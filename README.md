@@ -1,36 +1,59 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# CAD AI
+
+CAD AI is an intelligent, agent-driven Next.js application that enables Large Language Models (LLMs) to autonomously design, compile, and verify 3D printable mechanical parts using parametric OpenSCAD.
+
+## Features
+
+- **Agentic 3D Design:** An AI agent capable of writing parametric OpenSCAD scripts for mechanical fasteners, enclosures, snap-fits, gears, and more.
+- **In-Memory Compilation:** Uses `openscad-wasm` to securely and instantly compile OpenSCAD scripts to STL geometry directly within the Node/V8 engine.
+- **Geometry Verification:** Extracts physical volume, bounding boxes, and checks for zero-thickness manifold errors, providing a closed physical verification loop for the AI.
+- **Interactive UI:** Next.js frontend built with React, Tailwind CSS, Monaco Editor, and Three.js for realtime code editing and 3D rendering.
+
+## MCP Server Support
+
+CAD AI functions natively as an **MCP (Model Context Protocol)** server. This allows external clients like Claude Desktop or other agents to connect and use its CAD compilation and engineering tools.
+
+The server exposes three powerful MCP tools:
+1. `list_engineering_modules`: Lists all available mechanical design templates (fasteners, snap-fits, lattices).
+2. `get_engineering_module`: Retrieves exact parametric code and design rules for a chosen module.
+3. `compile_and_validate_scad`: Compiles an OpenSCAD script, verifies its solid geometry, and exports the STL.
+
+### Connecting to the MCP Server
+
+There are two ways to run the MCP server:
+
+**1. HTTP Server-Sent Events (SSE) via Next.js:**
+By running the Next.js development server, the MCP is automatically available over HTTP.
+```bash
+npm run dev
+```
+- **Endpoint:** `http://localhost:3000/api/mcp`
+- **Transport:** SSE (Server-Sent Events)
+
+**2. Standard Input/Output (CLI):**
+You can also run the MCP server directly via `stdio` for traditional integration.
+```bash
+npm run mcp
+```
 
 ## Getting Started
 
-First, run the development server:
-
+First, install dependencies:
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Start the development server:
+```bash
+npm run dev
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Open [http://localhost:3000](http://localhost:3000) with your browser to explore the interactive CAD workspace.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Technologies Used
+- Next.js (App Router)
+- Model Context Protocol (MCP) SDK
+- LangGraph & Google Gemini
+- Three.js / React Three Fiber
+- Monaco Editor
+- OpenSCAD WASM
