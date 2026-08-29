@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "cadai": {
+      "command": "npx",
+      "args": ["tsx", "c:/Users/prashant/.gemini/antigravity-ide/scratch/cadai/src/mcp-server.ts"],
+      "env": {
+        "NODE_ENV": "development"
+      }
+    }
+  }
+}

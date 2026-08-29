@@ -1,0 +1,101 @@
+'use client';
+
+import React from 'react';
+import { useAppStore } from '@/store/app-store';
+import {
+  Grid,
+  Axis3d,
+  Layers,
+  RotateCw,
+  Eye,
+  Maximize2,
+  Compass,
+} from 'lucide-react';
+
+interface ViewportToolbarProps {
+  onResetCamera: () => void;
+}
+
+export function ViewportToolbar({ onResetCamera }: ViewportToolbarProps) {
+  const { viewportSettings, updateViewportSettings } = useAppStore();
+
+  return (
+    <div className="absolute top-3 left-3 z-10 flex items-center gap-1 bg-slate-900/90 backdrop-blur-md border border-slate-800 rounded-lg p-1 shadow-lg select-none">
+      {/* Grid toggle */}
+      <button
+        onClick={() => updateViewportSettings({ showGrid: !viewportSettings.showGrid })}
+        className={`p-1.5 rounded-md text-xs transition-colors flex items-center gap-1 ${
+          viewportSettings.showGrid
+            ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/40'
+            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+        }`}
+        title="Toggle Build Grid (10mm)"
+      >
+        <Grid className="w-4 h-4" />
+      </button>
+
+      {/* Axes toggle */}
+      <button
+        onClick={() => updateViewportSettings({ showAxes: !viewportSettings.showAxes })}
+        className={`p-1.5 rounded-md text-xs transition-colors flex items-center gap-1 ${
+          viewportSettings.showAxes
+            ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/40'
+            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+        }`}
+        title="Toggle XYZ Axes (Red=X, Green=Y, Blue=Z)"
+      >
+        <Axis3d className="w-4 h-4" />
+      </button>
+
+      {/* Edges toggle */}
+      <button
+        onClick={() => updateViewportSettings({ showEdges: !viewportSettings.showEdges })}
+        className={`p-1.5 rounded-md text-xs transition-colors flex items-center gap-1 ${
+          viewportSettings.showEdges
+            ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/40'
+            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+        }`}
+        title="Toggle CAD Feature Edges"
+      >
+        <Layers className="w-4 h-4" />
+      </button>
+
+      {/* Wireframe toggle */}
+      <button
+        onClick={() => updateViewportSettings({ wireframe: !viewportSettings.wireframe })}
+        className={`p-1.5 rounded-md text-xs transition-colors flex items-center gap-1 ${
+          viewportSettings.wireframe
+            ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/40'
+            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+        }`}
+        title="Toggle Wireframe Mode"
+      >
+        <Eye className="w-4 h-4" />
+      </button>
+
+      {/* Auto-rotate */}
+      <button
+        onClick={() => updateViewportSettings({ autoRotate: !viewportSettings.autoRotate })}
+        className={`p-1.5 rounded-md text-xs transition-colors flex items-center gap-1 ${
+          viewportSettings.autoRotate
+            ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/40'
+            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+        }`}
+        title="Toggle Turntable Auto-Rotation"
+      >
+        <RotateCw className="w-4 h-4" />
+      </button>
+
+      <div className="w-px h-4 bg-slate-800 mx-0.5" />
+
+      {/* Reset Camera */}
+      <button
+        onClick={onResetCamera}
+        className="p-1.5 rounded-md text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+        title="Reset Camera & Center Model"
+      >
+        <Maximize2 className="w-4 h-4" />
+      </button>
+    </div>
+  );
+}
