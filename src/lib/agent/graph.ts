@@ -2,6 +2,8 @@ import { StateGraph, Annotation, END, START } from '@langchain/langgraph';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
 import type { RunnableConfig } from '@langchain/core/runnables';
+import { DynamicStructuredTool } from '@langchain/core/tools';
+import { z } from 'zod';
 import { CAD_AI_SYSTEM_PROMPT } from './system-prompt';
 import { extractOpenScadCode } from './code-extractor';
 import { validateOpenScadCode } from './code-validator';
@@ -20,6 +22,10 @@ export const AgentState = Annotation.Root({
   messages: Annotation<BaseMessage[]>({
     reducer: (x, y) => x.concat(y),
     default: () => [],
+  }),
+  assemblySpec: Annotation<any>({
+    reducer: (_, y) => y,
+    default: () => null,
   }),
   currentCode: Annotation<string>({
     reducer: (_, y) => y,
@@ -65,6 +71,44 @@ export function getGeminiModel(apiKey?: string, modelName?: string) {
   });
 }
 
+const outputAssemblySpecTool = new DynamicStructuredTool({
+  name: 'output_assembly_spec',
+  description: 'Outputs the final validated Assembly IR (Intermediate Representation) JSON spec containing joint contracts and dimensional bounds.',
+  schema: z.object({
+    assemblyName: z.string(),
+    boundingBox: z.object({ width: z.number(), length: z.number(), height: z.number() }),
+    jointContracts: z.array(z.object({
+      type: z.string(),
+      clearance: z.number(),
+      dimensions: z.object({
+        length: z.number().optional(),
+        width: z.number().optional(),
+        height: z.number().optional(),
+        depth: z.number().optional(),
+        diameter: z.number().optional(),
+        radius: z.number().optional(),
+        thickness: z.number().optional(),
+      }).optional()
+    })).optional(),
+    components: z.array(z.object({
+      name: z.string(),
+      description: z.string(),
+      dimensions: z.object({
+        length: z.number().optional(),
+        width: z.number().optional(),
+        height: z.number().optional(),
+        depth: z.number().optional(),
+        diameter: z.number().optional(),
+        radius: z.number().optional(),
+        thickness: z.number().optional(),
+      }).optional()
+    }))
+  }),
+  func: async (args) => {
+    return JSON.stringify(args, null, 2);
+  }
+});
+
 /**
  * Creates the CAD AI LangGraph agent graph with tool-calling capabilities.
  */
@@ -74,28 +118,68 @@ export function createCadAgent(
   modelName?: string
 ) {
   const model = getGeminiModel(apiKey, modelName);
-  const modelWithTools = model.bindTools([getFunctionalCadModuleTool]);
+  
+  // Architect uses output tool
+  const architectModel = model.bindTools([outputAssemblySpecTool]);
+  
+  // Drafter uses engineering lookup tools
+  const drafterModel = model.bindTools([getFunctionalCadModuleTool]);
 
-  // Node 1: generateCode
-  async function generateCode(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
+  // Node 1: architectNode
+  async function architectNode(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
     onProgress?.({
       type: 'thinking',
-      message: 'Analyzing mechanical design requirements, tolerances & hardware standards...',
+      message: 'Mechanical Architect: Analyzing design requirements and defining bounding boxes...',
       timestamp: Date.now(),
     });
 
     const messages: BaseMessage[] = [
       new SystemMessage(CAD_AI_SYSTEM_PROMPT),
       ...state.messages,
+      new HumanMessage("As the Mechanical Architect, analyze the request, calculate dimensions, and use the 'output_assembly_spec' tool to provide the JSON IR. Do not write OpenSCAD code yet.")
     ];
 
+    const response = await architectModel.invoke(messages, config);
+    let spec = null;
+    let explanation = typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
+
+    if (response.tool_calls && response.tool_calls.length > 0) {
+      for (const toolCall of response.tool_calls) {
+        if (toolCall.name === 'output_assembly_spec') {
+          spec = toolCall.args;
+          explanation += "\n\nAssembly Spec generated.";
+        }
+      }
+    }
+
+    return {
+      assemblySpec: spec,
+      explanation: explanation,
+    };
+  }
+
+  // Node 2: drafterNode
+  async function drafterNode(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
     onProgress?.({
       type: 'generating',
-      message: 'Evaluating functional engineering modules & parametric algorithms...',
+      message: 'Parametric Drafter: Generating Additive OpenSCAD geometry based on the Architect Spec...',
       timestamp: Date.now(),
     });
 
-    let response = await modelWithTools.invoke(messages, config);
+    const drafterPrompt = `As the Parametric Drafter, generate the final OpenSCAD code using the Architect's JSON Spec below. Remember to use Additive-First construction.
+    
+Architect Spec:
+${JSON.stringify(state.assemblySpec, null, 2)}
+`;
+
+    const messages: BaseMessage[] = [
+      new SystemMessage(CAD_AI_SYSTEM_PROMPT),
+      ...state.messages,
+      new AIMessage(state.explanation),
+      new HumanMessage(drafterPrompt)
+    ];
+
+    let response = await drafterModel.invoke(messages, config);
 
     // Handle tool execution loop if the model requests engineering modules
     if (response.tool_calls && response.tool_calls.length > 0) {
@@ -106,7 +190,7 @@ export function createCadAgent(
           const moduleKey = (toolCall.args as any)?.moduleKey || 'fastener_hardware';
           onProgress?.({
             type: 'thinking',
-            message: `Retrieving tested engineering algorithm: ${moduleKey}...`,
+            message: `Parametric Drafter: Retrieving tested engineering module: ${moduleKey}...`,
             timestamp: Date.now(),
           });
 
@@ -136,16 +220,16 @@ export function createCadAgent(
 
     return {
       currentCode: extractedCode || '',
-      explanation: content,
+      explanation: state.explanation + "\n\n" + content,
       attemptCount: 1,
     };
   }
 
-  // Node 2: validateCode
+  // Node 3: validateCode
   async function validateCode(state: AgentStateType): Promise<Partial<AgentStateType>> {
     onProgress?.({
       type: 'validating',
-      message: 'Validating OpenSCAD solid geometry & watertight manifoldness in WASM...',
+      message: 'Physical Validator: Checking watertightness and flat-pack capabilities in WASM...',
       timestamp: Date.now(),
     });
 
@@ -172,13 +256,13 @@ export function createCadAgent(
     }
   }
 
-  // Node 3: fixCode
+  // Node 4: fixCode
   async function fixCode(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
     const currentAttempt = state.attemptCount + 1;
 
     onProgress?.({
       type: 'fixing',
-      message: `OpenSCAD compilation error detected. Self-repairing solid model (attempt ${currentAttempt}/3)...`,
+      message: `Physical Validator Error. Drafter self-repairing solid model (attempt ${currentAttempt}/3)...`,
       timestamp: Date.now(),
     });
 
@@ -211,7 +295,7 @@ Please diagnose the issue and provide the COMPLETE fixed OpenSCAD code in a sing
     };
   }
 
-  // Node 4: respondToUser
+  // Node 5: respondToUser
   async function respondToUser(state: AgentStateType): Promise<Partial<AgentStateType>> {
     if (state.isValid) {
       onProgress?.({
@@ -248,12 +332,14 @@ Please diagnose the issue and provide the COMPLETE fixed OpenSCAD code in a sing
 
   // Build the graph
   const workflow = new StateGraph(AgentState)
-    .addNode('generateCode', generateCode)
+    .addNode('architectNode', architectNode)
+    .addNode('drafterNode', drafterNode)
     .addNode('validateCode', validateCode)
     .addNode('fixCode', fixCode)
     .addNode('respondToUser', respondToUser)
-    .addEdge(START, 'generateCode')
-    .addEdge('generateCode', 'validateCode')
+    .addEdge(START, 'architectNode')
+    .addEdge('architectNode', 'drafterNode')
+    .addEdge('drafterNode', 'validateCode')
     .addConditionalEdges('validateCode', checkValidationRoute, {
       fixCode: 'fixCode',
       respondToUser: 'respondToUser',

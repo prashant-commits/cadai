@@ -43,6 +43,7 @@ export interface ModelInfo {
   triangleCount: number;
   vertexCount: number;
   isWatertight: boolean;
+  isFlatPackable: boolean;
   boundingBox: {
     min: [number, number, number];
     max: [number, number, number];

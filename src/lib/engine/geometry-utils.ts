@@ -42,6 +42,34 @@ export function parseStlToGeometry(stlContent: string): {
 
   const volumeMm3 = Math.abs(volume);
 
+  // Flat-Pack Verification (Coplanar with Z=0)
+  // We check if there's a significant surface area whose vertices are at the bottom Z coordinate and normals point down.
+  let bottomArea = 0;
+  const normalAttr = geometry.getAttribute('normal');
+  const bottomZ = bbox.min.z;
+  
+  if (normalAttr) {
+    for (let i = 0; i < vertexCount; i += 3) {
+      p1.fromBufferAttribute(positionAttr, i);
+      p2.fromBufferAttribute(positionAttr, i + 1);
+      p3.fromBufferAttribute(positionAttr, i + 2);
+      
+      const n1 = new THREE.Vector3().fromBufferAttribute(normalAttr, i);
+      
+      // Check if triangle is approximately at the bottom and normal is pointing down
+      if (Math.abs(p1.z - bottomZ) < 1e-3 && Math.abs(p2.z - bottomZ) < 1e-3 && Math.abs(p3.z - bottomZ) < 1e-3) {
+        if (n1.z < -0.99) {
+          const v1 = p2.clone().sub(p1);
+          const v2 = p3.clone().sub(p1);
+          bottomArea += v1.cross(v2).length() / 2.0;
+        }
+      }
+    }
+  }
+  
+  // Consider flat-packable if bottom area is at least 10 mm^2 (arbitrary threshold for a stable base)
+  const isFlatPackable = bottomArea > 10.0;
+
   const modelInfo: ModelInfo = {
     dimensions: {
       x: Number(size.x.toFixed(2)),
@@ -52,6 +80,7 @@ export function parseStlToGeometry(stlContent: string): {
     triangleCount,
     vertexCount,
     isWatertight: triangleCount > 0 && Math.abs(volume) > 1e-4,
+    isFlatPackable,
     boundingBox: {
       min: [Number(bbox.min.x.toFixed(2)), Number(bbox.min.y.toFixed(2)), Number(bbox.min.z.toFixed(2))],
       max: [Number(bbox.max.x.toFixed(2)), Number(bbox.max.y.toFixed(2)), Number(bbox.max.z.toFixed(2))],

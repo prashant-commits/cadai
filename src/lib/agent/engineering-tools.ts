@@ -427,7 +427,87 @@ module parametric_spur_gear(
         translate([0, 0, -0.1])
             cylinder(d = bore_d, h = face_width + 0.2);
     }
-}`,
+}`
+  },
+
+  dowel_stacking_joint: {
+    id: 'dowel_stacking_joint',
+    name: 'Dowel Stacking Joint (Mating Interface)',
+    category: 'joinery',
+    description: 'Standardized pin and socket for vertically stacking components like lamp frames or chassis tiers.',
+    engineeringParameters: [
+      'pin_d: Diameter of the dowel pin (typically 7.0mm)',
+      'socket_d: Diameter of the mating blind bore (typically 7.5mm for 0.25mm radial clearance)',
+      'depth: Insertion depth of the pin (e.g., 8mm)',
+    ],
+    designRules: [
+      'Male pin should have a 1.0mm 45-degree chamfer lead-in for easy assembly.',
+      'Maintain 0.25mm radial clearance for a comfortable slip fit in FDM.',
+    ],
+    codeTemplate: `// --- Dowel Stacking Joint ---
+module dowel_stacking_pin(d = 7.0, h = 8.0) {
+    cylinder(d = d, h = h - 1.0, $fn = 32);
+    translate([0, 0, h - 1.0])
+        cylinder(r1 = d/2, r2 = (d/2) - 1.0, h = 1.0, $fn = 32);
+}
+
+module dowel_stacking_socket(d = 7.5, h = 8.0) {
+    cylinder(d = d, h = h + 0.5, $fn = 32); // Extra depth for clearance
+}`
+  },
+
+  panel_slide_track: {
+    id: 'panel_slide_track',
+    name: 'Panel Slide Track (Groove Joint)',
+    category: 'joinery',
+    description: 'U-channel guide groove for sliding in thin panels, diffusers, or Kumiko lattices.',
+    engineeringParameters: [
+      'panel_t: Thickness of the panel being inserted (e.g., 2.0mm)',
+      'groove_w: Width of the channel (panel_t + 0.4mm clearance)',
+      'depth: Insertion depth of the channel (e.g., 4.0mm)',
+      'length: Length of the track',
+    ],
+    designRules: [
+      'Provide 0.4mm total slot clearance (e.g. 2.4mm slot for a 2.0mm panel) so the panel slides without binding.',
+    ],
+    codeTemplate: `// --- Panel Slide Track ---
+module panel_slide_groove(panel_t = 2.0, depth = 4.0, length = 100, clearance = 0.4) {
+    groove_w = panel_t + clearance;
+    translate([-groove_w/2, -0.01, -0.01])
+        cube([groove_w, depth + 0.02, length + 0.02]);
+}`
+  },
+
+  trapped_plate_mount: {
+    id: 'trapped_plate_mount',
+    name: 'Trapped Plate Internal Mount',
+    category: 'joinery',
+    description: 'Internal shelf designed to capture and hold a functional core plate (e.g., Bulb Tray).',
+    engineeringParameters: [
+      'plate_w: Width of the trapped plate',
+      'plate_l: Length of the trapped plate',
+      'shelf_w: Width of the supporting shelf rim (e.g., 2-4mm)',
+      'clearance: Perimeter gap around the plate (e.g., 0.25mm)',
+    ],
+    designRules: [
+      'The trapped plate should have at least 0.25mm edge clearance on all sides.',
+      'The shelf should overlap the plate by at least 2.0mm to support vertical loads.',
+    ],
+    codeTemplate: `// --- Trapped Plate Shelf Cutout (Difference Target) ---
+module trapped_plate_cutout(plate_w = 81.5, plate_l = 81.5, plate_t = 3.0, shelf_depth = 2.0, clearance = 0.25) {
+    total_w = plate_w + (clearance * 2);
+    total_l = plate_l + (clearance * 2);
+    
+    // The cavity for the plate
+    translate([-(total_w/2), -(total_l/2), 0])
+        cube([total_w, total_l, plate_t + 0.2]);
+        
+    // The pass-through hole beneath the shelf
+    hole_w = total_w - (shelf_depth * 2);
+    hole_l = total_l - (shelf_depth * 2);
+    translate([-(hole_w/2), -(hole_l/2), -10]) // arbitrary deep cut
+        cube([hole_w, hole_l, 10 + 0.01]);
+}`
   },
 };
 
@@ -447,7 +527,10 @@ Available module keys:
 - 'print_in_place_hinge': Zero-assembly revolving hinge with conical pivot pins.
 - 'honeycomb_lattice': Mathematical hexagonal isogrid lattice for lightweighting and ventilation.
 - 'polar_bolt_circle': Trigonometric polar hole arrays for motor mounts and flanges.
-- 'involute_spur_gear': Parametric spur gear with standard pressure angle and shaft bore.`,
+- 'involute_spur_gear': Parametric spur gear with standard pressure angle and shaft bore.
+- 'dowel_stacking_joint': Standardized pin and socket for vertically stacking components.
+- 'panel_slide_track': U-channel guide groove for sliding in thin panels or diffusers.
+- 'trapped_plate_mount': Internal shelf designed to capture and hold a functional core plate.`,
   schema: z.object({
     moduleKey: z.enum([
       'fastener_hardware',
@@ -459,6 +542,9 @@ Available module keys:
       'honeycomb_lattice',
       'polar_bolt_circle',
       'involute_spur_gear',
+      'dowel_stacking_joint',
+      'panel_slide_track',
+      'trapped_plate_mount',
     ]).describe('The specific functional or mathematical CAD module key to retrieve.'),
   }),
   func: async ({ moduleKey }) => {
