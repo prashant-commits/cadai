@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { createCadAgent, StreamEventPayload } from '@/lib/agent/graph';
-import { getLangfuseCallbackHandler } from '@/lib/tracing/langfuse';
+import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/tracing/langfuse';
 import { getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { Command, isInterrupted, INTERRUPT } from '@langchain/langgraph';
 import { GateDecision, GatePayload } from '@/types';
@@ -126,8 +126,9 @@ export async function POST(req: NextRequest) {
         // See the matching comment in ../route.ts: the detached IIFE outlives
         // the returned Response, so the span queue must be drained explicitly
         // before the stream closes or the tail of every resumed run is lost.
+        // v5 moved that queue off the handler and onto the span processor.
         try {
-          await langfuseHandler?.flushAsync();
+          await getLangfuseSpanProcessor()?.forceFlush();
         } catch (e) {
           console.warn('Langfuse flush failed:', e);
         }

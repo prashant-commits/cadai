@@ -3,7 +3,7 @@ import { HumanMessage, AIMessage } from '@langchain/core/messages';
 import { isInterrupted, INTERRUPT } from '@langchain/langgraph';
 import { createCadAgent, StreamEventPayload } from '@/lib/agent/graph';
 import { getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
-import { getLangfuseCallbackHandler } from '@/lib/tracing/langfuse';
+import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/tracing/langfuse';
 import { DesignContract, GatePayload } from '@/types';
 import { randomUUID } from 'crypto';
 
@@ -138,8 +138,11 @@ export async function POST(req: NextRequest) {
         // next/server runs only once the response is finished, which for a
         // stream is after this close, and would race that teardown.
         // A failed flush must never strand the stream, hence the inner catch.
+        // v5 moved the export queue off the handler and onto the span
+        // processor (see src/lib/tracing/langfuse.ts), so that's what gets
+        // flushed now - flushing langfuseHandler itself is no longer a thing.
         try {
-          await langfuseHandler?.flushAsync();
+          await getLangfuseSpanProcessor()?.forceFlush();
         } catch (e) {
           console.warn('Langfuse flush failed:', e);
         }
