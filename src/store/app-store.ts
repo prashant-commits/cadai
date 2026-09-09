@@ -91,7 +91,7 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set, get) => ({
   apiKey: '',
-  selectedModel: 'gemini-3.6-flash',
+  selectedModel: 'deepseek-v4-flash',
   threads: [],
   activeThreadId: '',
 
@@ -136,7 +136,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       params: parseParams(initialCode),
       stlContent: active.stlContent || null,
       modelInfo: active.modelInfo || null,
-      selectedModel: active.selectedModel || 'gemini-3.6-flash',
+      selectedModel: active.selectedModel || 'deepseek-v4-flash',
     });
   },
 

@@ -15,6 +15,7 @@ import { SpecViolation, auditSpec } from './spec-audit';
 import { analyzeStl } from '../engine/geometry-utils';
 import { renderStlViews, RenderedView } from '../engine/stl-renderer';
 import { shouldGateSpec, shouldGateAccept } from './gate-policy';
+import { getChatModel, getVisionModel } from './model-provider';
 import { composeAssembly, stripGeneratedAssembly, instantiationFor } from '../design/compose-assembly';
 import { checkInterference } from '../engine/assembly-verifier';
 import { getCheckpointer } from './checkpointer';
@@ -40,7 +41,10 @@ const VisualCritiqueSchema = z.object({
       z.object({
         issue: z.string().describe('What is visibly wrong, in one sentence.'),
         severity: z.enum(['minor', 'major']),
-        view: z.string().optional().describe('front | right | top | iso'),
+        // NOT optional. The vision default (gpt-5.6-luna) enforces OpenAI
+        // strict json_schema, which rejects any property missing from
+        // `required` with a 400 before the model ever runs.
+        view: z.string().describe('front | right | top | iso, or "" if it applies to all views'),
       })
     )
     .default([]),
@@ -426,25 +430,12 @@ export const AgentState = Annotation.Root({
 
 export type AgentStateType = typeof AgentState.State;
 
+/**
+ * Retained as the Gemini-only entry point some callers still import. New code
+ * should use getChatModel(), which also serves the gateway models.
+ */
 export function getGeminiModel(apiKey?: string, modelName?: string) {
-  const key = apiKey || process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
-  if (!key) {
-    throw new Error('Google Gemini API Key is missing. Please set GOOGLE_API_KEY in your environment or .env.local.');
-  }
-
-  const selectedModel = modelName || process.env.GEMINI_MODEL || 'gemini-3.6-flash';
-
-  return new ChatGoogleGenerativeAI({
-    apiKey: key,
-    model: selectedModel,
-    temperature: 0.2,
-    // Kept at 8192 deliberately. A healthy Assembly Spec costs ~2.5k output
-    // tokens, so this is not the binding constraint; raising it to 32768 was
-    // measured against the Architect's real failure (Gemini's constrained
-    // decoding degenerating into repeated digits inside a numeric field) and
-    // changed nothing except how many tokens a doomed call burns before it dies.
-    maxOutputTokens: 8192,
-  });
+  return getChatModel(apiKey, modelName || 'gemini-3.6-flash');
 }
 
 /**
@@ -455,7 +446,10 @@ export function createCadAgent(
   onProgress?: (event: StreamEventPayload) => void,
   modelName?: string
 ) {
-  const model = getGeminiModel(apiKey, modelName);
+  const model = getChatModel(apiKey, modelName);
+  // Resolved separately: no DeepSeek text route accepts image input, so the
+  // critic falls back to a multimodal slug instead of failing the whole run.
+  const visionModel = getVisionModel(apiKey, modelName);
   
   // Architect uses structured output
   const architectModel = model.withStructuredOutput(AssemblySpecSchema);
@@ -989,7 +983,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
 
     let critique: VisualCritique | null = null;
     try {
-      critique = (await model
+      critique = (await visionModel
         .withStructuredOutput(VisualCritiqueSchema)
         .invoke(
           [

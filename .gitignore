@@ -47,3 +47,14 @@ next-env.d.ts
 
 # HIL checkpoint store (local-only, per-machine paused-run state)
 /.cadai/
+
+.vercel
+.env*
+
+# scratch probes / one-off diagnostic harnesses
+# These are throwaway benchmark and API-smoke scripts written while debugging a
+# provider or a schema. They hardcode prompts and model slugs, go stale within a
+# day, and were swept into a commit once already.
+__*.mts
+__*.mjs
+explabs_smoke.mjs

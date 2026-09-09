@@ -21,6 +21,19 @@ vi.mock('@langchain/google-genai', () => {
   return { ChatGoogleGenerativeAI: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
 });
 
+// The agent now picks its provider by model slug: gemini-* goes to Google, every
+// other slug to the Experiential Labs gateway over the OpenAI wire format. Both
+// lanes are faked so these suites keep exercising whichever one the default
+// selects, instead of silently making real calls when the default changes.
+vi.mock('@langchain/openai', () => {
+  class FakeChatModel {
+    invoke = invokeMock;
+    withStructuredOutput() { return this; }
+    bindTools() { return this; }
+  }
+  return { ChatOpenAI: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
+});
+
 import { createCadAgent } from './graph';
 
 function baseSpec(overrides: Record<string, any> = {}) {
