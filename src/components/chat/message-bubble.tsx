@@ -17,11 +17,18 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const { setCode, setCompileResult, setCompileStatus } = useAppStore();
   const [copied, setCopied] = useState(false);
+  const [messageCopied, setMessageCopied] = useState(false);
 
   const handleCopy = (code: string) => {
     navigator.clipboard.writeText(code);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleCopyMessage = () => {
+    navigator.clipboard.writeText(message.content);
+    setMessageCopied(true);
+    setTimeout(() => setMessageCopied(false), 2000);
   };
 
   const handleApplyCode = async (codeToApply: string) => {
@@ -31,8 +38,20 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     setCompileResult(result);
   };
 
+  const copyMessageButton = (
+    <button
+      onClick={handleCopyMessage}
+      title="Copy message"
+      aria-label="Copy message"
+      className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-slate-500 opacity-0 transition-all hover:bg-slate-800 hover:text-slate-300 focus-visible:opacity-100 group-hover:opacity-100"
+    >
+      {messageCopied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+      <span>{messageCopied ? 'Copied' : 'Copy'}</span>
+    </button>
+  );
+
   return (
-    <div className={`flex gap-3 py-4 ${isUser ? 'justify-end' : 'justify-start'}`}>
+    <div className={`group flex gap-3 py-4 ${isUser ? 'justify-end' : 'justify-start'}`}>
       {!isUser && (
         <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-600 to-purple-600 flex items-center justify-center shrink-0 shadow-sm mt-0.5">
           <Bot className="w-4 h-4 text-white" />
@@ -116,8 +135,12 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           </ReactMarkdown>
         </div>
 
-        <div className={`text-[10px] text-slate-500 px-1 ${isUser ? 'text-right' : 'text-left'}`}>
-          {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        <div className={`flex items-center gap-1 px-1 ${isUser ? 'justify-end' : 'justify-start'}`}>
+          {isUser && copyMessageButton}
+          <span className="text-[10px] text-slate-500">
+            {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </span>
+          {!isUser && copyMessageButton}
         </div>
       </div>
 

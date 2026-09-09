@@ -3,11 +3,14 @@
 import React from 'react';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { ChatPanel } from '@/components/chat/chat-panel';
-import { PrintAnalysisPanel } from '@/components/print-analysis/print-analysis-panel';
+import { DesignPanel } from '@/components/design/design-panel';
+import { useAppStore } from '@/store/app-store';
 import { ViewportPanel } from '@/components/viewport/viewport-panel';
 import { CodeEditorPanel } from '@/components/editor/code-editor-panel';
 
 export function SplitPaneLayout() {
+  const { editorView } = useAppStore();
+  
   return (
     <div className="flex-1 w-full h-[calc(100vh-3.5rem)] overflow-hidden">
       <Group orientation="horizontal" id="cadai-horizontal-layout">
@@ -21,7 +24,7 @@ export function SplitPaneLayout() {
           <div className="w-0.5 h-8 bg-slate-700 group-hover:bg-white rounded-full transition-colors" />
         </Separator>
 
-        {/* Right Side: Viewport + (Code Editor & Print Analysis) */}
+        {/* Right Side: Viewport + (Code Editor & Design Panel) */}
         <Panel defaultSize="60%" minSize="35%" className="h-full">
           <Group orientation="vertical" id="cadai-vertical-layout">
             {/* Top Right: 3D Viewport */}
@@ -34,13 +37,12 @@ export function SplitPaneLayout() {
               <div className="h-0.5 w-8 bg-slate-700 group-hover:bg-white rounded-full transition-colors" />
             </Separator>
 
-            {/* Bottom Right: Code Editor & Collapsible Print Analysis Panel */}
+            {/* Bottom Right: Code Editor or Design Panel */}
             <Panel defaultSize="40%" minSize="20%" className="h-full">
               <div className="h-full w-full flex overflow-hidden">
                 <div className="flex-1 min-w-0 h-full">
-                  <CodeEditorPanel />
+                  {editorView === 'code' ? <CodeEditorPanel /> : <DesignPanel />}
                 </div>
-                <PrintAnalysisPanel />
               </div>
             </Panel>
           </Group>

@@ -25,8 +25,8 @@ export function CodeEditorPanel() {
     setCompileResult,
     setCompileStatus,
     isGenerating,
-    isAnalysisCollapsed,
-    toggleAnalysisCollapsed,
+    editorView,
+    setEditorView,
   } = useAppStore();
 
   const [editorValue, setEditorValue] = useState(code);
@@ -86,7 +86,7 @@ export function CodeEditorPanel() {
   const handleEditorChange = (value?: string) => {
     const val = value || '';
     setEditorValue(val);
-    setCode(val);
+    setCode(val, undefined, 'user');
 
     // Debounce re-compilation by 500ms
     if (debounceTimerRef.current) {
@@ -137,18 +137,18 @@ export function CodeEditorPanel() {
             </div>
           )}
 
-          {/* Toggle Print Analysis button */}
+          {/* Toggle Design Panel button */}
           <button
-            onClick={toggleAnalysisCollapsed}
+            onClick={() => setEditorView(editorView === 'code' ? 'design' : 'code')}
             className={`flex items-center gap-1 text-xs px-2 py-1 rounded border transition-colors cursor-pointer ${
-              !isAnalysisCollapsed
+              editorView === 'design'
                 ? 'bg-indigo-600/20 border-indigo-500/40 text-indigo-300'
                 : 'bg-slate-900 hover:bg-slate-800 border-slate-800 text-slate-400 hover:text-slate-200'
             }`}
-            title={isAnalysisCollapsed ? 'Open Print Analysis & Export Panel' : 'Hide Print Analysis'}
+            title={editorView === 'code' ? 'Open Design Panel' : 'Hide Design Panel'}
           >
             <Printer className="w-3.5 h-3.5 text-cyan-400" />
-            <span className="text-[11px] hidden sm:inline">Analysis</span>
+            <span className="text-[11px] hidden sm:inline">Design</span>
           </button>
 
           <button

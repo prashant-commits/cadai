@@ -6,10 +6,12 @@ import { MessageBubble } from './message-bubble';
 import { ThinkingIndicator } from './thinking-indicator';
 import { ChatInput } from './chat-input';
 import { ThreadDrawer } from './thread-drawer';
+import { GateInlineUI } from './gate-inline-ui';
+import { readStream } from '@/lib/stream-reader';
 import { compileOpenScad } from '@/lib/engine/openscad-bridge';
 import { parseStlToGeometry } from '@/lib/engine/geometry-utils';
 import { extractOpenScadCode } from '@/lib/agent/code-extractor';
-import { AgentProgress, ChatMessage } from '@/types';
+import { AgentProgress, ChatMessage, GatePayload, GateDecision } from '@/types';
 import {
   FolderKanban,
   Plus,
@@ -40,15 +42,21 @@ export function ChatPanel() {
     initializeFromStorage,
     setCode,
     setCompileResult,
+    setThreadContract,
     setCompileStatus,
   } = useAppStore();
 
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [tempTitle, setTempTitle] = useState('');
+  const [pendingGate, setPendingGate] = useState(false);
+  const [pendingGateData, setPendingGateData] = useState<GatePayload | null>(null);
+  // The paused run behind the open gate. Its checkpoint is keyed threadId::runId,
+  // so resuming without it would address a checkpoint that does not exist.
+  const [pendingRunId, setPendingRunId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Initialize threads from localStorage on client mount
+  // Initialize threads from IndexedDB on client mount
   useEffect(() => {
     initializeFromStorage();
   }, [initializeFromStorage]);
@@ -62,7 +70,7 @@ export function ChatPanel() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, activeProgress, progressHistory]);
+  }, [messages, activeProgress, progressHistory, pendingGate, pendingGateData]);
 
   const handleStartRename = () => {
     if (activeThread) {
@@ -78,9 +86,31 @@ export function ChatPanel() {
     setIsEditingTitle(false);
   };
 
-  const handleSendMessage = async (userText: string) => {
+  // Renders an accept gate's candidate mesh into the viewport so the human is
+  // judging the actual part rather than three numbers. Spec gates carry no
+  // geometry yet, so they are a no-op here.
+  const showGateGeometry = (gate: GatePayload | null | undefined, threadId: string) => {
+    if (!gate || gate.kind !== 'accept') return;
+    const stl = gate.stl;
+    if (!stl || !stl.includes('facet normal')) return;
+    try {
+      const { geometry, modelInfo } = parseStlToGeometry(stl);
+      setCompileResult(
+        { success: true, stlContent: stl, geometry, modelInfo, compileTimeMs: 0 },
+        threadId
+      );
+    } catch (e) {
+      // A mesh we cannot parse must not take the gate down with it - the
+      // numeric summary in the gate card still stands on its own.
+      console.error('Failed to render gate geometry:', e);
+    }
+  };
+
+  const handleSendMessage = async (userText: string, image?: string) => {
     const targetThreadId = activeThreadId;
-    if (!userText.trim() || isGenerating || !targetThreadId) return;
+    // An annotated screenshot on its own is a valid turn - the input enables
+    // submit for image-without-text, so this guard must accept it too.
+    if ((!userText.trim() && !image) || isGenerating || !targetThreadId) return;
 
     // 1. Add user message to target thread
     const userMsgId = 'user-' + Date.now();
@@ -88,6 +118,7 @@ export function ChatPanel() {
       id: userMsgId,
       role: 'user',
       content: userText,
+      image,
       timestamp: Date.now(),
     };
     addMessage(userMsg, targetThreadId);
@@ -119,13 +150,18 @@ export function ChatPanel() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          // `image` must survive this mapping: /api/chat turns it into the
+          // image_url content block (route.ts:33-40) that is the only way
+          // geometry feedback reaches the model.
           messages: [...existingMessages, userMsg].map((m) => ({
             role: m.role,
             content: m.content,
+            image: m.image,
           })),
           apiKey: apiKey || undefined,
           model: selectedModel,
           threadId: targetThreadId,
+          designContract: targetThreadObj?.designContract ?? null,
         }),
       });
 
@@ -138,96 +174,82 @@ export function ChatPanel() {
         throw new Error('No response stream received.');
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let done = false;
-      let buffer = '';
-      let finalCode = '';
-      let finalExplanation = '';
-      let finalStl = '';
+      const handleStreamResponse = async (response: Response, currentProgressList: AgentProgress[]) => {
+        await readStream(response, targetThreadId, {
+          onProgress: (progressItem) => {
+            if (progressItem.type === 'awaiting_input') {
+              setPendingGateData(progressItem.gate ?? null);
+              setPendingRunId(progressItem.runId ?? null);
+              setPendingGate(true);
+              setIsGenerating(false);
+              setGeneratingThreadId(null);
+              // Put the candidate mesh in the viewport while the gate is open.
+              // The accept gate asks a human to sign off on geometry; without
+              // this the viewport still shows the PREVIOUS model and the only
+              // evidence is a bounding box and a volume.
+              showGateGeometry(progressItem.gate, targetThreadId);
+            } else {
+              setActiveProgress(progressItem);
+              addProgressUpdate(progressItem);
+            }
+          },
+          onFinalize: async (finalCode, finalExplanation, finalStl, _progress, finalContract) => {
+            // readStream now suppresses onFinalize entirely while a gate is
+            // open, so no guard is needed here. The old `if (pendingGate)`
+            // check read a stale render-time closure and never fired.
+            if (finalContract) setThreadContract(finalContract, targetThreadId);
 
-      while (!done) {
-        const { value, done: streamDone } = await reader.read();
-        done = streamDone;
-        if (value) {
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n\n');
-          buffer = lines.pop() || '';
+            // Fallback code extraction if not explicitly marked
+            const extracted = extractOpenScadCode(finalExplanation);
+            const resolvedCode = finalCode || extracted.code || '';
 
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (trimmed.startsWith('data: ')) {
-              const dataStr = trimmed.substring(6);
-              try {
-                const event = JSON.parse(dataStr);
+            // Add final assistant message targeting targetThreadId
+            const assistantMsg: ChatMessage = {
+              id: assistantMsgId,
+              role: 'assistant',
+              content: finalExplanation || 'Model generation completed.',
+              code: resolvedCode || undefined,
+              progressUpdates: currentProgressList,
+              timestamp: Date.now(),
+            };
+            addMessage(assistantMsg, targetThreadId);
 
-                const progressItem: AgentProgress = {
-                  id: 'progress-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
-                  type: event.type,
-                  message: event.message,
-                  timestamp: event.timestamp || Date.now(),
-                  details: event.details,
-                };
+            // Render 3D model targeting targetThreadId
+            if (resolvedCode) {
+              setCode(resolvedCode, targetThreadId);
 
-                setActiveProgress(progressItem);
-                addProgressUpdate(progressItem);
-                currentProgressList.push(progressItem);
-
-                if (event.type === 'ready') {
-                  if (event.code) finalCode = event.code;
-                  if (event.stl) finalStl = event.stl;
-                  finalExplanation = event.explanation || event.message;
-                } else if (event.type === 'error') {
-                  finalExplanation = event.explanation || event.message;
+              // If STL was already generated in validation on server, parse directly
+              if (finalStl && finalStl.includes('facet normal')) {
+                const { geometry, modelInfo } = parseStlToGeometry(finalStl);
+                setCompileResult(
+                  {
+                    success: true,
+                    stlContent: finalStl,
+                    geometry,
+                    modelInfo,
+                    compileTimeMs: 0,
+                  },
+                  targetThreadId
+                );
+              } else {
+                // Otherwise compile via WASM bridge
+                if (useAppStore.getState().activeThreadId === targetThreadId) {
+                  setCompileStatus('compiling');
                 }
-              } catch (parseErr) {
-                console.error('Error parsing SSE event:', parseErr);
+                const compileResult = await compileOpenScad(resolvedCode);
+                setCompileResult(compileResult, targetThreadId);
               }
             }
+            
+            setIsGenerating(false);
+            setGeneratingThreadId(null);
+            clearProgress();
           }
-        }
-      }
-
-      // Fallback code extraction if not explicitly marked
-      const resolvedCode = finalCode || extractOpenScadCode(finalExplanation) || '';
-
-      // Add final assistant message targeting targetThreadId
-      const assistantMsg: ChatMessage = {
-        id: assistantMsgId,
-        role: 'assistant',
-        content: finalExplanation || 'Model generation completed.',
-        code: resolvedCode || undefined,
-        progressUpdates: currentProgressList,
-        timestamp: Date.now(),
+        });
       };
-      addMessage(assistantMsg, targetThreadId);
+      
+      await handleStreamResponse(response, currentProgressList);
 
-      // Render 3D model targeting targetThreadId
-      if (resolvedCode) {
-        setCode(resolvedCode, targetThreadId);
-
-        // If STL was already generated in validation on server, parse directly
-        if (finalStl && finalStl.includes('facet normal')) {
-          const { geometry, modelInfo } = parseStlToGeometry(finalStl);
-          setCompileResult(
-            {
-              success: true,
-              stlContent: finalStl,
-              geometry,
-              modelInfo,
-              compileTimeMs: 0,
-            },
-            targetThreadId
-          );
-        } else {
-          // Otherwise compile via WASM bridge
-          if (useAppStore.getState().activeThreadId === targetThreadId) {
-            setCompileStatus('compiling');
-          }
-          const compileResult = await compileOpenScad(resolvedCode);
-          setCompileResult(compileResult, targetThreadId);
-        }
-      }
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       addMessage(
@@ -239,7 +261,177 @@ export function ChatPanel() {
         },
         targetThreadId
       );
-    } finally {
+      setIsGenerating(false);
+      setGeneratingThreadId(null);
+      clearProgress();
+    }
+  };
+
+  const handleResume = async (decision: GateDecision) => {
+    const targetThreadId = activeThreadId;
+    if (!targetThreadId) return;
+
+    // Captured before the state resets below; the resume is meaningless
+    // without it, so fail loudly rather than posting a request the server
+    // will reject.
+    const targetRunId = pendingRunId;
+    if (!targetRunId) {
+      addMessage(
+        {
+          id: 'assistant-' + Date.now(),
+          role: 'assistant',
+          content:
+            '❌ **CAD AI Error**: Lost track of the paused run, so this review can no longer be applied. Please send your request again.',
+          timestamp: Date.now(),
+        },
+        targetThreadId
+      );
+      setPendingGate(false);
+      setPendingGateData(null);
+      return;
+    }
+
+    setPendingGate(false);
+    setPendingGateData(null);
+    setPendingRunId(null);
+
+    // Prepare assistant placeholder and clear old progress steps
+    const assistantMsgId = 'assistant-' + Date.now();
+    const currentProgressList: AgentProgress[] = [];
+
+    clearProgress();
+    setIsGenerating(true);
+    setGeneratingThreadId(targetThreadId);
+
+    try {
+      const response = await fetch('/api/chat/resume', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          apiKey: apiKey || undefined,
+          model: selectedModel,
+          threadId: targetThreadId,
+          runId: targetRunId,
+          decision,
+        }),
+      });
+
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({}));
+        throw new Error(errJson.error || `Server responded with HTTP ${response.status}`);
+      }
+
+      // Cancel resolves in a single event (no streamed generation follows) -
+      // still route it through readStream so the "Cancelled." message lands
+      // in the thread the same way any other assistant message would.
+      if (decision.action === 'cancel') {
+        await readStream(response, targetThreadId, {
+          onProgress: () => {},
+          onFinalize: (_finalCode, finalExplanation) => {
+            addMessage(
+              {
+                id: assistantMsgId,
+                role: 'assistant',
+                content: finalExplanation || 'Generation cancelled.',
+                timestamp: Date.now(),
+              },
+              targetThreadId
+            );
+            setIsGenerating(false);
+            setGeneratingThreadId(null);
+            clearProgress();
+          },
+        });
+        return;
+      }
+
+      const handleStreamResponse = async (response: Response, currentProgressList: AgentProgress[]) => {
+        await readStream(response, targetThreadId, {
+          onProgress: (progressItem) => {
+            if (progressItem.type === 'awaiting_input') {
+              setPendingGateData(progressItem.gate ?? null);
+              setPendingRunId(progressItem.runId ?? null);
+              setPendingGate(true);
+              setIsGenerating(false);
+              setGeneratingThreadId(null);
+              // Put the candidate mesh in the viewport while the gate is open.
+              // The accept gate asks a human to sign off on geometry; without
+              // this the viewport still shows the PREVIOUS model and the only
+              // evidence is a bounding box and a volume.
+              showGateGeometry(progressItem.gate, targetThreadId);
+            } else {
+              setActiveProgress(progressItem);
+              addProgressUpdate(progressItem);
+            }
+          },
+          onFinalize: async (finalCode, finalExplanation, finalStl, _progress, finalContract) => {
+            // Same as the send path: readStream suppresses this while a gate
+            // is open. The old guard checked an activeProgress value that the
+            // awaiting_input branch never sets, so it never fired either.
+            if (finalContract) setThreadContract(finalContract, targetThreadId);
+
+            // Fallback code extraction if not explicitly marked
+            const extracted = extractOpenScadCode(finalExplanation);
+            const resolvedCode = finalCode || extracted.code || '';
+
+            // Add final assistant message targeting targetThreadId
+            const assistantMsg: ChatMessage = {
+              id: assistantMsgId,
+              role: 'assistant',
+              content: finalExplanation || 'Model generation resumed and completed.',
+              code: resolvedCode || undefined,
+              progressUpdates: currentProgressList,
+              timestamp: Date.now(),
+            };
+            addMessage(assistantMsg, targetThreadId);
+
+            // Render 3D model targeting targetThreadId
+            if (resolvedCode) {
+              setCode(resolvedCode, targetThreadId);
+
+              // If STL was already generated in validation on server, parse directly
+              if (finalStl && finalStl.includes('facet normal')) {
+                const { geometry, modelInfo } = parseStlToGeometry(finalStl);
+                setCompileResult(
+                  {
+                    success: true,
+                    stlContent: finalStl,
+                    geometry,
+                    modelInfo,
+                    compileTimeMs: 0,
+                  },
+                  targetThreadId
+                );
+              } else {
+                // Otherwise compile via WASM bridge
+                if (useAppStore.getState().activeThreadId === targetThreadId) {
+                  setCompileStatus('compiling');
+                }
+                const compileResult = await compileOpenScad(resolvedCode);
+                setCompileResult(compileResult, targetThreadId);
+              }
+            }
+            
+            setIsGenerating(false);
+            setGeneratingThreadId(null);
+            clearProgress();
+          }
+        });
+      };
+      
+      await handleStreamResponse(response, currentProgressList);
+
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      addMessage(
+        {
+          id: assistantMsgId,
+          role: 'assistant',
+          content: `❌ **CAD AI Resume Error**: ${errorMessage}`,
+          timestamp: Date.now(),
+        },
+        targetThreadId
+      );
       setIsGenerating(false);
       setGeneratingThreadId(null);
       clearProgress();
@@ -326,6 +518,12 @@ export function ChatPanel() {
             history={progressHistory}
           />
         )}
+
+        {/* The gate belongs IN the transcript, not in a band above the
+            composer. It is the agent's turn - it follows the run that produced
+            it, scrolls with the conversation, and reads as the thing the user
+            is answering rather than as detached chrome. */}
+        {pendingGate && <GateInlineUI gate={pendingGateData} onResume={handleResume} />}
 
         <div ref={messagesEndRef} />
       </div>

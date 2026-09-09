@@ -44,3 +44,6 @@ next-env.d.ts
 /output/
 /scripts/
 /models/
+
+# HIL checkpoint store (local-only, per-machine paused-run state)
+/.cadai/

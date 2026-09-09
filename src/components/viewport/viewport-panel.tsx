@@ -6,6 +6,7 @@ import { OrbitControls, GizmoHelper, GizmoViewport } from '@react-three/drei';
 import { useAppStore } from '@/store/app-store';
 import { CadModel } from './cad-model';
 import { ViewportToolbar } from './viewport-toolbar';
+import { Annotator } from './annotator';
 import { compileOpenScad } from '@/lib/engine/openscad-bridge';
 import { Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
@@ -17,6 +18,7 @@ export function ViewportPanel() {
     compileStatus,
     compileError,
     viewportSettings,
+    isAnnotating,
     setCompileResult,
     setCompileStatus,
   } = useAppStore();
@@ -53,6 +55,8 @@ export function ViewportPanel() {
 
   return (
     <div className="relative w-full h-full bg-[#090d16] overflow-hidden select-none">
+      {isAnnotating && <Annotator />}
+      
       {/* Floating Toolbar */}
       <ViewportToolbar onResetCamera={handleResetCamera} />
 
@@ -97,7 +101,7 @@ export function ViewportPanel() {
       <Canvas
         shadows
         camera={{ position: [60, 60, 70], fov: 45, near: 0.1, far: 5000 }}
-        gl={{ antialias: true, logarithmicDepthBuffer: true }}
+        gl={{ antialias: true, logarithmicDepthBuffer: true, preserveDrawingBuffer: true }}
       >
         {/* Lights */}
         <ambientLight intensity={0.75} />

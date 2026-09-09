@@ -1,12 +1,21 @@
 import { create } from 'zustand';
 import * as THREE from 'three';
-import { ChatMessage, AgentProgress, ModelInfo, ViewportSettings, CompileResult, ChatThread } from '@/types';
+import { ChatMessage, AgentProgress, ModelInfo, ViewportSettings, CompileResult, ChatThread, ScadParam, ContractDiff, ParamValue, StandingConstraints, DesignContract } from '@/types';
 import {
   DEFAULT_OPENSCAD_CODE,
-  loadStoredThreads,
-  saveStoredThreads,
+  clearThreadMessages,
   createInitialThread,
+  deleteThreadCascade,
+  loadAllThreads,
+  setActiveThreadId,
+  setCodeDebounced,
+  upsertMessage,
+  upsertThread,
 } from '@/lib/storage/thread-storage';
+import { applyContract } from '@/lib/design/contract';
+import { parseParams } from '@/lib/design/parse-params';
+import { setParamValue } from '@/lib/design/write-params';
+import { compileOpenScad } from '@/lib/engine/openscad-bridge';
 
 interface AppState {
   apiKey: string;
@@ -20,6 +29,11 @@ interface AppState {
   geometry: THREE.BufferGeometry | null;
   stlContent: string | null;
   modelInfo: ModelInfo | null;
+  
+  // Design Contract & Parameters
+  params: ScadParam[];
+  contractDiff: ContractDiff | null;
+  editorView: 'code' | 'design';
 
   // Runtime State & Generation
   isGenerating: boolean;
@@ -30,7 +44,11 @@ interface AppState {
   compileError: string | null;
   compileTimeMs: number;
   viewportSettings: ViewportSettings;
-  isAnalysisCollapsed: boolean;
+
+  // Annotation & Input State
+  isAnnotating: boolean;
+  baseSnapshot: string | null;
+  pendingAttachment: string | null;
 
   // Thread Actions
   createNewThread: (title?: string) => string;
@@ -48,14 +66,27 @@ interface AppState {
   setActiveProgress: (progress: AgentProgress | null) => void;
   addProgressUpdate: (progress: AgentProgress) => void;
   clearProgress: () => void;
-  setCode: (code: string, threadId?: string) => void;
+  setCode: (code: string, threadId?: string, source?: 'user' | 'agent') => void;
   setCompileResult: (result: CompileResult, threadId?: string) => void;
   setCompileStatus: (status: 'idle' | 'compiling' | 'success' | 'error', error?: string | null) => void;
   updateViewportSettings: (settings: Partial<ViewportSettings>) => void;
-  toggleAnalysisCollapsed: () => void;
-  setIsAnalysisCollapsed: (collapsed: boolean) => void;
+  
+  // Editor View & Contract
+  setEditorView: (view: 'code' | 'design') => void;
+  pinParam: (name: string, value: ParamValue) => void;
+  unpinParam: (name: string) => void;
+  unpinAll: () => void;
+  setStanding: (partial: Partial<StandingConstraints>) => void;
+  /** Persist the contract the agent returned (carries the human-approved spec). */
+  setThreadContract: (contract: DesignContract, threadId?: string) => void;
+  dismissContractDiff: () => void;
+  
+  setIsAnnotating: (isAnnotating: boolean) => void;
+  setBaseSnapshot: (snapshot: string | null) => void;
+  setPendingAttachment: (image: string | null) => void;
+
   resetProject: () => void;
-  initializeFromStorage: () => void;
+  initializeFromStorage: () => Promise<void>;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -69,6 +100,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   geometry: null,
   stlContent: null,
   modelInfo: null,
+  params: [],
+  contractDiff: null,
+  editorView: 'design',
 
   isGenerating: false,
   generatingThreadId: null,
@@ -77,7 +111,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   compileStatus: 'idle',
   compileError: null,
   compileTimeMs: 0,
-  isAnalysisCollapsed: false,
+  isAnnotating: false,
+  baseSnapshot: null,
+  pendingAttachment: null,
   viewportSettings: {
     showGrid: true,
     showAxes: true,
@@ -87,15 +123,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     autoRotate: false,
   },
 
-  initializeFromStorage: () => {
-    const { threads, activeThreadId } = loadStoredThreads();
+  initializeFromStorage: async () => {
+    const { threads, activeThreadId } = await loadAllThreads();
     const active = threads.find((t) => t.id === activeThreadId) || threads[0];
+    const initialCode = active.code || DEFAULT_OPENSCAD_CODE;
 
     set({
       threads,
       activeThreadId: active.id,
       messages: active.messages,
-      code: active.code || DEFAULT_OPENSCAD_CODE,
+      code: initialCode,
+      params: parseParams(initialCode),
       stlContent: active.stlContent || null,
       modelInfo: active.modelInfo || null,
       selectedModel: active.selectedModel || 'gemini-3.6-flash',
@@ -127,6 +165,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeThreadId: newThread.id,
       messages: newThread.messages,
       code: newThread.code,
+      params: parseParams(newThread.code),
       geometry: null,
       stlContent: null,
       modelInfo: null,
@@ -136,7 +175,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeProgress: null,
     });
 
-    saveStoredThreads(updatedThreads, newThread.id);
+    void upsertThread(newThread);
+    newThread.messages.forEach((m) => void upsertMessage(newThread.id, m));
+    void setActiveThreadId(newThread.id);
     return newThread.id;
   },
 
@@ -144,10 +185,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     const target = get().threads.find((t) => t.id === threadId);
     if (!target) return;
 
+    const initialCode = target.code || DEFAULT_OPENSCAD_CODE;
     set({
       activeThreadId: target.id,
       messages: target.messages,
-      code: target.code || DEFAULT_OPENSCAD_CODE,
+      code: initialCode,
+      params: parseParams(initialCode),
       geometry: null, // will recompile on mount/switch
       stlContent: target.stlContent || null,
       modelInfo: target.modelInfo || null,
@@ -158,7 +201,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeProgress: null,
     });
 
-    saveStoredThreads(get().threads, target.id);
+    void setActiveThreadId(target.id);
   },
 
   deleteThread: (threadId) => {
@@ -172,18 +215,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     const filtered = threads.filter((t) => t.id !== threadId);
     const newActiveId = activeThreadId === threadId ? filtered[0].id : activeThreadId;
     const newActive = filtered.find((t) => t.id === newActiveId)!;
+    const initialCode = newActive.code || DEFAULT_OPENSCAD_CODE;
 
     set({
       threads: filtered,
       activeThreadId: newActive.id,
       messages: newActive.messages,
-      code: newActive.code || DEFAULT_OPENSCAD_CODE,
+      code: initialCode,
+      params: parseParams(initialCode),
       geometry: null,
       stlContent: newActive.stlContent || null,
       modelInfo: newActive.modelInfo || null,
     });
 
-    saveStoredThreads(filtered, newActive.id);
+    void deleteThreadCascade(threadId);
+    void setActiveThreadId(newActive.id);
   },
 
   renameThread: (threadId, title) => {
@@ -191,7 +237,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       t.id === threadId ? { ...t, title, updatedAt: Date.now() } : t
     );
     set({ threads: updated });
-    saveStoredThreads(updated, get().activeThreadId);
+
+    const renamed = updated.find((t) => t.id === threadId);
+    if (renamed) void upsertThread(renamed);
   },
 
   setApiKey: (key) => set({ apiKey: key }),
@@ -223,7 +271,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ threads: updatedThreads });
     }
 
-    saveStoredThreads(updatedThreads, activeThreadId);
+    void upsertMessage(targetId, message);
+
+    // Thread row carries the (possibly auto-generated) title and updatedAt.
+    const updatedThread = updatedThreads.find((t) => t.id === targetId);
+    if (updatedThread) void upsertThread(updatedThread);
   },
 
   updateMessage: (id, partial, threadId) => {
@@ -248,7 +300,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ threads: updatedThreads });
     }
 
-    saveStoredThreads(updatedThreads, activeThreadId);
+    const updatedMessage = updatedMessages.find((m) => m.id === id);
+    if (updatedMessage) void upsertMessage(targetId, updatedMessage);
   },
 
   setIsGenerating: (isGenerating) => set({ isGenerating }),
@@ -265,23 +318,77 @@ export const useAppStore = create<AppState>((set, get) => ({
       progressHistory: [],
     }),
 
-  setCode: (code, threadId) => {
+  setCode: (code, threadId, source = 'agent') => {
     const targetId = threadId || get().activeThreadId;
     const { threads, activeThreadId } = get();
+    const targetThread = threads.find((t) => t.id === targetId);
+    if (!targetThread) return;
+
+    let finalCode = code;
+    let newContractDiff: ContractDiff | null = null;
+    let newContract = targetThread.designContract;
+    
+    if (newContract) {
+      if (source === 'agent') {
+        const { code: contractAppliedCode, diff } = applyContract(code, newContract);
+        finalCode = contractAppliedCode;
+        
+        // Only surface the diff in the active thread if changes were actually applied or rejected
+        if (targetId === activeThreadId && (diff.applied.length > 0 || diff.rejected.length > 0)) {
+          newContractDiff = diff;
+        }
+      } else {
+        // User manual edit: do not apply contract. Instead, update pins to match hand-typed values.
+        const parsedParams = parseParams(code);
+        let contractUpdated = false;
+        const newPinnedParams = { ...(newContract.pinnedParams || {}) };
+
+        for (const [name, pin] of Object.entries(newPinnedParams)) {
+          const editedParam = parsedParams.find(p => p.name === name);
+          if (editedParam && editedParam.value !== pin.value) {
+            newPinnedParams[name] = { ...pin, value: editedParam.value, pinnedAt: Date.now() };
+            contractUpdated = true;
+          }
+        }
+        
+        if (contractUpdated) {
+          newContract = { ...newContract, pinnedParams: newPinnedParams };
+        }
+      }
+    }
+
+    const currentParams = parseParams(finalCode);
+
     const updatedThreads = threads.map((t) =>
-      t.id === targetId ? { ...t, code, updatedAt: Date.now() } : t
+      t.id === targetId ? { ...t, code: finalCode, designContract: newContract, updatedAt: Date.now() } : t
     );
 
     if (targetId === activeThreadId) {
-      set({ code, threads: updatedThreads });
+      set({ 
+        code: finalCode, 
+        params: currentParams,
+        threads: updatedThreads 
+      });
+      if (newContractDiff) {
+        set({ contractDiff: newContractDiff });
+      }
     } else {
       set({ threads: updatedThreads });
     }
 
-    saveStoredThreads(updatedThreads, activeThreadId);
+    // Editor keystrokes land here, so the code write is debounced. A contract
+    // change (pins rewritten by a manual edit) is rare — write it straight through.
+    if (newContract !== targetThread.designContract) {
+      const updatedThread = updatedThreads.find((t) => t.id === targetId);
+      if (updatedThread) void upsertThread(updatedThread);
+    } else {
+      setCodeDebounced(targetId, finalCode, Date.now());
+    }
   },
 
   setCompileResult: (result, threadId) => {
+    if (result.aborted) return; // Do not process stale compile results
+
     const targetId = threadId || get().activeThreadId;
     const { threads, activeThreadId } = get();
     const updatedThreads = threads.map((t) =>
@@ -311,7 +418,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
     }
 
-    saveStoredThreads(updatedThreads, activeThreadId);
+    const updatedThread = updatedThreads.find((t) => t.id === targetId);
+    if (updatedThread) void upsertThread(updatedThread);
   },
 
   setCompileStatus: (status, error = null) =>
@@ -322,11 +430,167 @@ export const useAppStore = create<AppState>((set, get) => ({
       viewportSettings: { ...state.viewportSettings, ...settings },
     })),
 
-  toggleAnalysisCollapsed: () =>
-    set((state) => ({ isAnalysisCollapsed: !state.isAnalysisCollapsed })),
+  setEditorView: (view) => set({ editorView: view }),
 
-  setIsAnalysisCollapsed: (collapsed) =>
-    set({ isAnalysisCollapsed: collapsed }),
+  pinParam: (name, value) => {
+    const { activeThreadId, threads, code, params } = get();
+    const targetThread = threads.find((t) => t.id === activeThreadId);
+    if (!targetThread) return;
+
+    // Determine supersededValue if not already pinned
+    let supersededValue = value;
+    const existingContract = targetThread.designContract || { standing: {}, pinnedParams: {} };
+    const existingPins = existingContract.pinnedParams || {};
+    
+    if (existingPins[name]) {
+      supersededValue = existingPins[name].supersededValue;
+    } else {
+      const p = params.find(param => param.name === name);
+      if (p) supersededValue = p.value;
+    }
+
+    // 1. Write the literal to code
+    const newCode = setParamValue(code, name, value);
+
+    // 2. Record the pin in thread
+    const updatedContract = {
+      ...existingContract,
+      pinnedParams: {
+        ...existingPins,
+        [name]: { value, supersededValue, pinnedAt: Date.now() },
+      }
+    };
+
+    const updatedThreads = threads.map((t) =>
+      t.id === activeThreadId ? { ...t, designContract: updatedContract } : t
+    );
+    set({ threads: updatedThreads });
+
+    const updatedThread = updatedThreads.find((t) => t.id === activeThreadId);
+    if (updatedThread) void upsertThread(updatedThread);
+
+    // 3. Call setCode to derive params and apply contract (but don't overwrite user intent)
+    get().setCode(newCode, activeThreadId, 'user');
+
+    // 4. Schedule debounced compile
+    set({ compileStatus: 'compiling' });
+    compileOpenScad(get().code).then(result => {
+      get().setCompileResult(result);
+    });
+  },
+
+  unpinParam: (name) => {
+    const { activeThreadId, threads, code } = get();
+    const targetThread = threads.find((t) => t.id === activeThreadId);
+    if (!targetThread || !targetThread.designContract?.pinnedParams) return;
+
+    const pinnedParam = targetThread.designContract.pinnedParams[name];
+    if (!pinnedParam) return;
+
+    const newPinned = { ...targetThread.designContract.pinnedParams };
+    delete newPinned[name];
+
+    const updatedContract = { ...targetThread.designContract, pinnedParams: newPinned };
+
+    const updatedThreads = threads.map((t) =>
+      t.id === activeThreadId ? { ...t, designContract: updatedContract } : t
+    );
+    set({ threads: updatedThreads });
+
+    const updatedThread = updatedThreads.find((t) => t.id === activeThreadId);
+    if (updatedThread) void upsertThread(updatedThread);
+
+    // Restore supersededValue
+    const newCode = setParamValue(code, name, pinnedParam.supersededValue);
+    get().setCode(newCode, activeThreadId, 'user');
+
+    set({ compileStatus: 'compiling' });
+    compileOpenScad(get().code).then(result => {
+      get().setCompileResult(result);
+    });
+  },
+
+  unpinAll: () => {
+    const { activeThreadId, threads, code } = get();
+    const targetThread = threads.find((t) => t.id === activeThreadId);
+    if (!targetThread || !targetThread.designContract?.pinnedParams) return;
+
+    const pinnedParams = targetThread.designContract.pinnedParams;
+    if (Object.keys(pinnedParams).length === 0) return;
+
+    const updatedContract = { ...targetThread.designContract, pinnedParams: {} };
+
+    const updatedThreads = threads.map((t) =>
+      t.id === activeThreadId ? { ...t, designContract: updatedContract } : t
+    );
+    set({ threads: updatedThreads });
+
+    const updatedThread = updatedThreads.find((t) => t.id === activeThreadId);
+    if (updatedThread) void upsertThread(updatedThread);
+
+    // Restore supersededValues
+    let newCode = code;
+    for (const [name, pin] of Object.entries(pinnedParams)) {
+      newCode = setParamValue(newCode, name, pin.supersededValue);
+    }
+    get().setCode(newCode, activeThreadId, 'user');
+
+    set({ compileStatus: 'compiling' });
+    compileOpenScad(get().code).then(result => {
+      get().setCompileResult(result);
+    });
+  },
+
+  setStanding: (partial) => {
+    const { activeThreadId, threads } = get();
+    const targetThread = threads.find((t) => t.id === activeThreadId);
+    if (!targetThread) return;
+
+    const existingContract = targetThread.designContract || { standing: {}, pinnedParams: {} };
+    const updatedContract = {
+      ...existingContract,
+      standing: { ...existingContract.standing, ...partial },
+    };
+
+    const updatedThreads = threads.map((t) =>
+      t.id === activeThreadId ? { ...t, designContract: updatedContract } : t
+    );
+    set({ threads: updatedThreads });
+
+    const updatedThread = updatedThreads.find((t) => t.id === activeThreadId);
+    if (updatedThread) void upsertThread(updatedThread);
+  },
+
+  setThreadContract: (contract, threadId) => {
+    const targetId = threadId || get().activeThreadId;
+    const { threads } = get();
+    const targetThread = threads.find((t) => t.id === targetId);
+    if (!targetThread) return;
+
+    // The client owns standing constraints and pins - the user edits those
+    // locally and they are already POSTed on every turn. Only `spec` and its
+    // approval stamp are authoritative from the server, so merge rather than
+    // replace, or a slider pinned mid-run would be clobbered on completion.
+    const updatedContract: DesignContract = {
+      ...(targetThread.designContract ?? { standing: {}, pinnedParams: {} }),
+      spec: contract.spec,
+      specApprovedAt: contract.specApprovedAt,
+    };
+
+    const updatedThreads = threads.map((t) =>
+      t.id === targetId ? { ...t, designContract: updatedContract, updatedAt: Date.now() } : t
+    );
+    set({ threads: updatedThreads });
+
+    const updatedThread = updatedThreads.find((t) => t.id === targetId);
+    if (updatedThread) void upsertThread(updatedThread);
+  },
+
+  dismissContractDiff: () => set({ contractDiff: null }),
+
+  setIsAnnotating: (isAnnotating) => set({ isAnnotating }),
+  setBaseSnapshot: (snapshot) => set({ baseSnapshot: snapshot }),
+  setPendingAttachment: (image) => set({ pendingAttachment: image }),
 
   resetProject: () => {
     const { threads, activeThreadId } = get();
@@ -335,6 +599,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         ? {
             ...t,
             code: DEFAULT_OPENSCAD_CODE,
+            designContract: undefined,
             stlContent: null,
             modelInfo: null,
             messages: createInitialThread().messages,
@@ -345,6 +610,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     set({
       code: DEFAULT_OPENSCAD_CODE,
+      params: parseParams(DEFAULT_OPENSCAD_CODE),
+      contractDiff: null,
       geometry: null,
       stlContent: null,
       modelInfo: null,
@@ -355,6 +622,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       threads: resetThreads,
     });
 
-    saveStoredThreads(resetThreads, activeThreadId);
+    const resetThread = resetThreads.find((t) => t.id === activeThreadId);
+    if (resetThread) {
+      // Old messages go first, so the fresh welcome message isn't swept up with them.
+      void (async () => {
+        await clearThreadMessages(activeThreadId);
+        await upsertThread(resetThread);
+        await Promise.all(
+          resetThread.messages.map((m) => upsertMessage(activeThreadId, m))
+        );
+      })();
+    }
   },
 }));

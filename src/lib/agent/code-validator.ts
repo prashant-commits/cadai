@@ -1,10 +1,6 @@
-import { createOpenSCAD } from 'openscad-wasm';
+import { compileScad, ValidationResult } from '../engine/scad-compiler';
 
-export interface ValidationResult {
-  valid: boolean;
-  stl?: string;
-  error?: string;
-}
+export type { ValidationResult };
 
 /**
  * Basic syntax balance validation for brackets and quotes.
@@ -88,25 +84,26 @@ export async function validateOpenScadCode(code: string): Promise<ValidationResu
   // 1. Fast static check
   const staticCheck = checkSyntaxBalance(code);
   if (!staticCheck.valid) {
-    return { valid: false, error: staticCheck.error };
+    return { 
+      valid: false, 
+      error: staticCheck.error,
+      exitCode: 1,
+      errors: [{ severity: 'error', message: staticCheck.error!, count: 1, raw: staticCheck.error! }],
+      warnings: [],
+      compileTimeMs: 0,
+      rawStderr: [],
+    };
   }
 
-  // 2. OpenSCAD WASM compilation check
+  // 2. OpenSCAD WASM compilation check via scad-compiler
   try {
-    const instance = await createOpenSCAD();
-    const stl = await instance.renderToStl(code);
+    const result = await compileScad(code);
     
-    if (!stl || stl.trim().length === 0 || !stl.includes('facet normal')) {
-      return {
-        valid: false,
-        error: 'OpenSCAD compilation produced an empty or degenerate 3D model (no facets). Check that object dimensions are non-zero.',
-      };
+    if (!result.valid && result.exitCode === 0 && (!result.stl || !result.stl.includes('facet normal'))) {
+      result.error = 'OpenSCAD compilation produced an empty or degenerate 3D model (no facets). Check that object dimensions are non-zero.';
     }
 
-    return {
-      valid: true,
-      stl,
-    };
+    return result;
   } catch (err: unknown) {
     let message = 'Unknown error';
     if (err instanceof Error) {
@@ -120,6 +117,11 @@ export async function validateOpenScadCode(code: string): Promise<ValidationResu
     return {
       valid: false,
       error: `OpenSCAD Compiler Error: ${message}`,
+      exitCode: 1,
+      errors: [{ severity: 'error', message: `OpenSCAD Compiler Error: ${message}`, count: 1, raw: message }],
+      warnings: [],
+      compileTimeMs: 0,
+      rawStderr: [message],
     };
   }
 }

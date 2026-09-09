@@ -1,10 +1,11 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { createOpenSCAD } from 'openscad-wasm';
+import { compileScad } from '../engine/scad-compiler';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ENGINEERING_MODULE_REGISTRY } from '../agent/engineering-tools';
 import { parseStlToGeometry } from '../engine/geometry-utils';
+import { checkInterference } from '../engine/assembly-verifier';
 
 // Create MCP Server instance
 export const server = new McpServer({
@@ -25,8 +26,6 @@ server.tool(
     outputName: z.string().optional().describe('Optional basename for saving files in output/ directory (e.g., "m4_bracket").'),
   },
   async ({ code, outputName }) => {
-    const startTime = Date.now();
-
     if (!code || code.trim().length === 0) {
       return {
         content: [
@@ -42,29 +41,29 @@ server.tool(
     }
 
     try {
-      const instance = await createOpenSCAD({
-        print: (text: string) => console.error('[OpenSCAD stdout]:', text),
-        printErr: (text: string) => console.error('[OpenSCAD stderr]:', text),
-      });
-      const stl = await instance.renderToStl(code);
+      const result = await compileScad(code);
 
-      if (!stl || !stl.includes('facet normal')) {
+      if (!result.valid) {
         return {
           content: [
             {
               type: 'text',
               text: JSON.stringify({
                 success: false,
-                error: 'OpenSCAD produced an empty or zero-volume model (no facets). Check that object dimensions and boolean cuts are non-zero.',
+                error: result.error || 'OpenSCAD compilation failed.',
+                diagnostics: {
+                  errors: result.errors,
+                  warnings: result.warnings,
+                },
               }),
             },
           ],
         };
       }
 
+      const stl = result.stl!;
       // Compute geometric metadata and physical slicer telemetry
       const { modelInfo } = parseStlToGeometry(stl);
-      const compileTimeMs = Date.now() - startTime;
 
       let savedPaths: { scad?: string; stl?: string } = {};
 
@@ -93,10 +92,15 @@ server.tool(
             type: 'text',
             text: JSON.stringify({
               success: true,
-              compileTimeMs,
+              compileTimeMs: result.compileTimeMs,
               modelInfo,
               savedFiles: savedPaths,
               stlPreviewSnippet: stl.slice(0, 300) + '...',
+              summary: result.summary,
+              diagnostics: {
+                errors: result.errors,
+                warnings: result.warnings,
+              },
             }, null, 2),
           },
         ],
@@ -130,21 +134,13 @@ server.tool(
  * Tool 2: get_engineering_module
  * Retrieves tested, watertight OpenSCAD parametric modules for fasteners, snap-fits, enclosures, gears, and lattices.
  */
+const moduleKeys = Object.keys(ENGINEERING_MODULE_REGISTRY) as [string, ...string[]];
+
 server.tool(
   'get_engineering_module',
   'Retrieves verified parametric OpenSCAD modules and design rules for mechanical fasteners, snap-fits, enclosures, stiffening gussets, dovetails, print-in-place hinges, honeycomb lattices, polar bolt circles, and involute spur gears.',
   {
-    moduleKey: z.enum([
-      'fastener_hardware',
-      'cantilever_snap_fit',
-      'enclosure_features',
-      'structural_ribs_gussets',
-      'sliding_dovetail_joint',
-      'print_in_place_hinge',
-      'honeycomb_lattice',
-      'polar_bolt_circle',
-      'involute_spur_gear',
-    ]).describe('The key of the engineering module to retrieve.'),
+    moduleKey: z.enum(moduleKeys).describe('The key of the engineering module to retrieve.'),
   },
   async ({ moduleKey }) => {
     const moduleRecipe = ENGINEERING_MODULE_REGISTRY[moduleKey];
@@ -200,6 +196,31 @@ server.tool(
         {
           type: 'text',
           text: JSON.stringify(list, null, 2),
+        },
+      ],
+    };
+  }
+);
+
+/**
+ * Tool 4: verify_assembly_interference
+ * Probes for physical interference/collision between two instantiated CAD modules by compiling their intersection.
+ */
+server.tool(
+  'verify_assembly_interference',
+  'Checks for physical collision between two parts in a CAD assembly. Compiles their intersection and measures if resulting volume is > 0.',
+  {
+    code: z.string().describe('The shared OpenSCAD code containing module definitions.'),
+    callA: z.string().describe('The instantiation code for part A (e.g., "translate([0,0,0]) partA();")'),
+    callB: z.string().describe('The instantiation code for part B (e.g., "translate([10,0,0]) partB();")'),
+  },
+  async ({ code, callA, callB }) => {
+    const result = await checkInterference(code, callA, callB);
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
         },
       ],
     };

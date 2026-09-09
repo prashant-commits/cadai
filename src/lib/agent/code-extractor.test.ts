@@ -11,7 +11,7 @@ cube([width, 40, 10]);
 \`\`\`
 Hope you like it!
 `;
-    const code = extractOpenScadCode(text);
+    const { code } = extractOpenScadCode(text);
     expect(code).toBe('width = 60;\ncube([width, 40, 10]);');
   });
 
@@ -24,13 +24,23 @@ difference() {
 }
 \`\`\`
 `;
-    const code = extractOpenScadCode(text);
+    const { code } = extractOpenScadCode(text);
     expect(code).toContain('difference()');
     expect(code).toContain('cylinder(');
   });
 
   it('returns null for text without code blocks', () => {
     const text = 'Hello, I can design 3D parts for you.';
-    expect(extractOpenScadCode(text)).toBeNull();
+    expect(extractOpenScadCode(text).code).toBeNull();
+  });
+  
+  it('returns truncated error for odd number of fences', () => {
+    const text = `
+\`\`\`openscad
+cube([10, 10, 10]);
+`;
+    const result = extractOpenScadCode(text);
+    expect(result.code).toBeNull();
+    expect(result.error).toBe('truncated');
   });
 });

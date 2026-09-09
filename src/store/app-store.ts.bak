@@ -1,0 +1,377 @@
+import { create } from 'zustand';
+import * as THREE from 'three';
+import { ChatMessage, AgentProgress, ModelInfo, ViewportSettings, CompileResult, ChatThread } from '@/types';
+import {
+  DEFAULT_OPENSCAD_CODE,
+  loadStoredThreads,
+  saveStoredThreads,
+  createInitialThread,
+} from '@/lib/storage/thread-storage';
+
+interface AppState {
+  apiKey: string;
+  selectedModel: string;
+  threads: ChatThread[];
+  activeThreadId: string;
+
+  // Active Thread Data (mirrored for fast access)
+  messages: ChatMessage[];
+  code: string;
+  geometry: THREE.BufferGeometry | null;
+  stlContent: string | null;
+  modelInfo: ModelInfo | null;
+
+  // Runtime State & Generation
+  isGenerating: boolean;
+  generatingThreadId: string | null;
+  activeProgress: AgentProgress | null;
+  progressHistory: AgentProgress[];
+  compileStatus: 'idle' | 'compiling' | 'success' | 'error';
+  compileError: string | null;
+  compileTimeMs: number;
+  viewportSettings: ViewportSettings;
+  isAnalysisCollapsed: boolean;
+
+  // Annotation & Input State
+  isAnnotating: boolean;
+  baseSnapshot: string | null;
+  pendingAttachment: string | null;
+
+  // Thread Actions
+  createNewThread: (title?: string) => string;
+  switchThread: (threadId: string) => void;
+  deleteThread: (threadId: string) => void;
+  renameThread: (threadId: string, title: string) => void;
+
+  // Settings & State Actions
+  setApiKey: (key: string) => void;
+  setSelectedModel: (model: string) => void;
+  addMessage: (message: ChatMessage, threadId?: string) => void;
+  updateMessage: (id: string, partial: Partial<ChatMessage>, threadId?: string) => void;
+  setIsGenerating: (isGenerating: boolean) => void;
+  setGeneratingThreadId: (threadId: string | null) => void;
+  setActiveProgress: (progress: AgentProgress | null) => void;
+  addProgressUpdate: (progress: AgentProgress) => void;
+  clearProgress: () => void;
+  setCode: (code: string, threadId?: string) => void;
+  setCompileResult: (result: CompileResult, threadId?: string) => void;
+  setCompileStatus: (status: 'idle' | 'compiling' | 'success' | 'error', error?: string | null) => void;
+  updateViewportSettings: (settings: Partial<ViewportSettings>) => void;
+  toggleAnalysisCollapsed: () => void;
+  setIsAnalysisCollapsed: (collapsed: boolean) => void;
+  
+  setIsAnnotating: (isAnnotating: boolean) => void;
+  setBaseSnapshot: (snapshot: string | null) => void;
+  setPendingAttachment: (image: string | null) => void;
+
+  resetProject: () => void;
+  initializeFromStorage: () => void;
+}
+
+export const useAppStore = create<AppState>((set, get) => ({
+  apiKey: '',
+  selectedModel: 'gemini-3.6-flash',
+  threads: [],
+  activeThreadId: '',
+
+  messages: [],
+  code: DEFAULT_OPENSCAD_CODE,
+  geometry: null,
+  stlContent: null,
+  modelInfo: null,
+
+  isGenerating: false,
+  generatingThreadId: null,
+  activeProgress: null,
+  progressHistory: [],
+  compileStatus: 'idle',
+  compileError: null,
+  compileTimeMs: 0,
+  isAnalysisCollapsed: false,
+  isAnnotating: false,
+  baseSnapshot: null,
+  pendingAttachment: null,
+  viewportSettings: {
+    showGrid: true,
+    showAxes: true,
+    wireframe: false,
+    isOrthographic: false,
+    showEdges: true,
+    autoRotate: false,
+  },
+
+  initializeFromStorage: () => {
+    const { threads, activeThreadId } = loadStoredThreads();
+    const active = threads.find((t) => t.id === activeThreadId) || threads[0];
+
+    set({
+      threads,
+      activeThreadId: active.id,
+      messages: active.messages,
+      code: active.code || DEFAULT_OPENSCAD_CODE,
+      stlContent: active.stlContent || null,
+      modelInfo: active.modelInfo || null,
+      selectedModel: active.selectedModel || 'gemini-3.6-flash',
+    });
+  },
+
+  createNewThread: (title) => {
+    const newThread: ChatThread = {
+      id: 'thread-' + Date.now(),
+      title: title || `Design #${get().threads.length + 1}`,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      selectedModel: get().selectedModel,
+      code: DEFAULT_OPENSCAD_CODE,
+      messages: [
+        {
+          id: 'welcome-' + Date.now(),
+          role: 'assistant',
+          content: `👋 **New 3D Design Started!** What would you like to model? Describe your dimensions, features, or 3D print requirements.`,
+          code: DEFAULT_OPENSCAD_CODE,
+          timestamp: Date.now(),
+        },
+      ],
+    };
+
+    const updatedThreads = [newThread, ...get().threads];
+    set({
+      threads: updatedThreads,
+      activeThreadId: newThread.id,
+      messages: newThread.messages,
+      code: newThread.code,
+      geometry: null,
+      stlContent: null,
+      modelInfo: null,
+      compileStatus: 'idle',
+      compileError: null,
+      progressHistory: [],
+      activeProgress: null,
+    });
+
+    saveStoredThreads(updatedThreads, newThread.id);
+    return newThread.id;
+  },
+
+  switchThread: (threadId) => {
+    const target = get().threads.find((t) => t.id === threadId);
+    if (!target) return;
+
+    set({
+      activeThreadId: target.id,
+      messages: target.messages,
+      code: target.code || DEFAULT_OPENSCAD_CODE,
+      geometry: null, // will recompile on mount/switch
+      stlContent: target.stlContent || null,
+      modelInfo: target.modelInfo || null,
+      selectedModel: target.selectedModel || get().selectedModel,
+      compileStatus: 'idle',
+      compileError: null,
+      progressHistory: [],
+      activeProgress: null,
+    });
+
+    saveStoredThreads(get().threads, target.id);
+  },
+
+  deleteThread: (threadId) => {
+    const { threads, activeThreadId } = get();
+    if (threads.length <= 1) {
+      // Don't delete the last thread; reset it instead
+      get().resetProject();
+      return;
+    }
+
+    const filtered = threads.filter((t) => t.id !== threadId);
+    const newActiveId = activeThreadId === threadId ? filtered[0].id : activeThreadId;
+    const newActive = filtered.find((t) => t.id === newActiveId)!;
+
+    set({
+      threads: filtered,
+      activeThreadId: newActive.id,
+      messages: newActive.messages,
+      code: newActive.code || DEFAULT_OPENSCAD_CODE,
+      geometry: null,
+      stlContent: newActive.stlContent || null,
+      modelInfo: newActive.modelInfo || null,
+    });
+
+    saveStoredThreads(filtered, newActive.id);
+  },
+
+  renameThread: (threadId, title) => {
+    const updated = get().threads.map((t) =>
+      t.id === threadId ? { ...t, title, updatedAt: Date.now() } : t
+    );
+    set({ threads: updated });
+    saveStoredThreads(updated, get().activeThreadId);
+  },
+
+  setApiKey: (key) => set({ apiKey: key }),
+  setSelectedModel: (model) => set({ selectedModel: model }),
+
+  addMessage: (message, threadId) => {
+    const targetId = threadId || get().activeThreadId;
+    const { threads, activeThreadId } = get();
+    const targetThread = threads.find((t) => t.id === targetId);
+    if (!targetThread) return;
+
+    const updatedMessages = [...targetThread.messages, message];
+
+    // Smart title generation on first user prompt
+    let title = targetThread.title || 'Design';
+    if (message.role === 'user' && title.startsWith('Design #')) {
+      title = message.content.slice(0, 32) + (message.content.length > 32 ? '...' : '');
+    }
+
+    const updatedThreads = threads.map((t) =>
+      t.id === targetId
+        ? { ...t, title, messages: updatedMessages, updatedAt: Date.now() }
+        : t
+    );
+
+    if (targetId === activeThreadId) {
+      set({ messages: updatedMessages, threads: updatedThreads });
+    } else {
+      set({ threads: updatedThreads });
+    }
+
+    saveStoredThreads(updatedThreads, activeThreadId);
+  },
+
+  updateMessage: (id, partial, threadId) => {
+    const targetId = threadId || get().activeThreadId;
+    const { threads, activeThreadId } = get();
+    const targetThread = threads.find((t) => t.id === targetId);
+    if (!targetThread) return;
+
+    const updatedMessages = targetThread.messages.map((m) =>
+      m.id === id ? { ...m, ...partial } : m
+    );
+
+    const updatedThreads = threads.map((t) =>
+      t.id === targetId
+        ? { ...t, messages: updatedMessages, updatedAt: Date.now() }
+        : t
+    );
+
+    if (targetId === activeThreadId) {
+      set({ messages: updatedMessages, threads: updatedThreads });
+    } else {
+      set({ threads: updatedThreads });
+    }
+
+    saveStoredThreads(updatedThreads, activeThreadId);
+  },
+
+  setIsGenerating: (isGenerating) => set({ isGenerating }),
+  setGeneratingThreadId: (threadId) => set({ generatingThreadId: threadId }),
+  setActiveProgress: (progress) => set({ activeProgress: progress }),
+  addProgressUpdate: (progress) =>
+    set((state) => ({
+      activeProgress: progress,
+      progressHistory: [...state.progressHistory, progress],
+    })),
+  clearProgress: () =>
+    set({
+      activeProgress: null,
+      progressHistory: [],
+    }),
+
+  setCode: (code, threadId) => {
+    const targetId = threadId || get().activeThreadId;
+    const { threads, activeThreadId } = get();
+    const updatedThreads = threads.map((t) =>
+      t.id === targetId ? { ...t, code, updatedAt: Date.now() } : t
+    );
+
+    if (targetId === activeThreadId) {
+      set({ code, threads: updatedThreads });
+    } else {
+      set({ threads: updatedThreads });
+    }
+
+    saveStoredThreads(updatedThreads, activeThreadId);
+  },
+
+  setCompileResult: (result, threadId) => {
+    const targetId = threadId || get().activeThreadId;
+    const { threads, activeThreadId } = get();
+    const updatedThreads = threads.map((t) =>
+      t.id === targetId
+        ? {
+            ...t,
+            stlContent: result.stlContent || t.stlContent,
+            modelInfo: result.modelInfo || t.modelInfo,
+            updatedAt: Date.now(),
+          }
+        : t
+    );
+
+    if (targetId === activeThreadId) {
+      set({
+        compileStatus: result.success ? 'success' : 'error',
+        compileError: result.error || null,
+        geometry: result.geometry || null,
+        stlContent: result.stlContent || null,
+        modelInfo: result.modelInfo || null,
+        compileTimeMs: result.compileTimeMs || 0,
+        threads: updatedThreads,
+      });
+    } else {
+      set({
+        threads: updatedThreads,
+      });
+    }
+
+    saveStoredThreads(updatedThreads, activeThreadId);
+  },
+
+  setCompileStatus: (status, error = null) =>
+    set({ compileStatus: status, compileError: error }),
+
+  updateViewportSettings: (settings) =>
+    set((state) => ({
+      viewportSettings: { ...state.viewportSettings, ...settings },
+    })),
+
+  toggleAnalysisCollapsed: () =>
+    set((state) => ({ isAnalysisCollapsed: !state.isAnalysisCollapsed })),
+
+  setIsAnalysisCollapsed: (collapsed) =>
+    set({ isAnalysisCollapsed: collapsed }),
+
+  setIsAnnotating: (isAnnotating) => set({ isAnnotating }),
+  setBaseSnapshot: (snapshot) => set({ baseSnapshot: snapshot }),
+  setPendingAttachment: (image) => set({ pendingAttachment: image }),
+
+  resetProject: () => {
+    const { threads, activeThreadId } = get();
+    const resetThreads = threads.map((t) =>
+      t.id === activeThreadId
+        ? {
+            ...t,
+            code: DEFAULT_OPENSCAD_CODE,
+            stlContent: null,
+            modelInfo: null,
+            messages: createInitialThread().messages,
+            updatedAt: Date.now(),
+          }
+        : t
+    );
+
+    set({
+      code: DEFAULT_OPENSCAD_CODE,
+      geometry: null,
+      stlContent: null,
+      modelInfo: null,
+      compileStatus: 'idle',
+      compileError: null,
+      progressHistory: [],
+      activeProgress: null,
+      threads: resetThreads,
+    });
+
+    saveStoredThreads(resetThreads, activeThreadId);
+  },
+}));

@@ -10,6 +10,7 @@ import {
   Eye,
   Maximize2,
   Compass,
+  PenTool,
 } from 'lucide-react';
 
 interface ViewportToolbarProps {
@@ -17,7 +18,16 @@ interface ViewportToolbarProps {
 }
 
 export function ViewportToolbar({ onResetCamera }: ViewportToolbarProps) {
-  const { viewportSettings, updateViewportSettings } = useAppStore();
+  const { viewportSettings, updateViewportSettings, setIsAnnotating, setBaseSnapshot } = useAppStore();
+
+  const handleSnapshot = () => {
+    const canvas = document.querySelector('canvas');
+    if (canvas) {
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+      setBaseSnapshot(dataUrl);
+      setIsAnnotating(true);
+    }
+  };
 
   return (
     <div className="absolute top-3 left-3 z-10 flex items-center gap-1 bg-slate-900/90 backdrop-blur-md border border-slate-800 rounded-lg p-1 shadow-lg select-none">
@@ -95,6 +105,17 @@ export function ViewportToolbar({ onResetCamera }: ViewportToolbarProps) {
         title="Reset Camera & Center Model"
       >
         <Maximize2 className="w-4 h-4" />
+      </button>
+
+      <div className="w-px h-4 bg-slate-800 mx-0.5" />
+
+      {/* Snapshot & Annotate */}
+      <button
+        onClick={handleSnapshot}
+        className="p-1.5 rounded-md text-xs text-amber-400 hover:text-amber-200 hover:bg-amber-900/30 transition-colors flex items-center gap-1"
+        title="Snapshot & Annotate (Draw over 3D model)"
+      >
+        <PenTool className="w-4 h-4" />
       </button>
     </div>
   );

@@ -71,11 +71,19 @@ export function AppHeader() {
           value={selectedModel}
           onChange={(e) => setSelectedModel(e.target.value)}
           className="bg-slate-900 border border-slate-700 hover:border-slate-600 rounded-md px-2 py-1.5 text-xs text-indigo-300 font-mono focus:outline-none focus:border-indigo-500 cursor-pointer"
-          title="Select Gemini Model"
+          title="Select Gemini Model (RPD = free-tier requests/day)"
         >
-          <option value="gemini-3.6-flash">Gemini 3.6 Flash (Recommended)</option>
-          <option value="gemini-2.5-flash">Gemini 2.5 Flash (Deep Reasoning)</option>
-          <option value="gemini-1.5-flash">Gemini 1.5 Flash (Legacy)</option>
+          <optgroup label="High quota (500 req/day)">
+            <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite — 500/day</option>
+            <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite — 500/day</option>
+          </optgroup>
+          <optgroup label="Standard quota (20 req/day)">
+            <option value="gemini-3.6-flash">Gemini 3.6 Flash — 20/day (Recommended)</option>
+            <option value="gemini-3.7-flash">Gemini 3.7 Flash — 20/day</option>
+            <option value="gemini-3-flash">Gemini 3 Flash — 20/day</option>
+            <option value="gemini-2.5-flash">Gemini 2.5 Flash — 20/day (Deep Reasoning)</option>
+            <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite — 20/day</option>
+          </optgroup>
         </select>
 
         <button
@@ -136,7 +144,7 @@ export function AppHeader() {
                 placeholder="gemini-3.6-flash"
                 className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono"
               />
-              <p className="text-[10px] text-slate-500">e.g. gemini-3.6-flash, gemini-2.5-flash, etc.</p>
+              <p className="text-[10px] text-slate-500">e.g. gemini-3.5-flash-lite, gemini-3.1-flash-lite (500/day), gemini-3.6-flash (20/day)</p>
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <button
