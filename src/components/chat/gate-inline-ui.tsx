@@ -34,7 +34,7 @@ export function GateInlineUI({ gate, onResume }: GateInlineUIProps) {
     // at the same width as a message bubble. `self-end`/`mx-4` were sized for
     // life outside the scroll container and made this read as floating chrome.
     <div className="group flex gap-3 py-4 justify-start">
-      <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-600 to-purple-600 flex items-center justify-center shrink-0 shadow-sm mt-0.5">
+      <div className="w-7 h-7 rounded-lg bg-linear-to-br from-indigo-600 to-purple-600 flex items-center justify-center shrink-0 shadow-sm mt-0.5">
         <ClipboardCheck className="w-4 h-4 text-white" />
       </div>
       <div className="max-w-[88%] w-full bg-slate-900 border border-slate-700 rounded-xl overflow-hidden shadow-md">
