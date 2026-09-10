@@ -2,13 +2,14 @@ import { NextRequest } from 'next/server';
 import { HumanMessage, AIMessage } from '@langchain/core/messages';
 import { isInterrupted, INTERRUPT } from '@langchain/langgraph';
 import { createCadAgent, StreamEventPayload } from '@/lib/agent/graph';
-import { getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
+import { deleteRunCheckpoint, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/tracing/langfuse';
 import { DesignContract, GatePayload } from '@/types';
 import { randomUUID } from 'crypto';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   try {
@@ -118,12 +119,14 @@ export async function POST(req: NextRequest) {
         } else {
           // Ran to completion, so nothing can resume this checkpoint. Dropping
           // it here is what keeps one-key-per-run from growing without bound.
-          await getCheckpointer().deleteThread(checkpointKey);
+          await deleteRunCheckpoint(checkpointKey);
         }
       } catch (err: unknown) {
         const errorMessage = err instanceof Error ? err.message : String(err);
         // A run that threw is equally unresumable - don't strand its checkpoint.
-        await getCheckpointer().deleteThread(checkpointKey).catch(() => {});
+        // Must not throw: getCheckpointer() used to re-throw here on Vercel
+        // (read-only cwd), which skipped sendEvent and closed an empty stream.
+        await deleteRunCheckpoint(checkpointKey);
         await sendEvent({
           type: 'error',
           message: `Agent execution failed: ${errorMessage}`,
@@ -148,7 +151,9 @@ export async function POST(req: NextRequest) {
         }
         await writer.close();
       }
-    })();
+    })().catch((err) => {
+      console.error('Chat agent IIFE failed:', err);
+    });
 
     return new Response(stream.readable, {
       headers: {

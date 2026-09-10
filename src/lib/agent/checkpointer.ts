@@ -1,7 +1,38 @@
 import { MemorySaver } from '@langchain/langgraph';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import type { Checkpoint, CheckpointMetadata, CheckpointTuple } from '@langchain/langgraph';
+
+/**
+ * Directory for the on-disk HIL checkpoint store.
+ *
+ * Locally this is `<cwd>/.cadai` (gitignored). On Vercel `process.cwd()` is
+ * `/var/task`, which is not writable - mkdir there throws ENOENT and takes
+ * the chat stream down with it. `/tmp` is the only writable path in a
+ * function, so that's where paused-run state lives in production.
+ *
+ * `/tmp` is per-instance and ephemeral: a resume must land on the same
+ * warm isolate to find the checkpoint. That is still enough for the spec
+ * gate as long as Fluid Compute keeps the instance around for the review.
+ */
+export function checkpointStoreDir(): string {
+  return process.env.VERCEL
+    ? path.join(os.tmpdir(), 'cadai')
+    : path.join(process.cwd(), '.cadai');
+}
+
+function ensureWritableDir(preferred: string): string {
+  try {
+    fs.mkdirSync(preferred, { recursive: true });
+    fs.accessSync(preferred, fs.constants.W_OK);
+    return preferred;
+  } catch {
+    const fallback = path.join(os.tmpdir(), 'cadai');
+    fs.mkdirSync(fallback, { recursive: true });
+    return fallback;
+  }
+}
 
 // Custom replacer/reviver for Uint8Array base64 round-tripping
 function replacer(key: string, value: any) {
@@ -19,15 +50,14 @@ function reviver(key: string, value: any) {
 }
 
 export class FileCheckpointSaver extends MemorySaver {
+  readonly dir: string;
   private filePath: string;
   private pendingFlush: NodeJS.Timeout | null = null;
 
-  constructor(private dir: string) {
+  constructor(dir: string) {
     super();
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    this.filePath = path.join(dir, 'checkpoints.json');
+    this.dir = ensureWritableDir(dir);
+    this.filePath = path.join(this.dir, 'checkpoints.json');
     this.load();
   }
 
@@ -111,7 +141,22 @@ export function runCheckpointKey(threadId: string, runId: string): string {
 let singleton: FileCheckpointSaver | null = null;
 export function getCheckpointer(): FileCheckpointSaver {
   if (!singleton) {
-    singleton = new FileCheckpointSaver(path.join(process.cwd(), '.cadai'));
+    singleton = new FileCheckpointSaver(checkpointStoreDir());
   }
   return singleton;
+}
+
+/**
+ * Drop a paused run's checkpoint. Swallows construction AND delete failures:
+ * `/api/chat`'s catch used to call `getCheckpointer().deleteThread().catch()`,
+ * which does not catch a synchronous throw from the constructor, so a dead
+ * saver turned into an unhandledRejection and an empty SSE body.
+ */
+export async function deleteRunCheckpoint(id: string): Promise<void> {
+  try {
+    await getCheckpointer().deleteThread(id);
+  } catch {
+    // The run is already unresumable; failing to clean up must not hide the
+    // original error from the client.
+  }
 }

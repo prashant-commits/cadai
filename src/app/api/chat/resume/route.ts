@@ -1,12 +1,13 @@
 import { NextRequest } from 'next/server';
 import { createCadAgent, StreamEventPayload } from '@/lib/agent/graph';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/tracing/langfuse';
-import { getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
+import { deleteRunCheckpoint, getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { Command, isInterrupted, INTERRUPT } from '@langchain/langgraph';
 import { GateDecision, GatePayload } from '@/types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   try {
@@ -112,11 +113,11 @@ export async function POST(req: NextRequest) {
             timestamp: Date.now(),
           });
         } else {
-          await getCheckpointer().deleteThread(checkpointKey);
+          await deleteRunCheckpoint(checkpointKey);
         }
       } catch (err: unknown) {
         const errorMessage = err instanceof Error ? err.message : String(err);
-        await getCheckpointer().deleteThread(checkpointKey).catch(() => {});
+        await deleteRunCheckpoint(checkpointKey);
         await sendEvent({
           type: 'error',
           message: `Agent resume failed: ${errorMessage}`,
@@ -134,7 +135,9 @@ export async function POST(req: NextRequest) {
         }
         await writer.close();
       }
-    })();
+    })().catch((err) => {
+      console.error('Chat resume IIFE failed:', err);
+    });
 
     return new Response(stream.readable, {
       headers: {
