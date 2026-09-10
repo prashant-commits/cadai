@@ -128,3 +128,44 @@ export const AssemblySpecSchema = z.object({
 });
 
 export type AssemblySpec = z.infer<typeof AssemblySpecSchema>;
+
+/**
+ * The JSON Schema actually sent to the model, as opposed to the zod schema used
+ * to validate what comes back.
+ *
+ * Constrained decoders degenerate on an unbounded `{"type": "number"}`: the
+ * grammar permits digits forever, so a model that emits a float artefact like
+ * 6.000000000000001 can fall into a zero-repetition loop and pad until it
+ * exhausts the output budget, truncating the document mid-value. It is not
+ * provider-specific - it was first seen on Gemini and later reproduced on
+ * DeepSeek. Measured over 10 laptop-stand-class prompts on deepseek-v4-flash:
+ * 6/10 valid and 114s average unbounded, against 8/10 and 78s bounded.
+ *
+ * The grid and range live ONLY here, never on the zod schema. Adding
+ * .multipleOf(0.01) to zod would make it validate the constraint too, and
+ * binary floating point makes that check reject legitimate values (0.4 % 0.01
+ * is 0.0099999..., not 0). We want to constrain generation, not narrow what we
+ * are willing to accept.
+ */
+export function boundNumbers(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(boundNumbers);
+  if (node && typeof node === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(node)) out[k] = boundNumbers(v);
+    if (out.type === 'number') {
+      // 0.01 mm is finer than any FDM printer resolves, so this constrains the
+      // decoder without constraining the design. Signed: positions are vectors.
+      out.multipleOf = 0.01;
+      out.minimum = -100000;
+      out.maximum = 100000;
+    }
+    return out;
+  }
+  return node;
+}
+
+export function assemblySpecRequestSchema(): Record<string, unknown> {
+  const json = z.toJSONSchema(AssemblySpecSchema) as Record<string, unknown>;
+  delete json.$schema;
+  return boundNumbers(json) as Record<string, unknown>;
+}

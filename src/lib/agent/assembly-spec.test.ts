@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { AssemblySpecSchema } from './assembly-spec';
+import { AssemblySpecSchema, assemblySpecRequestSchema } from './assembly-spec';
 
 const minimal = {
   assemblyName: 'bracket',
@@ -92,5 +92,54 @@ describe('Gemini response_schema compatibility', () => {
         components: [{ name: 'bracket', description: 'an L bracket', position: [10, 0] }],
       })
     ).toThrow();
+  });
+});
+
+describe('assemblySpecRequestSchema', () => {
+  // An unbounded {"type":"number"} lets a constrained decoder emit digits
+  // forever: a float artefact like 6.000000000000001 turns into a zero-padding
+  // loop that exhausts the output budget and truncates the JSON mid-value.
+  // Measured on deepseek-v4-flash over 10 prompts: 6/10 valid unbounded,
+  // 8/10 bounded, with average latency down from 114s to 78s.
+  it('constrains every number so the decoder cannot run away', () => {
+    const json = assemblySpecRequestSchema();
+    const numbers: Record<string, unknown>[] = [];
+    (function walk(n: unknown) {
+      if (Array.isArray(n)) return n.forEach(walk);
+      if (n && typeof n === 'object') {
+        const o = n as Record<string, unknown>;
+        if (o.type === 'number') numbers.push(o);
+        Object.values(o).forEach(walk);
+      }
+    })(json);
+
+    expect(numbers.length).toBeGreaterThan(0);
+    for (const n of numbers) {
+      expect(n.multipleOf).toBe(0.01);
+      expect(n.minimum).toBe(-100000);
+      expect(n.maximum).toBe(100000);
+    }
+  });
+
+  it('stays signed so component positions can be negative', () => {
+    const json = assemblySpecRequestSchema();
+    expect(JSON.stringify(json)).not.toContain('"minimum":0');
+  });
+
+  it('drops $schema, which providers reject as an unknown field', () => {
+    expect(assemblySpecRequestSchema().$schema).toBeUndefined();
+  });
+
+  // The bound belongs to the request only. Binary floating point makes
+  // 0.4 % 0.01 come out as 0.0099999..., so validating multipleOf would reject
+  // legitimate chamfer sizes the model was right to emit.
+  it('does not narrow what the zod schema will accept', () => {
+    const spec = AssemblySpecSchema.parse({
+      ...minimal,
+      edgeTreatments: [{ location: 'all outer edges', category: 'printability', kind: 'chamfer', sizeMm: 0.4 }],
+      components: [{ name: 'bracket', description: 'an L bracket', position: [-12.5, 0, 3.333] }],
+    });
+    expect(spec.edgeTreatments[0].sizeMm).toBe(0.4);
+    expect(spec.components?.[0].position).toEqual([-12.5, 0, 3.333]);
   });
 });

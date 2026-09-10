@@ -8,7 +8,7 @@ import { CAD_AI_SYSTEM_PROMPT, ARCHITECT_PREAMBLE, DRAFTER_PREAMBLE, REPAIR_PREA
 import { extractOpenScadCode } from './code-extractor';
 import { validateOpenScadCode } from './code-validator';
 import { getFunctionalCadModuleTool } from './engineering-tools';
-import { AssemblySpec, AssemblySpecSchema } from './assembly-spec';
+import { AssemblySpec, AssemblySpecSchema, assemblySpecRequestSchema } from './assembly-spec';
 import { ValidationResult, ScadDiagnostic } from '../engine/scad-compiler';
 import { ModelInfo, GatePayload, GateDecision, DesignContract } from '@/types';
 import { SpecViolation, auditSpec } from './spec-audit';
@@ -144,6 +144,9 @@ function firstHumanText(messages: BaseMessage[]): string {
   }
   return '';
 }
+
+/** See the retry loop in architectNode for why this is 3 and not 2. */
+const MAX_ARCHITECT_ATTEMPTS = 3;
 
 const NO_SPEC_EXPLANATION =
   'No Assembly Spec could be generated; drafting without a dimensional contract.';
@@ -451,8 +454,13 @@ export function createCadAgent(
   // critic falls back to a multimodal slug instead of failing the whole run.
   const visionModel = getVisionModel(apiKey, modelName);
   
-  // Architect uses structured output
-  const architectModel = model.withStructuredOutput(AssemblySpecSchema);
+  // Architect uses structured output. It is handed the BOUNDED JSON Schema, not
+  // the zod object: an unbounded {"type":"number"} lets a constrained decoder
+  // emit digits forever and truncate the document. What comes back is still
+  // validated against the zod schema below, so the contract is unchanged.
+  const architectModel = model.withStructuredOutput(assemblySpecRequestSchema(), {
+    name: 'assembly_spec',
+  });
   
   // Drafter uses engineering lookup tools
   const drafterModel = model.bindTools([getFunctionalCadModuleTool]);
@@ -498,27 +506,53 @@ export function createCadAgent(
 
     // Bounded retry. The counter must advance on every pass, not only on throw,
     // or a falsy-but-resolved invoke spins forever around a network call.
+    //
+    // THREE attempts, not two. Decoder degeneration is per-attempt and
+    // independent, so retries compound: at the ~0.8 per-attempt success rate
+    // measured on the bounded schema, two attempts leave a 4% chance of
+    // reaching the review gate with no spec at all and three leave under 1%.
+    // Two attempts is what let a real run surface an empty approval card.
     let spec: AssemblySpec | null = null;
     let lastError: string | null = null;
-    for (let attempt = 0; attempt < 2 && !spec; attempt++) {
+    for (let attempt = 0; attempt < MAX_ARCHITECT_ATTEMPTS && !spec; attempt++) {
       const attemptMessages =
         attempt === 0
           ? messages
           : [
               ...messages,
               new HumanMessage(
-                'Your previous reply did not yield a valid Assembly Spec. Emit the structured spec now, with every dimension in millimetres.'
+                'Your previous reply did not yield a valid Assembly Spec. Emit the structured spec now, with every dimension in millimetres and at most two decimal places.'
               ),
             ];
       try {
-        spec = ((await architectModel.invoke(attemptMessages, config)) as AssemblySpec) ?? null;
+        const raw = await architectModel.invoke(attemptMessages, config);
+        // The model was given a JSON Schema, so what comes back is an untyped
+        // object; zod is what turns it into an AssemblySpec, and a reply that
+        // satisfied the decoder but not the contract must count as a failure
+        // and retry rather than flow onward half-formed.
+        const parsed = AssemblySpecSchema.safeParse(raw);
+        if (parsed.success) {
+          spec = parsed.data;
+        } else {
+          lastError = `Spec failed validation: ${parsed.error.issues
+            .slice(0, 3)
+            .map((i) => `${i.path.join('.')} ${i.message}`)
+            .join('; ')}`;
+          console.error(
+            `architectNode: spec rejected (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}):`,
+            lastError
+          );
+        }
       } catch (err) {
         // Fall through to the next attempt; a null spec degrades to warn-only.
         // But NEVER silently: a schema the provider rejects fails identically on
         // every attempt and every run, and swallowing it made the review gate
         // render an empty card with no way to tell a refusal from an outage.
         lastError = err instanceof Error ? err.message : String(err);
-        console.error(`architectNode: structured output failed (attempt ${attempt + 1}/2):`, lastError);
+        console.error(
+          `architectNode: structured output failed (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}):`,
+          lastError
+        );
       }
     }
 
