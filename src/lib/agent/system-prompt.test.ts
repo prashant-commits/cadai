@@ -94,6 +94,20 @@ describe('system prompts', () => {
     expect(CRITIC_PREAMBLE).toContain('bedFace');
     expect(CRITIC_PREAMBLE).toMatch(/empty findings list is the correct/i);
     expect(CAD_AI_SYSTEM_PROMPT).toMatch(/NEVER 3D minkowski/);
+    // One pose rule: nobody is told to author in print pose any more.
+    for (const [name, text] of Object.entries(PROMPTS)) {
+      expect(text, `${name} still talks about PRINT pose authoring`).not.toMatch(/PRINT pose/);
+      expect(text, `${name} still offers a print layout`).not.toMatch(/print layout/i);
+    }
+    for (const field of ['localExtents', 'positionNote', 'useModules']) {
+      expect(ARCHITECT_PREAMBLE).toContain(field);
+    }
+    expect(CAD_AI_SYSTEM_PROMPT).toMatch(/build plate; nothing is ever below it/);
+    expect(ARCHITECT_PREAMBLE).toMatch(/below z = 0/);
+    expect(DRAFTER_PREAMBLE).toMatch(/below z = 0/);
+    expect(DRAFTER_PREAMBLE).toContain('localExtents');
+    expect(DRAFTER_PLACEMENT_CONTRACT).toContain('localExtents');
+    expect(REPAIR_PREAMBLE).toContain('floating');
   });
 
   it('stays within its word budget', () => {
