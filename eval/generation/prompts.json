@@ -1,0 +1,12 @@
+[
+  { "id": "laptop_stand_30", "prompt": "Create a laptop stand with a 30 degree tilt: two side supports and a cross bar joining them at the rear." },
+  { "id": "hair_dryer_holder", "prompt": "A wall-mounted hair dryer holder: a backplate with two screw holes and a cup ring of 90 mm inner diameter attached to it." },
+  { "id": "cable_clip", "prompt": "A desk cable clip: a base plate 40 x 20 mm with a snap-on clip arm that holds a 6 mm cable." },
+  { "id": "hinged_box", "prompt": "A two-part box 80 x 60 x 40 mm with a separate lid that sits on top of the body." },
+  { "id": "pen_holder", "prompt": "A pen holder: a square base 80 x 80 mm with four upright tubes of 20 mm inner diameter, 100 mm tall, standing on the base." },
+  { "id": "phone_stand", "prompt": "A phone stand with a flat base plate and a backrest leaning at 65 degrees that slots into the base." },
+  { "id": "shelf_bracket", "prompt": "A shelf bracket: a 150 mm wall plate, a 150 mm shelf arm at right angles to it, and a diagonal gusset between them." },
+  { "id": "pi_case", "prompt": "A Raspberry Pi 4 case: a bottom tray with four standoffs and a lid that sits on the tray." },
+  { "id": "spool_holder", "prompt": "A filament spool holder: two A-frame end supports joined by a 60 mm long axle rod of 20 mm diameter." },
+  { "id": "drawer_unit", "prompt": "A small desk drawer unit: an outer shell 100 x 80 x 60 mm and a sliding drawer with a pull tab that fits inside it." }
+]

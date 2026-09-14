@@ -50,6 +50,18 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to explore the interactive CAD workspace.
 
+## Evaluating generation quality
+
+`npm run eval:generation -- --model deepseek-v4-flash --tag baseline` runs the prompts in
+`eval/generation/prompts.json` through the real agent graph (spec and accept gates
+auto-approved, automatic repair off) and prints first-draft rates: spec produced,
+placement composed from the spec, compiled, lowest point on the floor, no floating
+parts, module origins correct, extents matching. Results are written to
+`eval/results/` and, when `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` are set, recorded
+as a Langfuse experiment run on the `cadai-generation` dataset with one score per metric
+(seed the dataset once with `--seed-dataset`). Each run costs roughly 2 to 5 model calls
+per prompt. Use `--limit 2 --no-langfuse` for a quick local smoke test.
+
 ## Technologies Used
 - Next.js (App Router)
 - Model Context Protocol (MCP) SDK

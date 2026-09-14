@@ -58,3 +58,6 @@ next-env.d.ts
 __*.mts
 __*.mjs
 explabs_smoke.mjs
+
+# generation eval outputs
+/eval/results/
