@@ -53,3 +53,29 @@ describe('Engineering Tools Registry', () => {
     expect(parsed.codeTemplate).toContain('honeycomb_lattice_cutout');
   });
 });
+
+describe('orientation idioms', () => {
+  it('is registered and listed in the tool', async () => {
+    expect(ENGINEERING_MODULE_REGISTRY.orientation_idioms.category).toBe('orientation');
+    const raw = await getFunctionalCadModuleTool.invoke({ moduleKey: 'orientation_idioms' });
+    expect(JSON.parse(raw).codeTemplate).toContain('module profile_extrude_y');
+  });
+
+  // The test is the oracle for the sign conventions: every idiom must compile
+  // and land its min corner exactly on the origin.
+  it.each([
+    ['profile_extrude_y([[0,0],[30,0],[0,20]], 4);', [30, 4, 20]],
+    ['profile_extrude_x([[0,0],[30,0],[0,20]], 4);', [4, 30, 20]],
+    ['cylinder_along_x(10, 50);', [50, 10, 10]],
+    ['cylinder_along_y(10, 50);', [10, 50, 10]],
+    ['box_at_origin([10, 20, 30]);', [10, 20, 30]],
+  ])('%s sits at the origin with the documented extents', async (call, size) => {
+    const { compileScad } = await import('../engine/scad-compiler');
+    const template = ENGINEERING_MODULE_REGISTRY.orientation_idioms.codeTemplate;
+    const r = await compileScad(`$fn = 32;\n${template}\n${call}\n`);
+    expect(r.valid, r.error).toBe(true);
+    const bb = r.summary!.boundingBox!;
+    bb.min.forEach((v) => expect(Math.abs(v)).toBeLessThan(0.05));
+    bb.size.forEach((v, i) => expect(v).toBeCloseTo(size[i], 1));
+  });
+});

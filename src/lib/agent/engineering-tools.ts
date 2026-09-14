@@ -4,7 +4,7 @@ import { z } from 'zod';
 export interface EngineeringModuleRecipe {
   id: string;
   name: string;
-  category: 'fastener' | 'joinery' | 'enclosure' | 'structural' | 'motion_mechanism' | 'mathematical_lattice';
+  category: 'fastener' | 'joinery' | 'enclosure' | 'structural' | 'motion_mechanism' | 'mathematical_lattice' | 'orientation';
   description: string;
   engineeringParameters: string[];
   designRules: string[];
@@ -509,6 +509,51 @@ module trapped_plate_cutout(plate_w = 81.5, plate_l = 81.5, plate_t = 3.0, shelf
         cube([hole_w, hole_l, 10 + 0.01]);
 }`
   },
+
+  orientation_idioms: {
+    id: 'orientation_idioms',
+    name: 'Orientation Idioms - Extrusions and Cylinders Along Any Axis, Min Corner at the Origin',
+    category: 'orientation',
+    description: 'Verified transforms for laying a 2D profile in the XZ or YZ plane and running a cylinder along X or Y, each with its min corner exactly at the origin so spec placement lands where the Architect meant.',
+    engineeringParameters: [
+      'profile: 2D points [[x, y], ...] with min x = 0 and min y = 0; y becomes the vertical (Z) axis',
+      'thickness: extrusion length along the axis the profile is NOT in, in mm',
+      'd, len: cylinder diameter and length along its axis, in mm',
+      'size: [x, y, z] box size',
+    ],
+    designRules: [
+      'cube(size) with no center sits at the origin; center = true moves the min corner to -size/2 and breaks placement.',
+      'cylinder() is centred on its axis: after rotating it sideways, translate by +d/2 in the two cross axes.',
+      'rotate([90,0,0]) maps +y to +z (up). rotate([-90,0,0]) maps +y to -z (DOWN) - the classic inverted-part mistake.',
+      'rotate([0,90,0]) maps +z to +x; the extrusion must start at z = 0 for the result to start at x = 0.',
+      'Keep every module\'s min corner at [0,0,0]; code measures it and reports any offset.',
+    ],
+    codeTemplate: `// --- Orientation idioms: min corner at the origin, geometry in +x/+y/+z ---
+// Profile drawn in the XZ plane (profile x -> X, profile y -> Z), extruded along +Y.
+module profile_extrude_y(profile, thickness) {
+    rotate([90, 0, 0]) translate([0, 0, -thickness]) linear_extrude(thickness) polygon(profile);
+}
+
+// Profile drawn in the YZ plane (profile x -> Y, profile y -> Z), extruded along +X.
+module profile_extrude_x(profile, thickness) {
+    rotate([90, 0, 90]) linear_extrude(thickness) polygon(profile);
+}
+
+// Cylinder lying along +X, occupying [0..len] x [0..d] x [0..d].
+module cylinder_along_x(d, len) {
+    translate([0, d / 2, d / 2]) rotate([0, 90, 0]) cylinder(d = d, h = len);
+}
+
+// Cylinder lying along +Y, occupying [0..d] x [0..len] x [0..d].
+module cylinder_along_y(d, len) {
+    translate([d / 2, 0, d / 2]) rotate([-90, 0, 0]) cylinder(d = d, h = len);
+}
+
+// A box with its min corner at the origin (never use center = true for placed parts).
+module box_at_origin(size) {
+    cube(size);
+}`,
+  },
 };
 
 /**
@@ -530,7 +575,8 @@ Available module keys:
 - 'involute_spur_gear': Parametric spur gear with standard pressure angle and shaft bore.
 - 'dowel_stacking_joint': Standardized pin and socket for vertically stacking components.
 - 'panel_slide_track': U-channel guide groove for sliding in thin panels or diffusers.
-- 'trapped_plate_mount': Internal shelf designed to capture and hold a functional core plate.`,
+- 'trapped_plate_mount': Internal shelf designed to capture and hold a functional core plate.
+- 'orientation_idioms': Profile extrusions along X or Y and cylinders along X or Y, each with its min corner at the origin.`,
   schema: z.object({
     moduleKey: z.enum([
       'fastener_hardware',
@@ -545,6 +591,7 @@ Available module keys:
       'dowel_stacking_joint',
       'panel_slide_track',
       'trapped_plate_mount',
+      'orientation_idioms',
     ]).describe('The specific functional or mathematical CAD module key to retrieve.'),
   }),
   func: async ({ moduleKey }) => {
