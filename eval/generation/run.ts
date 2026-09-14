@@ -25,7 +25,7 @@ process.env.CADAI_VISUAL_CRITIC ??= 'off';
 
 import { createCadAgent, type AgentStateType } from '@/lib/agent/graph';
 import { getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
-import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/tracing/langfuse';
+import { getLangfuseCallbackHandler, getLangfuseSpanProcessor, initLangfuseTracing } from '@/lib/tracing/langfuse';
 import { GenerationMetrics, metricsFromState, scoresFor, summarize } from './metrics';
 
 const DATASET = 'cadai-generation';
@@ -107,6 +107,9 @@ async function main() {
 
   let rows: GenerationMetrics[] = [];
   if (useLangfuse) {
+    // Register the OpenTelemetry span processor BEFORE runExperiment opens its
+    // per-item spans; otherwise those traces are created but never exported.
+    initLangfuseTracing();
     const { LangfuseClient } = await import('@langfuse/client');
     const langfuse = new LangfuseClient();
     const dataset = await langfuse.dataset.get(DATASET);
