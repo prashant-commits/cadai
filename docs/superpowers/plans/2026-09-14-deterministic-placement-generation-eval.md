@@ -2830,6 +2830,32 @@ Report to the user: the rates table, which prompts still fail and on which metri
 
 ---
 
+## Results
+
+Sample size: 3 prompts (`cable_clip`, `hair_dryer_holder`, `laptop_stand_30`), `deepseek-v4-flash`, gates auto-approved, no repair. The user chose a 3-prompt run over the full 10 to limit spend. These are rates over 3, not conclusions.
+
+Baseline = Phase-0 code (commit `6f62418`, run in a worktree). After = commit `d62708a`. Denominators exclude prompts where the metric could not be measured (no compiled model, or placement not composed).
+
+| Metric | Baseline (Phase 0) | After (Phase 1) |
+|---|---|---|
+| specOk | 3/3 | 3/3 |
+| composed (placement from spec) | 0/3 | 2/3 |
+| compileOk | 2/3 | 2/3 |
+| floorOk (lowest point at z = 0) | 3/3 | 2/2 |
+| noFloating (support graph) | 0/0 (unmeasurable) | 2/2 |
+| localFrameOk (module min corner at origin) | 2/3 | 0/2 (both corrected by code) |
+| extentsOk | 0/0 (no localExtents in Phase 0) | 1/2 |
+| shellsOk | 2/3 | 1/2 |
+| mean wall time | 72 s | 156 s (one 344 s prompt: a stalled gateway call hit the new 4-minute timeout and retried) |
+
+Per prompt, after: `cable_clip` composed, on the floor, nothing floating, module `clip_arm` corrected by [3.5, 0, 0.37]; remaining errors manifold/shells/bbox/extents (draft quality). `laptop_stand_30` composed, on the floor, nothing floating, both supports corrected by 0.41 mm; one bbox error (259.6 vs 250 mm). `hair_dryer_holder`: the drafter's synthesis call after its tool round returned no code block, so nothing compiled (pre-existing single-tool-round weakness, not placement).
+
+Per prompt, baseline: the Phase-0 composer declined all three (no positions or model-written assembly), so contact was never measurable; `right_support` was authored 130 mm off its origin in `laptop_stand_30`; `hair_dryer_holder` failed with a CGAL assertion.
+
+Langfuse experiment runs: baseline `runs/e07c12c8-eb3f-4e4d-99da-d436dc901b96`, after `runs/a1761107-f9f0-411f-99fe-87ea73d44162` (dataset `cadai-generation`).
+
+Incidents during the runs, for the record: the first baseline attempt hung 10 minutes on a gateway request with no timeout (fixed by a 240 s client timeout, commit `d62708a`); a second attempt was run from the wrong commit (`7ff0b6e`, which already contained Tasks 8 and 9) and was discarded.
+
 ## Self-review notes
 
 - Spec coverage: decisions 1 (Task 8, 10), 2 (Task 9), 3 (Tasks 3, 9, 11), 4 (Task 10), 5 (Tasks 4, 8), 6 (Task 9), 7 (Task 8), 8 (Task 6), 9 (Tasks 5, 11), 10 (Task 12), 11 (Tasks 7, 13).
