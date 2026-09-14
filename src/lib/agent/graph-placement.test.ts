@@ -269,4 +269,62 @@ module peg() {
     // spec-driven after the first repair.
     expect(repairPrompt).not.toContain('Assembly placement (generated');
   });
+
+  describe('placement measurement (phase 0)', () => {
+    it('records each module frame and flags a part hanging below the floor', async () => {
+      // Drafter placed the parts itself AND authored the upright hanging downward.
+      const authored = `
+module base_plate() { cube([40, 40, 5]); }
+module upright() { translate([0, 0, -30]) cube([5, 40, 30]); }
+base_plate();
+translate([0, 0, 5]) upright();
+`;
+      invokeMock.mockResolvedValueOnce(TWO_PART_SPEC);
+      invokeMock.mockResolvedValueOnce(draft(authored));
+      invokeMock.mockResolvedValue(draft(authored));
+
+      const agent = createCadAgent('k', undefined, 'm');
+      const config = { configurable: { thread_id: newKey() } };
+      await runApproved(agent, config, 'a 40mm bracket');
+
+      const state = (await agent.getState(config)).values;
+      const report = state.placementReport;
+      expect(report).not.toBeNull();
+      const upright = report.components.find((c: any) => c.name === 'upright');
+      expect(upright.measured).toBe(true);
+      expect(upright.localMin[2]).toBeCloseTo(-30, 2);
+
+      const kinds = state.specViolations.map((v: any) => v.kind);
+      expect(kinds).toContain('floor');
+      expect(kinds).toContain('local_frame');
+    });
+
+    it('does not report a phantom interference when the drafter placed parts itself', async () => {
+      // Parts genuinely clear each other; the model's own top-level union used
+      // to be unioned into the probe's intersection() and read as overlap.
+      const authored = `
+module base() { cube([40, 40, 10]); }
+module peg() { cube([10, 10, 10]); }
+union() { base(); translate([10, 10, 15]) peg(); }
+`;
+      invokeMock.mockResolvedValueOnce({
+        assemblyName: 'fit', boundingBox: { width: 40, length: 40, height: 25 },
+        components: [
+          { name: 'base', description: 'base', position: [0, 0, 0] },
+          { name: 'peg', description: 'peg', position: [10, 10, 15] },
+        ],
+        jointContracts: [{ type: 'dowel_stack', clearance: 0.2, partA: 'base', partB: 'peg' }],
+        assumptions: [], openQuestions: [],
+      });
+      invokeMock.mockResolvedValueOnce(draft(authored));
+      invokeMock.mockResolvedValue(draft(authored));
+
+      const agent = createCadAgent('k', undefined, 'm');
+      const config = { configurable: { thread_id: newKey() } };
+      await runApproved(agent, config, 'a 40mm stack');
+
+      const state = (await agent.getState(config)).values;
+      expect(state.specViolations.some((v: any) => v.kind === 'interference')).toBe(false);
+    });
+  });
 });

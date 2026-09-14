@@ -16,7 +16,17 @@ import { analyzeStl } from '../engine/geometry-utils';
 import { renderStlViews, RenderedView } from '../engine/stl-renderer';
 import { shouldGateSpec, shouldGateAccept } from './gate-policy';
 import { getChatModel, getVisionModel } from './model-provider';
-import { composeAssembly, stripGeneratedAssembly, instantiationFor } from '../design/compose-assembly';
+import {
+  composeAssembly,
+  stripGeneratedAssembly,
+  stripTopLevelGeometry,
+  hasGeneratedAssembly,
+  analyzeTopLevel,
+  instantiationFor,
+} from '../design/compose-assembly';
+import { measureModuleFrames } from '../engine/module-frames';
+import { buildPlacementComponents, placementSummary, PlacementReport } from '../design/placement-report';
+import { auditPlacement } from './placement-audit';
 import { checkInterference } from '../engine/assembly-verifier';
 import { getCheckpointer } from './checkpointer';
 
@@ -96,7 +106,10 @@ async function checkAssemblyFit(
   const joints = (spec?.jointContracts ?? []).filter((j) => j.partA && j.partB);
   if (!spec || joints.length === 0) return [];
 
-  const modules = stripGeneratedAssembly(code);
+  // Module definitions only. OpenSCAD implicitly unions every top-level object,
+  // so any model-written placement left in here would be unioned INTO the
+  // probe's intersection() and read as a phantom overlap the size of the part.
+  const modules = stripTopLevelGeometry(stripGeneratedAssembly(code)).code;
   const violations: SpecViolation[] = [];
 
   for (const joint of joints.slice(0, MAX_INTERFERENCE_CHECKS)) {
@@ -368,6 +381,10 @@ export const AgentState = Annotation.Root({
   specViolations: Annotation<SpecViolation[]>({
     reducer: (_, y) => y,
     default: () => [],
+  }),
+  placementReport: Annotation<PlacementReport | null>({
+    reducer: (_, y) => y,
+    default: () => null,
   }),
   attemptHistory: Annotation<AttemptRecord[]>({
     // Merge by attempt number so a node can either append a new attempt or
@@ -732,6 +749,30 @@ ${contract}`;
 
     const specViolations = auditSpec(state.assemblySpec, modelInfo, validation, state.currentCode, state.designContract ?? undefined);
 
+    // Placement measurement. Each spec component that has a module is compiled
+    // alone to read its local frame; floor and contact are judged from those
+    // frames and the spec's coordinates. Composition itself is unchanged here.
+    let placementReport: PlacementReport | null = null;
+    if (state.assemblySpec?.components?.length && state.currentCode) {
+      const defined = new Set(analyzeTopLevel(state.currentCode).moduleNames);
+      const names = state.assemblySpec.components.map((c) => c.name).filter((n) => defined.has(n));
+      const frames = await measureModuleFrames(state.currentCode, names);
+      placementReport = {
+        composed: hasGeneratedAssembly(state.currentCode),
+        removedStatements: 0,
+        components: buildPlacementComponents(state.assemblySpec, frames, false),
+      };
+    }
+    const modelMin = validation.summary?.boundingBox?.min ?? modelInfo?.boundingBox.min ?? null;
+    specViolations.push(...auditPlacement(placementReport, modelMin, state.assemblySpec));
+    if (placementReport || modelMin) {
+      onProgress?.({
+        type: 'validating',
+        message: placementSummary(placementReport, modelMin ? modelMin[2] : null),
+        timestamp: Date.now(),
+      });
+    }
+
     // Assembly fit. Only possible now that jointContracts name the components
     // they join and those components have placements - checkInterference needs
     // real instantiation strings, which is exactly why this could not be wired
@@ -783,6 +824,7 @@ ${contract}`;
       validation,
       modelInfo: modelInfo ?? state.modelInfo,
       specViolations,
+      placementReport,
       attemptHistory: [attempt],
       failureKind: !validation.valid ? 'compile' : !isSemanticValid ? 'semantic' : 'none',
       // Count each class separately so neither can starve the other's budget.
