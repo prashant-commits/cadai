@@ -158,10 +158,23 @@ Of the eight nodes, only `drafterNode` and `fixCode` produce streamable prose.
 fragments. `validateCode`, `specGate`, `acceptGate` and `respondToUser` make no
 LLM call at all. The `custom` channel is what gives the latter six a voice.
 
-The exact interaction between `.stream()` and `interrupt()` must be verified
-against langgraph 1.4.12 during implementation — under `streamMode: 'updates'`
-the pause is expected to surface as an `__interrupt__` update, but this design
-does not assume it.
+All of this was verified by spike against langgraph 1.4.12, on both a minimal
+graph and the real `createCadAgent` (2026-09-14):
+
+- With `streamMode` given as an array, chunks arrive as `[mode, payload]` tuples.
+- `interrupt()` surfaces as an `updates` chunk shaped
+  `{ __interrupt__: [{ id, value }] }`, where `value` is the full `GatePayload`.
+  No `getState()` call is needed to read it.
+- `Command({ resume })` drives `.stream()` exactly as it drives `invoke()`, and a
+  second gate later in the same run surfaces through the identical
+  `__interrupt__` shape.
+- `config.writer` output arrives as a `custom` chunk *during* node execution —
+  before that node's own `updates` chunk — so server-composed markdown streams
+  live rather than landing at the node boundary.
+- `messages` chunks arrive as `[chunk, metadata]`, and the metadata carries
+  `langgraph_node`. **Section attribution therefore comes free**: token deltas
+  are self-labelling and do not need to be correlated against `updates` events.
+  This holds whether the node calls `model.invoke()` or `model.stream()`.
 
 ### Structured output → markdown, incrementally
 
@@ -290,11 +303,15 @@ Vitest is already configured (`vitest.config.mts`, `npm test`).
 
 ## Risks
 
-**`.stream()` with `interrupt()` is unverified** against langgraph 1.4.12. If
-interrupts do not surface cleanly through `streamMode: 'updates'`, step 4 falls
-back to `streamEvents` v3 or to keeping `invoke()` for the interrupt signal while
-streaming deltas alongside. This is the one step that could force a redesign, so
-it is worth a spike before committing to the event union.
+**Partial-JSON streaming through the gateway is unverified.** The spike settled
+every langgraph question, but it used mocked models, so one provider-level
+question remains: does `withStructuredOutput(...).stream()` actually yield
+incremental JSON fragments through the Experiential Labs gateway and through
+`@langchain/google-genai`, or does each return a single terminal chunk? If it
+returns one chunk, the architect and critic sections cannot stream progressively
+and fall back to a status line plus a rendered result — the rest of the design is
+unaffected. Answering this costs real API calls, so it should be batched into one
+probe covering both providers rather than tested a model at a time.
 
 **Section markers are a parsing contract.** If the server ever writes a literal
 `<!--/s-->` inside content, the client's split breaks. The composer must escape
