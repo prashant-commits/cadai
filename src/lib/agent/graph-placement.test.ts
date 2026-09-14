@@ -130,7 +130,8 @@ describe('deterministic assembly placement', () => {
     // The generated block exists and carries the spec's coordinates.
     expect(state.currentCode).toContain('Assembly placement (generated');
     expect(state.currentCode).toContain('base_plate();');
-    expect(state.currentCode).toContain('translate([0, 0, 5]) upright();');
+    expect(state.currentCode).toContain('translate([0, 0, upright_pos_z]) upright();');
+    expect(state.currentCode).toContain('upright_pos_z = 5;');
 
     // The payoff: this actually compiled, and the measured solid reflects the
     // placement. Without it both parts would sit at the origin and Z would
@@ -140,35 +141,25 @@ describe('deterministic assembly placement', () => {
     expect(state.modelInfo.dimensions.x).toBeCloseTo(40, 1);
   });
 
-  it('tells the drafter to stop placing parts, but only when the spec has coordinates', async () => {
-    invokeMock.mockResolvedValueOnce(TWO_PART_SPEC);
+  it('imposes the placement contract whenever the spec has components', async () => {
+    invokeMock.mockResolvedValueOnce({
+      ...TWO_PART_SPEC,
+      components: [{ name: 'base_plate', description: 'base' }, { name: 'upright', description: 'arm' }],
+    });
     invokeMock.mockResolvedValueOnce(draft(MODULES_ONLY));
+    // Both parts land at the origin, so the bbox audit fails and a repair runs.
+    invokeMock.mockResolvedValue(draft(MODULES_ONLY));
 
     const agent = createCadAgent('k', undefined, 'm');
     await runApproved(agent, { configurable: { thread_id: newKey() } }, 'a 40mm bracket');
 
     const drafterSystem = String((invokeMock.mock.calls[1][0] as any[])[0].content);
     expect(drafterSystem).toContain('PLACEMENT CONTRACT');
-
-    // A spec with no coordinates must not impose the contract - the drafter
-    // has to assemble the part itself in that case.
-    invokeMock.mockReset();
-    invokeMock.mockResolvedValueOnce({
-      ...TWO_PART_SPEC,
-      boundingBox: { width: 40, length: 40, height: 5 },
-      components: [{ name: 'base_plate', description: 'base' }],
-    });
-    invokeMock.mockResolvedValueOnce(draft('cube([40,40,5]);'));
-
-    await runApproved(agent, { configurable: { thread_id: newKey() } }, 'a 40mm plate');
-
-    const plainSystem = String((invokeMock.mock.calls[1][0] as any[])[0].content);
-    expect(plainSystem).not.toContain('PLACEMENT CONTRACT');
   });
 
-  it('leaves a model-authored assembly alone rather than doubling it', async () => {
-    // The drafter ignored the contract and placed the parts itself.
-    const authored = `${MODULES_ONLY}\nunion() { base_plate(); translate([0,0,5]) upright(); }`;
+  it('replaces a model-authored assembly with the spec placement', async () => {
+    // The drafter ignored the contract and put the upright 99mm up.
+    const authored = `${MODULES_ONLY}\nunion() { base_plate(); translate([0,0,99]) upright(); }`;
     invokeMock.mockResolvedValueOnce(TWO_PART_SPEC);
     invokeMock.mockResolvedValueOnce(draft(authored));
 
@@ -177,11 +168,75 @@ describe('deterministic assembly placement', () => {
     await runApproved(agent, config, 'a 40mm bracket');
 
     const state = (await agent.getState(config)).values;
-    // No second assembly block appended.
-    expect(state.currentCode).not.toContain('Assembly placement (generated');
-    // And the geometry is still correct, not doubled.
+    expect(state.currentCode).toContain('Assembly placement (generated');
+    expect(state.currentCode).not.toContain('translate([0,0,99])');
+    expect(state.placementReport.removedStatements).toBe(1);
     expect(state.isValid).toBe(true);
     expect(state.modelInfo.dimensions.z).toBeCloseTo(35, 1);
+  });
+
+  it('corrects a module authored off its origin so the part lands where the spec says', async () => {
+    const hanging = `
+module base_plate() { cube([40, 40, 5]); }
+module upright() { translate([-2.5, 0, -30]) cube([5, 40, 30]); }
+`;
+    invokeMock.mockResolvedValueOnce(TWO_PART_SPEC);
+    invokeMock.mockResolvedValueOnce(draft(hanging));
+
+    const agent = createCadAgent('k', undefined, 'm');
+    const config = { configurable: { thread_id: newKey() } };
+    await runApproved(agent, config, 'a 40mm bracket');
+
+    const state = (await agent.getState(config)).values;
+    expect(state.currentCode).toContain('translate([2.5, 0, 30]) upright();');
+    expect(state.modelInfo.boundingBox.min[2]).toBeCloseTo(0, 2);
+    expect(state.modelInfo.dimensions.z).toBeCloseTo(35, 1);
+    expect(state.specViolations.some((v: any) => v.kind === 'floor')).toBe(false);
+    expect(state.specViolations.some((v: any) => v.kind === 'floating')).toBe(false);
+    expect(state.specViolations.some((v: any) => v.kind === 'local_frame')).toBe(true);
+  });
+
+  it('reports a part the spec leaves hovering', async () => {
+    invokeMock.mockResolvedValueOnce({
+      ...TWO_PART_SPEC,
+      boundingBox: { width: 40, length: 40, height: 45 },
+      components: [
+        { name: 'base_plate', description: 'base', position: [0, 0, 0] },
+        { name: 'upright', description: 'arm', position: [0, 0, 15] },
+      ],
+    });
+    invokeMock.mockResolvedValueOnce(draft(MODULES_ONLY));
+    // A floating part is an error, so a repair runs; it returns the same modules.
+    invokeMock.mockResolvedValue(draft(MODULES_ONLY));
+
+    const agent = createCadAgent('k', undefined, 'm');
+    const config = { configurable: { thread_id: newKey() } };
+    await runApproved(agent, config, 'a 40mm bracket');
+
+    const state = (await agent.getState(config)).values;
+    const floating = state.specViolations.filter((v: any) => v.kind === 'floating');
+    expect(floating).toHaveLength(1);
+    expect(floating[0].message).toContain("'upright'");
+    expect(floating[0].deltaMm).toBeCloseTo(10, 1);
+  });
+
+  it('normalises free-text component names before drafting', async () => {
+    invokeMock.mockResolvedValueOnce({
+      ...TWO_PART_SPEC,
+      components: [
+        { name: 'Base Plate', description: 'base', position: [0, 0, 0] },
+        { name: 'Upright', description: 'arm', position: [0, 0, 5] },
+      ],
+    });
+    invokeMock.mockResolvedValueOnce(draft(MODULES_ONLY));
+
+    const agent = createCadAgent('k', undefined, 'm');
+    const config = { configurable: { thread_id: newKey() } };
+    await runApproved(agent, config, 'a 40mm bracket');
+
+    const state = (await agent.getState(config)).values;
+    expect(state.assemblySpec.components.map((c: any) => c.name)).toEqual(['base_plate', 'upright']);
+    expect(state.currentCode).toContain('translate([0, 0, upright_pos_z]) upright();');
   });
 
   it('keeps placement spec-driven across a repair', async () => {
@@ -197,7 +252,7 @@ describe('deterministic assembly placement', () => {
 
     const state = (await agent.getState(config)).values;
     // Re-composed after the repair, not left as bare modules with no assembly.
-    expect(state.currentCode).toContain('translate([0, 0, 5]) upright();');
+    expect(state.currentCode).toContain('translate([0, 0, upright_pos_z]) upright();');
     expect(state.modelInfo.dimensions.z).toBeCloseTo(35, 1);
   });
 
@@ -318,9 +373,12 @@ translate([0, 0, 5]) upright();
       expect(upright.measured).toBe(true);
       expect(upright.localMin[2]).toBeCloseTo(-30, 2);
 
+      // The model-written placement is stripped and the hanging upright is
+      // corrected, so the assembly sits on the floor and measures 35mm.
       const kinds = state.specViolations.map((v: any) => v.kind);
-      expect(kinds).toContain('floor');
+      expect(kinds).not.toContain('floor');
       expect(kinds).toContain('local_frame');
+      expect(state.modelInfo.dimensions.z).toBeCloseTo(35, 1);
     });
 
     it('does not report a phantom interference when the drafter placed parts itself', async () => {

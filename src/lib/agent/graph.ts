@@ -24,9 +24,10 @@ import {
   analyzeTopLevel,
   instantiationFor,
 } from '../design/compose-assembly';
-import { measureModuleFrames } from '../engine/module-frames';
-import { buildPlacementComponents, placementSummary, PlacementReport } from '../design/placement-report';
+import { measureModuleFrames, type ModuleFrame } from '../engine/module-frames';
+import { placementSummary, PlacementReport } from '../design/placement-report';
 import { auditPlacement } from './placement-audit';
+import { normalizeSpec } from './spec-normalize';
 import { checkInterference } from '../engine/assembly-verifier';
 import { getCheckpointer } from './checkpointer';
 
@@ -61,28 +62,44 @@ const VisualCritiqueSchema = z.object({
 });
 type VisualCritique = z.infer<typeof VisualCritiqueSchema>;
 
-/** True when the Architect gave at least one component real coordinates. */
-function specHasPlacements(spec: AssemblySpec | null): boolean {
-  return !!spec?.components?.some((c) => c.position !== undefined || c.rotation !== undefined);
+/** True when the spec names at least one component: placement is then always code-driven. */
+function specHasComponents(spec: AssemblySpec | null): boolean {
+  return !!spec?.components?.length;
 }
 
 /**
- * Hands assembly placement to deterministic code where the spec allows it.
- *
- * Every outcome except a clean compose leaves the model's script untouched, so
- * this can only ever add a correctly-placed assembly - never remove or reorder
- * geometry the model wrote.
+ * Measures each component module, then hands placement to deterministic code.
+ * Every outcome except a clean compose leaves the model's script untouched.
  */
-function applyPlacement(code: string, spec: AssemblySpec | null): string {
-  if (!code) return code;
-  const result = composeAssembly(code, spec);
-  if (result.composed) return result.code;
+async function placeAssembly(
+  code: string,
+  spec: AssemblySpec | null,
+  onProgress?: (event: StreamEventPayload) => void
+): Promise<{ code: string; report: PlacementReport | null; frames: ModuleFrame[] }> {
+  if (!code || !spec?.components?.length) return { code, report: null, frames: [] };
+
+  const defined = new Set(analyzeTopLevel(code).moduleNames);
+  const names = spec.components.map((c) => c.name).filter((n) => defined.has(n));
+  const frames = await measureModuleFrames(code, names);
+  const result = composeAssembly(code, spec, frames);
+
   if (result.reason === 'missing_modules') {
-    console.warn(
-      `Assembly placement skipped: the spec names components with no matching module (${result.missing?.join(', ')}).`
-    );
+    onProgress?.({
+      type: 'validating',
+      message: `Placement skipped: the script defines no module for ${result.missing?.join(', ')}; the model's own layout is compiled as written.`,
+      timestamp: Date.now(),
+    });
+    return { code: result.code, report: null, frames };
   }
-  return result.code;
+  onProgress?.({ type: 'validating', message: placementSummary(result.report, null), timestamp: Date.now() });
+  return { code: result.code, report: result.report, frames };
+}
+
+/** Frames as the composer measured them, rebuilt from the report for the interference probe. */
+function framesFromReport(report: PlacementReport | null): ModuleFrame[] {
+  return (report?.components ?? [])
+    .filter((c) => c.measured)
+    .map((c) => ({ name: c.name, valid: true, min: c.localMin, max: c.localMax, size: c.size }));
 }
 
 /**
@@ -101,7 +118,8 @@ const MAX_INTERFERENCE_CHECKS = 4;
  */
 async function checkAssemblyFit(
   code: string,
-  spec: AssemblySpec | null
+  spec: AssemblySpec | null,
+  frames: ModuleFrame[] = []
 ): Promise<SpecViolation[]> {
   const joints = (spec?.jointContracts ?? []).filter((j) => j.partA && j.partB);
   if (!spec || joints.length === 0) return [];
@@ -113,8 +131,8 @@ async function checkAssemblyFit(
   const violations: SpecViolation[] = [];
 
   for (const joint of joints.slice(0, MAX_INTERFERENCE_CHECKS)) {
-    const callA = instantiationFor(spec, joint.partA!);
-    const callB = instantiationFor(spec, joint.partB!);
+    const callA = instantiationFor(spec, joint.partA!, frames);
+    const callB = instantiationFor(spec, joint.partB!, frames);
     if (!callA || !callB) continue;
 
     try {
@@ -554,7 +572,7 @@ export function createCadAgent(
         // and retry rather than flow onward half-formed.
         const parsed = AssemblySpecSchema.safeParse(raw);
         if (parsed.success) {
-          spec = parsed.data;
+          spec = normalizeSpec(parsed.data);
         } else {
           lastError = `Spec failed validation: ${parsed.error.issues
             .slice(0, 3)
@@ -635,7 +653,7 @@ ${contract}`;
       CAD_AI_SYSTEM_PROMPT +
       '\n\n' +
       DRAFTER_PREAMBLE +
-      (specHasPlacements(state.assemblySpec) ? '\n\n' + DRAFTER_PLACEMENT_CONTRACT : '');
+      (specHasComponents(state.assemblySpec) ? '\n\n' + DRAFTER_PLACEMENT_CONTRACT : '');
 
     const messages: BaseMessage[] = [
       new SystemMessage(drafterSystem),
@@ -685,10 +703,11 @@ ${contract}`;
 
     const content = typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
     const extracted = extractOpenScadCode(content);
-    const placed = applyPlacement(extracted.code || '', state.assemblySpec);
+    const placed = await placeAssembly(extracted.code || '', state.assemblySpec, onProgress);
 
     return {
-      currentCode: placed,
+      currentCode: placed.code,
+      placementReport: placed.report,
       explanation: state.explanation + "\n\n" + content,
       attemptCount: 1,
       messages: [new AIMessage(content)],
@@ -751,26 +770,15 @@ ${contract}`;
 
     const specViolations = auditSpec(state.assemblySpec, modelInfo, validation, state.currentCode, state.designContract ?? undefined);
 
-    // Placement measurement. Each spec component that has a module is compiled
-    // alone to read its local frame; floor and contact are judged from those
-    // frames and the spec's coordinates. Composition itself is unchanged here.
-    let placementReport: PlacementReport | null = null;
-    if (state.assemblySpec?.components?.length && state.currentCode) {
-      const defined = new Set(analyzeTopLevel(state.currentCode).moduleNames);
-      const names = state.assemblySpec.components.map((c) => c.name).filter((n) => defined.has(n));
-      const frames = await measureModuleFrames(state.currentCode, names);
-      placementReport = {
-        composed: hasGeneratedAssembly(state.currentCode),
-        removedStatements: 0,
-        components: buildPlacementComponents(state.assemblySpec, frames, false),
-      };
-    }
+    // Placement was measured and composed before this compile (placeAssembly);
+    // here it is only audited against the compiled model's bounding box.
+    const placementReport = state.placementReport ?? null;
     const modelMin = validation.summary?.boundingBox?.min ?? modelInfo?.boundingBox.min ?? null;
     specViolations.push(...auditPlacement(placementReport, modelMin, state.assemblySpec));
-    if (placementReport || modelMin) {
+    if (modelMin) {
       onProgress?.({
         type: 'validating',
-        message: placementSummary(placementReport, modelMin ? modelMin[2] : null),
+        message: placementSummary(placementReport, modelMin[2]),
         timestamp: Date.now(),
       });
     }
@@ -781,7 +789,9 @@ ${contract}`;
     // in before. Runs only on a clean compile: two parts cannot be tested for
     // overlap if the script never produced a solid.
     if (validation.valid) {
-      specViolations.push(...(await checkAssemblyFit(state.currentCode, state.assemblySpec)));
+      specViolations.push(
+        ...(await checkAssemblyFit(state.currentCode, state.assemblySpec, framesFromReport(placementReport)))
+      );
     }
 
     const isSemanticValid = specViolations.filter(v => v.severity === 'error').length === 0;
@@ -985,11 +995,16 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     const last = state.attemptHistory[state.attemptHistory.length - 1];
     const patchedHistory = last ? [{ ...last, diagnosis: content }] : [];
 
+    // Re-measure and re-compose: the repair model was shown the modules with
+    // the generated block stripped, so placement stays driven by the spec.
+    const repaired = extracted.code ? await placeAssembly(extracted.code, state.assemblySpec, onProgress) : null;
+
     return {
       // Re-compose: the repair model was shown the modules with the generated
       // block stripped, so placement stays driven by the spec across repairs
       // instead of silently reverting to whatever the repair happened to write.
-      currentCode: extracted.code ? applyPlacement(extracted.code, state.assemblySpec) : state.currentCode,
+      currentCode: repaired ? repaired.code : state.currentCode,
+      placementReport: repaired ? repaired.report : state.placementReport,
       explanation: state.explanation + "\n\n" + content,
       attemptCount: currentAttempt,
       messages: [new AIMessage(content)],
@@ -1164,7 +1179,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     let approvedSpec = state.assemblySpec;
     if (decision.spec) {
       const parsed = AssemblySpecSchema.safeParse(decision.spec);
-      if (parsed.success) approvedSpec = parsed.data;
+      if (parsed.success) approvedSpec = normalizeSpec(parsed.data);
       // On failure, fall back to the last known-good spec rather than reject
       // the whole approval over a malformed edit.
     }
