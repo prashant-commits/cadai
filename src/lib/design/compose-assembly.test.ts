@@ -5,6 +5,7 @@ import {
   instantiationFor,
   stripTopLevelGeometry,
   hasGeneratedAssembly,
+  stripGeneratedAssembly,
 } from './compose-assembly';
 import { AssemblySpec } from '../agent/assembly-spec';
 
@@ -118,20 +119,25 @@ describe('composeAssembly', () => {
     expect(result.code).toContain('base_plate();');
     expect(result.code).not.toContain('translate([0, 0, 0])');
     // Rotation sits inside translation: rotate about own origin, then move.
-    expect(result.code).toContain('translate([0, 0, 6]) rotate([0, 0, 90]) upright();');
+    expect(result.code).toContain('translate([0, 0, upright_pos_z]) rotate([0, 0, 90]) upright();');
+    expect(result.code).toContain('upright_pos_z = 6;');
   });
 
-  it('leaves the model in charge when it wrote its own assembly', () => {
-    const authored = `${MODULES}\nunion() { base_plate(); translate([0,0,6]) upright(); }`;
+  it('strips a model-written assembly and places from the spec instead', () => {
+    const authored = `${MODULES}\nunion() { base_plate(); translate([0,0,99]) upright(); }`;
     const result = composeAssembly(
       authored,
-      spec([{ name: 'base_plate', description: 'b', position: [5, 5, 5] }])
+      spec([
+        { name: 'base_plate', description: 'b', position: [0, 0, 0] },
+        { name: 'upright', description: 'u', position: [0, 0, 6] },
+      ])
     );
-
-    expect(result.composed).toBe(false);
-    expect(result.reason).toBe('model_wrote_assembly');
-    // Untouched - appending would double the geometry.
-    expect(result.code).toBe(authored);
+    expect(result.composed).toBe(true);
+    expect(result.report?.removedStatements).toBe(1);
+    expect(result.code).not.toContain('translate([0,0,99])');
+    expect(result.code).toContain('translate([0, 0, upright_pos_z]) upright();');
+    // Exactly one top-level union: the generated one.
+    expect(result.code.match(/union\(\)/g)).toHaveLength(1);
   });
 
   it('declines when the spec names a module the code never defined', () => {
@@ -149,7 +155,7 @@ describe('composeAssembly', () => {
     expect(result.code).toBe(MODULES);
   });
 
-  it('declines when no component declares a placement', () => {
+  it('places every component at the origin when the spec gives no coordinates', () => {
     const result = composeAssembly(
       MODULES,
       spec([
@@ -157,9 +163,9 @@ describe('composeAssembly', () => {
         { name: 'upright', description: 'u' },
       ])
     );
-    expect(result.composed).toBe(false);
-    expect(result.reason).toBe('no_placements');
-    expect(result.code).toBe(MODULES);
+    expect(result.composed).toBe(true);
+    expect(result.code).toContain('    base_plate();');
+    expect(result.code).toContain('    upright();');
   });
 
   it('declines with no spec at all', () => {
@@ -176,7 +182,8 @@ describe('composeAssembly', () => {
     );
     expect(result.composed).toBe(true);
     expect(result.code).toContain('base_plate();');
-    expect(result.code).toContain('translate([0, 0, 6]) upright();');
+    expect(result.code).toContain('translate([0, 0, upright_pos_z]) upright();');
+    expect(result.code).toContain('upright_pos_z = 6;');
   });
 
   it('trims float noise out of emitted vectors', () => {
@@ -184,7 +191,65 @@ describe('composeAssembly', () => {
       MODULES,
       spec([{ name: 'base_plate', description: 'b', position: [0.1 + 0.2, 1 / 3, 2] }])
     );
-    expect(result.code).toContain('translate([0.3, 0.333, 2])');
+    expect(result.code).toContain('base_plate_pos_x = 0.3;');
+    expect(result.code).toContain('base_plate_pos_y = 0.333;');
+    expect(result.code).toContain('base_plate_pos_z = 2;');
+    expect(result.code).toContain('translate([base_plate_pos_x, base_plate_pos_y, base_plate_pos_z]) base_plate();');
+  });
+});
+
+describe('composeAssembly with measured frames', () => {
+  const frames = [
+    { name: 'base_plate', valid: true, min: [0, 0, 0] as [number, number, number], max: [60, 40, 6] as [number, number, number], size: [60, 40, 6] as [number, number, number] },
+    { name: 'upright', valid: true, min: [-3, 0, -45] as [number, number, number], max: [3, 40, 0] as [number, number, number], size: [6, 40, 45] as [number, number, number] },
+  ];
+
+  it('corrects a module whose min corner is off the origin, inside the rotation', () => {
+    const result = composeAssembly(
+      MODULES,
+      spec([
+        { name: 'base_plate', description: 'b', position: [0, 0, 0] },
+        { name: 'upright', description: 'u', position: [0, 0, 6], rotation: [0, 0, 90] },
+      ]),
+      frames
+    );
+    expect(result.code).toContain(
+      'translate([0, 0, upright_pos_z]) rotate([0, 0, 90]) translate([3, 0, 45]) upright();'
+    );
+    expect(result.code).toMatch(/local-frame correction.*upright.*\[-3, 0, -45\]/);
+    const up = result.report?.components.find((c) => c.name === 'upright');
+    expect(up?.correction).toEqual([3, 0, 45]);
+    expect(up?.placedMin).toEqual([-40, 0, 6]);
+  });
+
+  it('writes the position note beside the first emitted parameter', () => {
+    const result = composeAssembly(
+      MODULES,
+      spec([
+        { name: 'base_plate', description: 'b', position: [0, 0, 0] },
+        { name: 'upright', description: 'u', position: [0, 10, 6], positionNote: 'z = top of base_plate (localExtents z = 6)' },
+      ]),
+      frames
+    );
+    expect(result.code).toContain('/* [Assembly Placement] */');
+    expect(result.code).toContain('upright_pos_y = 10;   // z = top of base_plate (localExtents z = 6)');
+    expect(result.code).toContain('upright_pos_z = 6;');
+  });
+
+  it('puts a note above the call when every coordinate is zero', () => {
+    const result = composeAssembly(
+      MODULES,
+      spec([{ name: 'base_plate', description: 'b', position: [0, 0, 0], positionNote: 'sits on the floor' }]),
+      frames
+    );
+    expect(result.code).toContain('    // base_plate: sits on the floor\n    base_plate();');
+  });
+
+  it('round-trips through stripGeneratedAssembly and re-composes identically', () => {
+    const s = spec([{ name: 'upright', description: 'u', position: [0, 0, 6] }, { name: 'base_plate', description: 'b' }]);
+    const once = composeAssembly(MODULES, s, frames).code;
+    const twice = composeAssembly(stripGeneratedAssembly(once), s, frames).code;
+    expect(twice).toBe(once);
   });
 });
 
@@ -197,6 +262,12 @@ describe('instantiationFor', () => {
     expect(instantiationFor(s, 'lid')).toBe('translate([0, 0, 20]) rotate([180, 0, 0]) lid();');
     expect(instantiationFor(s, 'body')).toBe('body();');
     expect(instantiationFor(s, 'nope')).toBeNull();
+  });
+
+  it('applies the same local-frame correction as the placement block', () => {
+    const s = spec([{ name: 'lid', description: 'l', position: [0, 0, 20] }]);
+    const frames = [{ name: 'lid', valid: true, min: [-10, -10, 0] as [number, number, number], max: [10, 10, 4] as [number, number, number], size: [20, 20, 4] as [number, number, number] }];
+    expect(instantiationFor(s, 'lid', frames)).toBe('translate([0, 0, 20]) translate([10, 10, 0]) lid();');
   });
 });
 

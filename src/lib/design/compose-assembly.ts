@@ -1,4 +1,7 @@
 import { AssemblySpec } from '../agent/assembly-spec';
+import type { ModuleFrame } from '../engine/module-frames';
+import { buildPlacementComponents, PlacementComponent, PlacementReport } from './placement-report';
+import { isZeroVec, Vec3 } from './placement-geometry';
 
 /**
  * Deterministic assembly placement.
@@ -31,11 +34,7 @@ export interface TopLevelAnalysis {
   hasTopLevelGeometry: boolean;
 }
 
-export type ComposeSkipReason =
-  | 'no_spec'
-  | 'no_placements'
-  | 'model_wrote_assembly'
-  | 'missing_modules';
+export type ComposeSkipReason = 'no_spec' | 'missing_modules';
 
 export interface ComposeResult {
   code: string;
@@ -44,6 +43,7 @@ export interface ComposeResult {
   reason?: ComposeSkipReason;
   /** Spec components whose module the code never defined. */
   missing?: string[];
+  report: PlacementReport | null;
 }
 
 const GENERATED_HEADER = '// ---- Assembly placement (generated from the approved Assembly Spec) ----';
@@ -295,68 +295,93 @@ function fmt(n: number): string {
   return String(rounded);
 }
 
-function vec(v: [number, number, number]): string {
+function vec(v: Vec3): string {
   return `[${fmt(v[0])}, ${fmt(v[1])}, ${fmt(v[2])}]`;
 }
 
-function isZero(v: [number, number, number]): boolean {
-  return v[0] === 0 && v[1] === 0 && v[2] === 0;
+const AXES = ['x', 'y', 'z'] as const;
+
+/** `translate(P) rotate(R) translate(C) name();` with P given per axis (literal or parameter name). */
+function placementCall(c: PlacementComponent, posExpr: [string, string, string]): string {
+  let call = `${c.name}();`;
+  if (!isZeroVec(c.correction)) call = `translate(${vec(c.correction)}) ${call}`;
+  if (!isZeroVec(c.rotation)) call = `rotate(${vec(c.rotation)}) ${call}`;
+  if (posExpr.some((e) => e !== '0')) call = `translate([${posExpr.join(', ')}]) ${call}`;
+  return call;
 }
 
 /**
- * Appends a generated placement block to model-authored module definitions.
+ * Enforces the placement contract. Model-written top-level geometry is
+ * stripped, every component is placed from the spec, and each module's
+ * measured min corner is corrected so its origin lands where the Architect
+ * meant. Only two things stop it: no spec, or a spec component with no module
+ * (then the code is returned exactly as authored, since stripping it would
+ * leave nothing to render).
  *
  * `rotate` is emitted inside `translate`, so a component is rotated about its
  * own origin and then moved into place - the reading an engineer expects from
  * "position" and "rotation" on a part.
+ *
+ * Non-zero coordinates are emitted as named parameters with the Architect's
+ * positionNote as the comment, so the design panel can expose them and a later
+ * parametric rewrite is a one-token edit. The block is regenerated from the
+ * spec on every compose, so an edit to these parameters is a preview, and the
+ * spec stays the source of truth.
  */
-export function composeAssembly(code: string, spec: AssemblySpec | null): ComposeResult {
+export function composeAssembly(code: string, spec: AssemblySpec | null, frames: ModuleFrame[] = []): ComposeResult {
   if (!spec?.components?.length) {
-    return { code, composed: false, reason: 'no_spec' };
-  }
-
-  const placed = spec.components.filter(
-    (c) => c.position !== undefined || c.rotation !== undefined
-  );
-  if (placed.length === 0) {
-    return { code, composed: false, reason: 'no_placements' };
+    return { code, composed: false, reason: 'no_spec', report: null };
   }
 
   const analysis = analyzeTopLevel(code);
-  if (analysis.hasTopLevelGeometry) {
-    // The model built its own assembly. Replacing it would be guesswork, and
-    // appending ours would double the geometry.
-    return { code, composed: false, reason: 'model_wrote_assembly' };
-  }
-
   const defined = new Set(analysis.moduleNames);
   const missing = spec.components.map((c) => c.name).filter((n) => !defined.has(n));
   if (missing.length > 0) {
-    return { code, composed: false, reason: 'missing_modules', missing };
+    return { code, composed: false, reason: 'missing_modules', missing, report: null };
   }
 
-  const calls = spec.components.map((c) => {
-    const pos = (c.position ?? [0, 0, 0]) as [number, number, number];
-    const rot = (c.rotation ?? [0, 0, 0]) as [number, number, number];
+  const stripped = stripTopLevelGeometry(code);
+  const components = buildPlacementComponents(spec, frames, true);
+  const noteFor = new Map((spec.components ?? []).map((c) => [c.name, c.positionNote?.replace(/\s+/g, ' ').trim()]));
 
-    let call = `${c.name}();`;
-    if (!isZero(rot)) call = `rotate(${vec(rot)}) ${call}`;
-    if (!isZero(pos)) call = `translate(${vec(pos)}) ${call}`;
-    return `    ${call}`;
-  });
+  const params: string[] = [];
+  const calls: string[] = [];
+  for (const c of components) {
+    const note = noteFor.get(c.name);
+    let noteUsed = false;
+    const posExpr = AXES.map((axis, i) => {
+      if (c.position[i] === 0) return '0';
+      const pname = `${c.name}_pos_${axis}`;
+      params.push(`${pname} = ${fmt(c.position[i])};${note && !noteUsed ? `   // ${note}` : ''}`);
+      noteUsed = true;
+      return pname;
+    }) as [string, string, string];
+
+    if (note && !noteUsed) calls.push(`    // ${c.name}: ${note}`);
+    let line = `    ${placementCall(c, posExpr)}`;
+    if (!isZeroVec(c.correction)) {
+      line += `   // local-frame correction: ${c.name} min corner measured at ${vec(c.localMin)}`;
+    }
+    calls.push(line);
+  }
 
   const block = [
     '',
     GENERATED_HEADER,
     '// Placement is computed from the spec, not written by the model.',
-    '// To move a part, change its position/rotation in the spec.',
+    '// Edit the *_pos_* parameters to preview a move; change the spec to keep it.',
+    ...(params.length ? ['/* [Assembly Placement] */', ...params] : []),
     'union() {',
     ...calls,
     '}',
     '',
   ].join('\n');
 
-  return { code: `${code.trimEnd()}\n${block}`, composed: true };
+  return {
+    code: `${stripped.code.trimEnd()}\n${block}`,
+    composed: true,
+    report: { composed: true, removedStatements: stripped.removed, components },
+  };
 }
 
 /**
@@ -383,15 +408,9 @@ export function stripGeneratedAssembly(code: string): string {
  * check has nothing to intersect, which is why assembly interference could not
  * be wired into the graph before.
  */
-export function instantiationFor(spec: AssemblySpec, componentName: string): string | null {
-  const c = spec.components?.find((x) => x.name === componentName);
-  if (!c) return null;
-
-  const pos = (c.position ?? [0, 0, 0]) as [number, number, number];
-  const rot = (c.rotation ?? [0, 0, 0]) as [number, number, number];
-
-  let call = `${c.name}();`;
-  if (!isZero(rot)) call = `rotate(${vec(rot)}) ${call}`;
-  if (!isZero(pos)) call = `translate(${vec(pos)}) ${call}`;
-  return call;
+export function instantiationFor(spec: AssemblySpec, componentName: string, frames: ModuleFrame[] = []): string | null {
+  if (!spec.components?.some((x) => x.name === componentName)) return null;
+  const c = buildPlacementComponents(spec, frames, true).find((x) => x.name === componentName)!;
+  const posExpr = AXES.map((_, i) => (c.position[i] === 0 ? '0' : fmt(c.position[i]))) as [string, string, string];
+  return placementCall(c, posExpr);
 }
