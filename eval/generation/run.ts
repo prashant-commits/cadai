@@ -30,19 +30,23 @@ import { GenerationMetrics, metricsFromState, scoresFor, summarize } from './met
 
 const DATASET = 'cadai-generation';
 
-interface Args { model: string; tag: string; limit: number; langfuse: boolean; seed: boolean }
+interface Args { model: string; tag: string; limit: number; only: string[]; langfuse: boolean; seed: boolean }
 function parseArgs(argv: string[]): Args {
-  const a: Args = { model: 'deepseek-v4-flash', tag: 'run', limit: Infinity, langfuse: true, seed: false };
+  const a: Args = { model: 'deepseek-v4-flash', tag: 'run', limit: Infinity, only: [], langfuse: true, seed: false };
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i];
     if (v === '--model') a.model = argv[++i];
     else if (v === '--tag') a.tag = argv[++i];
     else if (v === '--limit') a.limit = Number(argv[++i]);
+    else if (v === '--only') a.only = argv[++i].split(',').map((s) => s.trim()).filter(Boolean);
     else if (v === '--no-langfuse') a.langfuse = false;
     else if (v === '--seed-dataset') a.seed = true;
   }
   return a;
 }
+
+const RESULTS_DIR = path.join(__dirname, '..', 'results');
+const stamp = (d: Date) => d.toISOString().replace(/[:.]/g, '-');
 
 interface PromptItem { id: string; prompt: string }
 const prompts: PromptItem[] = JSON.parse(fs.readFileSync(path.join(__dirname, 'prompts.json'), 'utf8'));
@@ -51,12 +55,20 @@ function gitSha(): string {
   try { return execSync('git rev-parse --short HEAD').toString().trim(); } catch { return 'unknown'; }
 }
 
-async function runOne(item: PromptItem, args: Args): Promise<GenerationMetrics> {
+async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<GenerationMetrics> {
   const handler = getLangfuseCallbackHandler({
     tags: ['cadai', 'eval', args.model],
     metadata: { model: args.model, tag: args.tag, promptId: item.id },
   });
-  const agent = createCadAgent(undefined, undefined, args.model);
+  console.log(`\n=== ${item.id} ===`);
+  // Node-by-node progress in the log: a prompt that goes quiet after
+  // "Physical Validator" is a frozen wasm compile, which nothing in-process
+  // can interrupt - kill the run and re-run the rest with --only.
+  const agent = createCadAgent(
+    undefined,
+    (e) => console.log(`  ${new Date().toISOString().slice(11, 19)} [${e.type}] ${e.message.slice(0, 160)}`),
+    args.model
+  );
   const key = runCheckpointKey(`eval-${args.tag}`, `${item.id}-${Date.now()}`);
   const config = { configurable: { thread_id: key }, callbacks: handler ? [handler] : undefined };
 
@@ -70,6 +82,8 @@ async function runOne(item: PromptItem, args: Args): Promise<GenerationMetrics> 
 
   const m = metricsFromState(item.id, args.model, state, Date.now() - t0);
   console.log(`${item.id}: composed=${m.composed} floor=${m.floorOk} floating=${m.floatingCount} localFrame=${m.localFrameOk} errors=[${m.errorKinds.join(',')}] ${m.wallMs} ms`);
+  // Written per prompt so a killed run keeps what it finished.
+  fs.appendFileSync(jsonl, JSON.stringify(m) + '\n');
   return m;
 }
 
@@ -100,10 +114,15 @@ async function main() {
     return;
   }
 
-  const items = prompts.slice(0, args.limit);
+  const items = (args.only.length ? prompts.filter((p) => args.only.includes(p.id)) : prompts).slice(0, args.limit);
   console.log(`Eval: ${items.length} prompt(s) on ${args.model}, tag "${args.tag}". ` +
     `Expect roughly ${items.length * 2}-${items.length * 5} model calls (architect retries + drafter tool round). Starting in 5 s, Ctrl+C to abort.`);
   await new Promise((r) => setTimeout(r, 5000));
+
+  fs.mkdirSync(RESULTS_DIR, { recursive: true });
+  const base = path.join(RESULTS_DIR, `${args.tag}-${args.model}-${stamp(new Date())}`);
+  const jsonl = `${base}.jsonl`;
+  console.log(`per-prompt results: ${jsonl}`);
 
   let rows: GenerationMetrics[] = [];
   if (useLangfuse) {
@@ -122,21 +141,19 @@ async function main() {
       data,
       // One at a time: each run drives a wasm compiler and spends model quota.
       maxConcurrency: 1,
-      task: async ({ input }) => runOne(input as PromptItem, args),
+      task: async ({ input }) => runOne(input as PromptItem, args, jsonl),
       evaluators: [async ({ output }) => scoresFor(output as GenerationMetrics)],
     } as Parameters<typeof dataset.runExperiment>[0]);
     rows = result.itemResults.map((r) => r.output as GenerationMetrics);
     await langfuse.flush();
     if (result.datasetRunUrl) console.log(`Langfuse run: ${result.datasetRunUrl}`);
   } else {
-    for (const item of items) rows.push(await runOne(item, args));
+    for (const item of items) rows.push(await runOne(item, args, jsonl));
   }
 
   const summary = summarize(rows);
   console.table(summary);
-  const outDir = path.join(__dirname, '..', 'results');
-  fs.mkdirSync(outDir, { recursive: true });
-  const file = path.join(outDir, `${args.tag}-${args.model}-${Date.now()}.json`);
+  const file = `${base}.json`;
   fs.writeFileSync(file, JSON.stringify({ args, gitSha: gitSha(), summary, rows }, null, 2));
   console.log(`wrote ${file}`);
 
