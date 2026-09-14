@@ -41,6 +41,8 @@ afterAll(async () => {
   const cp = getCheckpointer();
   for (const k of createdKeys) await cp.deleteThread(k);
   await new Promise((r) => setTimeout(r, 200));
+  delete process.env.CADAI_VISUAL_CRITIC;
+  delete process.env.CADAI_MAX_ATTEMPTS;
 });
 
 function baseSpec(overrides: Record<string, any> = {}) {
@@ -69,7 +71,9 @@ function queueCleanRun() {
 describe('visual critic', () => {
   beforeEach(() => {
     invokeMock.mockReset();
-    delete process.env.CADAI_VISUAL_CRITIC;
+    // The critic is parked (off unless 'on'); this suite is about the critic.
+    process.env.CADAI_VISUAL_CRITIC = 'on';
+    process.env.CADAI_MAX_ATTEMPTS = '3';
   });
 
   it('shows the model real rendered images of the compiled part', async () => {

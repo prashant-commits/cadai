@@ -102,11 +102,14 @@ describe('HIL gating (interrupt/resume)', () => {
   // every count in this file a statement about two unrelated things at once.
   beforeEach(() => {
     process.env.CADAI_VISUAL_CRITIC = 'off';
+    // These tests exercise the repair loop, which is parked (default 1 pass).
+    process.env.CADAI_MAX_ATTEMPTS = '3';
     invokeMock.mockReset();
   });
 
   afterAll(() => {
     delete process.env.CADAI_VISUAL_CRITIC;
+    delete process.env.CADAI_MAX_ATTEMPTS;
   });
 
   it('pauses at the spec gate with a real payload, and an edited+approved spec becomes the enforced contract', async () => {

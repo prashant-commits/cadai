@@ -407,7 +407,9 @@ export const AgentState = Annotation.Root({
   }),
   maxAttempts: Annotation<number>({
     reducer: (_, y) => y,
-    default: () => Number(process.env.CADAI_MAX_ATTEMPTS ?? 3),
+    // Parked: automatic repair is off by default while generation quality is
+    // the focus. A human can still ask for a revision at the accept gate.
+    default: () => Number(process.env.CADAI_MAX_ATTEMPTS ?? 1),
   }),
   failureKind: Annotation<'none'|'no_code'|'truncated'|'compile'|'semantic'|'interference'>({
     reducer: (_, y) => y,
@@ -1016,7 +1018,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
    * low-detail render is how you get a good part spiralled into a bad one.
    */
   async function visualCritic(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
-    if (process.env.CADAI_VISUAL_CRITIC === 'off') return {};
+    if (process.env.CADAI_VISUAL_CRITIC !== 'on') return {};
     if (!state.stlContent) return {};
 
     let views: RenderedView[];

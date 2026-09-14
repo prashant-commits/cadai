@@ -42,6 +42,7 @@ afterAll(async () => {
   for (const k of createdKeys) await cp.deleteThread(k);
   await new Promise((r) => setTimeout(r, 200));
   delete process.env.CADAI_VISUAL_CRITIC;
+  delete process.env.CADAI_MAX_ATTEMPTS;
 });
 
 /**
@@ -90,7 +91,30 @@ describe('deterministic assembly placement', () => {
   beforeEach(() => {
     // Exact call counts; vision is covered by its own suite.
     process.env.CADAI_VISUAL_CRITIC = 'off';
+    // Several tests here exercise a repair; the loop is parked by default.
+    process.env.CADAI_MAX_ATTEMPTS = '3';
     invokeMock.mockReset();
+  });
+
+  it('does not repair automatically by default (repair loop is parked)', async () => {
+    const saved = process.env.CADAI_MAX_ATTEMPTS;
+    delete process.env.CADAI_MAX_ATTEMPTS;
+    try {
+      invokeMock.mockResolvedValueOnce(TWO_PART_SPEC);
+      invokeMock.mockResolvedValueOnce(draft('module base_plate() { cube([40,40,5); }'));
+      invokeMock.mockResolvedValue(draft(MODULES_ONLY));
+
+      const agent = createCadAgent('k', undefined, 'm');
+      const config = { configurable: { thread_id: newKey() } };
+      const result = await runApproved(agent, config, 'a 40mm bracket');
+
+      // One draft, no repair: the run pauses at the accept gate for a human.
+      const state = (await agent.getState(config)).values;
+      expect(state.attemptCount).toBe(1);
+      expect(isInterrupted(result)).toBe(true);
+    } finally {
+      if (saved !== undefined) process.env.CADAI_MAX_ATTEMPTS = saved;
+    }
   });
 
   it('compiles placed geometry that the model never positioned itself', async () => {
