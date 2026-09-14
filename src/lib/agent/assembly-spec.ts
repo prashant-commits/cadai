@@ -88,19 +88,37 @@ export const AssemblySpecSchema = z.object({
     dimensions: DimensionsSchema.optional()
   })).optional(),
   components: z.array(z.object({
+    /** snake_case; becomes `module <name>()` verbatim. Normalised after parsing by spec-normalize.ts. */
     name: z.string(),
     description: z.string(),
+    /** Dominant construction of the part; a hint for the drafter, not a constraint. */
+    form: z.enum(['box', 'cylinder', 'profile_extrude', 'revolve', 'shell', 'other']).optional(),
     /**
-     * Where this component sits in assembly coordinates, in mm. The component's
-     * own module is authored at the ORIGIN in its local frame; this vector is
-     * emitted as a translate() by deterministic code rather than written by the
-     * model, because misplaced parts are the failure mode a bounding-box check
-     * cannot see.
+     * The module's exact size in its own frame, [x, y, z] mm. Required in the
+     * request schema; measured after every compile and audited as `extents`.
+     * Replaces the old optional length/width/height/depth object, which never
+     * said which axis was which.
+     */
+    localExtents: Vec3.optional(),
+    /**
+     * Where this component's local origin (its min corner) lands in assembly
+     * coordinates, in mm, ALWAYS in the assembled pose. Required in the request
+     * schema; defaults to the origin on validation. Emitted as translate() by
+     * deterministic code rather than written by the model, because misplaced
+     * parts are the failure mode a bounding-box check cannot see.
      */
     position: Vec3.optional(),
     /** Rotation about the component's own origin, in degrees [X, Y, Z]. */
     rotation: Vec3.optional(),
-    dimensions: DimensionsSchema.optional(),
+    /**
+     * One line deriving the non-zero coordinates from other components, e.g.
+     * "z = top of base_plate (localExtents z = 6.4)". Emitted as the comment on
+     * the generated placement parameter so a later parametric rewrite is a
+     * one-token edit.
+     */
+    positionNote: z.string().optional(),
+    /** Engineering registry keys the drafter must fetch for this part. */
+    useModules: z.array(z.string()).optional(),
     bedFace: BedFaceSchema.optional(),
     /**
      * Planar datum/mating faces that must stay flat and free of cosmetic
@@ -164,8 +182,20 @@ export function boundNumbers(node: unknown): unknown {
   return node;
 }
 
+/** Adds fields to a component's `required` list in the REQUEST schema only. */
+function requireComponentFields(json: Record<string, unknown>, fields: string[]): Record<string, unknown> {
+  const props = json.properties as Record<string, any> | undefined;
+  const items = props?.components?.items;
+  if (!items?.properties) return json;
+  items.required = [...new Set<string>([...(items.required ?? []), ...fields])];
+  return json;
+}
+
 export function assemblySpecRequestSchema(): Record<string, unknown> {
   const json = z.toJSONSchema(AssemblySpecSchema) as Record<string, unknown>;
   delete json.$schema;
-  return boundNumbers(json) as Record<string, unknown>;
+  // The decoder must emit a placement and extents for every component; the
+  // zod schema stays lenient so a model that still omits them degrades to
+  // [0,0,0] / unmeasured instead of failing the whole spec.
+  return boundNumbers(requireComponentFields(json, ['position', 'localExtents'])) as Record<string, unknown>;
 }

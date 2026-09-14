@@ -18,7 +18,6 @@ export function auditPlacement(
   modelMin: Vec3 | null,
   spec: AssemblySpec | null
 ): SpecViolation[] {
-  void spec;
   const violations: SpecViolation[] = [];
   const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -54,6 +53,37 @@ export function auditPlacement(
           ? `The compiled model extends ${-z} mm below the build plate (z = 0). Nothing may ever be below the plate.`
           : `The lowest point of the compiled model hovers ${z} mm above the build plate. The model must rest on z = 0.`,
     });
+  }
+
+  // Extents: the module the Drafter built must be the size the Architect
+  // declared, or every position computed from those sizes is wrong too.
+  if (report && spec?.components) {
+    const approved = !!spec.specApprovedAt;
+    const absTol = approved ? 1.0 : 5.0;
+    const byName = new Map(report.components.map((c) => [c.name, c]));
+    for (const sc of spec.components) {
+      const ext = sc.localExtents as Vec3 | undefined;
+      const c = byName.get(sc.name);
+      if (!ext || !c?.measured) continue;
+      (['x', 'y', 'z'] as const).forEach((axis, i) => {
+        const delta = Math.abs(ext[i] - c.size[i]);
+        if (delta <= 1.0) return;
+        const relative = ext[i] > 0 ? delta / ext[i] : Infinity;
+        const gross = approved || delta > absTol || relative > 0.2;
+        violations.push({
+          kind: 'extents',
+          field: `${sc.name}.${axis}`,
+          expected: ext[i],
+          measured: c.size[i],
+          deltaMm: round2(delta),
+          tolerance: approved ? 1.0 : absTol,
+          severity: gross ? 'error' : 'warning',
+          message:
+            `module ${sc.name}() measures ${c.size[i]} mm along ${axis} but the spec's localExtents say ${ext[i]} mm ` +
+            `(delta ${delta.toFixed(2)} mm). Resize the module; do not move it.`,
+        });
+      });
+    }
   }
 
   if (!report) return violations;

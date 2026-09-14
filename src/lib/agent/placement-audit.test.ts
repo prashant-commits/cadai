@@ -50,3 +50,24 @@ describe('auditPlacement', () => {
     expect(auditPlacement(null, null, null)).toEqual([]);
   });
 });
+
+describe('extents', () => {
+  const specWith = (approved: boolean) => ({
+    assemblyName: 't', boundingBox: { width: 1, length: 1, height: 1 },
+    components: [{ name: 'base', description: '', localExtents: [40, 40, 10] }],
+    edgeTreatments: [], stressPoints: [], assumptions: [], openQuestions: [],
+    ...(approved ? { specApprovedAt: 1 } : {}),
+  }) as any;
+  const measuredBase = (size: [number, number, number]) =>
+    report([{ ...part('base', [0, 0, 0], [size[0], size[1], size[2]]), size }]);
+
+  it('is silent when the measured size matches', () => {
+    expect(auditPlacement(measuredBase([40, 40, 10]), [0, 0, 0], specWith(true))).toEqual([]);
+  });
+
+  it('errors on an approved spec past 1 mm and warns on an unapproved one within the loose band', () => {
+    expect(kinds(auditPlacement(measuredBase([40, 40, 12]), [0, 0, 0], specWith(true)))).toEqual(['error:extents']);
+    expect(kinds(auditPlacement(measuredBase([40, 40, 12]), [0, 0, 0], specWith(false)))).toEqual(['warning:extents']);
+    expect(kinds(auditPlacement(measuredBase([40, 40, 20]), [0, 0, 0], specWith(false)))).toEqual(['error:extents']);
+  });
+});

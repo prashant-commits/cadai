@@ -143,3 +143,32 @@ describe('assemblySpecRequestSchema', () => {
     expect(spec.components?.[0].position).toEqual([-12.5, 0, 3.333]);
   });
 });
+
+describe('placement and extents fields', () => {
+  it('accepts form, localExtents, positionNote and useModules, and tolerates their absence', () => {
+    const spec = AssemblySpecSchema.parse({
+      ...minimal,
+      components: [
+        { name: 'base', description: 'b', form: 'box', localExtents: [40, 30, 6], position: [0, 0, 0] },
+        { name: 'arm', description: 'a', localExtents: [6, 30, 25], position: [0, 0, 6], positionNote: 'z = top of base (localExtents z = 6)', useModules: ['structural_ribs_gussets'] },
+      ],
+    });
+    expect(spec.components?.[0].form).toBe('box');
+    expect(spec.components?.[1].positionNote).toContain('top of base');
+    expect(AssemblySpecSchema.safeParse(minimal).success).toBe(true);
+  });
+
+  it('marks position and localExtents required in the REQUEST schema only', () => {
+    const json = assemblySpecRequestSchema() as any;
+    const items = json.properties.components.items;
+    expect(items.required).toEqual(expect.arrayContaining(['name', 'description', 'position', 'localExtents']));
+    // Validation stays lenient: a component without them still parses.
+    expect(AssemblySpecSchema.safeParse(minimal).success).toBe(true);
+  });
+
+  it('no longer carries a dimensions object on components', () => {
+    const json = assemblySpecRequestSchema() as any;
+    expect(json.properties.components.items.properties.dimensions).toBeUndefined();
+    expect(json.properties.jointContracts.items.properties.dimensions).toBeDefined();
+  });
+});
