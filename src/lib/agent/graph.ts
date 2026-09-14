@@ -205,7 +205,7 @@ function criticSpecSummary(spec: AssemblySpec | null): string {
  */
 const REPAIR_KIND_PRIORITY: SpecViolation['kind'][] = [
   'unknown_symbol', 'dimensionality', 'empty', 'manifold', 'shells', 'interference',
-  'clearance', 'bbox', 'standing', 'buildplate', 'compile', 'visual',
+  'clearance', 'floating', 'floor', 'extents', 'bbox', 'standing', 'buildplate', 'compile', 'visual',
 ];
 function dominantViolationKind(violations: SpecViolation[]): SpecViolation['kind'] | null {
   const errors = violations.filter((v) => v.severity === 'error');
@@ -226,6 +226,9 @@ const REPAIR_HINTS: Partial<Record<SpecViolation['kind'], string>> = {
   bbox: 'The measured extents disagree with the spec. Fix the arithmetic behind the offending axis (stacked heights, wall x 2 + cavity, position + size); do not delete features to shrink the box.',
   standing: 'A Design Contract rule was broken: restore the pinned assignment exactly, or raise the wall parameter to the minimum.',
   buildplate: 'The part does not sit on the build plate as declared, or exceeds the printer. Re-orient it onto its bedFace or resize it.',
+  floating: 'A component does not rest on the floor or on any other component. Fix its spec position or its module\'s local origin; do not change its shape.',
+  floor: 'The lowest point of the model is not at z = 0. Every part must sit on the floor or on another part; nothing may ever be below the build plate.',
+  extents: 'A module\'s measured size differs from the spec\'s localExtents. Resize the module; do not move it.',
 };
 
 /**

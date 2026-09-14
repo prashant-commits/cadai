@@ -15,6 +15,14 @@ export interface SpecViolation {
     | 'clearance'
     | 'unknown_symbol'
     | 'standing'
+    /** Whole-model min z is not 0: something hangs below or hovers above the floor. */
+    | 'floor'
+    /** A placed component does not rest on the floor or on any other component. */
+    | 'floating'
+    /** A module's min corner is not at its local origin (informational once corrected). */
+    | 'local_frame'
+    /** A module's measured size disagrees with the spec's localExtents. */
+    | 'extents'
     /** Emitted by the Design Inspector from rendered views. Always a warning. */
     | 'visual';
   field: string;
