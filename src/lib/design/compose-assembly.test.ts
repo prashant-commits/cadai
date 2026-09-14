@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { analyzeTopLevel, composeAssembly, instantiationFor } from './compose-assembly';
+import {
+  analyzeTopLevel,
+  composeAssembly,
+  instantiationFor,
+  stripTopLevelGeometry,
+  hasGeneratedAssembly,
+} from './compose-assembly';
 import { AssemblySpec } from '../agent/assembly-spec';
 
 function spec(components: AssemblySpec['components']): AssemblySpec {
@@ -191,5 +197,77 @@ describe('instantiationFor', () => {
     expect(instantiationFor(s, 'lid')).toBe('translate([0, 0, 20]) rotate([180, 0, 0]) lid();');
     expect(instantiationFor(s, 'body')).toBe('body();');
     expect(instantiationFor(s, 'nope')).toBeNull();
+  });
+});
+
+describe('stripTopLevelGeometry', () => {
+  it('removes a bare call and reports how many statements went', () => {
+    const r = stripTopLevelGeometry(`${MODULES}\nbase_plate();\n`);
+    expect(r.removed).toBe(1);
+    expect(r.code).not.toContain('base_plate();');
+    expect(analyzeTopLevel(r.code).hasTopLevelGeometry).toBe(false);
+    expect(analyzeTopLevel(r.code).moduleNames).toEqual(['base_plate', 'upright']);
+  });
+
+  it('removes transformed calls, CSG blocks and control flow with their bodies', () => {
+    const authored = `${MODULES}
+translate([0, 0, 6]) upright();
+union() {
+  base_plate();
+  translate([0,0,6]) upright();
+}
+for (i = [0:2]) translate([i * 10, 0, 0]) upright();
+if (true) { base_plate(); }
+`;
+    const r = stripTopLevelGeometry(authored);
+    expect(r.removed).toBe(4);
+    expect(r.code).not.toMatch(/translate|union\(\)|for \(|if \(/);
+    expect(r.code).toContain('module base_plate()');
+    expect(r.code).toContain('module upright()');
+  });
+
+  it('keeps assignments, functions, directives and comments that precede declarations', () => {
+    const src = `include <x.scad>
+$fn = 48;
+wall_t = 2.4; // [1.6:5] wall
+function area(x) = x * x;
+// the base
+module base_plate() { cube([60, 40, 6]); }
+`;
+    const r = stripTopLevelGeometry(src);
+    expect(r.removed).toBe(0);
+    expect(r.code.trim()).toBe(src.trim());
+  });
+
+  it('is not fooled by braces in strings or comments', () => {
+    const src = `label = "a { brace";
+// translate([9,9,9]) base_plate();
+/* union() { base_plate(); } */
+module base_plate() { cube([1,1,1]); }
+base_plate();
+`;
+    const r = stripTopLevelGeometry(src);
+    expect(r.removed).toBe(1);
+    expect(r.code).toContain('label = "a { brace";');
+    expect(r.code).toContain('module base_plate()');
+    expect(r.code).not.toMatch(/^base_plate\(\);/m);
+  });
+
+  it('compiles to empty after stripping, and to geometry once a call is appended', async () => {
+    const { compileScad } = await import('../engine/scad-compiler');
+    const r = stripTopLevelGeometry(`${MODULES}\nunion() { base_plate(); upright(); }`);
+    const empty = await compileScad(r.code);
+    expect(empty.valid).toBe(false);
+    const withCall = await compileScad(`${r.code}\nbase_plate();`);
+    expect(withCall.valid).toBe(true);
+    expect(withCall.summary?.boundingBox?.size).toEqual([60, 40, 6]);
+  });
+});
+
+describe('hasGeneratedAssembly', () => {
+  it('detects the generated placement block', () => {
+    const composed = composeAssembly(MODULES, spec([{ name: 'base_plate', description: 'b', position: [0, 0, 0] }]));
+    expect(hasGeneratedAssembly(composed.code)).toBe(true);
+    expect(hasGeneratedAssembly(MODULES)).toBe(false);
   });
 });
