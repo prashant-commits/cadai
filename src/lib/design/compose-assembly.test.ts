@@ -244,6 +244,62 @@ describe('composeAssembly with measured frames', () => {
     expect(result.code).toContain('    // base_plate: sits on the floor\n    base_plate();');
   });
 
+  it('generates the spec\'s gussets into a wrapper module and places the wrapper', async () => {
+    const bracket = `
+module bracket() {
+  cube([60, 40, 3]);
+  translate([0, 37, 0]) cube([60, 3, 30]);
+}
+`;
+    const s = spec([{ name: 'bracket', description: 'L', position: [0, 0, 0], localExtents: [60, 40, 30] }]);
+    s.stressPoints = [{
+      component: 'bracket', location: 'inside corner', loadCase: '20 N bending', risk: 'high', mitigation: '3 gussets',
+      gusset: { corner: [0, 37, 3], along: 'x', floorDir: '-', legMm: 20, thicknessMm: 2.4, at: [10, 30, 50] },
+    }];
+    const bracketFrame = [{ name: 'bracket', valid: true, min: [0, 0, 0] as [number, number, number], max: [60, 40, 30] as [number, number, number], size: [60, 40, 30] as [number, number, number] }];
+
+    const result = composeAssembly(bracket, s, bracketFrame);
+    expect(result.code).toContain('module bracket__braced()');
+    expect(result.code).toContain('// gusset: inside corner');
+    expect(result.code).toContain('    bracket__braced();');
+    expect(result.report?.components[0].gussets).toBe(3);
+
+    const { compileScad } = await import('../engine/scad-compiler');
+    const plain = await compileScad(`${bracket}\nbracket();`);
+    const braced = await compileScad(result.code);
+    expect(braced.valid, braced.error).toBe(true);
+    expect(braced.shellCount).toBe(1);
+    // Envelope unchanged, volume up by three 20 x 20 / 2 x 2.4 prisms.
+    expect(braced.summary?.boundingBox?.size).toEqual([60, 40, 30]);
+    const { analyzeStl } = await import('../engine/geometry-utils');
+    const delta = analyzeStl(braced.stl!).volumeMm3 - analyzeStl(plain.stl!).volumeMm3;
+    expect(delta).toBeGreaterThan(1400);
+    expect(delta).toBeLessThan(1500);
+  });
+
+  it('applies the origin correction to the module only, not to the generated gussets', () => {
+    const s = spec([{ name: 'upright', description: 'u', position: [0, 0, 6] }]);
+    s.stressPoints = [{
+      location: 'root', loadCase: 'x', risk: 'high', mitigation: 'gusset',
+      gusset: { corner: [0, 0, 0], along: 'y', floorDir: '+', legMm: 5, thicknessMm: 1, at: [20] },
+    }];
+    const result = composeAssembly(MODULES, s, frames);
+    expect(result.code).toContain('        translate([3, 0, 45]) upright();');
+    expect(result.code).toContain('translate([0, 0, upright_pos_z]) upright__braced();');
+    expect(result.code).not.toContain('translate([3, 0, 45]) upright__braced');
+  });
+
+  it('inlines the gussets for the interference probe', () => {
+    const s = spec([{ name: 'lid', description: 'l', position: [0, 0, 20] }]);
+    s.stressPoints = [{
+      location: 'rim', loadCase: 'x', risk: 'medium', mitigation: 'gusset',
+      gusset: { corner: [0, 0, 0], along: 'x', floorDir: '+', legMm: 5, thicknessMm: 1, at: [5] },
+    }];
+    const call = instantiationFor(s, 'lid')!;
+    expect(call.startsWith('translate([0, 0, 20]) union() { lid(); // gusset: rim')).toBe(true);
+    expect(call).toContain('polygon(');
+  });
+
   it('round-trips through stripGeneratedAssembly and re-composes identically', () => {
     const s = spec([{ name: 'upright', description: 'u', position: [0, 0, 6] }, { name: 'base_plate', description: 'b' }]);
     const once = composeAssembly(MODULES, s, frames).code;

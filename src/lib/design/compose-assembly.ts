@@ -2,6 +2,7 @@ import { AssemblySpec } from '../agent/assembly-spec';
 import type { ModuleFrame } from '../engine/module-frames';
 import { buildPlacementComponents, PlacementComponent, PlacementReport } from './placement-report';
 import { isZeroVec, Vec3 } from './placement-geometry';
+import { gussetScad, gussetsFor } from './gussets';
 
 /**
  * Deterministic assembly placement.
@@ -301,13 +302,35 @@ function vec(v: Vec3): string {
 
 const AXES = ['x', 'y', 'z'] as const;
 
-/** `translate(P) rotate(R) translate(C) name();` with P given per axis (literal or parameter name). */
-function placementCall(c: PlacementComponent, posExpr: [string, string, string]): string {
-  let call = `${c.name}();`;
-  if (!isZeroVec(c.correction)) call = `translate(${vec(c.correction)}) ${call}`;
+/**
+ * `translate(P) rotate(R) translate(C) name();` with P given per axis (literal
+ * or parameter name). A caller may pass `body` (a wrapper call or an inline
+ * union) that already contains the origin correction; the correction is then
+ * not applied again here.
+ */
+function placementCall(c: PlacementComponent, posExpr: [string, string, string], body?: string): string {
+  let call = body ?? `${c.name}();`;
+  if (!body && !isZeroVec(c.correction)) call = `translate(${vec(c.correction)}) ${call}`;
   if (!isZeroVec(c.rotation)) call = `rotate(${vec(c.rotation)}) ${call}`;
   if (posExpr.some((e) => e !== '0')) call = `translate([${posExpr.join(', ')}]) ${call}`;
   return call;
+}
+
+/**
+ * The lines of a union body for a component with generated gussets: the
+ * module, origin-corrected, then every gusset in the component's frame.
+ */
+function bracedBodyLines(
+  c: PlacementComponent,
+  gussets: ReturnType<typeof gussetsFor>,
+  indent: string
+): string[] {
+  const lines = [`${indent}${isZeroVec(c.correction) ? '' : `translate(${vec(c.correction)}) `}${c.name}();`];
+  for (const g of gussets) {
+    lines.push(`${indent}// gusset: ${g.location.replace(/\s+/g, ' ').trim()}`);
+    lines.push(...gussetScad(g.gusset, indent));
+  }
+  return lines;
 }
 
 /**
@@ -341,10 +364,14 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
   }
 
   const stripped = stripTopLevelGeometry(code);
-  const components = buildPlacementComponents(spec, frames, true);
+  const components = buildPlacementComponents(spec, frames, true).map((c) => ({
+    ...c,
+    gussets: gussetsFor(spec, c.name).reduce((n, g) => n + g.gusset.at.length, 0),
+  }));
   const noteFor = new Map((spec.components ?? []).map((c) => [c.name, c.positionNote?.replace(/\s+/g, ' ').trim()]));
 
   const params: string[] = [];
+  const wrappers: string[] = [];
   const calls: string[] = [];
   for (const c of components) {
     const note = noteFor.get(c.name);
@@ -358,7 +385,24 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
     }) as [string, string, string];
 
     if (note && !noteUsed) calls.push(`    // ${c.name}: ${note}`);
-    let line = `    ${placementCall(c, posExpr)}`;
+
+    // Gussets the spec prescribes are generated here and unioned onto the
+    // module in a wrapper, so the Drafter never has to place one.
+    const gussets = gussetsFor(spec, c.name);
+    let line: string;
+    if (gussets.length > 0) {
+      const wrapper = `${c.name}__braced`;
+      wrappers.push(
+        `module ${wrapper}() {   // ${c.name} + ${c.gussets} gusset(s) generated from stressPoints`,
+        '    union() {',
+        ...bracedBodyLines(c, gussets, '        '),
+        '    }',
+        '}'
+      );
+      line = `    ${placementCall(c, posExpr, `${wrapper}();`)}`;
+    } else {
+      line = `    ${placementCall(c, posExpr)}`;
+    }
     if (!isZeroVec(c.correction)) {
       line += `   // local-frame correction: ${c.name} min corner measured at ${vec(c.localMin)}`;
     }
@@ -371,6 +415,7 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
     '// Placement is computed from the spec, not written by the model.',
     '// Edit the *_pos_* parameters to preview a move; change the spec to keep it.',
     ...(params.length ? ['/* [Assembly Placement] */', ...params] : []),
+    ...wrappers,
     'union() {',
     ...calls,
     '}',
@@ -412,5 +457,9 @@ export function instantiationFor(spec: AssemblySpec, componentName: string, fram
   if (!spec.components?.some((x) => x.name === componentName)) return null;
   const c = buildPlacementComponents(spec, frames, true).find((x) => x.name === componentName)!;
   const posExpr = AXES.map((_, i) => (c.position[i] === 0 ? '0' : fmt(c.position[i]))) as [string, string, string];
-  return placementCall(c, posExpr);
+  const gussets = gussetsFor(spec, componentName);
+  if (gussets.length === 0) return placementCall(c, posExpr);
+  // The probe compiles module-only code (no generated wrappers), so the gussets
+  // are inlined here rather than referenced through the wrapper module.
+  return placementCall(c, posExpr, `union() { ${bracedBodyLines(c, gussets, '').join(' ')} }`);
 }

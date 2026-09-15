@@ -29,6 +29,28 @@ export type BedFace = z.infer<typeof BedFaceSchema>;
 
 export const StressRiskSchema = z.enum(['low', 'medium', 'high']);
 
+/**
+ * A gusset the Architect prescribes as numbers, in the component's LOCAL frame,
+ * so that code can generate and measure it (see design/gussets.ts). The
+ * Drafter never models a gusset: a prose mitigation left it to guess a
+ * rotation, and it guessed wrong.
+ */
+export const GussetSpecSchema = z.object({
+  /** The inside corner where the wall meets the floor, local mm. */
+  corner: Vec3,
+  /** Axis the corner line runs along; the gusset's triangle is perpendicular to it. */
+  along: z.enum(['x', 'y']),
+  /** Which way the floor extends from the wall, on the other horizontal axis. */
+  floorDir: z.enum(['+', '-']),
+  /** Leg length along the floor and up the wall, mm. */
+  legMm: z.number(),
+  /** 60-80 % of the thinner braced wall. */
+  thicknessMm: z.number(),
+  /** Gusset centres along the corner axis, local mm. */
+  at: z.array(z.number()),
+});
+export type GussetSpec = z.infer<typeof GussetSpecSchema>;
+
 export const StressPointSchema = z.object({
   component: z.string().optional(),
   location: z.string(),
@@ -36,12 +58,13 @@ export const StressPointSchema = z.object({
   loadCase: z.string(),
   risk: StressRiskSchema,
   /**
-   * A sized prescription, not an adjective: "1.8 mm gusset every 25 mm",
-   * "thicken to 2.2 mm", "bedFace -X so the arm prints flat". Never a fillet,
-   * chamfer or round. The Drafter builds exactly this and the Repair node is
-   * forbidden to remove it.
+   * A sized prescription, not an adjective: "thicken to 2.2 mm", "bedFace -X
+   * so the arm prints flat", "3 gussets, see gusset". Never a fillet, chamfer
+   * or round. The Drafter builds the thickening; code builds the gusset.
    */
   mitigation: z.string(),
+  /** Present when the mitigation is a gusset: generated deterministically by code. */
+  gusset: GussetSpecSchema.optional(),
 });
 export type StressPoint = z.infer<typeof StressPointSchema>;
 

@@ -220,6 +220,29 @@ module upright() { translate([-2.5, 0, -30]) cube([5, 40, 30]); }
     expect(floating[0].deltaMm).toBeCloseTo(10, 1);
   });
 
+  it('generates the spec\'s gussets so the drafter never models one', async () => {
+    invokeMock.mockResolvedValueOnce({
+      ...TWO_PART_SPEC,
+      stressPoints: [{
+        component: 'base_plate', location: 'upright root', loadCase: '20 N bending', risk: 'high', mitigation: '1 gusset',
+        gusset: { corner: [5, 0, 5], along: 'y', floorDir: '+', legMm: 10, thicknessMm: 2, at: [20] },
+      }],
+    });
+    invokeMock.mockResolvedValueOnce(draft(MODULES_ONLY));
+    invokeMock.mockResolvedValue(draft(MODULES_ONLY));
+
+    const agent = createCadAgent('k', undefined, 'm');
+    const config = { configurable: { thread_id: newKey() } };
+    await runApproved(agent, config, 'a 40mm bracket');
+
+    const state = (await agent.getState(config)).values;
+    expect(state.currentCode).toContain('module base_plate__braced()');
+    expect(state.currentCode).toContain('// gusset: upright root');
+    expect(state.placementReport.components[0].gussets).toBe(1);
+    expect(state.isValid).toBe(true);
+    expect(state.modelInfo.dimensions.z).toBeCloseTo(35, 1);
+  });
+
   it('normalises free-text component names before drafting', async () => {
     invokeMock.mockResolvedValueOnce({
       ...TWO_PART_SPEC,

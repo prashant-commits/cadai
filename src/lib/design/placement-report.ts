@@ -16,6 +16,8 @@ export interface PlacementComponent {
   rotation: Vec3;
   placedMin: Vec3;
   placedMax: Vec3;
+  /** Gussets code generated for this component from the spec's stress points. */
+  gussets?: number;
 }
 
 export interface PlacementReport {
@@ -121,6 +123,8 @@ export function placementSummary(report: PlacementReport | null, modelMinZ: numb
         : 'placement was not composed from the spec'
     );
     if (report.removedStatements > 0) parts.push(`removed ${report.removedStatements} model-written top-level statement(s)`);
+    const gussets = report.components.reduce((n, c) => n + (c.gussets ?? 0), 0);
+    if (gussets > 0) parts.push(`generated ${gussets} gusset(s) from the spec`);
     const off = measured.filter((c) => !isZeroVec(c.localMin));
     if (off.length > 0) {
       parts.push(

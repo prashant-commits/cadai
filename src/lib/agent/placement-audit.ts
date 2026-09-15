@@ -2,6 +2,7 @@ import type { AssemblySpec } from './assembly-spec';
 import type { SpecViolation } from './spec-audit';
 import { findFloating, PlacementReport } from '../design/placement-report';
 import { FRAME_EPS, isZeroVec, Vec3 } from '../design/placement-geometry';
+import { gussetBounds, gussetsFor } from '../design/gussets';
 
 const vec = (v: Vec3) => `[${v.map((n) => Math.round(n * 100) / 100).join(', ')}]`;
 
@@ -82,6 +83,30 @@ export function auditPlacement(
             `module ${sc.name}() measures ${c.size[i]} mm along ${axis} but the spec's localExtents say ${ext[i]} mm ` +
             `(delta ${delta.toFixed(2)} mm). Resize the module; do not move it.`,
         });
+      });
+    }
+  }
+
+  // Generated gussets must lie inside the component's declared extents: the
+  // Architect placed them by coordinates, and a leg past the part's edge would
+  // widen the compiled envelope.
+  for (const sc of spec?.components ?? []) {
+    const ext = sc.localExtents as Vec3 | undefined;
+    if (!ext) continue;
+    for (const g of gussetsFor(spec!, sc.name)) {
+      const b = gussetBounds(g.gusset);
+      if (!b) continue;
+      const outside = [0, 1, 2].some((i) => b.min[i] < -FRAME_EPS || b.max[i] > ext[i] + FRAME_EPS);
+      if (!outside) continue;
+      violations.push({
+        kind: 'extents',
+        field: `${sc.name}.gusset`,
+        expected: `inside [0, 0, 0]..${vec(ext)}`,
+        measured: `${vec(b.min)}..${vec(b.max)}`,
+        severity: 'error',
+        message:
+          `The gusset for "${g.location}" on ${sc.name} spans ${vec(b.min)} to ${vec(b.max)}, outside the ` +
+          `component's localExtents ${vec(ext)}. Move its corner or shorten its legs in the spec.`,
       });
     }
   }

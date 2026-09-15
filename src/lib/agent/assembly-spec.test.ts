@@ -156,6 +156,27 @@ describe('placement and extents fields', () => {
     expect(AssemblySpecSchema.safeParse(minimal).success).toBe(true);
   });
 
+  it('carries a structured gusset on a stress point, bounded in the request schema', () => {
+    const spec = AssemblySpecSchema.parse({
+      ...minimal,
+      stressPoints: [{
+        component: 'bracket', location: 'inside corner', loadCase: '20 N bending', risk: 'high', mitigation: '3 gussets',
+        gusset: { corner: [0, 37, 3], along: 'x', floorDir: '-', legMm: 20, thicknessMm: 2.4, at: [10, 30, 50] },
+      }],
+    });
+    expect(spec.stressPoints[0].gusset?.at).toEqual([10, 30, 50]);
+    const json = assemblySpecRequestSchema() as any;
+    const gusset = json.properties.stressPoints.items.properties.gusset;
+    expect(gusset.properties.along.enum).toEqual(['x', 'y']);
+    expect(gusset.properties.legMm.multipleOf).toBe(0.01);
+    expect(
+      AssemblySpecSchema.safeParse({
+        ...minimal,
+        stressPoints: [{ location: 'x', loadCase: 'y', risk: 'high', mitigation: 'z', gusset: { corner: [0, 0, 0], along: 'z', floorDir: '+', legMm: 1, thicknessMm: 1, at: [] } }],
+      }).success
+    ).toBe(false);
+  });
+
   it('marks position and localExtents required in the REQUEST schema only', () => {
     const json = assemblySpecRequestSchema() as any;
     const items = json.properties.components.items;

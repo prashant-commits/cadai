@@ -65,6 +65,22 @@ describe('extents', () => {
     expect(auditPlacement(measuredBase([40, 40, 10]), [0, 0, 0], specWith(true))).toEqual([]);
   });
 
+  it('errors when a generated gusset would poke outside the component', () => {
+    const s = specWith(true);
+    s.stressPoints = [{
+      component: 'base', location: 'corner', loadCase: 'x', risk: 'high', mitigation: 'gusset',
+      // Legs of 20 mm from a corner 5 mm from the edge: 15 mm past the part.
+      gusset: { corner: [0, 35, 3], along: 'x', floorDir: '+', legMm: 20, thicknessMm: 2, at: [20] },
+    }];
+    const v = auditPlacement(measuredBase([40, 40, 10]), [0, 0, 0], s);
+    expect(kinds(v)).toEqual(['error:extents']);
+    expect(v[0].field).toBe('base.gusset');
+    expect(v[0].message).toMatch(/outside the component's localExtents/);
+
+    s.stressPoints[0].gusset = { corner: [0, 35, 3], along: 'x', floorDir: '-', legMm: 5, thicknessMm: 2, at: [20] };
+    expect(auditPlacement(measuredBase([40, 40, 10]), [0, 0, 0], s)).toEqual([]);
+  });
+
   it('errors on an approved spec past 1 mm and warns on an unapproved one within the loose band', () => {
     expect(kinds(auditPlacement(measuredBase([40, 40, 12]), [0, 0, 0], specWith(true)))).toEqual(['error:extents']);
     expect(kinds(auditPlacement(measuredBase([40, 40, 12]), [0, 0, 0], specWith(false)))).toEqual(['warning:extents']);
