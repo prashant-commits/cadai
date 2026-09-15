@@ -467,18 +467,15 @@ describe('HIL gating (interrupt/resume)', () => {
     expect(repairPrompt).toContain('Lead with the [bbox] violation');
   });
 
-  it('shows the drafter the edge treatments, stress points and design contract it is graded on', async () => {
+  it('shows the drafter the stress points and design contract it is graded on', async () => {
     const agent = createCadAgent('test-key', undefined, 'test-model');
     const config = { configurable: { thread_id: newRunKey(newThreadId()) } };
 
     invokeMock.mockResolvedValueOnce(
       baseSpec({
         components: [{ name: 'box', description: 'a box', bedFace: '-Z', matingFaces: ['+Z (lid seat)'] }],
-        edgeTreatments: [
-          { location: 'bed perimeter', category: 'printability', kind: 'chamfer', sizeMm: 0.4 },
-        ],
         stressPoints: [
-          { location: 'floor/wall junction', loadCase: '20 N bending', risk: 'high', mitigation: 'R1.2 fillet' },
+          { location: 'floor/wall junction', loadCase: '20 N bending', risk: 'high', mitigation: '1.8 mm gusset every 25 mm' },
         ],
       })
     );
@@ -498,15 +495,14 @@ describe('HIL gating (interrupt/resume)', () => {
     // Call 1 is the drafter. The spec JSON must reach it whole, and the
     // contract it is audited against must be spelled out rather than implied.
     const drafterPrompt = contentsOf(1).join('\n');
-    expect(drafterPrompt).toContain('"category": "printability"');
-    expect(drafterPrompt).toContain('R1.2 fillet');
+    expect(drafterPrompt).toContain('1.8 mm gusset every 25 mm');
     expect(drafterPrompt).toContain('"bedFace": "-Z"');
     expect(drafterPrompt).toContain('wall_t = 2.4;');
     expect(drafterPrompt).toContain('Minimum wall thickness: 1.6mm');
 
     // The user-facing summary surfaces the same decisions without the JSON.
     const state = (await agent.getState(config)).values;
-    expect(state.explanation).toContain('Edge treatment [printability] chamfer 0.4mm');
+    expect(state.explanation).not.toContain('Edge treatment');
     expect(state.explanation).toContain('Stress point [high]');
     expect(state.explanation).toContain('bed face -Z');
   });

@@ -19,31 +19,13 @@ const Vec3 = z.array(z.number()).length(3);
 export const BedFaceSchema = z.enum(['-Z', '+Z', '-X', '+X', '-Y', '+Y']);
 export type BedFace = z.infer<typeof BedFaceSchema>;
 
-/**
- * Why an edge is softened. The category decides which OpenSCAD idiom the
- * Drafter reaches for and which treatment wins when two meet on one edge
- * (mating flatness > stress_relief > printability > assembly_lead_in >
- * ergonomic_cosmetic), so it is an enum rather than free text.
+/*
+ * Edge treatments (chamfers, fillets, rounds, elephant-foot, lead-ins) were
+ * removed from the spec on purpose: every softened edge was extra CSG the
+ * model got wrong (non-manifold hulls, changed bounding boxes), and generated
+ * parts ship with sharp edges. Any finishing belongs to the parked print-prep
+ * node, not to generation.
  */
-export const EdgeTreatmentCategorySchema = z.enum([
-  'stress_relief',
-  'printability',
-  'assembly_lead_in',
-  'ergonomic_cosmetic',
-]);
-export type EdgeTreatmentCategory = z.infer<typeof EdgeTreatmentCategorySchema>;
-
-export const EdgeTreatmentSchema = z.object({
-  /** Component the edge belongs to; omitted for a single-part spec. */
-  component: z.string().optional(),
-  /** Where, in the component's own terms: "all vertical outer edges", "inside corner where wall meets floor". */
-  location: z.string(),
-  category: EdgeTreatmentCategorySchema,
-  kind: z.enum(['fillet', 'chamfer', 'round']),
-  sizeMm: z.number(),
-  rationale: z.string().optional(),
-});
-export type EdgeTreatment = z.infer<typeof EdgeTreatmentSchema>;
 
 export const StressRiskSchema = z.enum(['low', 'medium', 'high']);
 
@@ -54,9 +36,10 @@ export const StressPointSchema = z.object({
   loadCase: z.string(),
   risk: StressRiskSchema,
   /**
-   * A sized prescription, not an adjective: "R1.0 fillet + 1.8 mm gusset every
-   * 25 mm", "thicken to 2.2 mm", "bedFace -X so the arm prints flat". The
-   * Drafter builds exactly this and the Repair node is forbidden to remove it.
+   * A sized prescription, not an adjective: "1.8 mm gusset every 25 mm",
+   * "thicken to 2.2 mm", "bedFace -X so the arm prints flat". Never a fillet,
+   * chamfer or round. The Drafter builds exactly this and the Repair node is
+   * forbidden to remove it.
    */
   mitigation: z.string(),
 });
@@ -127,8 +110,6 @@ export const AssemblySpecSchema = z.object({
      */
     matingFaces: z.array(z.string()).optional(),
   })).optional(),
-  /** Every softened edge, categorised. See EdgeTreatmentSchema. */
-  edgeTreatments: z.array(EdgeTreatmentSchema).default([]),
   /** Stress concentrations the Architect identified, graded and prescribed for. */
   stressPoints: z.array(StressPointSchema).default([]),
   assumptions: z.array(z.object({

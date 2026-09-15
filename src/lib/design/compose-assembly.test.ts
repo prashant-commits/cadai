@@ -14,7 +14,6 @@ function spec(components: AssemblySpec['components']): AssemblySpec {
     assemblyName: 'test',
     boundingBox: { width: 100, length: 100, height: 100 },
     components,
-    edgeTreatments: [],
     stressPoints: [],
     assumptions: [],
     openQuestions: [],

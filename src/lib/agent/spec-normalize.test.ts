@@ -22,7 +22,6 @@ describe('normalizeSpec', () => {
         { name: 'Cup Receptacle', description: 'c', position: [0, 5, 0] },
       ],
       jointContracts: [{ type: 'cantilever_gusset', clearance: 0, partA: 'Wall Mount Backplate', partB: 'Cup Receptacle' }],
-      edgeTreatments: [{ component: 'Cup Receptacle', location: 'rim', category: 'printability', kind: 'chamfer', sizeMm: 0.4 }],
       stressPoints: [{ component: 'Wall Mount Backplate', location: 'screw holes', loadCase: '20 N', risk: 'low', mitigation: 'none' }],
     });
     const n = normalizeSpec(spec);
@@ -31,7 +30,6 @@ describe('normalizeSpec', () => {
     expect(n.components?.[0].useModules).toEqual(['fastener_hardware']);
     expect(n.components?.[1].position).toEqual([0, 5, 0]);
     expect(n.jointContracts?.[0]).toMatchObject({ partA: 'wall_mount_backplate', partB: 'cup_receptacle' });
-    expect(n.edgeTreatments[0].component).toBe('cup_receptacle');
     expect(n.stressPoints[0].component).toBe('wall_mount_backplate');
   });
 

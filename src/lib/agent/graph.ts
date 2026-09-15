@@ -296,11 +296,6 @@ function summarizeSpec(spec: AssemblySpec): string {
     if (c.matingFaces?.length) parts.push(`mating faces: ${c.matingFaces.join(', ')}`);
     lines.push(`${c.name} - ${parts.join('; ')}`);
   }
-  for (const e of spec.edgeTreatments ?? []) {
-    lines.push(
-      `Edge treatment [${e.category}] ${e.kind} ${e.sizeMm}mm - ${e.component ? `${e.component}: ` : ''}${e.location}`
-    );
-  }
   for (const s of spec.stressPoints ?? []) {
     lines.push(
       `Stress point [${s.risk}] ${s.component ? `${s.component}: ` : ''}${s.location} - ${s.loadCase}; mitigation: ${s.mitigation}`
@@ -639,7 +634,7 @@ export function createCadAgent(
     // draft entirely - an empty script gives the repair loop nothing to work with.
     const contract = contractLines(state.designContract);
     const drafterPrompt = state.assemblySpec
-      ? `Implement the Architect Spec below as one complete OpenSCAD script. Honour every field: bedFace planar (on z = 0 for a single part), matingFaces flat, each edgeTreatment built at its location and size by category, each stressPoint mitigation built exactly as sized, joints at their declared clearance.
+      ? `Implement the Architect Spec below as one complete OpenSCAD script. Honour every field: matingFaces flat, each stressPoint mitigation built exactly as sized, joints at their declared clearance, every edge sharp.
 
 Architect Spec:
 ${JSON.stringify(state.assemblySpec, null, 2)}
@@ -940,7 +935,7 @@ Current Broken Code:
 ${stripGeneratedAssembly(state.currentCode)}
 \`\`\`
 ${humanRevision}
-${state.assemblySpec ? `Assembly Spec (every edgeTreatment and stressPoint mitigation in it is mandatory):\n${JSON.stringify(state.assemblySpec, null, 2)}\n` : ''}${contractLines(state.designContract)}
+${state.assemblySpec ? `Assembly Spec (every stressPoint mitigation in it is mandatory; edges stay sharp):\n${JSON.stringify(state.assemblySpec, null, 2)}\n` : ''}${contractLines(state.designContract)}
 Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`openscad ... \`\`\` block.`;
 
     const fixMessages = [

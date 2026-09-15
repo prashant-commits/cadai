@@ -8,7 +8,6 @@ const spec: AssemblySpec = {
   assemblyName: 'test_box',
   boundingBox: { width: 40, length: 40, height: 40 },
   components: [{ name: 'box', description: 'a box' }],
-  edgeTreatments: [],
   stressPoints: [],
   assumptions: [],
   openQuestions: []

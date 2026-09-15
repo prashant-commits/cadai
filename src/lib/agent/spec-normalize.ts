@@ -45,7 +45,6 @@ export function normalizeSpec(spec: AssemblySpec): AssemblySpec {
     ...spec,
     components,
     jointContracts: spec.jointContracts?.map((j) => ({ ...j, partA: ref(j.partA), partB: ref(j.partB) })),
-    edgeTreatments: spec.edgeTreatments.map((e) => ({ ...e, component: ref(e.component) })),
     stressPoints: spec.stressPoints.map((s) => ({ ...s, component: ref(s.component) })),
   };
 }

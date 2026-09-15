@@ -53,7 +53,9 @@ describe('system prompts', () => {
   it('embeds only OpenSCAD examples that compile to real 3D geometry', async () => {
     const blocks = openscadBlocks();
     // A prompt with zero examples would pass vacuously; the idioms are the point.
-    expect(blocks.length).toBeGreaterThanOrEqual(4);
+    // Two remain after the edge-treatment idioms were removed: the format
+    // example and the gusset.
+    expect(blocks.length).toBeGreaterThanOrEqual(2);
 
     for (const b of blocks) {
       expect(b.code, `${b.prompt} block ${b.index} uses 3D minkowski`).not.toMatch(/minkowski\s*\(/);
@@ -77,16 +79,24 @@ describe('system prompts', () => {
     }
   });
 
-  it('teaches every node the spec fields for flat faces, corner categories and stress points', () => {
-    for (const field of ['bedFace', 'matingFaces', 'edgeTreatments', 'stressPoints']) {
+  it('teaches every node the spec fields for flat faces and stress points, and no edge treatments', () => {
+    for (const field of ['bedFace', 'matingFaces', 'stressPoints']) {
       expect(CAD_AI_SYSTEM_PROMPT).toContain(field);
       expect(ARCHITECT_PREAMBLE).toContain(field);
     }
-    for (const category of ['stress_relief', 'printability', 'assembly_lead_in', 'ergonomic_cosmetic']) {
-      expect(CAD_AI_SYSTEM_PROMPT).toContain(category);
+    // Edge treatments were removed from generation: no prompt may ask for or
+    // teach a chamfer, fillet, round, elephant-foot or lead-in. Sentences that
+    // prohibit them ("never", "no", "sharp") are the only place the words may
+    // still appear.
+    const withoutProhibitions = (text: string) =>
+      text.split(/(?<=\.)\s+|\n/).filter((s) => !/\b(never|no|sharp)\b/i.test(s)).join('\n');
+    for (const [name, text] of Object.entries(PROMPTS)) {
+      expect(withoutProhibitions(text), `${name} still teaches an edge treatment`).not.toMatch(
+        /edgeTreatment|elephant|lead-in|lead_in|teardrop|\b(fillets?|chamfers?|rounding)\b/i
+      );
     }
+    expect(CAD_AI_SYSTEM_PROMPT).toMatch(/Edges stay sharp/);
     // The drafter implements and the repair node must not undo.
-    expect(DRAFTER_PREAMBLE).toContain('edgeTreatments');
     expect(DRAFTER_PREAMBLE).toContain('stressPoints');
     expect(REPAIR_PREAMBLE).toMatch(/never delete/i);
     expect(REPAIR_PREAMBLE).toContain('flat-packable');

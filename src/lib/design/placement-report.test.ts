@@ -9,7 +9,7 @@ const frame = (name: string, min: [number, number, number], max: [number, number
 
 const spec = (components: AssemblySpec['components']): AssemblySpec => ({
   assemblyName: 't', boundingBox: { width: 1, length: 1, height: 1 }, components,
-  edgeTreatments: [], stressPoints: [], assumptions: [], openQuestions: [],
+  stressPoints: [], assumptions: [], openQuestions: [],
 });
 
 describe('buildPlacementComponents', () => {

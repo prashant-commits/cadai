@@ -11,13 +11,23 @@ const minimal = {
 describe('AssemblySpecSchema', () => {
   it('defaults the new lists to empty so consumers can iterate without guards', () => {
     const spec = AssemblySpecSchema.parse(minimal);
-    expect(spec.edgeTreatments).toEqual([]);
     expect(spec.stressPoints).toEqual([]);
     expect(spec.components?.[0].bedFace).toBeUndefined();
     expect(spec.components?.[0].matingFaces).toBeUndefined();
   });
 
-  it('carries bed faces, mating faces, categorised edge treatments and graded stress points', () => {
+  it('has no edge-treatment field: generated parts ship with sharp edges', () => {
+    const json = assemblySpecRequestSchema() as any;
+    expect(json.properties.edgeTreatments).toBeUndefined();
+    // A stale client spec that still carries the field is accepted and the field dropped.
+    const spec = AssemblySpecSchema.parse({
+      ...minimal,
+      edgeTreatments: [{ location: 'bed perimeter', category: 'printability', kind: 'chamfer', sizeMm: 0.4 }],
+    });
+    expect((spec as Record<string, unknown>).edgeTreatments).toBeUndefined();
+  });
+
+  it('carries bed faces, mating faces and graded stress points', () => {
     const spec = AssemblySpecSchema.parse({
       ...minimal,
       components: [
@@ -29,31 +39,19 @@ describe('AssemblySpecSchema', () => {
           position: [0, 0, 0],
         },
       ],
-      edgeTreatments: [
-        { component: 'bracket', location: 'inside corner where wall meets floor', category: 'stress_relief', kind: 'fillet', sizeMm: 1.2 },
-        { location: 'bed perimeter', category: 'printability', kind: 'chamfer', sizeMm: 0.4, rationale: 'elephant foot' },
-      ],
       stressPoints: [
-        { component: 'bracket', location: 'wall/floor junction', loadCase: '50 N bending the wall outward', risk: 'high', mitigation: 'R1.2 fillet + 1.8 mm gusset every 25 mm' },
+        { component: 'bracket', location: 'wall/floor junction', loadCase: '50 N bending the wall outward', risk: 'high', mitigation: '1.8 mm gusset every 25 mm' },
       ],
     });
 
     expect(spec.components?.[0].bedFace).toBe('-Z');
     expect(spec.components?.[0].matingFaces).toEqual(['-X (wall mount)']);
-    expect(spec.edgeTreatments).toHaveLength(2);
-    expect(spec.edgeTreatments[0].category).toBe('stress_relief');
     expect(spec.stressPoints[0].risk).toBe('high');
   });
 
-  it('rejects a bed face, category or risk outside the vocabulary the prompts teach', () => {
+  it('rejects a bed face or risk outside the vocabulary the prompts teach', () => {
     expect(
       AssemblySpecSchema.safeParse({ ...minimal, components: [{ name: 'b', description: 'b', bedFace: 'bottom' }] }).success
-    ).toBe(false);
-    expect(
-      AssemblySpecSchema.safeParse({
-        ...minimal,
-        edgeTreatments: [{ location: 'x', category: 'cosmetic', kind: 'fillet', sizeMm: 1 }],
-      }).success
     ).toBe(false);
     expect(
       AssemblySpecSchema.safeParse({
@@ -136,10 +134,10 @@ describe('assemblySpecRequestSchema', () => {
   it('does not narrow what the zod schema will accept', () => {
     const spec = AssemblySpecSchema.parse({
       ...minimal,
-      edgeTreatments: [{ location: 'all outer edges', category: 'printability', kind: 'chamfer', sizeMm: 0.4 }],
-      components: [{ name: 'bracket', description: 'an L bracket', position: [-12.5, 0, 3.333] }],
+      stressPoints: [{ location: 'root', loadCase: '10 N', risk: 'low', mitigation: 'thicken to 2.2 mm' }],
+      components: [{ name: 'bracket', description: 'an L bracket', position: [-12.5, 0, 3.333], localExtents: [40.4, 30, 25.01] }],
     });
-    expect(spec.edgeTreatments[0].sizeMm).toBe(0.4);
+    expect(spec.components?.[0].localExtents).toEqual([40.4, 30, 25.01]);
     expect(spec.components?.[0].position).toEqual([-12.5, 0, 3.333]);
   });
 });

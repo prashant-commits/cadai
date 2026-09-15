@@ -142,29 +142,6 @@ export function GateInlineUI({ gate, onResume }: GateInlineUIProps) {
               ) : null}
             </div>
 
-            {gate.spec?.edgeTreatments?.length ? (
-              <>
-                <div className="border-t border-slate-800" />
-                <div className="space-y-2">
-                  <div className="flex items-center gap-1.5 text-cyan-400">
-                    <Ruler className="w-3.5 h-3.5" />
-                    <h4 className="text-[11px] font-semibold uppercase tracking-wider">Edge Treatments</h4>
-                  </div>
-                  <ul className="text-xs text-slate-300 space-y-1">
-                    {gate.spec.edgeTreatments.map((e, i) => (
-                      <li key={i} className="flex flex-wrap items-baseline gap-x-1.5">
-                        <span className="px-1 py-0.5 rounded bg-slate-800 text-[10px] font-mono text-cyan-200">{e.category}</span>
-                        <span className="font-mono text-slate-200">{e.kind} {e.sizeMm}mm</span>
-                        <span className="text-slate-400">
-                          {e.component ? `${e.component}: ` : ''}{e.location}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </>
-            ) : null}
-
             {gate.spec?.stressPoints?.length ? (
               <>
                 <div className="border-t border-slate-800" />

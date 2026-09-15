@@ -55,7 +55,7 @@ describe('extents', () => {
   const specWith = (approved: boolean) => ({
     assemblyName: 't', boundingBox: { width: 1, length: 1, height: 1 },
     components: [{ name: 'base', description: '', localExtents: [40, 40, 10] }],
-    edgeTreatments: [], stressPoints: [], assumptions: [], openQuestions: [],
+    stressPoints: [], assumptions: [], openQuestions: [],
     ...(approved ? { specApprovedAt: 1 } : {}),
   }) as any;
   const measuredBase = (size: [number, number, number]) =>
