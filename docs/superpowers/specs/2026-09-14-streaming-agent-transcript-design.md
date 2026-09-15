@@ -178,24 +178,73 @@ graph and the real `createCadAgent` (2026-09-14):
 
 ### Structured output → markdown, incrementally
 
-`architectNode` and `visualCritic` stream their structured output through
-`parsePartialJson` (`@langchain/core/utils/json`, re-exported from
-`@langchain/core/output_parsers`). As each field's value terminates, the node
-composes the corresponding markdown line and writes it via `config.writer`.
+Probed against the live gateway on 2026-09-16 with the production path —
+`getChatModel(...).withStructuredOutput(assemblySpecRequestSchema(), { name: 'assembly_spec' }).stream()`:
 
-Two guards are mandatory, because this is the exact path that produced the
-original Gemini failure:
+`deepseek-v4-flash` streams **382 chunks**, and each chunk is a
+**progressively-complete parsed object**, not a raw JSON fragment. LangChain's
+cumulative output parser already does the partial-JSON work, so
+`parsePartialJson` is **not needed** — the node can diff consecutive chunks and
+emit markdown for whatever became newly complete. Top-level fields settled at:
 
-1. **Emit only terminated values.** A number is written out only once the parser
-   has seen its closing delimiter, so a partially-decoded number never reaches
-   the UI one digit at a time.
-2. **Sanity-check numerics.** A dimension outside a plausible millimetre range
-   aborts that field rather than rendering it. Degenerate decoding terminates
-   eventually — at the token cap — so rule 1 alone is not sufficient.
+| field | first seen |
+|---|---|
+| `assemblyName` | 1.65 s |
+| `boundingBox` | 1.65 s |
+| `components` | 1.84 s |
+| `stressPoints` | 7.2 s |
+| `assumptions` | 9.5 s |
+| `openQuestions` | 10.7 s |
+| complete | 13.9 s |
+
+That is a ~14-second window currently showing a static spinner, which is
+precisely what this design fills.
+
+The plain prose lane (`model.stream()`, the drafter and repair path) streams
+normally: 43 chunks, first at 1.3 s.
+
+One guard remains mandatory: **emit a value only once its chunk shows it
+structurally settled**, and sanity-check numerics against a plausible millimetre
+range. Diffing partial objects means a half-decoded number can appear as a
+legitimate-looking value in an intermediate chunk.
 
 Raw parse errors go to `console.error` only. The progress line at
 `src/lib/agent/graph.ts:559` becomes
-`Mechanical Architect: no valid Assembly Spec after 3 attempts.`
+`Mechanical Architect: no valid Assembly Spec after 3 attempts.` This matters
+more than it first appeared — see below.
+
+### The Gemini gate is not a decoder problem
+
+The probe found the actual cause of the reported Gemini failure, and it is not
+degenerate decoding. `withStructuredOutput` against `gemini-3.6-flash` fails
+outright in 442 ms with HTTP 400:
+
+```
+Unknown name "multipleOf" at 'generation_config.response_schema...'
+```
+
+`boundNumbers` (`src/lib/agent/assembly-spec.ts:158`) stamps `multipleOf: 0.01`
+onto every `{"type": "number"}` node. Google's `response_schema` is an OpenAPI
+3.0 subset that has no `multipleOf`, so it rejects the request before generating
+a single token — on all three architect attempts, every time.
+
+So commit `10787f0` ("bound Assembly Spec JSON Schema for structured output"),
+which took DeepSeek from 6/10 to 8/10 valid, broke Gemini from partly-working to
+**100% failure**. The chain that follows is exactly the reported bug: every
+attempt 400s → `spec` is `null` → `shouldGateSpec` opens a gate anyway → the card
+renders empty, while `lastError.slice(0, 200)` dumps the head of a very large
+Google error payload into the progress feed. That is the "producing outputs" the
+user saw.
+
+Two consequences for this design:
+
+1. The comment at `src/lib/agent/model-provider.ts:10-15` citing "1/5 valid on
+   gemini-3.6-flash" is **stale** — it predates the bounding change and now
+   understates the failure.
+2. The fix is small and separable from the streaming work: strip `multipleOf`
+   (and anything else outside Google's schema subset) when the target is the
+   Google lane, keeping the full bounded schema for the gateway. It should land
+   on its own rather than inside this redesign.
 
 ### Gates
 
@@ -303,15 +352,25 @@ Vitest is already configured (`vitest.config.mts`, `npm test`).
 
 ## Risks
 
-**Partial-JSON streaming through the gateway is unverified.** The spike settled
-every langgraph question, but it used mocked models, so one provider-level
-question remains: does `withStructuredOutput(...).stream()` actually yield
-incremental JSON fragments through the Experiential Labs gateway and through
-`@langchain/google-genai`, or does each return a single terminal chunk? If it
-returns one chunk, the architect and critic sections cannot stream progressively
-and fall back to a status line plus a rendered result — the rest of the design is
-unaffected. Answering this costs real API calls, so it should be batched into one
-probe covering both providers rather than tested a model at a time.
+**This document was written against a stale base.** The branch it lives on is
+roughly fifteen commits behind `main`, and at least two of those change things
+this design describes:
+
+- `e98b1a9 feat(agent): remove edge treatments from the spec, prompts and gate UI`
+  — every reference to edge treatments here (gate detail, server-rendered
+  markdown) is obsolete.
+- `e9efbed chore(agent): park automatic repair and the visual critic behind env
+  flags` — the "eight nodes, of which two stream prose" analysis needs redoing
+  against the current graph, and `visualCritic` may not be a live node at all.
+
+Main also added deterministic gussets, placement enforcement, spec
+normalisation, and a generation eval harness (`6f62418`), the last of which is
+probably a better home for some of the testing in this document. **Rebase before
+writing the implementation plan**, then re-check every file reference here.
+
+**Streaming is no longer a risk.** Both the langgraph questions (spike,
+2026-09-14) and the provider questions (probe, 2026-09-16) are settled, on the
+real production code path.
 
 **Section markers are a parsing contract.** If the server ever writes a literal
 `<!--/s-->` inside content, the client's split breaks. The composer must escape
