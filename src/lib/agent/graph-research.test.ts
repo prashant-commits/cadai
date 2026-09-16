@@ -21,7 +21,7 @@ vi.mock('@langchain/openai', () => {
   return { ChatOpenAI: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
 });
 
-import { createCadAgent, type StreamEventPayload } from './graph';
+import { createCadAgent } from './graph';
 
 const plan = { partClass: 'wall bracket', queries: ['wall bracket fdm', 'gusseted bracket 3d print'] };
 const briefReply = {
@@ -87,7 +87,7 @@ describe('research node and gate', () => {
 
   it('researches first, pauses with a grounded brief, and stamps the choice into the contract', async () => {
     invokeMock.mockResolvedValueOnce(plan).mockResolvedValueOnce(briefReply);
-    const agent = createCadAgent(undefined, 'test-model');
+    const agent = createCadAgent( 'test-model');
     const config = newConfig();
 
     const paused = await agent.invoke({ messages: [new HumanMessage('a wall bracket')] }, config);
@@ -121,7 +121,7 @@ describe('research node and gate', () => {
     for (const decision of [{ action: 'approve', chosenApproachId: 'nope' }, { action: 'revise', comment: 'again' }]) {
       invokeMock.mockReset();
       invokeMock.mockResolvedValueOnce(plan).mockResolvedValueOnce(briefReply).mockResolvedValueOnce(gatedSpec());
-      const agent = createCadAgent(undefined, 'test-model');
+      const agent = createCadAgent( 'test-model');
       const config = newConfig();
       await agent.invoke({ messages: [new HumanMessage('a wall bracket')] }, config);
       const next = await agent.invoke(new Command({ resume: decision }), config);
@@ -135,7 +135,7 @@ describe('research node and gate', () => {
 
   it('cancel at the research gate ends the run', async () => {
     invokeMock.mockResolvedValueOnce(plan).mockResolvedValueOnce(briefReply);
-    const agent = createCadAgent(undefined, 'test-model');
+    const agent = createCadAgent( 'test-model');
     const config = newConfig();
     await agent.invoke({ messages: [new HumanMessage('a wall bracket')] }, config);
     const done = await agent.invoke(new Command({ resume: { action: 'cancel' } }), config);
@@ -172,7 +172,7 @@ describe('research node and gate', () => {
       arrange();
       // No research calls: the first model call is the Architect, then the drafter.
       invokeMock.mockResolvedValueOnce(baseSpec()).mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
-      const agent = createCadAgent(undefined, 'test-model');
+      const agent = createCadAgent( 'test-model');
       const config = newConfig();
       const result = await agent.invoke({ messages: [new HumanMessage('a 40mm box')], ...input }, config);
       expect(result.researchSkipReason, reason).toBe(reason);
@@ -184,7 +184,6 @@ describe('research node and gate', () => {
   });
 
   it('degrades to the Architect when the brief cannot be produced, and reports why', async () => {
-    const events: StreamEventPayload[] = [];
     // Plan ok, then two invalid briefs, then the run proceeds as before.
     invokeMock
       .mockResolvedValueOnce(plan)
@@ -192,11 +191,10 @@ describe('research node and gate', () => {
       .mockResolvedValueOnce({ approaches: [] })
       .mockResolvedValueOnce(baseSpec())
       .mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
-    const agent = createCadAgent((e) => events.push(e), 'test-model');
+    const agent = createCadAgent('test-model');
     const result = await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, newConfig());
     expect(result.researchSkipReason).toBe('brief_failed');
     expect(result.isValid).toBe(true);
-    expect(events.some((e) => e.type === 'thinking' && /no valid brief/.test(e.message))).toBe(true);
   });
 });
 
@@ -213,7 +211,7 @@ describe('Architect binding', () => {
 
   it('hands the Architect the chosen approach exactly once, on every pass, and never in the history', async () => {
     invokeMock.mockResolvedValueOnce(plan).mockResolvedValueOnce(briefReply);
-    const agent = createCadAgent(undefined, 'test-model');
+    const agent = createCadAgent('test-model');
     const config = newConfig();
     await agent.invoke({ messages: [new HumanMessage('a 40mm wall bracket')] }, config);
 
@@ -237,7 +235,7 @@ describe('Architect binding', () => {
 
   it('binds a later turn from the contract alone, with no research calls', async () => {
     invokeMock.mockResolvedValueOnce(baseSpec()).mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
-    const agent = createCadAgent(undefined, 'test-model');
+    const agent = createCadAgent( 'test-model');
     const result = await agent.invoke(
       {
         messages: [new HumanMessage('a 40mm box')],
@@ -264,7 +262,7 @@ describe('Architect binding', () => {
       .mockResolvedValueOnce(briefReply)
       .mockResolvedValueOnce(baseSpec())
       .mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
-    const agent = createCadAgent(undefined, 'test-model');
+    const agent = createCadAgent( 'test-model');
     const config = newConfig();
 
     // Sources are a citation list for the human, so they belong in the

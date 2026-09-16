@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import * as THREE from 'three';
-import { ChatMessage, AgentProgress, ModelInfo, ViewportSettings, CompileResult, ChatThread, ScadParam, ContractDiff, ParamValue, StandingConstraints, DesignContract } from '@/types';
+import { ChatMessage, ModelInfo, ViewportSettings, CompileResult, ChatThread, ScadParam, ContractDiff, ParamValue, StandingConstraints, DesignContract } from '@/types';
 import {
   DEFAULT_OPENSCAD_CODE,
   clearThreadMessages,
@@ -38,8 +38,6 @@ interface AppState {
   // Runtime State & Generation
   isGenerating: boolean;
   generatingThreadId: string | null;
-  activeProgress: AgentProgress | null;
-  progressHistory: AgentProgress[];
   compileStatus: 'idle' | 'compiling' | 'success' | 'error';
   compileError: string | null;
   compileTimeMs: number;
@@ -62,9 +60,6 @@ interface AppState {
   updateMessage: (id: string, partial: Partial<ChatMessage>, threadId?: string) => void;
   setIsGenerating: (isGenerating: boolean) => void;
   setGeneratingThreadId: (threadId: string | null) => void;
-  setActiveProgress: (progress: AgentProgress | null) => void;
-  addProgressUpdate: (progress: AgentProgress) => void;
-  clearProgress: () => void;
   setCode: (code: string, threadId?: string, source?: 'user' | 'agent') => void;
   setCompileResult: (result: CompileResult, threadId?: string) => void;
   setCompileStatus: (status: 'idle' | 'compiling' | 'success' | 'error', error?: string | null) => void;
@@ -104,8 +99,6 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   isGenerating: false,
   generatingThreadId: null,
-  activeProgress: null,
-  progressHistory: [],
   compileStatus: 'idle',
   compileError: null,
   compileTimeMs: 0,
@@ -169,8 +162,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       modelInfo: null,
       compileStatus: 'idle',
       compileError: null,
-      progressHistory: [],
-      activeProgress: null,
     });
 
     void upsertThread(newThread);
@@ -195,8 +186,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       selectedModel: target.selectedModel || get().selectedModel,
       compileStatus: 'idle',
       compileError: null,
-      progressHistory: [],
-      activeProgress: null,
     });
 
     void setActiveThreadId(target.id);
@@ -303,17 +292,6 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setIsGenerating: (isGenerating) => set({ isGenerating }),
   setGeneratingThreadId: (threadId) => set({ generatingThreadId: threadId }),
-  setActiveProgress: (progress) => set({ activeProgress: progress }),
-  addProgressUpdate: (progress) =>
-    set((state) => ({
-      activeProgress: progress,
-      progressHistory: [...state.progressHistory, progress],
-    })),
-  clearProgress: () =>
-    set({
-      activeProgress: null,
-      progressHistory: [],
-    }),
 
   setCode: (code, threadId, source = 'agent') => {
     const targetId = threadId || get().activeThreadId;
@@ -616,8 +594,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       modelInfo: null,
       compileStatus: 'idle',
       compileError: null,
-      progressHistory: [],
-      activeProgress: null,
       threads: resetThreads,
     });
 

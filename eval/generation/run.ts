@@ -66,13 +66,9 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
     metadata: { model: args.model, tag: args.tag, promptId: item.id },
   });
   console.log(`\n=== ${item.id} ===`);
-  // Node-by-node progress in the log: a prompt that goes quiet after
-  // "Physical Validator" is a frozen wasm compile, which nothing in-process
-  // can interrupt - kill the run and re-run the rest with --only.
-  const agent = createCadAgent(
-    (e) => console.log(`  ${new Date().toISOString().slice(11, 19)} [${e.type}] ${e.message.slice(0, 160)}`),
-    args.model
-  );
+  // Node-by-node progress in the log has been removed as part of the stream refactoring.
+  // Agent creation is now simpler - progress is streamed directly to the client.
+  const agent = createCadAgent(args.model);
   const key = runCheckpointKey(`eval-${args.tag}`, `${item.id}-${Date.now()}`);
   const config = { configurable: { thread_id: key }, callbacks: handler ? [handler] : undefined };
 

@@ -46,7 +46,7 @@ describe('graph custom-channel writes', () => {
       })()
     );
 
-    const agent = createCadAgent(undefined, 'deepseek-v4-flash');
+    const agent = createCadAgent( 'deepseek-v4-flash');
     const key = runCheckpointKey('writer-test', 'run-1');
     keys.push(key);
 
@@ -73,7 +73,7 @@ describe('graph custom-channel writes', () => {
     });
     invokeMock.mockRejectedValue(new Error('400 Bad Request {"error":{"message":"giant payload"}}'));
 
-    const agent = createCadAgent(undefined, 'deepseek-v4-flash');
+    const agent = createCadAgent( 'deepseek-v4-flash');
     const key = runCheckpointKey('writer-test', 'run-2');
     keys.push(key);
 

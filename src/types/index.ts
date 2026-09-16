@@ -3,8 +3,6 @@ import { AssemblySpec } from '../lib/agent/assembly-spec';
 import { SpecViolation } from '../lib/agent/spec-audit';
 import type { ChosenApproach, DesignBrief } from '../lib/research/design-brief';
 
-export type AgentStepType = 'thinking' | 'generating' | 'validating' | 'fixing' | 'ready' | 'error' | 'awaiting_input';
-
 export type ParamKind = 'number' | 'range' | 'enum' | 'boolean';
 export type ParamValue = number | boolean | string;
 
@@ -108,17 +106,6 @@ export interface GateDecision {
   chosenApproachId?: string;
 }
 
-export interface AgentProgress {
-  id: string;
-  type: AgentStepType;
-  message: string;
-  timestamp: number;
-  details?: string;
-  gate?: GatePayload;
-  // Set alongside `gate` on an 'awaiting_input' step: the run to resume.
-  runId?: string;
-}
-
 /** Where one gate got to. `open` is the only state that accepts input. */
 export type GateStatus = 'open' | 'approved' | 'revised' | 'denied';
 
@@ -156,7 +143,6 @@ export interface ChatMessage {
   runId?: string;
   image?: string;
   code?: string;
-  progressUpdates?: AgentProgress[];
   timestamp: number;
 }
 

@@ -75,7 +75,7 @@ describe('visual critic', () => {
     queueCleanRun();
     invokeMock.mockResolvedValueOnce({ matchesIntent: true, findings: [] });
 
-    const agent = createCadAgent(undefined, 'm');
+    const agent = createCadAgent( 'm');
     await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, { configurable: { thread_id: newKey() } });
 
     // Call 2 is the critic.
@@ -105,7 +105,7 @@ describe('visual critic', () => {
       ],
     });
 
-    const agent = createCadAgent(undefined, 'm');
+    const agent = createCadAgent( 'm');
     const config = { configurable: { thread_id: newKey() } };
     const result = await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
 
@@ -129,7 +129,7 @@ describe('visual critic', () => {
     queueCleanRun();
     invokeMock.mockResolvedValueOnce({ matchesIntent: true, findings: [] });
 
-    const agent = createCadAgent(undefined, 'm');
+    const agent = createCadAgent( 'm');
     const config = { configurable: { thread_id: newKey() } };
     const result = await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
 
@@ -146,7 +146,7 @@ describe('visual critic', () => {
     invokeMock.mockResolvedValueOnce(baseSpec());
     invokeMock.mockResolvedValue(draftResponse('cube([40,40,40);'));
 
-    const agent = createCadAgent(undefined, 'm');
+    const agent = createCadAgent( 'm');
     const config = { configurable: { thread_id: newKey() } };
     await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
 
@@ -159,7 +159,7 @@ describe('visual critic', () => {
     queueCleanRun();
     invokeMock.mockRejectedValueOnce(new Error('vision endpoint exploded'));
 
-    const agent = createCadAgent(undefined, 'm');
+    const agent = createCadAgent( 'm');
     const config = { configurable: { thread_id: newKey() } };
     const result = await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
 
@@ -173,7 +173,7 @@ describe('visual critic', () => {
     process.env.CADAI_VISUAL_CRITIC = 'off';
     queueCleanRun();
 
-    const agent = createCadAgent(undefined, 'm');
+    const agent = createCadAgent( 'm');
     await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, { configurable: { thread_id: newKey() } });
 
     // Architect + drafter only - no third call was made.

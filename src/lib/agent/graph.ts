@@ -87,8 +87,7 @@ function specHasComponents(spec: AssemblySpec | null): boolean {
  */
 async function placeAssembly(
   code: string,
-  spec: AssemblySpec | null,
-  onProgress?: (event: StreamEventPayload) => void
+  spec: AssemblySpec | null
 ): Promise<{ code: string; report: PlacementReport | null; frames: ModuleFrame[] }> {
   if (!code || !spec?.components?.length) return { code, report: null, frames: [] };
 
@@ -98,14 +97,10 @@ async function placeAssembly(
   const result = composeAssembly(code, spec, frames);
 
   if (result.reason === 'missing_modules') {
-    onProgress?.({
-      type: 'validating',
-      message: `Placement skipped: the script defines no module for ${result.missing?.join(', ')}; the model's own layout is compiled as written.`,
-      timestamp: Date.now(),
-    });
+
     return { code: result.code, report: null, frames };
   }
-  onProgress?.({ type: 'validating', message: placementSummary(result.report, null), timestamp: Date.now() });
+
   return { code: result.code, report: result.report, frames };
 }
 
@@ -358,21 +353,7 @@ function answeredQuestionLines(
   return lines.length ? ['The user answered your open questions:', ...lines] : [];
 }
 
-export interface StreamEventPayload {
-  type: 'thinking' | 'generating' | 'validating' | 'fixing' | 'ready' | 'error' | 'token' | 'awaiting_input';
-  message: string;
-  code?: string;
-  stl?: string;
-  explanation?: string;
-  gate?: GatePayload;
-  // Identifies the paused run the client must post back to /api/chat/resume.
-  // Set only on 'awaiting_input'.
-  runId?: string;
-  // The contract as the server last saw it, including any spec the human
-  // approved at the gate. Set on 'ready' so the client can persist it.
-  designContract?: DesignContract;
-  timestamp: number;
-}
+
 
 export interface AttemptRecord {
   n: number; phase: 'draft' | 'repair'; code: string;
@@ -525,7 +506,6 @@ function write(
  * Creates the CAD AI LangGraph agent graph with tool-calling capabilities.
  */
 export function createCadAgent(
-  onProgress?: (event: StreamEventPayload) => void,
   modelName?: string
 ) {
   const model = getChatModel(modelName);
@@ -558,14 +538,7 @@ export function createCadAgent(
       alreadyChosen: !!state.designContract?.researchApproach,
     });
     if (pre) {
-      onProgress?.({
-        type: 'thinking',
-        message:
-          pre === 'already_researched'
-            ? 'Design Researcher: using the approach chosen earlier in this thread.'
-            : `Design Researcher: skipped (${RESEARCH_SKIP_MESSAGES[pre]}).`,
-        timestamp: Date.now(),
-      });
+
       return { ...cleared, researchSkipReason: pre };
     }
 
@@ -574,22 +547,13 @@ export function createCadAgent(
       constraints: contractLines(state.designContract),
       provider: provider!,
       model,
-      onProgress,
       config,
     });
     if (!brief) {
-      onProgress?.({
-        type: 'thinking',
-        message: `Design Researcher: skipped (${RESEARCH_SKIP_MESSAGES[skipReason!]}). Proceeding without prior art.`,
-        timestamp: Date.now(),
-      });
+
       return { ...cleared, researchSkipReason: skipReason };
     }
-    onProgress?.({
-      type: 'thinking',
-      message: `Design Researcher: found ${brief.approaches.length} approaches for ${brief.partClass}; awaiting your choice.`,
-      timestamp: Date.now(),
-    });
+
     return { ...cleared, designBrief: brief, researchSkipReason: null };
   }
 
@@ -636,11 +600,7 @@ Sources: ${sourceLinks}` : ''}
 
   // Node 1: architectNode
   async function architectNode(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
-    onProgress?.({
-      type: 'thinking',
-      message: 'Mechanical Architect: Analyzing design requirements and defining bounding boxes...',
-      timestamp: Date.now(),
-    });
+
 
     const messages: BaseMessage[] = [
       new SystemMessage(CAD_AI_SYSTEM_PROMPT + "\n\n" + ARCHITECT_PREAMBLE),
@@ -800,11 +760,7 @@ Sources: ${sourceLinks}` : ''}
 
   // Node 2: drafterNode
   async function drafterNode(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
-    onProgress?.({
-      type: 'generating',
-      message: 'Parametric Drafter: Generating Additive OpenSCAD geometry based on the Architect Spec...',
-      timestamp: Date.now(),
-    });
+
 
     // A missing spec degrades to unconstrained drafting rather than skipping the
     // draft entirely - an empty script gives the repair loop nothing to work with.
@@ -841,11 +797,7 @@ ${contract}`;
       for (const toolCall of response.tool_calls) {
         if (toolCall.name === 'get_functional_cad_module') {
           const moduleKey = (toolCall.args as any)?.moduleKey || 'fastener_hardware';
-          onProgress?.({
-            type: 'thinking',
-            message: `Parametric Drafter: Retrieving tested engineering module: ${moduleKey}...`,
-            timestamp: Date.now(),
-          });
+
 
           // Pass `config` so the tool run is parented to this node's span.
           // Without it the retrieval is invisible to tracing (or shows up as a
@@ -862,11 +814,6 @@ ${contract}`;
         }
       }
 
-      onProgress?.({
-        type: 'generating',
-        message: 'Synthesizing complete parametric OpenSCAD script with retrieved engineering modules...',
-        timestamp: Date.now(),
-      });
 
       // Synthesize final code with tool observations
       response = await model.invoke([...messages, ...toolCallMessages], config);
@@ -874,7 +821,7 @@ ${contract}`;
 
     const content = typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
     const extracted = extractOpenScadCode(content);
-    const placed = await placeAssembly(extracted.code || '', state.assemblySpec, onProgress);
+    const placed = await placeAssembly(extracted.code || '', state.assemblySpec);
 
     return {
       currentCode: placed.code,
@@ -894,11 +841,7 @@ ${contract}`;
 
   // Node 3: validateCode
   async function validateCode(state: AgentStateType): Promise<Partial<AgentStateType>> {
-    onProgress?.({
-      type: 'validating',
-      message: 'Physical Validator: Checking watertightness and flat-pack capabilities in WASM...',
-      timestamp: Date.now(),
-    });
+
 
     if (state.failureKind === 'truncated' || state.failureKind === 'no_code') {
        return { 
@@ -956,11 +899,7 @@ ${contract}`;
     const modelMin = validation.summary?.boundingBox?.min ?? modelInfo?.boundingBox.min ?? null;
     specViolations.push(...auditPlacement(placementReport, modelMin, state.assemblySpec));
     if (modelMin) {
-      onProgress?.({
-        type: 'validating',
-        message: placementSummary(placementReport, modelMin[2]),
-        timestamp: Date.now(),
-      });
+
     }
 
     // Assembly fit. Only possible now that jointContracts name the components
@@ -1045,11 +984,6 @@ ${contract}`;
     const currentAttempt = state.attemptCount + 1;
     const fixModel = model.bindTools([getFunctionalCadModuleTool]);
 
-    onProgress?.({
-      type: 'fixing',
-      message: `Physical Validator Error. Drafter self-repairing solid model (attempt ${currentAttempt}/${state.maxAttempts})...`,
-      timestamp: Date.now(),
-    });
 
     const attemptsContext = state.attemptHistory
       .slice(-2)
@@ -1146,11 +1080,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       for (const toolCall of response.tool_calls) {
         if (toolCall.name === 'get_functional_cad_module') {
           const moduleKey = (toolCall.args as any)?.moduleKey || 'fastener_hardware';
-          onProgress?.({
-            type: 'thinking',
-            message: `Parametric Drafter: Retrieving tested engineering module: ${moduleKey}...`,
-            timestamp: Date.now(),
-          });
+
 
           // Pass `config` so the tool run is parented to this node's span.
           // Without it the retrieval is invisible to tracing (or shows up as a
@@ -1167,11 +1097,6 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
         }
       }
 
-      onProgress?.({
-        type: 'generating',
-        message: 'Synthesizing complete parametric OpenSCAD script with retrieved engineering modules...',
-        timestamp: Date.now(),
-      });
 
       response = await model.invoke([...fixMessages, ...toolCallMessages], config);
     }
@@ -1186,7 +1111,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
 
     // Re-measure and re-compose: the repair model was shown the modules with
     // the generated block stripped, so placement stays driven by the spec.
-    const repaired = extracted.code ? await placeAssembly(extracted.code, state.assemblySpec, onProgress) : null;
+    const repaired = extracted.code ? await placeAssembly(extracted.code, state.assemblySpec) : null;
 
     return {
       // Re-compose: the repair model was shown the modules with the generated
@@ -1236,11 +1161,6 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     }
     if (views.length === 0) return {};
 
-    onProgress?.({
-      type: 'validating',
-      message: `Design Inspector: Reviewing ${views.length} rendered views for shape correctness...`,
-      timestamp: Date.now(),
-    });
 
     const request = firstHumanText(state.messages) || 'the user request above';
     const specText = criticSpecSummary(state.assemblySpec);

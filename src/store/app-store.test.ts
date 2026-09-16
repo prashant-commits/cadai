@@ -56,8 +56,6 @@ describe('useAppStore thread scoping & progress isolation', () => {
       contractDiff: null,
       isGenerating: false,
       generatingThreadId: null,
-      activeProgress: null,
-      progressHistory: [],
       editorView: 'design',
     });
   });
@@ -99,25 +97,6 @@ describe('useAppStore thread scoping & progress isolation', () => {
 
     expect(t2?.code).toBe('cylinder(r=5, h=20);');
     expect(updated.code).toBe('cube(10);'); // active code unchanged
-  });
-
-  it('clears progress history properly when clearProgress is called', () => {
-    const store = useAppStore.getState();
-
-    store.addProgressUpdate({
-      id: 'step-1',
-      type: 'thinking',
-      message: 'Analyzing...',
-      timestamp: Date.now(),
-    });
-
-    expect(useAppStore.getState().progressHistory.length).toBe(1);
-    expect(useAppStore.getState().activeProgress?.message).toBe('Analyzing...');
-
-    store.clearProgress();
-
-    expect(useAppStore.getState().progressHistory.length).toBe(0);
-    expect(useAppStore.getState().activeProgress).toBeNull();
   });
 
   it('changes editorView state', () => {

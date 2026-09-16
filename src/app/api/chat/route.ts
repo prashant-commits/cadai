@@ -84,7 +84,7 @@ export async function POST(req: NextRequest) {
       });
 
       try {
-        const agent = createCadAgent(undefined, model);
+        const agent = createCadAgent(model);
 
         let sawGate = false;
         const stream = await agent.stream(
