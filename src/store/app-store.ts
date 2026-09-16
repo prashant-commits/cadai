@@ -134,7 +134,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       params: parseParams(initialCode),
       stlContent: active.stlContent || null,
       modelInfo: active.modelInfo || null,
-      selectedModel: active.selectedModel || 'deepseek-v4-flash',
+      selectedModel: active.selectedModel || DEFAULT_TEXT_MODEL,
     });
   },
 
