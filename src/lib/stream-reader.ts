@@ -1,95 +1,104 @@
-import { AgentProgress, DesignContract } from '@/types';
+import type { DesignContract, GateRecord } from '@/types';
+import type { StreamEvent } from './agent/stream-events';
+import type { TranscriptNode, TranscriptSection } from './agent/transcript';
+import { escapeMarkers } from './agent/transcript';
 
-export const readStream = async (
-  response: Response,
-  targetThreadId: string,
-  callbacks: {
-    onProgress: (progressItem: AgentProgress) => void;
-    onFinalize: (
-      finalCode: string,
-      finalExplanation: string,
-      finalStl: string,
-      currentProgressList: AgentProgress[],
-      finalContract?: DesignContract
-    ) => void;
-  }
-) => {
+export interface StreamState {
+  nodes: TranscriptNode[];
+  gates: Record<string, GateRecord>;
+  summary: string;
+  code?: string;
+  stl?: string;
+  designContract?: DesignContract;
+  /** The paused run to POST back to /api/chat/resume. */
+  runId?: string;
+  awaitingInput: boolean;
+  error?: string;
+}
+
+export interface StreamCallbacks {
+  onUpdate: (state: StreamState) => void;
+  onDone: (state: StreamState) => void;
+}
+
+export async function readStream(response: Response, callbacks: StreamCallbacks): Promise<void> {
   if (!response.body) throw new Error('No response stream received.');
-  
+
+  const state: StreamState = { nodes: [], gates: {}, summary: '', awaitingInput: false };
+  let open: TranscriptSection | null = null;
+
+  /** A delta with no open section still has to land somewhere visible. */
+  function ensureOpen(): TranscriptSection {
+    if (open) return open;
+    open = { kind: 'section', id: 'agent', label: 'Agent', status: 'running', body: '' };
+    state.nodes.push(open);
+    return open;
+  }
+
+  function apply(event: StreamEvent) {
+    switch (event.t) {
+      case 'section':
+        if (event.state === 'open') {
+          open = { kind: 'section', id: event.id, label: event.label, status: 'running', body: '' };
+          state.nodes.push(open);
+        } else if (open) {
+          open.status = event.status;
+          if (event.summary) open.body += `\n\n${escapeMarkers(event.summary)}`;
+          open = null;
+        }
+        return;
+      case 'delta':
+        ensureOpen().body += event.text;
+        return;
+      case 'gate':
+        if (open) { open.status = 'ok'; open = null; }
+        state.gates[event.id] = { payload: event.payload, status: 'open' };
+        state.nodes.push({ kind: 'gate', id: event.id });
+        state.runId = event.runId;
+        state.awaitingInput = true;
+        return;
+      case 'result':
+        if (open) { open.status = 'ok'; open = null; }
+        state.summary = event.summary;
+        if (event.code) state.code = event.code;
+        if (event.stl) state.stl = event.stl;
+        if (event.designContract) state.designContract = event.designContract;
+        // A resumed run that reaches a result really has finished, even if it
+        // paused earlier in this same stream.
+        state.awaitingInput = false;
+        return;
+      case 'error':
+        if (open) { open.status = 'error'; open = null; }
+        state.error = event.message;
+        state.awaitingInput = false;
+        return;
+    }
+  }
+
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let done = false;
   let buffer = '';
-  let finalCode = '';
-  let finalExplanation = '';
-  let finalStl = '';
-  // The approved spec + pins as the server last saw them. Without carrying
-  // this back, everything the human confirmed at the spec gate is discarded
-  // when the run ends and the next turn re-derives it from scratch.
-  let finalContract: DesignContract | undefined;
-  // A run that paused at a gate has not produced a final answer. The server
-  // closes the stream right after emitting awaiting_input, so without this the
-  // loop below would fall through and "finalize" an empty result - appending a
-  // bogus "Model generation completed." message underneath the open gate.
-  // Tracking it here fixes every caller at once; both call-site guards were
-  // broken (one read a stale useState closure, the other read an
-  // activeProgress that the awaiting_input branch never sets).
-  let awaitingInput = false;
-  const currentProgressList: AgentProgress[] = [];
+  let done = false;
 
   while (!done) {
     const { value, done: streamDone } = await reader.read();
     done = streamDone;
-    if (value) {
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n\n');
-      buffer = lines.pop() || '';
+    if (!value) continue;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split('\n\n');
+    buffer = frames.pop() || '';
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith('data: ')) {
-          const dataStr = trimmed.substring(6);
-          try {
-            const event = JSON.parse(dataStr);
-
-            const progressItem: AgentProgress = {
-              id: 'progress-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
-              type: event.type,
-              message: event.message,
-              timestamp: event.timestamp || Date.now(),
-              details: event.details,
-              gate: event.gate,
-              runId: event.runId,
-            };
-
-            currentProgressList.push(progressItem);
-            callbacks.onProgress(progressItem);
-
-            if (event.type === 'ready') {
-              if (event.code) finalCode = event.code;
-              if (event.stl) finalStl = event.stl;
-              if (event.designContract) finalContract = event.designContract;
-              finalExplanation = event.explanation || event.message;
-              // A resumed run that reaches 'ready' really has finished, even
-              // if it paused earlier in this same stream.
-              awaitingInput = false;
-            } else if (event.type === 'error') {
-              finalExplanation = event.explanation || event.message;
-              awaitingInput = false;
-            } else if (event.type === 'awaiting_input') {
-              awaitingInput = true;
-            }
-          } catch (parseErr) {
-            console.error('Error parsing SSE event:', parseErr);
-          }
-        }
+    for (const frame of frames) {
+      const trimmed = frame.trim();
+      if (!trimmed.startsWith('data: ')) continue;
+      try {
+        apply(JSON.parse(trimmed.slice(6)) as StreamEvent);
+        callbacks.onUpdate(state);
+      } catch (err) {
+        console.error('Error parsing SSE event:', err);
       }
     }
   }
 
-  // Paused at a gate: the human's decision continues the run, so there is
-  // nothing to finalize yet.
-  if (awaitingInput) return;
-
-  callbacks.onFinalize(finalCode, finalExplanation, finalStl, currentProgressList, finalContract);
-};
+  callbacks.onDone(state);
+}
