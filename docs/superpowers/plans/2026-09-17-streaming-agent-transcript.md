@@ -2070,7 +2070,11 @@ rm src/components/chat/gate-inline-ui.tsx src/components/chat/thinking-indicator
   declarations, their initial values, and every reset block that lists them.
 - In `src/lib/agent/graph.ts`: delete the `onProgress` parameter from
   `createCadAgent`, every remaining `onProgress?.()` call site, and the
-  `StreamEventPayload` interface.
+  `StreamEventPayload` interface. The signature becomes
+  `createCadAgent(modelName?: string)`.
+- Because that signature changed, update **both** callers written in Task 8:
+  in `src/app/api/chat/route.ts` and `src/app/api/chat/resume/route.ts`, change
+  `createCadAgent(undefined, model)` to `createCadAgent(model)`.
 
 - [ ] **Step 7: Verify and commit**
 
