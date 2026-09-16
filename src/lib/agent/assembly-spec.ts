@@ -53,6 +53,36 @@ export const GussetSpecSchema = z.object({
 });
 export type GussetSpec = z.infer<typeof GussetSpecSchema>;
 
+/**
+ * A hole the Architect prescribes as numbers, in the component's LOCAL frame,
+ * so that code can probe for it after the compile.
+ *
+ * Holes were the largest measurable blind spot in the pipeline: a bolt hole
+ * that was deleted, doubled in diameter or moved to the far end of the plate
+ * changes no bounding box, no volume the spec declares, no shell count and no
+ * overhang, so every numeric check passed a part with the wrong holes or none
+ * at all. Prose in `description` cannot be verified; these numbers can be.
+ *
+ * Only holes worth verifying belong here - the ones a fastener, shaft or
+ * dowel has to pass through. Decorative perforations and lattices do not.
+ */
+export const HoleSpecSchema = z.object({
+  /** Nominal diameter in mm - the drilled size, already including fit allowance. */
+  d: z.number(),
+  /** Axis the hole runs along in the component's local frame. */
+  axis: z.enum(['x', 'y', 'z']),
+  /**
+   * Centre of the hole's mouth on the face it enters, local mm: the point on
+   * the surface, not the centre of the bore.
+   */
+  at: Vec3,
+  /** Depth along `axis` from `at`. Omit for a hole that goes all the way through. */
+  depth: z.number().optional(),
+  /** What the hole is for, e.g. "M3 pass-through for the lid screw". */
+  note: z.string().optional(),
+});
+export type HoleSpec = z.infer<typeof HoleSpecSchema>;
+
 export const StressPointSchema = z.object({
   component: z.string().optional(),
   location: z.string(),
@@ -125,6 +155,12 @@ export const AssemblySpecSchema = z.object({
      * one-token edit.
      */
     positionNote: z.string().optional(),
+    /**
+     * Holes a fastener, shaft or dowel must pass through, as numbers in this
+     * component's local frame. Probed after every compile (see hole-audit.ts);
+     * a hole described only in `description` is not checked by anything.
+     */
+    holes: z.array(HoleSpecSchema).optional(),
     /** Engineering registry keys the drafter must fetch for this part. */
     useModules: z.array(z.string()).optional(),
     bedFace: BedFaceSchema.optional(),

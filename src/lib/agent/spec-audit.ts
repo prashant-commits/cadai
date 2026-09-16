@@ -23,6 +23,12 @@ export interface SpecViolation {
     | 'local_frame'
     /** A module's measured size disagrees with the spec's localExtents. */
     | 'extents'
+    /** The spec contradicts itself: declared envelope vs the one its placements imply. */
+    | 'coherence'
+    /** A component module is mirrored as a whole, so the part is the wrong hand. */
+    | 'handedness'
+    /** A hole the spec declared is missing, displaced or the wrong size. */
+    | 'feature'
     /** Emitted by the Design Inspector from rendered views. Always a warning. */
     | 'visual';
   field: string;
@@ -67,7 +73,7 @@ export function auditSpec(
       severity: 'error',
       message: validation.error
         ? `Compilation failed: ${validation.error}`
-        : 'Compilation failed or produced no printable geometry.',
+        : 'Compilation failed or produced no usable 3D geometry.',
     });
   }
 
@@ -167,12 +173,12 @@ export function auditSpec(
     }
   }
 
-  // Print posture. The Architect declared which face of a single part lies on
-  // the build plate; analyzeStl measures whether ANY flat face does. Only
-  // meaningful for a lone component: a placed assembly is compiled in
-  // assembly pose, where the lowest plane says nothing about how each part
-  // prints. Warning, not error - the human decides at the accept gate whether
-  // to re-orient, since a repair loop chasing orientation can wreck a good part.
+  // Resting posture. The Architect declared which face of a single part lies on
+  // z = 0; analyzeStl measures whether ANY flat face does. Only meaningful for a
+  // lone component: a placed assembly is compiled in assembly pose, where the
+  // lowest plane says nothing about an individual part. Warning, not error -
+  // the human decides at the accept gate, since a repair loop chasing
+  // orientation can wreck a good part.
   const solo = spec?.components?.length === 1 ? spec.components[0] : undefined;
   if (solo?.bedFace && modelInfo.isFlatPackable === false) {
     violations.push({
@@ -182,8 +188,8 @@ export function auditSpec(
       measured: `bottom area ${modelInfo.bottomAreaMm2 ?? 0}mm2`,
       severity: 'warning',
       message:
-        `The spec declares ${solo.bedFace} as the bed face, but the compiled part has no flat face resting on the build plate ` +
-        `(bottom area ${modelInfo.bottomAreaMm2 ?? 0}mm2). Re-orient the module so that face is planar on z=0.`,
+        `The spec declares ${solo.bedFace} as the resting face, but the compiled part has no flat face on z = 0 ` +
+        `(bottom area ${modelInfo.bottomAreaMm2 ?? 0}mm2). Author the module so that face is planar on z = 0.`,
     });
   }
 

@@ -26,6 +26,9 @@ import {
 import { measureModuleFrames, type ModuleFrame } from '../engine/module-frames';
 import { placementSummary, PlacementReport } from '../design/placement-report';
 import { auditPlacement } from './placement-audit';
+import { auditSpecCoherence } from './spec-coherence';
+import { auditModuleGuards } from '../design/module-guards';
+import { auditHoles } from './hole-audit';
 import { normalizeSpec } from './spec-normalize';
 import { checkInterference } from '../engine/assembly-verifier';
 import { getCheckpointer } from './checkpointer';
@@ -206,11 +209,8 @@ function contractLines(contract: DesignContract | null): string {
     for (const [name, pin] of pins) lines.push(`  ${name} = ${JSON.stringify(pin.value)};`);
   }
   const s = contract.standing ?? {};
-  const minWall = s.minWallMm ?? (s.nozzleMm ? s.nozzleMm * 4 : undefined);
-  if (minWall !== undefined) lines.push(`Minimum wall thickness: ${minWall}mm (every parameter named *wall* is audited against it).`);
-  if (s.buildVolumeMm) lines.push(`Build volume: ${s.buildVolumeMm.join(' x ')}mm.`);
-  if (s.material) lines.push(`Material: ${s.material}.`);
-  if (s.maxOverhangDeg !== undefined) lines.push(`Support-free overhang limit: ${s.maxOverhangDeg} degrees from vertical.`);
+  if (s.minWallMm !== undefined) lines.push(`Minimum wall thickness: ${s.minWallMm}mm (every parameter named *wall* is audited against it).`);
+  if (s.maxSizeMm) lines.push(`Maximum overall size: ${s.maxSizeMm.join(' x ')}mm.`);
   return lines.length ? `\nDesign Contract:\n${lines.join('\n')}\n` : '';
 }
 
@@ -263,9 +263,9 @@ const REPAIR_HINTS: Partial<Record<SpecViolation['kind'], string>> = {
   clearance: 'A declared clearance was not achieved. Adjust the mating dimensions, not the placement.',
   bbox: 'The measured extents disagree with the spec. Fix the arithmetic behind the offending axis (stacked heights, wall x 2 + cavity, position + size); do not delete features to shrink the box.',
   standing: 'A Design Contract rule was broken: restore the pinned assignment exactly, or raise the wall parameter to the minimum.',
-  buildplate: 'The part does not sit on the build plate as declared, or exceeds the printer. Re-orient it onto its bedFace or resize it.',
+  buildplate: 'The part does not rest on its declared bedFace, or exceeds the allowed overall size. Resize it or correct which face sits on z = 0.',
   floating: 'A component does not rest on the floor or on any other component. Fix its spec position or its module\'s local origin; do not change its shape.',
-  floor: 'The lowest point of the model is not at z = 0. Every part must sit on the floor or on another part; nothing may ever be below the build plate.',
+  floor: 'The lowest point of the model is not at z = 0. Every part must sit on the ground plane or on another part; nothing may ever be below z = 0.',
   extents: 'A module\'s measured size differs from the spec\'s localExtents. Resize the module; do not move it.',
 };
 
@@ -659,16 +659,19 @@ export function createCadAgent(
     // Two attempts is what let a real run surface an empty approval card.
     let spec: AssemblySpec | null = null;
     let lastError: string | null = null;
+    /** Set when a retry is for a spec that parsed but contradicted itself. */
+    let coherenceFeedback: SpecViolation[] | null = null;
     for (let attempt = 0; attempt < MAX_ARCHITECT_ATTEMPTS && !spec; attempt++) {
+      // A spec that failed on arithmetic needs the arithmetic pointed at, not
+      // the generic "emit valid JSON" nudge - it already emitted valid JSON.
+      const retryPrompt = coherenceFeedback
+        ? 'Your previous Assembly Spec was internally inconsistent:\n' +
+          coherenceFeedback.map((v) => `- ${v.message}`).join('\n') +
+          '\nRecompute the placement arithmetic and emit a spec whose boundingBox equals the extent of its ' +
+          'own components once each is rotated about its origin and moved to its position.'
+        : 'Your previous reply did not yield a valid Assembly Spec. Emit the structured spec now, with every dimension in millimetres and at most two decimal places.';
       const attemptMessages =
-        attempt === 0
-          ? messages
-          : [
-              ...messages,
-              new HumanMessage(
-                'Your previous reply did not yield a valid Assembly Spec. Emit the structured spec now, with every dimension in millimetres and at most two decimal places.'
-              ),
-            ];
+        attempt === 0 ? messages : [...messages, new HumanMessage(retryPrompt)];
       try {
         const raw = await architectModel.invoke(attemptMessages, config);
         // The model was given a JSON Schema, so what comes back is an untyped
@@ -677,7 +680,26 @@ export function createCadAgent(
         // and retry rather than flow onward half-formed.
         const parsed = AssemblySpecSchema.safeParse(raw);
         if (parsed.success) {
-          spec = normalizeSpec(parsed.data);
+          const candidate = normalizeSpec(parsed.data);
+          // Coherence is pure arithmetic over the spec's own numbers, so it can
+          // be answered here, before the Drafter is paid to implement a spec
+          // that already contradicts itself. Handing the contradiction back is
+          // strictly cheaper than discovering it after a draft and a compile,
+          // and the Architect is the only node that can say which number was
+          // wrong. On the last attempt it is accepted anyway: a spec that is
+          // merely inconsistent still beats no spec, and validateCode repeats
+          // the check so the violation is never lost.
+          const incoherent = auditSpecCoherence(candidate).filter((v) => v.severity === 'error');
+          if (incoherent.length > 0 && attempt < MAX_ARCHITECT_ATTEMPTS - 1) {
+            lastError = incoherent.map((v) => v.message).join(' ');
+            console.warn(
+              `architectNode: spec is self-inconsistent (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}):`,
+              lastError
+            );
+            coherenceFeedback = incoherent;
+            continue;
+          }
+          spec = candidate;
         } else {
           lastError = `Spec failed validation: ${parsed.error.issues
             .slice(0, 3)
@@ -875,6 +897,15 @@ ${contract}`;
 
     const specViolations = auditSpec(state.assemblySpec, modelInfo, validation, state.currentCode, state.designContract ?? undefined);
 
+    // Spec-internal coherence. Already reported at the gate, but a revised spec
+    // or a spec that skipped the gate has never been through it, and a repair
+    // prompt that never sees the contradiction cannot resolve it.
+    specViolations.push(...auditSpecCoherence(state.assemblySpec));
+
+    // Handedness: static, because a mirrored part measures identically to the
+    // one the spec asked for and no geometric check can separate them.
+    specViolations.push(...auditModuleGuards(state.currentCode, state.assemblySpec));
+
     // Placement was measured and composed before this compile (placeAssembly);
     // here it is only audited against the compiled model's bounding box.
     const placementReport = state.placementReport ?? null;
@@ -896,6 +927,12 @@ ${contract}`;
     if (validation.valid) {
       specViolations.push(
         ...(await checkAssemblyFit(state.currentCode, state.assemblySpec, framesFromReport(placementReport)))
+      );
+      // Declared holes, probed in each module's own local frame. Like the
+      // interference probe this needs a solid to ask questions of, so it only
+      // runs on a clean compile.
+      specViolations.push(
+        ...(await auditHoles(stripGeneratedAssembly(state.currentCode), state.assemblySpec, framesFromReport(placementReport)))
       );
     }
 
@@ -974,15 +1011,18 @@ ${contract}`;
       .slice(-2)
       .map((a) => {
         const m = a.measured;
-        const flatFace =
+        // Only the geometry the repair node can act on. Overhang and
+        // unsupported area used to ride along here and were pure noise: they
+        // describe a fabrication process this pipeline does not model, and
+        // handing them to a repair prompt invited the model to reshape a part
+        // that was merely mis-dimensioned. Bottom area stays because a solid
+        // that barely touches z = 0 is a placement fault, stated as geometry.
+        const resting =
           m?.bottomAreaMm2 !== undefined
-            ? `, bottom area ${m.bottomAreaMm2}mm2 (${m.isFlatPackable ? 'flat-packable' : 'NOT flat-packable: no flat face on the build plate'})`
+            ? `, bottom area ${m.bottomAreaMm2}mm2 (${m.isFlatPackable ? 'rests on a flat face at z = 0' : 'NO flat face on z = 0'})`
             : '';
-        const overhang = m?.overhang
-          ? `, max overhang ${m.overhang.maxOverhangDeg}deg from vertical (${m.overhang.unsupportedAreaMm2}mm2 unsupported past 45deg)`
-          : '';
         const measured = m
-          ? `Measured: ${m.dimensions.x} x ${m.dimensions.y} x ${m.dimensions.z} mm, volume ${m.volumeMm3}mm3, manifold=${m.isManifold ?? 'unknown'}, shells=${m.shellCount ?? 'unknown'}${flatFace}${overhang}`
+          ? `Measured: ${m.dimensions.x} x ${m.dimensions.y} x ${m.dimensions.z} mm, volume ${m.volumeMm3}mm3, manifold=${m.isManifold ?? 'unknown'}, shells=${m.shellCount ?? 'unknown'}${resting}`
           : 'Measured: no geometry produced';
         const errs = a.errors
           .slice(0, 5)
