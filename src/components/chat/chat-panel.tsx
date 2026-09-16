@@ -8,6 +8,7 @@ import { ThreadDrawer } from './thread-drawer';
 import { GateDock } from './gate-dock';
 import { readStream } from '@/lib/stream-reader';
 import { serializeTranscript } from '@/lib/agent/transcript';
+import { resumableGate, freezeStreamingMessages } from '@/lib/chat/rehydrate';
 import { compileOpenScad } from '@/lib/engine/openscad-bridge';
 import { parseStlToGeometry } from '@/lib/engine/geometry-utils';
 import { ChatMessage, GatePayload, GateDecision, GateRecord } from '@/types';
@@ -53,6 +54,30 @@ export function ChatPanel() {
   useEffect(() => {
     void initializeFromStorage();
   }, [initializeFromStorage]);
+
+  // Runs after storage has populated the store, and again on every thread
+  // switch: a gate left open in another thread must not stay docked here.
+  useEffect(() => {
+    if (!activeThreadId) return;
+    const thread = threads.find((t) => t.id === activeThreadId);
+    if (!thread) return;
+
+    for (const frozen of freezeStreamingMessages(thread.messages)) {
+      const original = thread.messages.find((m) => m.id === frozen.id);
+      if (original && original.status !== frozen.status) {
+        updateMessage(frozen.id, { status: frozen.status, content: frozen.content }, activeThreadId);
+      }
+    }
+
+    const open = resumableGate(thread.messages);
+    setPendingGate(open?.gate ?? null);
+    setPendingRunId(open?.runId ?? null);
+    setPendingMessageId(open?.messageId ?? null);
+    // `threads` is intentionally absent: this must react to the thread
+    // CHANGING, not to every message mutation during a live stream, which
+    // would re-dock a gate the user just answered.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeThreadId]);
 
   const activeThread = threads.find((t) => t.id === activeThreadId);
   const isCurrentThreadGenerating = isGenerating && generatingThreadId === activeThreadId;
