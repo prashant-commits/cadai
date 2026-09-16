@@ -36,7 +36,7 @@ describe('auditPlacement', () => {
     expect(v[0].field).toBe('leg');
     expect(v[0].message).toContain("'leg'");
     expect(v[0].message).toContain('30');
-    expect(v[0].message).toMatch(/below the build plate/);
+    expect(v[0].message).toMatch(/below the ground plane/);
   });
 
   it('warns about a module whose min corner is off the origin', () => {

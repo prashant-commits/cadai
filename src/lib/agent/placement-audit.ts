@@ -22,7 +22,7 @@ export function auditPlacement(
   const violations: SpecViolation[] = [];
   const round2 = (n: number) => Math.round(n * 100) / 100;
 
-  // Rule: nothing is ever below the build plate. Name each offending part when
+  // Rule: nothing is ever below the ground plane. Name each offending part when
   // the report knows them; fall back to the whole-model check otherwise.
   const below = (report?.components ?? []).filter((c) => c.measured && c.placedMin[2] < -FRAME_EPS);
   for (const c of below) {
@@ -35,7 +35,7 @@ export function auditPlacement(
       deltaMm: depth,
       severity: 'error',
       message:
-        `'${c.name}' extends ${depth} mm below the build plate (z = 0). Nothing may ever be below the plate: ` +
+        `'${c.name}' extends ${depth} mm below the ground plane (z = 0). Nothing may ever be below z = 0: ` +
         'raise its spec position or fix its module\'s local frame.',
     });
   }
@@ -51,8 +51,8 @@ export function auditPlacement(
       severity: 'error',
       message:
         z < 0
-          ? `The compiled model extends ${-z} mm below the build plate (z = 0). Nothing may ever be below the plate.`
-          : `The lowest point of the compiled model hovers ${z} mm above the build plate. The model must rest on z = 0.`,
+          ? `The compiled model extends ${-z} mm below the ground plane (z = 0). Nothing may ever be below z = 0.`
+          : `The lowest point of the compiled model hovers ${z} mm above z = 0. The model must rest on the ground plane.`,
     });
   }
 

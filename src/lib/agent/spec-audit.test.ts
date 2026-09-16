@@ -211,13 +211,13 @@ describe('auditSpec', () => {
 
   describe('design contract enforcement', () => {
     const contract: DesignContract = {
-      standing: { buildVolumeMm: [100, 100, 100], nozzleMm: 0.4 },
+      standing: { maxSizeMm: [100, 100, 100], minWallMm: 1.6 },
       pinnedParams: {
         'width': { value: 55, supersededValue: 40, pinnedAt: Date.now() }
       }
     };
 
-    it('emits buildplate violation when geometry exceeds standing build volume', () => {
+    it('emits a buildplate violation when geometry exceeds the maximum size', () => {
       const violations = auditSpec(spec, model({ dimensions: { x: 150, y: 40, z: 40 } }), validation(), 'width = 55;', contract);
       const bounds = errorsOf(violations).filter((x) => x.kind === 'buildplate');
       expect(bounds).toHaveLength(1);

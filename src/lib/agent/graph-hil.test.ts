@@ -437,7 +437,7 @@ describe('HIL gating (interrupt/resume)', () => {
     expect(repairPrompt).not.toContain('compilation or geometry error');
   });
 
-  it('hands the repair node the flat-face and overhang measurements, led by the dominant violation', async () => {
+  it('hands the repair node the geometric measurements, led by the dominant violation', async () => {
     const agent = createCadAgent(undefined, 'test-model');
     const config = { configurable: { thread_id: newRunKey(newThreadId()) } };
 
@@ -450,8 +450,12 @@ describe('HIL gating (interrupt/resume)', () => {
     const repairPrompt = contentsOf(2).join('\n');
     // Numbers analyzeStl always computed but the repair prompt never carried.
     expect(repairPrompt).toContain('bottom area');
-    expect(repairPrompt).toContain('flat-packable');
-    expect(repairPrompt).toContain('max overhang');
+    expect(repairPrompt).toContain('z = 0');
+    // Overhang and unsupported area are fabrication-process numbers this
+    // pipeline does not model; handing them to the repair node invited it to
+    // reshape parts that were only mis-dimensioned.
+    expect(repairPrompt).not.toContain('max overhang');
+    expect(repairPrompt).not.toContain('unsupported');
     // The semantic class is broad; the header names the one violation to fix.
     expect(repairPrompt).toContain('Lead with the [bbox] violation');
   });
@@ -474,7 +478,7 @@ describe('HIL gating (interrupt/resume)', () => {
       {
         messages: [new HumanMessage('a 40mm box')],
         designContract: {
-          standing: { nozzleMm: 0.4 },
+          standing: { minWallMm: 1.6 },
           pinnedParams: { wall_t: { value: 2.4, supersededValue: 2, pinnedAt: 1 } },
         },
       },
