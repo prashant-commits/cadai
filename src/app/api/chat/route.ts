@@ -1,10 +1,11 @@
 import { NextRequest } from 'next/server';
 import { HumanMessage, AIMessage } from '@langchain/core/messages';
-import { isInterrupted, INTERRUPT } from '@langchain/langgraph';
-import { createCadAgent, StreamEventPayload } from '@/lib/agent/graph';
+import { createCadAgent } from '@/lib/agent/graph';
+import { bridgeGraphStream } from '@/lib/agent/stream-bridge';
+import type { StreamEvent } from '@/lib/agent/stream-events';
 import { deleteRunCheckpoint, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/tracing/langfuse';
-import { DesignContract, GatePayload } from '@/types';
+import { DesignContract } from '@/types';
 import { DEFAULT_TEXT_MODEL } from '@/lib/agent/models';
 import { randomUUID } from 'crypto';
 
@@ -51,7 +52,7 @@ export async function POST(req: NextRequest) {
     const stream = new TransformStream();
     const writer = stream.writable.getWriter();
 
-    const sendEvent = async (event: StreamEventPayload) => {
+    const sendEvent = async (event: StreamEvent) => {
       try {
         const payload = `data: ${JSON.stringify(event)}\n\n`;
         await writer.write(encoder.encode(payload));
@@ -83,54 +84,34 @@ export async function POST(req: NextRequest) {
       });
 
       try {
-        const agent = createCadAgent(
-          (event) => {
-            sendEvent(event);
-          },
-          model
-        );
+        const agent = createCadAgent(undefined, model);
 
-        const result = await agent.invoke(
-          {
-            messages: lcMessages,
-            designContract: designContract ?? null,
-          },
+        let sawGate = false;
+        const stream = await agent.stream(
+          { messages: lcMessages, designContract: designContract ?? null },
           {
             configurable: { thread_id: checkpointKey },
+            streamMode: ['updates', 'messages', 'custom'],
             callbacks: langfuseHandler ? [langfuseHandler] : undefined,
           }
         );
 
-        // A paused run's own invoke() result carries the interrupt payload
-        // directly - no separate getState() call needed, and getState()
-        // requires the checkpointer to have already committed the pausing
-        // checkpoint, which is a race this avoids entirely.
-        if (isInterrupted(result)) {
-          await sendEvent({
-            type: 'awaiting_input',
-            message: 'Awaiting your review before continuing...',
-            gate: result[INTERRUPT][0].value as GatePayload,
-            // The client cannot resume without this: the checkpoint lives
-            // under threadId::runId, and only the server knows the runId.
-            runId,
-            timestamp: Date.now(),
-          });
-        } else {
-          // Ran to completion, so nothing can resume this checkpoint. Dropping
-          // it here is what keeps one-key-per-run from growing without bound.
-          await deleteRunCheckpoint(checkpointKey);
-        }
+        await bridgeGraphStream(stream, runId, (event) => {
+          if (event.t === 'gate') sawGate = true;
+          sendEvent(event);
+        });
+
+        // A run that paused is the only one whose checkpoint is still needed.
+        // Anything else - finished or failed - cannot be resumed, and dropping
+        // it here is what keeps one-key-per-run from growing without bound.
+        if (!sawGate) await deleteRunCheckpoint(checkpointKey);
       } catch (err: unknown) {
         const errorMessage = err instanceof Error ? err.message : String(err);
         // A run that threw is equally unresumable - don't strand its checkpoint.
         // Must not throw: getCheckpointer() used to re-throw here on Vercel
         // (read-only cwd), which skipped sendEvent and closed an empty stream.
         await deleteRunCheckpoint(checkpointKey);
-        await sendEvent({
-          type: 'error',
-          message: `Agent execution failed: ${errorMessage}`,
-          timestamp: Date.now(),
-        });
+        await sendEvent({ t: 'error', message: `Agent execution failed: ${errorMessage}` });
       } finally {
         // Langfuse batches spans and ships them on a timer. This IIFE is
         // detached from a request whose Response already returned, so nothing

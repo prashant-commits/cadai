@@ -1,9 +1,11 @@
 import { NextRequest } from 'next/server';
-import { createCadAgent, StreamEventPayload } from '@/lib/agent/graph';
+import { createCadAgent } from '@/lib/agent/graph';
+import { bridgeGraphStream } from '@/lib/agent/stream-bridge';
+import type { StreamEvent } from '@/lib/agent/stream-events';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/tracing/langfuse';
 import { deleteRunCheckpoint, getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
-import { Command, isInterrupted, INTERRUPT } from '@langchain/langgraph';
-import { GateDecision, GatePayload } from '@/types';
+import { Command } from '@langchain/langgraph';
+import { GateDecision } from '@/types';
 import { DEFAULT_TEXT_MODEL } from '@/lib/agent/models';
 
 export const runtime = 'nodejs';
@@ -42,7 +44,7 @@ export async function POST(req: NextRequest) {
     const stream = new TransformStream();
     const writer = stream.writable.getWriter();
 
-    const sendEvent = async (event: StreamEventPayload) => {
+    const sendEvent = async (event: StreamEvent) => {
       try {
         const payload = `data: ${JSON.stringify(event)}\n\n`;
         await writer.write(encoder.encode(payload));
@@ -58,7 +60,7 @@ export async function POST(req: NextRequest) {
     if (decision?.action === 'cancel') {
       await getCheckpointer().deleteThread(checkpointKey);
       return new Response(
-        `data: ${JSON.stringify({ type: 'ready', message: 'Cancelled.', explanation: 'Generation cancelled by user.', timestamp: Date.now() } satisfies StreamEventPayload)}\n\n`,
+        `data: ${JSON.stringify({ t: 'result', summary: 'Generation cancelled by user.' } satisfies StreamEvent)}\n\n`,
         {
           headers: {
             'Content-Type': 'text/event-stream; charset=utf-8',
@@ -83,45 +85,27 @@ export async function POST(req: NextRequest) {
       });
 
       try {
-        const agent = createCadAgent(
-          (event) => {
-            sendEvent(event);
-          },
-          model
-        );
+        const agent = createCadAgent(undefined, model);
 
-        // Resume using Command. A resumed run can hit ANOTHER gate (e.g. the
-        // accept gate, right after the spec gate) - isInterrupted() catches
-        // that exactly the same way the initial /api/chat POST does.
-        const result = await agent.invoke(
-          new Command({ resume: decision }),
-          {
-            configurable: { thread_id: checkpointKey },
-            callbacks: langfuseHandler ? [langfuseHandler] : undefined,
-          }
-        );
+        let sawGate = false;
+        const stream = await agent.stream(new Command({ resume: decision }), {
+          configurable: { thread_id: checkpointKey },
+          streamMode: ['updates', 'messages', 'custom'],
+          callbacks: langfuseHandler ? [langfuseHandler] : undefined,
+        });
 
-        if (isInterrupted(result)) {
-          await sendEvent({
-            type: 'awaiting_input',
-            message: 'Awaiting your review before continuing...',
-            gate: result[INTERRUPT][0].value as GatePayload,
-            // Same run, same checkpoint - echo the id so the client can resume
-            // again from this second gate.
-            runId,
-            timestamp: Date.now(),
-          });
-        } else {
-          await deleteRunCheckpoint(checkpointKey);
-        }
+        // A resumed run can hit ANOTHER gate - the accept gate right after the
+        // spec gate. The bridge surfaces that identically to the first one.
+        await bridgeGraphStream(stream, runId, (event) => {
+          if (event.t === 'gate') sawGate = true;
+          sendEvent(event);
+        });
+
+        if (!sawGate) await deleteRunCheckpoint(checkpointKey);
       } catch (err: unknown) {
         const errorMessage = err instanceof Error ? err.message : String(err);
         await deleteRunCheckpoint(checkpointKey);
-        await sendEvent({
-          type: 'error',
-          message: `Agent resume failed: ${errorMessage}`,
-          timestamp: Date.now(),
-        });
+        await sendEvent({ t: 'error', message: `Agent resume failed: ${errorMessage}` });
       } finally {
         // See the matching comment in ../route.ts: the detached IIFE outlives
         // the returned Response, so the span queue must be drained explicitly
