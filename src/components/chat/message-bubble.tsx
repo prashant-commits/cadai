@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm';
 import { ChatMessage } from '@/types';
 import { useAppStore } from '@/store/app-store';
 import { compileOpenScad } from '@/lib/engine/openscad-bridge';
-import { ThinkingIndicator } from './thinking-indicator';
+import { TranscriptView } from './transcript-view';
 import { Check, Copy, Play, User, Bot, Code } from 'lucide-react';
 
 interface MessageBubbleProps {
@@ -59,12 +59,8 @@ export function MessageBubble({ message }: MessageBubbleProps) {
       )}
 
       <div className={`max-w-[88%] space-y-2 ${isUser ? 'items-end' : 'items-start'}`}>
-        {/* Progress history (if any was saved with this message) */}
-        {message.progressUpdates && message.progressUpdates.length > 0 && (
-          <ThinkingIndicator
-            activeProgress={null}
-            history={message.progressUpdates}
-          />
+        {message.transcript && (
+          <TranscriptView transcript={message.transcript} gates={message.gates} />
         )}
 
         {/* Message body */}
@@ -134,6 +130,18 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             {message.content}
           </ReactMarkdown>
         </div>
+
+        {message.code && (
+          <details className="rounded-lg border border-slate-800 bg-slate-950 overflow-hidden">
+            <summary className="flex items-center gap-1.5 px-3 py-1.5 cursor-pointer select-none text-[11px] text-indigo-300 list-none">
+              <Code className="w-3.5 h-3.5" />
+              <span>View code</span>
+            </summary>
+            <pre className="p-3 text-xs font-mono text-cyan-300 overflow-x-auto max-h-60">
+              <code>{message.code}</code>
+            </pre>
+          </details>
+        )}
 
         <div className={`flex items-center gap-1 px-1 ${isUser ? 'justify-end' : 'justify-start'}`}>
           {isUser && copyMessageButton}
