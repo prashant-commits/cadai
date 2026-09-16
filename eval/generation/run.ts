@@ -3,8 +3,12 @@
  * auto-approved and automatic repair off, then reports first-draft quality.
  *
  *   npm run eval:generation -- --model deepseek-v4-flash --tag baseline
+ *   npm run eval:generation -- --research on --tag research   # + 2 model calls and 2-4 searches per prompt
  *   npm run eval:generation -- --seed-dataset          # once, creates the Langfuse dataset
  *   npm run eval:generation -- --no-langfuse --limit 2 # local only
+ *
+ * The auto-approve loop in runOne() covers the research gate too: resumed
+ * with no chosenApproachId, the gate binds the brief's recommendation.
  *
  * Results land in eval/results/<tag>-<model>-<timestamp>.json and, when
  * LANGFUSE_* keys are set, as a Langfuse experiment run on dataset
@@ -30,9 +34,9 @@ import { GenerationMetrics, metricsFromState, scoresFor, summarize } from './met
 
 const DATASET = 'cadai-generation';
 
-interface Args { model: string; tag: string; limit: number; only: string[]; langfuse: boolean; seed: boolean }
+interface Args { model: string; tag: string; limit: number; only: string[]; langfuse: boolean; seed: boolean; research: 'on' | 'off' }
 function parseArgs(argv: string[]): Args {
-  const a: Args = { model: 'deepseek-v4-flash', tag: 'run', limit: Infinity, only: [], langfuse: true, seed: false };
+  const a: Args = { model: 'deepseek-v4-flash', tag: 'run', limit: Infinity, only: [], langfuse: true, seed: false, research: 'off' };
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i];
     if (v === '--model') a.model = argv[++i];
@@ -41,6 +45,7 @@ function parseArgs(argv: string[]): Args {
     else if (v === '--only') a.only = argv[++i].split(',').map((s) => s.trim()).filter(Boolean);
     else if (v === '--no-langfuse') a.langfuse = false;
     else if (v === '--seed-dataset') a.seed = true;
+    else if (v === '--research') a.research = argv[++i] === 'on' ? 'on' : 'off';
   }
   return a;
 }
@@ -80,7 +85,7 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
   await getCheckpointer().deleteThread(key);
 
   const m = metricsFromState(item.id, args.model, state, Date.now() - t0);
-  console.log(`${item.id}: composed=${m.composed} floor=${m.floorOk} floating=${m.floatingCount} localFrame=${m.localFrameOk} errors=[${m.errorKinds.join(',')}] ${m.wallMs} ms`);
+  console.log(`${item.id}: composed=${m.composed} floor=${m.floorOk} floating=${m.floatingCount} localFrame=${m.localFrameOk} errors=[${m.errorKinds.join(',')}] research=${m.researchRan}${m.citedApproachChosen === null ? '' : ` cited=${m.citedApproachChosen}`} ${m.wallMs} ms`);
   // Written per prompt so a killed run keeps what it finished.
   fs.appendFileSync(jsonl, JSON.stringify(m) + '\n');
   return m;
@@ -103,6 +108,9 @@ async function seedDataset(): Promise<void> {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  // Opt-in for the eval: research spends Tavily quota as well as model calls.
+  // The graph reads this at run time, so setting it here is early enough.
+  process.env.CADAI_RESEARCH = args.research;
   const keysPresent = !!(process.env.LANGFUSE_PUBLIC_KEY && process.env.LANGFUSE_SECRET_KEY);
   const useLangfuse = args.langfuse && keysPresent;
   if (args.langfuse && !keysPresent) console.log('LANGFUSE_* keys not set: running locally only.');
@@ -115,7 +123,9 @@ async function main() {
 
   const items = (args.only.length ? prompts.filter((p) => args.only.includes(p.id)) : prompts).slice(0, args.limit);
   console.log(`Eval: ${items.length} prompt(s) on ${args.model}, tag "${args.tag}". ` +
-    `Expect roughly ${items.length * 2}-${items.length * 5} model calls (architect retries + drafter tool round). Starting in 5 s, Ctrl+C to abort.`);
+    `Expect roughly ${items.length * 2}-${items.length * 5} model calls (architect retries + drafter tool round)` +
+    (args.research === 'on' ? `, plus 2 model calls and 2-4 searches per prompt for research` : '') +
+    `. Starting in 5 s, Ctrl+C to abort.`);
   await new Promise((r) => setTimeout(r, 5000));
 
   fs.mkdirSync(RESULTS_DIR, { recursive: true });

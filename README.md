@@ -62,6 +62,17 @@ as a Langfuse experiment run on the `cadai-generation` dataset with one score pe
 (seed the dataset once with `--seed-dataset`). Each run costs roughly 2 to 5 model calls
 per prompt. Use `--limit 2 --no-langfuse` for a quick local smoke test.
 
+## Prior-art research (optional)
+
+Before the Architect commits to a construction, a research node can search the web for how
+the requested class of part is normally built and pause at a gate where you pick one of 2–3
+approaches; the Architect is then bound to it. Set `TAVILY_API_KEY` to enable it (Tavily's
+free tier is 1,000 requests/month; a design run uses 2–4). Without a key the pipeline runs
+exactly as before. `CADAI_RESEARCH=off` disables the node, and `CADAI_RESEARCH_STUB=1`
+serves canned results so the gate can be tried without a key or quota. The eval opts in
+with `--research on` and reports `researchRan` and `citedApproachChosen` alongside the
+other rates.
+
 ## Technologies Used
 - Next.js (App Router)
 - Model Context Protocol (MCP) SDK
