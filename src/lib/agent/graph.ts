@@ -1,8 +1,12 @@
 import { StateGraph, Annotation, END, START, interrupt } from '@langchain/langgraph';
+import type { LangGraphRunnableConfig } from '@langchain/langgraph';
 import { BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
 import type { RunnableConfig } from '@langchain/core/runnables';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
+import { createSpecRenderer } from './spec-markdown';
+import { composeRunSummary } from './run-summary';
+import type { StreamEvent } from './stream-events';
 import { CAD_AI_SYSTEM_PROMPT, ARCHITECT_PREAMBLE, DRAFTER_PREAMBLE, REPAIR_PREAMBLE, CRITIC_PREAMBLE, DRAFTER_PLACEMENT_CONTRACT } from './system-prompt';
 import { extractOpenScadCode } from './code-extractor';
 import { validateOpenScadCode } from './code-validator';
@@ -503,6 +507,21 @@ export const AgentState = Annotation.Root({
 export type AgentStateType = typeof AgentState.State;
 
 /**
+ * Writes one stream event on the graph's `custom` channel.
+ *
+ * langgraph's custom mode yields the bare payload with no node metadata, so the
+ * node id travels inside the payload - the client needs it to know which
+ * section a delta belongs to.
+ */
+function write(
+  config: LangGraphRunnableConfig | undefined,
+  node: string,
+  event: StreamEvent
+): void {
+  config?.writer?.({ ...event, node });
+}
+
+/**
  * Creates the CAD AI LangGraph agent graph with tool-calling capabilities.
  */
 export function createCadAgent(
@@ -576,7 +595,7 @@ export function createCadAgent(
 
   // Node: researchGate. Pauses with the brief; the human picks an approach.
   // Same interrupt()/Command({ resume }) channel as specGate.
-  async function researchGate(state: AgentStateType): Promise<Partial<AgentStateType>> {
+  async function researchGate(state: AgentStateType, config?: LangGraphRunnableConfig): Promise<Partial<AgentStateType>> {
     const brief = state.designBrief!; // routed here only when set
     const payload: GatePayload = { kind: 'research', brief };
     const decision = interrupt(payload) as GateDecision;
@@ -590,6 +609,18 @@ export function createCadAgent(
     // is known, else the recommendation, rather than rejecting the approval
     // (the same lenience specGate shows a malformed edited spec).
     const approach = chooseApproach(brief, decision.action === 'approve' ? decision.chosenApproachId : undefined);
+
+    // Sources belong in the transcript, not in the run summary: the summary
+    // becomes ChatMessage.content, which is replayed to the model on every
+    // later turn, and a citation list is for the human to read once.
+    const sourceLinks = approach.sources.map((src) => `[${src.title}](${src.url})`).join(', ');
+    write(config, 'researchGate', {
+      t: 'delta',
+      text: `Design approach: ${approach.name}${sourceLinks ? `
+
+Sources: ${sourceLinks}` : ''}
+`,
+    });
 
     // The choice goes into the contract, not state: state is per run, and
     // the contract is what respondToUser returns and the next turn re-POSTs.
@@ -673,7 +704,17 @@ export function createCadAgent(
       const attemptMessages =
         attempt === 0 ? messages : [...messages, new HumanMessage(retryPrompt)];
       try {
-        const raw = await architectModel.invoke(attemptMessages, config);
+        const renderer = createSpecRenderer();
+        let raw: unknown = null;
+        for await (const partial of await architectModel.stream(attemptMessages, config)) {
+          raw = partial;
+          const md = renderer.push(partial);
+          if (md) write(config, 'architectNode', { t: 'delta', text: md });
+        }
+        // Flush whatever settled last: the final key has no successor to
+        // settle it, so without this the tail of every spec is never shown.
+        const tail = renderer.push({ ...(raw as object), __done: true });
+        if (tail) write(config, 'architectNode', { t: 'delta', text: tail });
         // The model was given a JSON Schema, so what comes back is an untyped
         // object; zod is what turns it into an AssemblySpec, and a reply that
         // satisfied the decoder but not the contract must count as a failure
@@ -724,10 +765,13 @@ export function createCadAgent(
     }
 
     if (!spec) {
-      onProgress?.({
-        type: 'thinking',
-        message: `Mechanical Architect: no Assembly Spec was produced${lastError ? ` (${lastError.slice(0, 200)})` : ''}. Drafting without a dimensional contract.`,
-        timestamp: Date.now(),
+      // The raw provider error goes to the log ONLY. It was being sliced into
+      // the UI, which is how a provider's 400 payload ended up rendered as the
+      // agent's own output.
+      console.error('architectNode: no valid Assembly Spec after 3 attempts:', lastError);
+      write(config, 'architectNode', {
+        t: 'delta',
+        text: '\nNo valid Assembly Spec after 3 attempts. Drafting without a dimensional contract.\n',
       });
     }
 
@@ -1254,35 +1298,23 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
   }
 
   // Node 5: respondToUser
-  async function respondToUser(state: AgentStateType): Promise<Partial<AgentStateType>> {
-    const explanation = withApproachLine(state.explanation, state.designContract?.researchApproach);
+  async function respondToUser(state: AgentStateType, config?: LangGraphRunnableConfig): Promise<Partial<AgentStateType>> {
+    const summary = composeRunSummary({
+      spec: state.assemblySpec,
+      modelInfo: state.modelInfo,
+      violations: state.specViolations,
+      attempts: state.attemptCount,
+      isValid: state.isValid,
+      approach: state.designContract?.researchApproach,
+    });
 
-    if (state.isValid) {
-      onProgress?.({
-        type: 'ready',
-        message: 'Mechanical model compiled and verified successfully! 3D preview is ready.',
-        code: state.currentCode,
-        stl: state.stlContent || undefined,
-        explanation,
-        // specGate stamps the approved spec into designContract, but until now
-        // nothing sent it back, so the write had no reader and every later
-        // turn re-POSTed a spec-less contract and re-opened the gate.
-        designContract: state.designContract ?? undefined,
-        timestamp: Date.now(),
-      });
-    } else {
-      let errorMsg = state.validation?.error || 'Unknown compilation error.';
-      if (state.specViolations.length > 0) {
-        errorMsg = state.specViolations.map(v => `[${v.kind}] ${v.message}`).join(', ');
-      }
-      onProgress?.({
-        type: 'error',
-        message: `Unable to automatically resolve compilation error: ${errorMsg}`,
-        code: state.currentCode,
-        explanation,
-        timestamp: Date.now(),
-      });
-    }
+    write(config, 'respondToUser', {
+      t: 'result',
+      summary,
+      code: state.currentCode || undefined,
+      stl: state.stlContent || undefined,
+      designContract: state.designContract ?? undefined,
+    });
 
     return {};
   }

@@ -17,6 +17,10 @@ const invokeMock = vi.fn();
 vi.mock('@langchain/openai', () => {
   class FakeChatModel {
     invoke = invokeMock;
+    // architectNode reads its structured output with .stream() so the spec
+    // renders as it arrives. Delegating to the same mock keeps ONE queue and
+    // one call index, so every ordering assertion in this file still holds.
+    async *stream(...args: unknown[]) { yield await invokeMock(...args); }
     withStructuredOutput() { return this; }
     bindTools() { return this; }
   }

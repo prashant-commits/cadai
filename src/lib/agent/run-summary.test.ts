@@ -53,7 +53,7 @@ describe('composeRunSummary', () => {
   it('names the chosen research approach when one was picked', () => {
     const out = composeRunSummary({
       spec, modelInfo, violations: [], attempts: 1, isValid: true,
-      approach: { id: 'a1', name: 'Two-plate gusseted bracket' } as never,
+      approach: { partClass: 'bracket', chosenAt: 1, approach: { id: 'a1', name: 'Two-plate gusseted bracket' } } as never,
     });
     expect(out).toContain('Two-plate gusseted bracket');
   });

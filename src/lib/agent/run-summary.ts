@@ -26,7 +26,9 @@ export function composeRunSummary(input: RunSummaryInput): string {
   const { spec, modelInfo, violations, attempts, isValid, approach } = input;
   const lines: string[] = [];
 
-  if (approach?.name) lines.push(`Approach: ${approach.name}.`);
+  // ChosenApproach wraps the Approach ({ partClass, approach, chosenAt }), so
+  // the human-readable name is one level in.
+  if (approach?.approach?.name) lines.push(`Approach: ${approach.approach.name}.`);
 
   if (!isValid) {
     lines.push(

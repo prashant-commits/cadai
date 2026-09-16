@@ -11,6 +11,10 @@ const invokeMock = vi.fn();
 vi.mock('@langchain/openai', () => {
   class FakeChatModel {
     invoke = invokeMock;
+    // architectNode reads its structured output with .stream() so the spec
+    // renders as it arrives. Delegating to the same mock keeps ONE queue and
+    // one call index, so every ordering assertion in this file still holds.
+    async *stream(...args: unknown[]) { yield await invokeMock(...args); }
     withStructuredOutput() { return this; }
     bindTools() { return this; }
   }
@@ -254,22 +258,36 @@ describe('Architect binding', () => {
     expect(contentsOf(0).some((c) => c.includes('Name: Lidded shell'))).toBe(true);
   });
 
-  it('names the approach and its sources at the top of the final explanation', async () => {
-    const events: StreamEventPayload[] = [];
+  it('names the approach in the summary and its sources in the transcript', async () => {
     invokeMock
       .mockResolvedValueOnce(plan)
       .mockResolvedValueOnce(briefReply)
       .mockResolvedValueOnce(baseSpec())
       .mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
-    const agent = createCadAgent((e) => events.push(e), 'test-model');
+    const agent = createCadAgent(undefined, 'test-model');
     const config = newConfig();
-    await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
-    await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
 
-    const ready = events.find((e) => e.type === 'ready');
-    expect(ready?.explanation?.startsWith('Design approach: Plate and gusset')).toBe(true);
-    expect(ready?.explanation).toContain(`[FDM brackets](${STUB_HITS[0].url})`);
-    expect(ready?.explanation).toContain('Assembly Spec: test_box');
-    expect(ready?.designContract?.researchApproach?.approach.id).toBe('a1');
+    // Sources are a citation list for the human, so they belong in the
+    // streamed transcript. The summary stays compact because it is the only
+    // field replayed to the model on the next turn.
+    const custom: Array<Record<string, any>> = [];
+    const collect = async (input: any) => {
+      for await (const [mode, payload] of await agent.stream(input, {
+        ...config,
+        streamMode: ['custom'],
+      })) {
+        if (mode === 'custom') custom.push(payload as Record<string, any>);
+      }
+    };
+    await collect({ messages: [new HumanMessage('a 40mm box')] });
+    await collect(new Command({ resume: { action: 'approve' } }));
+
+    const markdown = custom.filter((c) => c.t === 'delta').map((c) => c.text).join('');
+    expect(markdown).toContain('Design approach: Plate and gusset');
+    expect(markdown).toContain(`[FDM brackets](${STUB_HITS[0].url})`);
+
+    const result = custom.find((c) => c.t === 'result');
+    expect(result?.summary).toContain('Plate and gusset');
+    expect(result?.designContract?.researchApproach?.approach.id).toBe('a1');
   });
 });

@@ -688,7 +688,7 @@ describe('composeRunSummary', () => {
   it('names the chosen research approach when one was picked', () => {
     const out = composeRunSummary({
       spec, modelInfo, violations: [], attempts: 1, isValid: true,
-      approach: { id: 'a1', name: 'Two-plate gusseted bracket' } as never,
+      approach: { partClass: 'bracket', chosenAt: 1, approach: { id: 'a1', name: 'Two-plate gusseted bracket' } } as never,
     });
     expect(out).toContain('Two-plate gusseted bracket');
   });
@@ -732,7 +732,9 @@ export function composeRunSummary(input: RunSummaryInput): string {
   const { spec, modelInfo, violations, attempts, isValid, approach } = input;
   const lines: string[] = [];
 
-  if (approach?.name) lines.push(`Approach: ${approach.name}.`);
+  // ChosenApproach wraps the Approach ({ partClass, approach, chosenAt }), so
+  // the human-readable name is one level in.
+  if (approach?.approach?.name) lines.push(`Approach: ${approach.approach.name}.`);
 
   if (!isValid) {
     lines.push(
