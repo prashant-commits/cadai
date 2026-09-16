@@ -75,7 +75,13 @@ describe('runResearch', () => {
       constraints: '',
       provider: stubProvider(STUB_HITS),
       model,
-      onProgress: (e) => events.push(e.message),
+      // Progress now rides the graph's custom channel, so the test supplies a
+      // writer the same way langgraph does.
+      config: {
+        writer: (chunk: unknown) => {
+          events.push((chunk as { text?: string }).text ?? '');
+        },
+      },
     });
     expect(skipReason).toBeNull();
     expect(brief!.partClass).toBe('wall bracket');

@@ -1,5 +1,5 @@
 import { HumanMessage, SystemMessage, type BaseMessage } from '@langchain/core/messages';
-import type { RunnableConfig } from '@langchain/core/runnables';
+import type { LangGraphRunnableConfig } from '@langchain/langgraph';
 import type { z } from 'zod';
 import type { CadChatModel } from '../agent/model-provider';
 import { normalizeUrl, type SearchHit, type SearchProvider } from './search-provider';
@@ -71,16 +71,13 @@ export function dedupeHits(hits: SearchHit[]): SearchHit[] {
   return out;
 }
 
-type ProgressFn = (event: { type: 'thinking'; message: string; timestamp: number }) => void;
-
 export interface ResearchInput {
   request: string;
   /** contractLines()-style text, or '' when there is no contract. */
   constraints: string;
   provider: SearchProvider;
   model: CadChatModel;
-  onProgress?: ProgressFn;
-  config?: RunnableConfig;
+  config?: LangGraphRunnableConfig;
   timeoutMs?: number;
 }
 
@@ -101,7 +98,7 @@ async function structured<T>(
   name: string,
   schema: z.ZodType<T>,
   messages: BaseMessage[],
-  config: RunnableConfig | undefined,
+  config: LangGraphRunnableConfig | undefined,
   label: string
 ): Promise<T | null> {
   const bound = model.withStructuredOutput(jsonSchema, { name });
@@ -139,9 +136,14 @@ async function searchWithTimeout(provider: SearchProvider, query: string, timeou
 }
 
 export async function runResearch(input: ResearchInput): Promise<ResearchOutput> {
-  const { request, constraints, provider, model, onProgress, config } = input;
+  const { request, constraints, provider, model, config } = input;
   const timeoutMs = input.timeoutMs ?? SEARCH_TIMEOUT_MS;
-  const say = (message: string) => onProgress?.({ type: 'thinking', message, timestamp: Date.now() });
+  // Research spends real time on web search and two model calls. These lines
+  // are the only thing standing between the user and a silent gap, so they go
+  // on the graph's custom channel - the same one every other node writes to.
+  const say = (message: string) =>
+    config?.writer?.({ t: 'delta', text: `${message}
+`, node: 'researchNode' });
   const system = new SystemMessage(RESEARCHER_PREAMBLE);
 
   say('Design Researcher: planning prior-art searches...');
