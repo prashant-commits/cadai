@@ -29,8 +29,14 @@ import { auditPlacement } from './placement-audit';
 import { normalizeSpec } from './spec-normalize';
 import { checkInterference } from '../engine/assembly-verifier';
 import { getCheckpointer } from './checkpointer';
-import type { DesignBrief } from '../research/design-brief';
-import type { ResearchSkipReason } from '../research/research-node';
+import { resolveSearchProvider } from '../research/search-provider';
+import { chooseApproach, type DesignBrief } from '../research/design-brief';
+import {
+  runResearch,
+  preResearchSkipReason,
+  RESEARCH_SKIP_MESSAGES,
+  type ResearchSkipReason,
+} from '../research/research-node';
 
 const MAX_SPEC_REVISIONS = 2;
 const MAX_ACCEPT_REVISIONS = 2;
@@ -506,6 +512,84 @@ export function createCadAgent(
   
   // Drafter uses engineering lookup tools
   const drafterModel = model.bindTools([getFunctionalCadModuleTool]);
+
+  // Node 0: researchNode. Runs once per thread, before the Architect, and
+  // every failure degrades to the Architect running exactly as it did before.
+  async function researchNode(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
+    // Cleared on every path, as architectNode does: a decision left over from
+    // an earlier turn's gate must not reach the Architect as fresh feedback.
+    const cleared = { gateAction: null, gateFeedback: null } as const;
+
+    const provider = resolveSearchProvider();
+    const pre = preResearchSkipReason({
+      enabled: process.env.CADAI_RESEARCH !== 'off',
+      provider,
+      alreadyChosen: !!state.designContract?.researchApproach,
+    });
+    if (pre) {
+      onProgress?.({
+        type: 'thinking',
+        message:
+          pre === 'already_researched'
+            ? 'Design Researcher: using the approach chosen earlier in this thread.'
+            : `Design Researcher: skipped (${RESEARCH_SKIP_MESSAGES[pre]}).`,
+        timestamp: Date.now(),
+      });
+      return { ...cleared, researchSkipReason: pre };
+    }
+
+    const { brief, skipReason } = await runResearch({
+      request: firstHumanText(state.messages),
+      constraints: contractLines(state.designContract),
+      provider: provider!,
+      model,
+      onProgress,
+      config,
+    });
+    if (!brief) {
+      onProgress?.({
+        type: 'thinking',
+        message: `Design Researcher: skipped (${RESEARCH_SKIP_MESSAGES[skipReason!]}). Proceeding without prior art.`,
+        timestamp: Date.now(),
+      });
+      return { ...cleared, researchSkipReason: skipReason };
+    }
+    onProgress?.({
+      type: 'thinking',
+      message: `Design Researcher: found ${brief.approaches.length} approaches for ${brief.partClass}; awaiting your choice.`,
+      timestamp: Date.now(),
+    });
+    return { ...cleared, designBrief: brief, researchSkipReason: null };
+  }
+
+  // Node: researchGate. Pauses with the brief; the human picks an approach.
+  // Same interrupt()/Command({ resume }) channel as specGate.
+  async function researchGate(state: AgentStateType): Promise<Partial<AgentStateType>> {
+    const brief = state.designBrief!; // routed here only when set
+    const payload: GatePayload = { kind: 'research', brief };
+    const decision = interrupt(payload) as GateDecision;
+
+    if (decision.action === 'cancel') {
+      return { gateAction: 'cancel' };
+    }
+
+    // No revise here: a thread gets one research pass. Anything else,
+    // including a stray 'revise', approves - the named approach when the id
+    // is known, else the recommendation, rather than rejecting the approval
+    // (the same lenience specGate shows a malformed edited spec).
+    const approach = chooseApproach(brief, decision.action === 'approve' ? decision.chosenApproachId : undefined);
+
+    // The choice goes into the contract, not state: state is per run, and
+    // the contract is what respondToUser returns and the next turn re-POSTs.
+    const baseContract: DesignContract = state.designContract ?? { standing: {}, pinnedParams: {} };
+    return {
+      gateAction: 'approve',
+      designContract: {
+        ...baseContract,
+        researchApproach: { partClass: brief.partClass, approach, chosenAt: Date.now() },
+      },
+    };
+  }
 
   // Node 1: architectNode
   async function architectNode(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
@@ -1321,8 +1405,22 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     return 'respondToUser';
   }
 
+  // Conditional Edge: route from researchNode
+  function checkResearchRoute(state: AgentStateType) {
+    if (state.designBrief && !state.researchSkipReason) return 'researchGate';
+    return 'architectNode';
+  }
+
+  // Conditional Edge: route from researchGate
+  function checkResearchGateRoute(state: AgentStateType) {
+    if (state.gateAction === 'cancel') return 'respondToUser';
+    return 'architectNode';
+  }
+
   // Build the graph
   const workflow = new StateGraph(AgentState)
+    .addNode('researchNode', researchNode)
+    .addNode('researchGate', researchGate)
     .addNode('architectNode', architectNode)
     .addNode('specGate', specGate)
     .addNode('drafterNode', drafterNode)
@@ -1331,7 +1429,15 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     .addNode('visualCritic', visualCritic)
     .addNode('acceptGate', acceptGate)
     .addNode('respondToUser', respondToUser)
-    .addEdge(START, 'architectNode')
+    .addEdge(START, 'researchNode')
+    .addConditionalEdges('researchNode', checkResearchRoute, {
+      researchGate: 'researchGate',
+      architectNode: 'architectNode'
+    })
+    .addConditionalEdges('researchGate', checkResearchGateRoute, {
+      architectNode: 'architectNode',
+      respondToUser: 'respondToUser'
+    })
     .addConditionalEdges('architectNode', checkSpecRoute, {
       specGate: 'specGate',
       drafterNode: 'drafterNode'
@@ -1359,7 +1465,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     })
     .addEdge('respondToUser', END);
 
-  // interrupt() calls inside specGate/acceptGate are what actually pause the
+  // interrupt() calls inside researchGate/specGate/acceptGate are what actually pause the
   // graph and carry data across the boundary; a checkpointer is required for
   // that pause to survive past this single invoke() call, which is exactly
   // what durably holding a run open across an HTTP request needs.
