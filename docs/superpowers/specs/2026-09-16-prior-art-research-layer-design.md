@@ -37,7 +37,7 @@ New directory `src/lib/research/`, mirroring how `src/lib/design/` holds determi
 | `research-prompts.ts` | `RESEARCHER_PREAMBLE`, the query-plan prompt and the brief-synthesis prompt. Kept out of `system-prompt.ts` so the Architect and Drafter prompts do not grow. |
 | `research-node.ts` | `runResearch({ prompt, contract, feedback, provider, model, onProgress })` returning `{ brief, queries, skipReason }`. Pure with respect to graph state so it is testable without LangGraph. |
 
-`graph.ts` gains the `researchNode` and `researchGate` node functions, two routing functions, three state fields, and the Architect binding block. `gate-policy.ts` is unchanged.
+`graph.ts` gains the `researchNode` and `researchGate` node functions, two routing functions, four state fields, and the Architect binding block. `gate-policy.ts` is unchanged.
 
 ## Data
 
