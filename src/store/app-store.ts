@@ -16,9 +16,9 @@ import { applyContract } from '@/lib/design/contract';
 import { parseParams } from '@/lib/design/parse-params';
 import { setParamValue } from '@/lib/design/write-params';
 import { compileOpenScad } from '@/lib/engine/openscad-bridge';
+import { DEFAULT_TEXT_MODEL } from '@/lib/agent/models';
 
 interface AppState {
-  apiKey: string;
   selectedModel: string;
   threads: ChatThread[];
   activeThreadId: string;
@@ -57,7 +57,6 @@ interface AppState {
   renameThread: (threadId: string, title: string) => void;
 
   // Settings & State Actions
-  setApiKey: (key: string) => void;
   setSelectedModel: (model: string) => void;
   addMessage: (message: ChatMessage, threadId?: string) => void;
   updateMessage: (id: string, partial: Partial<ChatMessage>, threadId?: string) => void;
@@ -90,8 +89,7 @@ interface AppState {
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
-  apiKey: '',
-  selectedModel: 'deepseek-v4-flash',
+  selectedModel: DEFAULT_TEXT_MODEL,
   threads: [],
   activeThreadId: '',
 
@@ -242,7 +240,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (renamed) void upsertThread(renamed);
   },
 
-  setApiKey: (key) => set({ apiKey: key }),
   setSelectedModel: (model) => set({ selectedModel: model }),
 
   addMessage: (message, threadId) => {

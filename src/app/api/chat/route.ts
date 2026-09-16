@@ -5,6 +5,7 @@ import { createCadAgent, StreamEventPayload } from '@/lib/agent/graph';
 import { deleteRunCheckpoint, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/tracing/langfuse';
 import { DesignContract, GatePayload } from '@/types';
+import { DEFAULT_TEXT_MODEL } from '@/lib/agent/models';
 import { randomUUID } from 'crypto';
 
 export const runtime = 'nodejs';
@@ -75,9 +76,9 @@ export async function POST(req: NextRequest) {
       // throw outside the try.
       const langfuseHandler = getLangfuseCallbackHandler({
         sessionId: threadId,
-        tags: ['cadai', model || 'gemini-3.6-flash'],
+        tags: ['cadai', model || DEFAULT_TEXT_MODEL],
         metadata: {
-          model: model || 'gemini-3.6-flash',
+          model: model || DEFAULT_TEXT_MODEL,
         },
       });
 

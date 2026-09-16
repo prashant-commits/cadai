@@ -33,7 +33,6 @@ export function ChatPanel() {
     addProgressUpdate,
     clearProgress,
     progressHistory,
-    apiKey,
     selectedModel,
     threads,
     activeThreadId,
@@ -158,7 +157,6 @@ export function ChatPanel() {
             content: m.content,
             image: m.image,
           })),
-          apiKey: apiKey || undefined,
           model: selectedModel,
           threadId: targetThreadId,
           designContract: targetThreadObj?.designContract ?? null,
@@ -256,7 +254,7 @@ export function ChatPanel() {
         {
           id: assistantMsgId,
           role: 'assistant',
-          content: `❌ **CAD AI Error**: ${errorMessage}\n\nPlease check your Google Gemini API key or try refining your prompt.`,
+          content: `❌ **CAD AI Error**: ${errorMessage}\n\nTry refining your prompt, or check that the server has a valid EXPLABS_API_KEY.`,
           timestamp: Date.now(),
         },
         targetThreadId
@@ -308,7 +306,6 @@ export function ChatPanel() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          apiKey: apiKey || undefined,
           model: selectedModel,
           threadId: targetThreadId,
           runId: targetRunId,

@@ -4,6 +4,7 @@ import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/trac
 import { deleteRunCheckpoint, getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { Command, isInterrupted, INTERRUPT } from '@langchain/langgraph';
 import { GateDecision, GatePayload } from '@/types';
+import { DEFAULT_TEXT_MODEL } from '@/lib/agent/models';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -75,9 +76,9 @@ export async function POST(req: NextRequest) {
       // throw outside the try.
       const langfuseHandler = getLangfuseCallbackHandler({
         sessionId: threadId,
-        tags: ['cadai', model || 'gemini-3.6-flash', 'resume'],
+        tags: ['cadai', model || DEFAULT_TEXT_MODEL, 'resume'],
         metadata: {
-          model: model || 'gemini-3.6-flash',
+          model: model || DEFAULT_TEXT_MODEL,
         },
       });
 
