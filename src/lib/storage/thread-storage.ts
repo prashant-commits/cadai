@@ -1,5 +1,6 @@
 import { IDBPDatabase, IDBPTransaction, openDB } from 'idb';
 import { ChatMessage, ChatThread } from '@/types';
+import { DEFAULT_TEXT_MODEL, isGatewayModel } from '@/lib/agent/models';
 import {
   ACTIVE_THREAD_META_KEY,
   CadaiDB,
@@ -42,6 +43,18 @@ difference() {
 }
 `;
 
+/**
+ * Rewrites a persisted model slug we no longer serve.
+ *
+ * Threads saved before the Google lane was removed carry slugs like
+ * 'gemini-3.6-flash'. Left alone they reach getChatModel on the next send and
+ * fail, so every existing thread would break on open. Anything absent, empty or
+ * outside the current catalogue loads on the default instead.
+ */
+export function coerceModelSlug(slug: string | undefined): string {
+  return isGatewayModel(slug) ? (slug as string) : DEFAULT_TEXT_MODEL;
+}
+
 export function createInitialThread(): ChatThread {
   const initialId = 'thread-' + Date.now();
   return {
@@ -49,7 +62,7 @@ export function createInitialThread(): ChatThread {
     title: 'Demo Rounded Box',
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    selectedModel: 'gemini-3.6-flash',
+    selectedModel: DEFAULT_TEXT_MODEL,
     code: DEFAULT_OPENSCAD_CODE,
     messages: [
       {
@@ -190,6 +203,8 @@ async function assembleThread(
     ...row,
     // Every loaded thread carries a contract, as the old loader guaranteed.
     designContract: row.designContract || { standing: {}, pinnedParams: {} },
+    // ...and a slug the gateway still serves.
+    selectedModel: coerceModelSlug(row.selectedModel),
     messages,
   };
 }
