@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { AssemblySpec } from '../lib/agent/assembly-spec';
 import { SpecViolation } from '../lib/agent/spec-audit';
+import type { ChosenApproach, DesignBrief } from '../lib/research/design-brief';
 
 export type AgentStepType = 'thinking' | 'generating' | 'validating' | 'fixing' | 'ready' | 'error' | 'awaiting_input';
 
@@ -41,6 +42,13 @@ export interface DesignContract {
   spec?: AssemblySpec;                // approved intent
   specApprovedAt?: number;
   pinnedParams: Record<string, PinnedParam>;
+  /**
+   * The prior-art approach chosen at the research gate. Graph state is per
+   * run, so this is how the choice reaches every later turn: the gate stamps
+   * it, respondToUser returns the contract on `ready`, the client merges it
+   * and re-POSTs it. Research is skipped while it is present.
+   */
+  researchApproach?: ChosenApproach;
 }
 
 export interface ContractDiff {
@@ -65,6 +73,11 @@ export type GatePayload =
       code: string;
       stl?: string;
       revisionCount: number;
+    }
+  | {
+      // No revisionCount: a thread gets exactly one research pass.
+      kind: 'research';
+      brief: DesignBrief;
     };
 
 // What the client sends back to resume a paused graph run.
@@ -79,6 +92,11 @@ export interface GateDecision {
    * was Revise, which threw the whole spec away and re-rolled the architect.
    */
   answers?: Record<string, string>;
+  /**
+   * The approach picked at the research gate; approve only. Absent or
+   * unknown falls back to the brief's recommendation rather than rejecting.
+   */
+  chosenApproachId?: string;
 }
 
 export interface AgentProgress {

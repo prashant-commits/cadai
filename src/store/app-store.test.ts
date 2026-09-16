@@ -208,6 +208,33 @@ describe('useAppStore thread scoping & progress isolation', () => {
       expect(activeThread?.designContract?.pinnedParams['w'].value).toBe(99); // Pin updated to 99
       expect(activeThread?.designContract?.pinnedParams['w'].supersededValue).toBe(10); // supersededValue unchanged
     });
+
+    it('setThreadContract keeps the research approach the server returned, alongside the spec', async () => {
+      const store = useAppStore.getState();
+      const approach = {
+        id: 'a1',
+        name: 'Plate and gusset',
+        construction: 'A back plate with an arm and a gusset.',
+        strengths: ['stiff'],
+        weaknesses: ['bulky'],
+        sources: [{ title: 'FDM brackets', url: 'https://example.com/fdm-brackets' }],
+        grounding: 'cited' as const,
+      };
+      store.setThreadContract(
+        {
+          standing: {},
+          pinnedParams: {},
+          specApprovedAt: 123,
+          researchApproach: { partClass: 'wall bracket', approach, chosenAt: 456 },
+        },
+        'thread-2'
+      );
+      await flushWrites();
+      const t2 = useAppStore.getState().threads.find((t) => t.id === 'thread-2');
+      expect(t2?.designContract?.researchApproach?.approach.name).toBe('Plate and gusset');
+      // Client-owned pins survive the merge exactly as before.
+      expect(t2?.designContract?.pinnedParams['w'].value).toBe(20);
+    });
   });
 
   describe('IndexedDB persistence', () => {

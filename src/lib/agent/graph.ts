@@ -29,6 +29,8 @@ import { auditPlacement } from './placement-audit';
 import { normalizeSpec } from './spec-normalize';
 import { checkInterference } from '../engine/assembly-verifier';
 import { getCheckpointer } from './checkpointer';
+import type { DesignBrief } from '../research/design-brief';
+import type { ResearchSkipReason } from '../research/research-node';
 
 const MAX_SPEC_REVISIONS = 2;
 const MAX_ACCEPT_REVISIONS = 2;
@@ -465,6 +467,18 @@ export const AgentState = Annotation.Root({
   semanticFailures: Annotation<number>({
     reducer: (_, y) => y,
     default: () => 0,
+  }),
+  // Research runs once, before the Architect. The brief is per run; the
+  // CHOICE is not state at all - it lives in designContract.researchApproach
+  // so it survives to the next turn (see specGate for the same pattern).
+  designBrief: Annotation<DesignBrief | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  // null means research ran; a reason means the Architect ran as before.
+  researchSkipReason: Annotation<ResearchSkipReason | null>({
+    reducer: (_, y) => y,
+    default: () => null,
   }),
 });
 

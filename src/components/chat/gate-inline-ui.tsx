@@ -40,7 +40,7 @@ export function GateInlineUI({ gate, onResume }: GateInlineUIProps) {
       <div className="max-w-[88%] w-full bg-slate-900 border border-slate-700 rounded-xl overflow-hidden shadow-md">
       <div className="px-3 py-2 bg-indigo-900/30 border-b border-slate-700 flex items-center justify-between">
         <span className="text-xs font-semibold text-indigo-300">{title}</span>
-        {gate && gate.revisionCount > 0 && (
+        {gate && 'revisionCount' in gate && gate.revisionCount > 0 && (
           <span className="text-[10px] text-slate-500">Revision {gate.revisionCount}</span>
         )}
       </div>
@@ -203,7 +203,7 @@ export function GateInlineUI({ gate, onResume }: GateInlineUIProps) {
               </>
             )}
           </>
-        ) : (
+        ) : gate.kind === 'accept' ? (
           <>
             <div className="space-y-2">
               <div className="flex items-center gap-1.5 text-cyan-400">
@@ -246,7 +246,7 @@ export function GateInlineUI({ gate, onResume }: GateInlineUIProps) {
               </>
             )}
           </>
-        )}
+        ) : null}
       </div>
 
       <div className="p-3 bg-slate-950 border-t border-slate-800 space-y-2">
