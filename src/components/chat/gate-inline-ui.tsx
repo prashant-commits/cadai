@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Target, SlidersHorizontal, Check, X, RefreshCw, Ruler, ShieldAlert, Box, ClipboardCheck } from 'lucide-react';
 import { GateDecision, GatePayload } from '@/types';
 
@@ -14,6 +14,13 @@ export function GateInlineUI({ gate, onResume }: GateInlineUIProps) {
   // suggestion back as a confirmed fact rather than leaving it ambiguous.
   const [answers, setAnswers] = useState<Record<string, string>>({});
 
+  // The radio selection at the research gate. Reset whenever a new gate
+  // arrives so a choice made on one brief cannot carry over to another.
+  const [chosenId, setChosenId] = useState<string | null>(null);
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => setChosenId(null), [gate]);
+  const isResearch = gate?.kind === 'research';
+
   const answerFor = (q: { id: string; suggestedAnswer?: string }) =>
     answers[q.id] ?? q.suggestedAnswer ?? '';
 
@@ -27,7 +34,10 @@ export function GateInlineUI({ gate, onResume }: GateInlineUIProps) {
     return Object.keys(out).length ? out : undefined;
   };
 
-  const title = gate?.kind === 'accept' ? 'Review Compiled Model' : 'Approval Required';
+  const title =
+    gate?.kind === 'research' ? 'Choose a Design Approach'
+    : gate?.kind === 'accept' ? 'Review Compiled Model'
+    : 'Approval Required';
 
   return (
     // Laid out like an assistant turn: avatar gutter on the left, card capped
@@ -203,6 +213,76 @@ export function GateInlineUI({ gate, onResume }: GateInlineUIProps) {
               </>
             )}
           </>
+        ) : gate.kind === 'research' ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5 text-cyan-400">
+              <Target className="w-3.5 h-3.5" />
+              <h4 className="text-[11px] font-semibold uppercase tracking-wider">Prior art: {gate.brief.partClass}</h4>
+            </div>
+            <p className="text-[10px] text-slate-500">Searched: {gate.brief.searchQueries.join(' · ')}</p>
+            <div role="radiogroup" aria-label="Design approach" className="space-y-2">
+              {gate.brief.approaches.map((a) => {
+                const selected = (chosenId ?? gate.brief.recommendedId) === a.id;
+                return (
+                  <label
+                    key={a.id}
+                    className={`block rounded-lg border p-2 cursor-pointer transition-colors ${
+                      selected ? 'border-emerald-500/60 bg-emerald-900/10' : 'border-slate-700 bg-slate-950/40 hover:border-slate-600'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input
+                        type="radio"
+                        name="approach"
+                        value={a.id}
+                        checked={selected}
+                        onChange={() => setChosenId(a.id)}
+                        className="accent-emerald-500"
+                      />
+                      <span className="text-xs font-semibold text-slate-100">{a.name}</span>
+                      {/* Grounding is a label the human weighs, never a filter:
+                          a recalled approach is shown, just marked as unsourced. */}
+                      <span
+                        className={`px-1 py-0.5 rounded text-[10px] font-mono ${
+                          a.grounding === 'cited' ? 'bg-emerald-900/40 text-emerald-200' : 'bg-slate-800 text-slate-400'
+                        }`}
+                      >
+                        {a.grounding}
+                      </span>
+                      {a.id === gate.brief.recommendedId && (
+                        <span className="text-[10px] text-indigo-300">recommended</span>
+                      )}
+                    </div>
+                    <p className="mt-1 text-xs text-slate-300">{a.construction}</p>
+                    <div className="mt-1 grid grid-cols-2 gap-2 text-[11px]">
+                      <ul className="list-disc list-inside text-emerald-200/80">
+                        {a.strengths.map((s, i) => <li key={i}>{s}</li>)}
+                      </ul>
+                      <ul className="list-disc list-inside text-amber-200/80">
+                        {a.weaknesses.map((s, i) => <li key={i}>{s}</li>)}
+                      </ul>
+                    </div>
+                    {a.sources.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-2">
+                        {a.sources.map((s) => (
+                          <a
+                            key={s.url}
+                            href={s.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-[10px] text-cyan-300 hover:underline"
+                          >
+                            {s.title} ↗
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </label>
+                );
+              })}
+            </div>
+          </div>
         ) : gate.kind === 'accept' ? (
           <>
             <div className="space-y-2">
@@ -250,12 +330,15 @@ export function GateInlineUI({ gate, onResume }: GateInlineUIProps) {
       </div>
 
       <div className="p-3 bg-slate-950 border-t border-slate-800 space-y-2">
-        <textarea
-          value={comment}
-          onChange={(e) => setComment(e.target.value)}
-          placeholder="Add comments or request changes (optional)..."
-          className="w-full h-16 bg-slate-900 border border-slate-700 rounded p-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 resize-none"
-        />
+        {/* One research pass per thread: no comment box and no Revise here. */}
+        {!isResearch && (
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            placeholder="Add comments or request changes (optional)..."
+            className="w-full h-16 bg-slate-900 border border-slate-700 rounded p-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 resize-none"
+          />
+        )}
         <div className="flex items-center justify-end gap-2">
           <button
             onClick={() => onResume({ action: 'cancel' })}
@@ -263,24 +346,27 @@ export function GateInlineUI({ gate, onResume }: GateInlineUIProps) {
           >
             <X className="w-3.5 h-3.5" /> Cancel
           </button>
-          <button
-            onClick={() => onResume({ action: 'revise', comment, answers: collectedAnswers() })}
-            className="flex items-center gap-1 px-3 py-1.5 rounded bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 text-xs transition-colors"
-          >
-            <RefreshCw className="w-3.5 h-3.5" /> Revise
-          </button>
+          {!isResearch && (
+            <button
+              onClick={() => onResume({ action: 'revise', comment, answers: collectedAnswers() })}
+              className="flex items-center gap-1 px-3 py-1.5 rounded bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 text-xs transition-colors"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Revise
+            </button>
+          )}
           <button
             onClick={() =>
               onResume({
                 action: 'approve',
-                comment: comment || undefined,
+                comment: isResearch ? undefined : comment || undefined,
                 answers: collectedAnswers(),
                 spec: gate?.kind === 'spec' ? gate.spec ?? undefined : undefined,
+                chosenApproachId: gate?.kind === 'research' ? chosenId ?? gate.brief.recommendedId : undefined,
               })
             }
             className="flex items-center gap-1 px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow transition-colors"
           >
-            <Check className="w-3.5 h-3.5" /> Approve
+            <Check className="w-3.5 h-3.5" /> {isResearch ? 'Use this approach' : 'Approve'}
           </button>
         </div>
       </div>
