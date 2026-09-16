@@ -43,6 +43,7 @@ export const GATEWAY_MODELS = [
   { slug: 'deepseek-v4-pro', label: 'DeepSeek v4 Pro' },
   { slug: 'deepseek-v3.1', label: 'DeepSeek v3.1 — fastest' },
   { slug: 'deepseek-v3.2', label: 'DeepSeek v3.2' },
+  { slug: 'glm-5.3-flash', label: 'GLM-5.3 Flash' },
   { slug: DEFAULT_VISION_MODEL, label: 'GPT-5.6 Luna — multimodal' },
 ] as const;
 
