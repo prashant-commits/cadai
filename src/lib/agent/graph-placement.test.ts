@@ -5,19 +5,10 @@ import { getCheckpointer, runCheckpointKey } from './checkpointer';
 
 const invokeMock = vi.fn();
 
-vi.mock('@langchain/google-genai', () => {
-  class FakeChatModel {
-    invoke = invokeMock;
-    withStructuredOutput() { return this; }
-    bindTools() { return this; }
-  }
-  return { ChatGoogleGenerativeAI: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
-});
-
-// The agent now picks its provider by model slug: gemini-* goes to Google, every
-// other slug to the Experiential Labs gateway over the OpenAI wire format. Both
-// lanes are faked so these suites keep exercising whichever one the default
-// selects, instead of silently making real calls when the default changes.
+// Every node talks to the Experiential Labs gateway over the OpenAI wire
+// format, so faking ChatOpenAI is enough to keep these suites off the network.
+// Arrow functions have no [[Construct]] slot, so `new ChatOpenAI(...)` needs a
+// real constructible mock, not vi.fn(() => ...).
 vi.mock('@langchain/openai', () => {
   class FakeChatModel {
     invoke = invokeMock;
@@ -104,7 +95,7 @@ describe('deterministic assembly placement', () => {
       invokeMock.mockResolvedValueOnce(draft('module base_plate() { cube([40,40,5); }'));
       invokeMock.mockResolvedValue(draft(MODULES_ONLY));
 
-      const agent = createCadAgent('k', undefined, 'm');
+      const agent = createCadAgent(undefined, 'm');
       const config = { configurable: { thread_id: newKey() } };
       const result = await runApproved(agent, config, 'a 40mm bracket');
 
@@ -121,7 +112,7 @@ describe('deterministic assembly placement', () => {
     invokeMock.mockResolvedValueOnce(TWO_PART_SPEC);
     invokeMock.mockResolvedValueOnce(draft(MODULES_ONLY));
 
-    const agent = createCadAgent('k', undefined, 'm');
+    const agent = createCadAgent(undefined, 'm');
     const config = { configurable: { thread_id: newKey() } };
     await runApproved(agent, config, 'a 40mm bracket');
 
@@ -150,7 +141,7 @@ describe('deterministic assembly placement', () => {
     // Both parts land at the origin, so the bbox audit fails and a repair runs.
     invokeMock.mockResolvedValue(draft(MODULES_ONLY));
 
-    const agent = createCadAgent('k', undefined, 'm');
+    const agent = createCadAgent(undefined, 'm');
     await runApproved(agent, { configurable: { thread_id: newKey() } }, 'a 40mm bracket');
 
     const drafterSystem = String((invokeMock.mock.calls[1][0] as any[])[0].content);
@@ -163,7 +154,7 @@ describe('deterministic assembly placement', () => {
     invokeMock.mockResolvedValueOnce(TWO_PART_SPEC);
     invokeMock.mockResolvedValueOnce(draft(authored));
 
-    const agent = createCadAgent('k', undefined, 'm');
+    const agent = createCadAgent(undefined, 'm');
     const config = { configurable: { thread_id: newKey() } };
     await runApproved(agent, config, 'a 40mm bracket');
 
@@ -183,7 +174,7 @@ module upright() { translate([-2.5, 0, -30]) cube([5, 40, 30]); }
     invokeMock.mockResolvedValueOnce(TWO_PART_SPEC);
     invokeMock.mockResolvedValueOnce(draft(hanging));
 
-    const agent = createCadAgent('k', undefined, 'm');
+    const agent = createCadAgent(undefined, 'm');
     const config = { configurable: { thread_id: newKey() } };
     await runApproved(agent, config, 'a 40mm bracket');
 
@@ -209,7 +200,7 @@ module upright() { translate([-2.5, 0, -30]) cube([5, 40, 30]); }
     // A floating part is an error, so a repair runs; it returns the same modules.
     invokeMock.mockResolvedValue(draft(MODULES_ONLY));
 
-    const agent = createCadAgent('k', undefined, 'm');
+    const agent = createCadAgent(undefined, 'm');
     const config = { configurable: { thread_id: newKey() } };
     await runApproved(agent, config, 'a 40mm bracket');
 
@@ -231,7 +222,7 @@ module upright() { translate([-2.5, 0, -30]) cube([5, 40, 30]); }
     invokeMock.mockResolvedValueOnce(draft(MODULES_ONLY));
     invokeMock.mockResolvedValue(draft(MODULES_ONLY));
 
-    const agent = createCadAgent('k', undefined, 'm');
+    const agent = createCadAgent(undefined, 'm');
     const config = { configurable: { thread_id: newKey() } };
     await runApproved(agent, config, 'a 40mm bracket');
 
@@ -253,7 +244,7 @@ module upright() { translate([-2.5, 0, -30]) cube([5, 40, 30]); }
     });
     invokeMock.mockResolvedValueOnce(draft(MODULES_ONLY));
 
-    const agent = createCadAgent('k', undefined, 'm');
+    const agent = createCadAgent(undefined, 'm');
     const config = { configurable: { thread_id: newKey() } };
     await runApproved(agent, config, 'a 40mm bracket');
 
@@ -269,7 +260,7 @@ module upright() { translate([-2.5, 0, -30]) cube([5, 40, 30]); }
     // Repair: valid modules, again with no top-level placement.
     invokeMock.mockResolvedValueOnce(draft(MODULES_ONLY));
 
-    const agent = createCadAgent('k', undefined, 'm');
+    const agent = createCadAgent(undefined, 'm');
     const config = { configurable: { thread_id: newKey() } };
     await runApproved(agent, config, 'a 40mm bracket');
 
@@ -315,7 +306,7 @@ module peg() {
       // An interference violation is an error, so a repair is attempted.
       invokeMock.mockResolvedValue(draft(FIT_MODULES));
 
-      const agent = createCadAgent('k', undefined, 'm');
+      const agent = createCadAgent(undefined, 'm');
       const config = { configurable: { thread_id: newKey() } };
       await runApproved(agent, config, 'a 40mm stack');
 
@@ -335,7 +326,7 @@ module peg() {
       invokeMock.mockResolvedValueOnce(draft(FIT_MODULES));
       invokeMock.mockResolvedValue(draft(FIT_MODULES));
 
-      const agent = createCadAgent('k', undefined, 'm');
+      const agent = createCadAgent(undefined, 'm');
       const config = { configurable: { thread_id: newKey() } };
       await runApproved(agent, config, 'a 40mm stack');
 
@@ -354,7 +345,7 @@ module peg() {
     invokeMock.mockResolvedValueOnce(draft(MODULES_ONLY));
     invokeMock.mockResolvedValueOnce(draft(MODULES_ONLY));
 
-    const agent = createCadAgent('k', undefined, 'm');
+    const agent = createCadAgent(undefined, 'm');
     const config = { configurable: { thread_id: newKey() } };
     await runApproved(agent, config, 'a 40mm bracket');
 
@@ -385,7 +376,7 @@ translate([0, 0, 5]) upright();
       invokeMock.mockResolvedValueOnce(draft(authored));
       invokeMock.mockResolvedValue(draft(authored));
 
-      const agent = createCadAgent('k', undefined, 'm');
+      const agent = createCadAgent(undefined, 'm');
       const config = { configurable: { thread_id: newKey() } };
       await runApproved(agent, config, 'a 40mm bracket');
 
@@ -424,7 +415,7 @@ union() { base(); translate([10, 10, 15]) peg(); }
       invokeMock.mockResolvedValueOnce(draft(authored));
       invokeMock.mockResolvedValue(draft(authored));
 
-      const agent = createCadAgent('k', undefined, 'm');
+      const agent = createCadAgent(undefined, 'm');
       const config = { configurable: { thread_id: newKey() } };
       await runApproved(agent, config, 'a 40mm stack');
 

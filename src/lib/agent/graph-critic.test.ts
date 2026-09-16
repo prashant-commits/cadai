@@ -5,19 +5,10 @@ import { getCheckpointer, runCheckpointKey } from './checkpointer';
 
 const invokeMock = vi.fn();
 
-vi.mock('@langchain/google-genai', () => {
-  class FakeChatModel {
-    invoke = invokeMock;
-    withStructuredOutput() { return this; }
-    bindTools() { return this; }
-  }
-  return { ChatGoogleGenerativeAI: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
-});
-
-// The agent now picks its provider by model slug: gemini-* goes to Google, every
-// other slug to the Experiential Labs gateway over the OpenAI wire format. Both
-// lanes are faked so these suites keep exercising whichever one the default
-// selects, instead of silently making real calls when the default changes.
+// Every node talks to the Experiential Labs gateway over the OpenAI wire
+// format, so faking ChatOpenAI is enough to keep these suites off the network.
+// Arrow functions have no [[Construct]] slot, so `new ChatOpenAI(...)` needs a
+// real constructible mock, not vi.fn(() => ...).
 vi.mock('@langchain/openai', () => {
   class FakeChatModel {
     invoke = invokeMock;
@@ -80,7 +71,7 @@ describe('visual critic', () => {
     queueCleanRun();
     invokeMock.mockResolvedValueOnce({ matchesIntent: true, findings: [] });
 
-    const agent = createCadAgent('k', undefined, 'm');
+    const agent = createCadAgent(undefined, 'm');
     await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, { configurable: { thread_id: newKey() } });
 
     // Call 2 is the critic.
@@ -110,7 +101,7 @@ describe('visual critic', () => {
       ],
     });
 
-    const agent = createCadAgent('k', undefined, 'm');
+    const agent = createCadAgent(undefined, 'm');
     const config = { configurable: { thread_id: newKey() } };
     const result = await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
 
@@ -134,7 +125,7 @@ describe('visual critic', () => {
     queueCleanRun();
     invokeMock.mockResolvedValueOnce({ matchesIntent: true, findings: [] });
 
-    const agent = createCadAgent('k', undefined, 'm');
+    const agent = createCadAgent(undefined, 'm');
     const config = { configurable: { thread_id: newKey() } };
     const result = await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
 
@@ -151,7 +142,7 @@ describe('visual critic', () => {
     invokeMock.mockResolvedValueOnce(baseSpec());
     invokeMock.mockResolvedValue(draftResponse('cube([40,40,40);'));
 
-    const agent = createCadAgent('k', undefined, 'm');
+    const agent = createCadAgent(undefined, 'm');
     const config = { configurable: { thread_id: newKey() } };
     await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
 
@@ -164,7 +155,7 @@ describe('visual critic', () => {
     queueCleanRun();
     invokeMock.mockRejectedValueOnce(new Error('vision endpoint exploded'));
 
-    const agent = createCadAgent('k', undefined, 'm');
+    const agent = createCadAgent(undefined, 'm');
     const config = { configurable: { thread_id: newKey() } };
     const result = await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
 
@@ -178,7 +169,7 @@ describe('visual critic', () => {
     process.env.CADAI_VISUAL_CRITIC = 'off';
     queueCleanRun();
 
-    const agent = createCadAgent('k', undefined, 'm');
+    const agent = createCadAgent(undefined, 'm');
     await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, { configurable: { thread_id: newKey() } });
 
     // Architect + drafter only - no third call was made.

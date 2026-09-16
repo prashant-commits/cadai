@@ -12,10 +12,9 @@ export const maxDuration = 300;
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { threadId, runId, apiKey, model, decision } = body as {
+    const { threadId, runId, model, decision } = body as {
       threadId: string;
       runId: string;
-      apiKey?: string;
       model?: string;
       decision: GateDecision;
     };
@@ -84,7 +83,6 @@ export async function POST(req: NextRequest) {
 
       try {
         const agent = createCadAgent(
-          apiKey,
           (event) => {
             sendEvent(event);
           },

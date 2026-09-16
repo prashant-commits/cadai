@@ -65,7 +65,6 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
   // "Physical Validator" is a frozen wasm compile, which nothing in-process
   // can interrupt - kill the run and re-run the rest with --only.
   const agent = createCadAgent(
-    undefined,
     (e) => console.log(`  ${new Date().toISOString().slice(11, 19)} [${e.type}] ${e.message.slice(0, 160)}`),
     args.model
   );

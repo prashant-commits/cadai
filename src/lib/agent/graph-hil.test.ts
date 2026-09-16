@@ -3,28 +3,17 @@ import { isInterrupted, INTERRUPT, Command } from '@langchain/langgraph';
 import { HumanMessage, AIMessage } from '@langchain/core/messages';
 import { getCheckpointer, runCheckpointKey } from './checkpointer';
 
-// createCadAgent talks to Gemini through @langchain/google-genai. Every
+// createCadAgent talks to the gateway through @langchain/openai. Every
 // invoke() call across architect/drafter/fix goes through the SAME mocked
 // instance (withStructuredOutput/bindTools both return `this`), so a test
 // queues canned responses in the exact order the graph is expected to call
 // them - matching the ordering asserted by each scenario below.
 const invokeMock = vi.fn();
 
-vi.mock('@langchain/google-genai', () => {
-  class FakeChatModel {
-    invoke = invokeMock;
-    withStructuredOutput() { return this; }
-    bindTools() { return this; }
-  }
-  // Arrow functions have no [[Construct]] slot, so `new ChatGoogleGenerativeAI(...)`
-  // inside getGeminiModel requires a real constructible mock, not vi.fn(() => ...).
-  return { ChatGoogleGenerativeAI: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
-});
-
-// The agent now picks its provider by model slug: gemini-* goes to Google, every
-// other slug to the Experiential Labs gateway over the OpenAI wire format. Both
-// lanes are faked so these suites keep exercising whichever one the default
-// selects, instead of silently making real calls when the default changes.
+// Every node talks to the Experiential Labs gateway over the OpenAI wire
+// format, so faking ChatOpenAI is enough to keep these suites off the network.
+// Arrow functions have no [[Construct]] slot, so `new ChatOpenAI(...)` needs a
+// real constructible mock, not vi.fn(() => ...).
 vi.mock('@langchain/openai', () => {
   class FakeChatModel {
     invoke = invokeMock;
@@ -119,7 +108,7 @@ describe('HIL gating (interrupt/resume)', () => {
       baseSpec({ assumptions: [{ field: 'wall_thickness', value: '2.4mm', rationale: 'default FDM wall' }] })
     );
 
-    const agent = createCadAgent('test-key', undefined, 'test-model');
+    const agent = createCadAgent(undefined, 'test-model');
     const threadId = newThreadId();
     const config = { configurable: { thread_id: threadId } };
 
@@ -152,7 +141,7 @@ describe('HIL gating (interrupt/resume)', () => {
   it('rejects a malformed edited spec and falls back to the last known-good one', async () => {
     invokeMock.mockResolvedValueOnce(baseSpec({ assumptions: [{ field: 'x', value: 'y', rationale: 'z' }] }));
 
-    const agent = createCadAgent('test-key', undefined, 'test-model');
+    const agent = createCadAgent(undefined, 'test-model');
     const threadId = newThreadId();
     const config = { configurable: { thread_id: threadId } };
 
@@ -174,7 +163,7 @@ describe('HIL gating (interrupt/resume)', () => {
     // First pass: gated by an assumption.
     invokeMock.mockResolvedValueOnce(baseSpec({ assumptions: [{ field: 'x', value: 'y', rationale: 'z' }] }));
 
-    const agent = createCadAgent('test-key', undefined, 'test-model');
+    const agent = createCadAgent(undefined, 'test-model');
     const threadId = newThreadId();
     const config = { configurable: { thread_id: threadId } };
 
@@ -211,7 +200,7 @@ describe('HIL gating (interrupt/resume)', () => {
   it('cancel at the spec gate stops the run and deletes the checkpoint', async () => {
     invokeMock.mockResolvedValueOnce(baseSpec({ assumptions: [{ field: 'x', value: 'y', rationale: 'z' }] }));
 
-    const agent = createCadAgent('test-key', undefined, 'test-model');
+    const agent = createCadAgent(undefined, 'test-model');
     const threadId = newThreadId();
     const config = { configurable: { thread_id: threadId } };
 
@@ -234,7 +223,7 @@ describe('HIL gating (interrupt/resume)', () => {
     // Repair produces valid code.
     invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
 
-    const agent = createCadAgent('test-key', undefined, 'test-model');
+    const agent = createCadAgent(undefined, 'test-model');
     const threadId = newThreadId();
     const config = { configurable: { thread_id: threadId } };
 
@@ -286,7 +275,7 @@ describe('HIL gating (interrupt/resume)', () => {
   // does, which is where state leaked.
   describe('turn isolation', () => {
     it('does not replay one turn of a chat thread into the next', async () => {
-      const agent = createCadAgent('test-key', undefined, 'test-model');
+      const agent = createCadAgent(undefined, 'test-model');
       const chatThreadId = newThreadId();
 
       // TURN 1: no assumptions and a dimension in the prompt, so no gate.
@@ -325,7 +314,7 @@ describe('HIL gating (interrupt/resume)', () => {
     });
 
     it('does not carry a gate decision from one turn into the next', async () => {
-      const agent = createCadAgent('test-key', undefined, 'test-model');
+      const agent = createCadAgent(undefined, 'test-model');
       const chatThreadId = newThreadId();
       const turn1 = { configurable: { thread_id: newRunKey(chatThreadId) } };
 
@@ -368,7 +357,7 @@ describe('HIL gating (interrupt/resume)', () => {
     });
 
     it('sends the drafter exactly one Assembly Spec after a revise loop', async () => {
-      const agent = createCadAgent('test-key', undefined, 'test-model');
+      const agent = createCadAgent(undefined, 'test-model');
       const config = { configurable: { thread_id: newRunKey(newThreadId()) } };
 
       // Architect pass 1: gates, and proposes a 40mm box.
@@ -399,7 +388,7 @@ describe('HIL gating (interrupt/resume)', () => {
   });
 
   it('gives a semantic failure its own repair pass after compile failures burned attempts', async () => {
-    const agent = createCadAgent('test-key', undefined, 'test-model');
+    const agent = createCadAgent(undefined, 'test-model');
     const config = { configurable: { thread_id: newRunKey(newThreadId()) } };
 
     // No gate: single component, no assumptions, dimension in the prompt.
@@ -431,7 +420,7 @@ describe('HIL gating (interrupt/resume)', () => {
   });
 
   it('names the failure class in the repair prompt instead of "compilation or geometry"', async () => {
-    const agent = createCadAgent('test-key', undefined, 'test-model');
+    const agent = createCadAgent(undefined, 'test-model');
     const config = { configurable: { thread_id: newRunKey(newThreadId()) } };
 
     invokeMock.mockResolvedValueOnce(baseSpec());
@@ -449,7 +438,7 @@ describe('HIL gating (interrupt/resume)', () => {
   });
 
   it('hands the repair node the flat-face and overhang measurements, led by the dominant violation', async () => {
-    const agent = createCadAgent('test-key', undefined, 'test-model');
+    const agent = createCadAgent(undefined, 'test-model');
     const config = { configurable: { thread_id: newRunKey(newThreadId()) } };
 
     invokeMock.mockResolvedValueOnce(baseSpec());
@@ -468,7 +457,7 @@ describe('HIL gating (interrupt/resume)', () => {
   });
 
   it('shows the drafter the stress points and design contract it is graded on', async () => {
-    const agent = createCadAgent('test-key', undefined, 'test-model');
+    const agent = createCadAgent(undefined, 'test-model');
     const config = { configurable: { thread_id: newRunKey(newThreadId()) } };
 
     invokeMock.mockResolvedValueOnce(
@@ -508,7 +497,7 @@ describe('HIL gating (interrupt/resume)', () => {
   });
 
   it('folds answered open questions into the spec as assumptions on approve', async () => {
-    const agent = createCadAgent('test-key', undefined, 'test-model');
+    const agent = createCadAgent(undefined, 'test-model');
     const config = { configurable: { thread_id: newRunKey(newThreadId()) } };
 
     invokeMock.mockResolvedValueOnce(
@@ -540,7 +529,7 @@ describe('HIL gating (interrupt/resume)', () => {
   });
 
   it('carries gate answers into the architect prompt on revise', async () => {
-    const agent = createCadAgent('test-key', undefined, 'test-model');
+    const agent = createCadAgent(undefined, 'test-model');
     const config = { configurable: { thread_id: newRunKey(newThreadId()) } };
 
     invokeMock.mockResolvedValueOnce(
@@ -568,7 +557,7 @@ describe('HIL gating (interrupt/resume)', () => {
     invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40);')); // broken
     invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40]);')); // repaired
 
-    const agent = createCadAgent('test-key', undefined, 'test-model');
+    const agent = createCadAgent(undefined, 'test-model');
     const threadId = newThreadId();
     const config = { configurable: { thread_id: threadId } };
 

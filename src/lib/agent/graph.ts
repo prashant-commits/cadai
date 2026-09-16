@@ -1,5 +1,4 @@
 import { StateGraph, Annotation, END, START, interrupt } from '@langchain/langgraph';
-import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
 import type { RunnableConfig } from '@langchain/core/runnables';
 import { DynamicStructuredTool } from '@langchain/core/tools';
@@ -472,25 +471,16 @@ export const AgentState = Annotation.Root({
 export type AgentStateType = typeof AgentState.State;
 
 /**
- * Retained as the Gemini-only entry point some callers still import. New code
- * should use getChatModel(), which also serves the gateway models.
- */
-export function getGeminiModel(apiKey?: string, modelName?: string) {
-  return getChatModel(apiKey, modelName || 'gemini-3.6-flash');
-}
-
-/**
  * Creates the CAD AI LangGraph agent graph with tool-calling capabilities.
  */
 export function createCadAgent(
-  apiKey?: string,
   onProgress?: (event: StreamEventPayload) => void,
   modelName?: string
 ) {
-  const model = getChatModel(apiKey, modelName);
+  const model = getChatModel(modelName);
   // Resolved separately: no DeepSeek text route accepts image input, so the
   // critic falls back to a multimodal slug instead of failing the whole run.
-  const visionModel = getVisionModel(apiKey, modelName);
+  const visionModel = getVisionModel(modelName);
   
   // Architect uses structured output. It is handed the BOUNDED JSON Schema, not
   // the zod object: an unbounded {"type":"number"} lets a constrained decoder
@@ -841,13 +831,13 @@ ${contract}`;
       compileFailures: !validation.valid ? state.compileFailures + 1 : state.compileFailures,
       semanticFailures:
         validation.valid && !isSemanticValid ? state.semanticFailures + 1 : state.semanticFailures,
-      // Never accumulate a SystemMessage into `messages`: Gemini's client
-      // rejects any request where a system-role message isn't at index 0
-      // (@langchain/google-genai/dist/utils/common.cjs), and every node
-      // prepends its own fresh SystemMessage ahead of this history. Frame
-      // the validation report as environment feedback instead - there's no
-      // tool_call_id to hang a ToolMessage off, so HumanMessage is the
-      // idiomatic accumulated-history role.
+      // Never accumulate a SystemMessage into `messages`: every node prepends
+      // its own fresh SystemMessage ahead of this history, so a second
+      // system-role message mid-history is at best redundant and at worst
+      // rejected outright - the Google client used to 400 on any system role
+      // past index 0. Frame the validation report as environment feedback
+      // instead - there's no tool_call_id to hang a ToolMessage off, so
+      // HumanMessage is the idiomatic accumulated-history role.
       messages: [new HumanMessage(`[Validation Report]\n${validationMsgStr}`)],
     };
   }
