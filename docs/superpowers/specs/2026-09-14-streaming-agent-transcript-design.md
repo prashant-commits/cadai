@@ -7,8 +7,8 @@ Design doc — 2026-09-14
 Three failures share one root cause: the client is handed raw model output and
 discrete progress pings, and is left to assemble a result from them.
 
-**Gemini's spec gate renders broken.** `architectNode` calls
-`withStructuredOutput(assemblySpecRequestSchema())`. On Gemini that decoder
+**A gate can open with nothing to approve.** `architectNode` calls
+`withStructuredOutput(assemblySpecRequestSchema())`. When that decoder
 degenerates — it emits a valid number then repeats digits until the token cap,
 producing unparseable JSON (measured 1/5 valid, `src/lib/agent/model-provider.ts`).
 After three failed attempts `spec` is `null`, and `shouldGateSpec` returns `true`
@@ -43,9 +43,9 @@ that stream and resume into the same message.
 
 ## Non-goals
 
-- Model routing is unchanged. Gemini stays selectable and stays unreliable on the
-  Assembly Spec schema; this design stops the failure from rendering badly, it
-  does not reroute around it.
+- Model routing. cadai is single-provider on the Experiential Labs gateway; the
+  Google lane has already been removed from `model-provider.ts`. This design
+  neither reintroduces it nor changes slug selection.
 - Spec editing at the gate. `GateDecision.spec` exists but the current UI only
   passes `gate.spec` through unchanged (`src/components/chat/gate-inline-ui.tsx:295`).
   That pass-through behaviour is preserved; no editor is added.
@@ -153,7 +153,8 @@ in both `/api/chat` and `/api/chat/resume`.
   `config.writer` (`LangGraphRunnableConfig.writer`, confirmed present at
   `node_modules/@langchain/langgraph/dist/graph/types.d.ts:56`).
 
-Of the eight nodes, only `drafterNode` and `fixCode` produce streamable prose.
+Of the ten nodes, only `drafterNode` and `fixCode` reliably produce streamable
+prose.
 `architectNode` and `visualCritic` go through `withStructuredOutput` and emit JSON
 fragments. `validateCode`, `specGate`, `acceptGate` and `respondToUser` make no
 LLM call at all. The `custom` channel is what gives the latter six a voice.
@@ -204,47 +205,47 @@ The plain prose lane (`model.stream()`, the drafter and repair path) streams
 normally: 43 chunks, first at 1.3 s.
 
 One guard remains mandatory: **emit a value only once its chunk shows it
-structurally settled**, and sanity-check numerics against a plausible millimetre
-range. Diffing partial objects means a half-decoded number can appear as a
-legitimate-looking value in an intermediate chunk.
+structurally settled**. Diffing partial objects means a half-decoded number can
+appear as a legitimate-looking value in an intermediate chunk, and a line that
+rewrites itself as the user reads it is worse than one that arrives late.
+
+A value that settles but is implausible — a dimension outside any sane millimetre
+range, the signature of a degenerate decode — is **rendered with a warning label,
+not dropped**. Silently discarding it would hide from the user that the model
+produced something wrong, which is exactly the failure mode where they most need
+to see it. The label is the mechanism; suppression is not.
 
 Raw parse errors go to `console.error` only. The progress line at
 `src/lib/agent/graph.ts:559` becomes
 `Mechanical Architect: no valid Assembly Spec after 3 attempts.` This matters
 more than it first appeared — see below.
 
-### The Gemini gate is not a decoder problem
+### Recorded: the multipleOf incompatibility
 
-The probe found the actual cause of the reported Gemini failure, and it is not
-degenerate decoding. `withStructuredOutput` against `gemini-3.6-flash` fails
-outright in 442 ms with HTTP 400:
+The probe also explained the original "Gemini gate produces outputs" report, and
+the cause was not degenerate decoding. `withStructuredOutput` against
+`gemini-3.6-flash` failed outright in 442 ms with HTTP 400:
 
 ```
 Unknown name "multipleOf" at 'generation_config.response_schema...'
 ```
 
-`boundNumbers` (`src/lib/agent/assembly-spec.ts:158`) stamps `multipleOf: 0.01`
-onto every `{"type": "number"}` node. Google's `response_schema` is an OpenAPI
-3.0 subset that has no `multipleOf`, so it rejects the request before generating
-a single token — on all three architect attempts, every time.
+`boundNumbers` (`src/lib/agent/assembly-spec.ts`) stamps `multipleOf: 0.01` onto
+every `{"type": "number"}` node. Google's `response_schema` is an OpenAPI 3.0
+subset with no `multipleOf`, so it rejected the request before generating a
+token — on every architect attempt. Bounding the schema, which took the gateway
+model from 6/10 to 8/10 valid, had broken the Google lane to 100% failure.
 
-So commit `10787f0` ("bound Assembly Spec JSON Schema for structured output"),
-which took DeepSeek from 6/10 to 8/10 valid, broke Gemini from partly-working to
-**100% failure**. The chain that follows is exactly the reported bug: every
-attempt 400s → `spec` is `null` → `shouldGateSpec` opens a gate anyway → the card
-renders empty, while `lastError.slice(0, 200)` dumps the head of a very large
-Google error payload into the progress feed. That is the "producing outputs" the
-user saw.
+**This is now moot as a bug.** cadai went single-provider on the Experiential
+Labs gateway and `main` has already removed the Google lane, so the failure is
+resolved by deletion rather than by a fix. It is recorded here for one reason:
+the same class of incompatibility will bite again if a second provider is ever
+added, because `boundNumbers` emits JSON Schema keywords that not every
+provider's constrained-decoding subset accepts.
 
-Two consequences for this design:
-
-1. The comment at `src/lib/agent/model-provider.ts:10-15` citing "1/5 valid on
-   gemini-3.6-flash" is **stale** — it predates the bounding change and now
-   understates the failure.
-2. The fix is small and separable from the streaming work: strip `multipleOf`
-   (and anything else outside Google's schema subset) when the target is the
-   Google lane, keeping the full bounded schema for the gateway. It should land
-   on its own rather than inside this redesign.
+What does still need fixing is the leak it exposed: `lastError.slice(0, 200)`
+prints the head of a provider error payload straight into the progress feed,
+whatever the provider.
 
 ### Gates
 
@@ -264,7 +265,7 @@ A gate pauses the graph mid-stream. The sequence:
    2 answers recorded` plus the comment.
 
 Because the rich read-only detail — bounding box, components, assumptions, stress
-points, edge treatments, measured geometry, violations — is now server-rendered
+points, measured geometry, violations — is now server-rendered
 markdown in the transcript, roughly 200 lines of read-only JSX in
 `GateInlineUI` disappear. What remains is a small `GateDock`: answers, comment,
 three buttons.
@@ -336,7 +337,7 @@ gate interrupted.
 
 - `parsePartialJson` → markdown composer: terminated-value-only emission, and
   the numeric sanity guard rejecting a degenerate decode. Table-driven over
-  recorded token sequences, including a captured Gemini digit-spam trace.
+  recorded token sequences, including a captured degenerate-decode trace.
 - Transcript section parser: round-trip, unclosed section, section containing a
   fenced code block, gate marker with no matching record.
 - Gate record reducer: open → approved / revised / denied, and the receipt
@@ -352,25 +353,20 @@ Vitest is already configured (`vitest.config.mts`, `npm test`).
 
 ## Risks
 
-**This document was written against a stale base.** The branch it lives on is
-roughly fifteen commits behind `main`, and at least two of those change things
-this design describes:
+**Rebased onto `main` on 2026-09-17**, so the file references here are current.
+Three shape changes from the base this was first written against are already
+folded in: edge treatments are gone from the spec and gate UI, `visualCritic` is
+off unless `CADAI_VISUAL_CRITIC=on`, and the graph now carries ten nodes with a
+**third gate kind** — `researchGate`, whose payload is `{ kind: 'research';
+brief: DesignBrief }` and which is on by default. Every mechanism here applies to
+it unchanged; it simply means the dock renders three gate kinds rather than two.
 
-- `e98b1a9 feat(agent): remove edge treatments from the spec, prompts and gate UI`
-  — every reference to edge treatments here (gate detail, server-rendered
-  markdown) is obsolete.
-- `e9efbed chore(agent): park automatic repair and the visual critic behind env
-  flags` — the "eight nodes, of which two stream prose" analysis needs redoing
-  against the current graph, and `visualCritic` may not be a live node at all.
-
-Main also added deterministic gussets, placement enforcement, spec
-normalisation, and a generation eval harness (`6f62418`), the last of which is
-probably a better home for some of the testing in this document. **Rebase before
-writing the implementation plan**, then re-check every file reference here.
+`main` also added a generation eval harness, which is likely a better home for
+some of the streaming assertions than the unit suites listed above.
 
 **Streaming is no longer a risk.** Both the langgraph questions (spike,
-2026-09-14) and the provider questions (probe, 2026-09-16) are settled, on the
-real production code path.
+2026-09-14) and the provider questions (probe, 2026-09-16) are settled against
+the real production code path.
 
 **Section markers are a parsing contract.** If the server ever writes a literal
 `<!--/s-->` inside content, the client's split breaks. The composer must escape
