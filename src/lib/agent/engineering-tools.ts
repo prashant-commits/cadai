@@ -20,20 +20,19 @@ export const ENGINEERING_MODULE_REGISTRY: Record<string, EngineeringModuleRecipe
     engineeringParameters: [
       'size: Metric screw nominal diameter (e.g., 2, 3, 4, 5, 6 mm)',
       'depth: Hole pass-through depth in mm',
-      'clearance: 3D print shrinkage compensation (+0.4mm on bore diameter)',
+      'clearance: added to the nominal bore diameter for a free fit (+0.4mm)',
       'counterbore_depth: Recess depth for socket head cap screws (SHCS)',
       'nut_trap_depth: Thickness of hex nut + 0.5mm clearance',
     ],
     designRules: [
-      'M3 clearance hole diameter is 3.4mm (compensates for 0.4mm nozzle hole shrinkage).',
+      'M3 clearance hole diameter is 3.4mm: the standard free-fit size for an M3 fastener.',
       'M3 counterbore diameter is 6.2mm with depth 3.2mm.',
       'M3 hex nut trap width across flats is 5.6mm (5.4mm nominal + 0.2mm clearance).',
       'M3 heat-set insert pocket: Top diameter 4.0mm, bottom 3.8mm, depth 5.5mm.',
-      'For horizontal holes, use a 45-degree teardrop or chamfered top to eliminate internal support.',
     ],
     codeTemplate: `// --- Parametric Fastener & Hardware Modules ---
 module bolt_clearance_hole(size = 3, depth = 10, counterbore = true, teardrop = false) {
-    // Exact hole dimensions with 3D print compensation
+    // Standard free-fit clearance dimensions
     hole_d = (size == 2) ? 2.4 :
              (size == 3) ? 3.4 :
              (size == 4) ? 4.5 :
@@ -77,7 +76,7 @@ module heat_set_insert_pocket(size = 3, depth = 5.5) {
     id: 'cantilever_snap_fit',
     name: 'Engineered Cantilever Snap-Fit Clip & Catch Slot',
     category: 'joinery',
-    description: 'Tapered snap-fit beam designed to keep maximum bending strain under 1.5% for PLA and 2.0% for PETG.',
+    description: 'Tapered snap-fit beam whose taper keeps peak bending strain low over its deflection.',
     engineeringParameters: [
       'length: Beam length (longer beams reduce peak strain)',
       'width: Beam width (determines retention force)',
@@ -88,9 +87,8 @@ module heat_set_insert_pocket(size = 3, depth = 5.5) {
       'retention_angle: Retention/locking angle (90 deg for permanent, 45-60 deg for separable)',
     ],
     designRules: [
-      'Always orient the part so the cantilever beam lies flat in the XY plane during printing for maximum tensile layer strength.',
       'Taper the beam from root to tip to distribute stress evenly along the beam.',
-      'Add a minimum 0.8mm fillet radius at the root of the cantilever to eliminate stress concentration.',
+      'Thicken the beam root rather than narrowing it: the root carries the peak bending stress.',
       'Provide 0.35mm to 0.40mm clearance around the catch slot.',
     ],
     codeTemplate: `// --- Parametric Cantilever Snap-Fit Clip & Catch ---
@@ -103,7 +101,7 @@ module snap_fit_cantilever(
     lead_angle = 30,
     retention_angle = 60
 ) {
-    // 2D profile extruded in width for clean printing
+    // 2D profile extruded across the beam width
     rotate([90, 0, 90])
     linear_extrude(height = width, center = true) {
         polygon(points = [
@@ -112,7 +110,7 @@ module snap_fit_cantilever(
             [length, (thickness_base - thickness_tip) + hook_depth],
             [length - (hook_depth / tan(retention_angle)), thickness_base - thickness_tip],
             [0, thickness_base],
-            [-0.5, thickness_base], // Root fillet blend
+            [-0.5, thickness_base], // Root blend, kept square
             [-0.5, 0]
         ]);
     }
@@ -171,7 +169,7 @@ module enclosure_perimeter_lip(outer_w, outer_l, wall_t = 2.4, lip_h = 1.8, clea
       'length_x: Length of horizontal support leg',
       'height_z: Height of vertical support leg',
       'thickness: Rib thickness (typically 60-80% of wall thickness to prevent sink marks)',
-      'chamfer: Optional 45-degree corner cutout for clearance',
+      'chamfer: Optional 45-degree cutout across the gusset hypotenuse, for clearance',
     ],
     designRules: [
       'Gusset thickness should be 2.0mm - 4.0mm to provide solid infill strength.',
@@ -200,11 +198,9 @@ module triangular_gusset(length_x = 20, height_z = 20, thickness = 3.0) {
       'base_w: Narrow neck width (e.g., 8mm)',
       'top_w: Wide flared width (e.g., 12mm)',
       'height: Joint thickness (e.g., 6mm)',
-      'clearance: Sliding clearance (0.35mm standard for FDM)',
+      'clearance: Sliding clearance between the male and female profiles (0.35mm standard)',
     ],
     designRules: [
-      'Print the slide axis horizontally if possible for low friction and maximum shear strength.',
-      'Add a 0.5mm lead-in chamfer at the entry of the socket for smooth sliding.',
     ],
     codeTemplate: `// --- Sliding Dovetail Joint ---
 module dovetail_pin(length = 25, base_w = 8, top_w = 12, height = 6) {
@@ -233,23 +229,21 @@ module dovetail_socket(length = 25, base_w = 8, top_w = 12, height = 6, clearanc
 
   print_in_place_hinge: {
     id: 'print_in_place_hinge',
-    name: 'Print-in-Place Revolving Hinge (Zero Assembly)',
+    name: 'Revolving Hinge (Zero Assembly)',
     category: 'motion_mechanism',
-    description: 'Functional revolving hinge with captured conical pins and calibrated 0.4mm air gaps, fully operational right off the build plate.',
+    description: 'Functional revolving hinge with captured conical pins and 0.4mm air gaps, generated already assembled and free to rotate.',
     engineeringParameters: [
       'length: Hinge total knuckle length',
       'outer_d: Knuckle outer diameter (e.g., 8-10mm)',
       'pin_d: Internal revolving pin diameter (e.g., 4mm)',
-      'clearance: Radial air gap (0.4mm recommended for FDM)',
+      'clearance: Radial air gap that keeps the knuckle free to turn (0.4mm recommended)',
       'leaf_w: Width of mounting hinge leaves',
       'leaf_t: Thickness of mounting hinge leaves',
     ],
     designRules: [
-      'Conical pin ends (45-degree taper) eliminate horizontal overhangs inside the pin cavity.',
       'Maintain 0.4mm air gap between the rotating knuckle and stationary outer leaves.',
-      'Print with knuckles oriented along the Z-axis (vertical) for perfectly circular pin clearance.',
     ],
-    codeTemplate: `// --- Print-in-Place Revolving Hinge ---
+    codeTemplate: `// --- Revolving Hinge (generated pre-assembled) ---
 module print_in_place_hinge(
     knuckle_l = 24,
     outer_d = 8,
@@ -309,7 +303,7 @@ module print_in_place_hinge(
       'depth: Extrusion cutout depth',
     ],
     designRules: [
-      'Maintain web wall thickness >= 1.2mm (at least 3 nozzle perimeters) for structural rigidity.',
+      'Maintain web wall thickness >= 1.2mm for structural rigidity.',
       'Use $fn = 6 with 30-degree rotation for true regular hexagons.',
     ],
     codeTemplate: `// --- Mathematical Honeycomb Lightweighting Grid ---
@@ -387,7 +381,7 @@ module polar_bolt_flange(count = 6, pcd = 40, screw_size = 3, center_bore = 15, 
     designRules: [
       'Maintain module pitch matching across mating gears (e.g., Module 1.0 or 1.5).',
       'Center distance between two gears = (Teeth1 + Teeth2) * Module / 2.',
-      'Add 0.2mm backlash clearance on tooth thickness for 3D printed gear meshes.',
+      'Add 0.2mm backlash clearance on tooth thickness so the teeth mesh freely.',
     ],
     codeTemplate: `// --- Parametric Involute Spur Gear ---
 module parametric_spur_gear(
@@ -441,8 +435,7 @@ module parametric_spur_gear(
       'depth: Insertion depth of the pin (e.g., 8mm)',
     ],
     designRules: [
-      'Male pin should have a 1.0mm 45-degree chamfer lead-in for easy assembly.',
-      'Maintain 0.25mm radial clearance for a comfortable slip fit in FDM.',
+      'Maintain 0.25mm radial clearance for a comfortable slip fit.',
     ],
     codeTemplate: `// --- Dowel Stacking Joint ---
 module dowel_stacking_pin(d = 7.0, h = 8.0) {

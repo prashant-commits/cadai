@@ -17,18 +17,27 @@ export interface ScadParam {
   line: number;                       // 1-indexed, for "reveal in code"
 }
 
-export interface StandingConstraints {          // hard physical bounds
-  buildVolumeMm?: [number, number, number];
-  nozzleMm?: number; layerHeightMm?: number;
-  material?: 'PLA' | 'PETG' | 'ABS' | 'ASA';
-  minWallMm?: number;                 // defaults to nozzleMm * 4
-  /**
-   * Steepest overhang printable without support, measured from vertical.
-   * 45 is the conventional FDM figure. Opt-in: analyzeStl always measures the
-   * overhang, but it is only asserted once you declare a limit - otherwise
-   * every model with a shallow chamfer would open the accept gate.
-   */
-  maxOverhangDeg?: number;
+/**
+ * Hard geometric bounds on what may be generated.
+ *
+ * These are modelling constraints, not fabrication settings. Nozzle diameter,
+ * layer height, material and a support-free overhang limit used to live here
+ * and fed straight into the Architect's and Drafter's prompts, where they
+ * pulled the models into 3D-printing reasoning nobody had asked for: they
+ * would size walls from a nozzle, re-orient parts to dodge an overhang, and
+ * otherwise alter the requested geometry to satisfy a process this pipeline
+ * does not model. Printability is a separate, opt-in analysis over a finished
+ * model; analyzeStl still measures overhang for it. It is not an input to
+ * generation.
+ *
+ * `minWallMm` survives because a minimum wall is a geometric floor the user
+ * can state directly, and it is audited against every parameter named *wall*.
+ */
+export interface StandingConstraints {
+  /** Overall size the assembly must fit inside, [x, y, z] mm. */
+  maxSizeMm?: [number, number, number];
+  /** Thinnest wall allowed anywhere, mm. Stated outright, derived from nothing. */
+  minWallMm?: number;
 }
 
 export interface PinnedParam {

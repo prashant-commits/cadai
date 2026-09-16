@@ -91,48 +91,40 @@ export function DesignPanel() {
             <div className="p-3 border-t border-slate-800 space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <label className="text-[11px] text-slate-500 font-sans">Build Volume (X Y Z mm)</label>
-                  <input 
-                    type="text" 
+                  <label className="text-[11px] text-slate-500 font-sans">Max Size (X Y Z mm)</label>
+                  <input
+                    type="text"
                     placeholder="250 250 250"
                     className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-300 font-mono focus:border-indigo-500 focus:outline-none"
-                    value={contract?.standing?.buildVolumeMm?.join(' ') || ''}
+                    value={contract?.standing?.maxSizeMm?.join(' ') || ''}
                     onChange={(e) => {
-                      const parts = e.target.value.split(' ').map(Number);
+                      const raw = e.target.value.trim();
+                      if (raw === '') {
+                        setStanding({ maxSizeMm: undefined });
+                        return;
+                      }
+                      const parts = raw.split(/\s+/).map(Number);
                       if (parts.length === 3 && !parts.some(isNaN)) {
-                        setStanding({ buildVolumeMm: parts as [number, number, number] });
+                        setStanding({ maxSizeMm: parts as [number, number, number] });
                       }
                     }}
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[11px] text-slate-500 font-sans">Material</label>
-                  <select 
-                    className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-300 focus:border-indigo-500 focus:outline-none"
-                    value={contract?.standing?.material || 'PLA'}
-                    onChange={(e) => setStanding({ material: e.target.value as any })}
-                  >
-                    <option value="PLA">PLA</option>
-                    <option value="PETG">PETG</option>
-                    <option value="ABS">ABS</option>
-                    <option value="ASA">ASA</option>
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[11px] text-slate-500 font-sans">Max overhang (deg)</label>
+                  <label className="text-[11px] text-slate-500 font-sans">Min wall (mm)</label>
                   <input
                     type="text"
-                    placeholder="45"
+                    placeholder="1.6"
                     className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-300 font-mono focus:border-indigo-500 focus:outline-none"
-                    value={contract?.standing?.maxOverhangDeg ?? ''}
+                    value={contract?.standing?.minWallMm ?? ''}
                     onChange={(e) => {
                       const raw = e.target.value.trim();
                       if (raw === '') {
-                        setStanding({ maxOverhangDeg: undefined });
+                        setStanding({ minWallMm: undefined });
                         return;
                       }
-                      const deg = Number(raw);
-                      if (!isNaN(deg) && deg > 0 && deg <= 90) setStanding({ maxOverhangDeg: deg });
+                      const mm = Number(raw);
+                      if (!isNaN(mm) && mm > 0) setStanding({ minWallMm: mm });
                     }}
                   />
                 </div>

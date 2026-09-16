@@ -2,6 +2,48 @@ import { describe, it, expect } from 'vitest';
 import { getFunctionalCadModuleTool, ENGINEERING_MODULE_REGISTRY } from './engineering-tools';
 
 describe('Engineering Tools Registry', () => {
+  /**
+   * The registry's prose - descriptions, parameter help and design notes - is
+   * handed to the Drafter as a tool schema, so it is prompt text with a
+   * different name. It used to carry fabrication advice ("orient the beam flat
+   * in XY for layer strength", "0.35mm standard for FDM") that primed the model
+   * to reason about a process this pipeline does not model, and then to reshape
+   * geometry to suit it. Dimensions stay; the process lore does not.
+   *
+   * 'print_in_place_hinge' is exempt: it is a registry key and an emitted
+   * OpenSCAD module name, and renaming it would invalidate the useModules
+   * values in every spec already stored.
+   */
+  it('keeps fabrication-process framing out of the text the Drafter is shown', () => {
+    const FABRICATION =
+      /\b(FDM|nozzle|PLA|PETG|filament|slicer|layer (height|strength|adhesion)|overhang|build plate|printing|printed|printab\w*)\b/i;
+    for (const [key, entry] of Object.entries(ENGINEERING_MODULE_REGISTRY)) {
+      const prose = [entry.name, entry.description, ...entry.engineeringParameters, ...entry.designRules].join('\n');
+      const hit = FABRICATION.exec(prose);
+      expect(hit?.[0], `${key} describes a fabrication process ("${hit?.[0]}")`).toBeUndefined();
+    }
+  });
+
+  /**
+   * The same text was telling the Drafter to add a fillet at a cantilever root
+   * and a lead-in chamfer on a dovetail, while every prompt told it edges stay
+   * sharp. The prompts already have this guard; the registry is prompt text
+   * too, and it was contradicting them.
+   *
+   * designRules are instructions and must not ask for an edge treatment.
+   * engineeringParameters may still NAME one (`chamfer` is a parameter of the
+   * gusset template), since naming a knob is not telling the model to turn it.
+   */
+  it('never instructs the Drafter to add an edge treatment', () => {
+    const TREATMENT = /\b(fillets?|chamfers?|rounds?|rounding|teardrops?|lead-ins?|elephant)\b/i;
+    for (const [key, entry] of Object.entries(ENGINEERING_MODULE_REGISTRY)) {
+      for (const rule of entry.designRules) {
+        const hit = TREATMENT.exec(rule);
+        expect(hit?.[0], `${key} designRule asks for an edge treatment ("${hit?.[0]}"): ${rule}`).toBeUndefined();
+      }
+    }
+  });
+
   it('should have all key functional mechanical and mathematical modules', () => {
     const requiredKeys = [
       'fastener_hardware',
