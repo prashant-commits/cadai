@@ -79,6 +79,8 @@ PLACEMENT IS YOUR JOB, NOT THE DRAFTER'S. Give every component, including the on
 
 DESIGN CONTRACT. Standing constraints (build volume, nozzle, minimum wall, material) are physical limits; pinned parameters are exact. Treat both as facts.
 
+DESIGN APPROACH. When a chosen approach is given, its construction is the topology you build: the same bodies and the same joining scheme. Deviate only for a physical constraint and record every deviation in assumptions[].
+
 PER COMPONENT:
 - name: snake_case; it becomes \`module <name>()\` verbatim.
 - description: a geometric brief - overall form, every face and feature with size and location, which face is the bedFace, what mates where. It is the drafter's only drawing.

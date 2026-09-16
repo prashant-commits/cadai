@@ -30,7 +30,7 @@ import { normalizeSpec } from './spec-normalize';
 import { checkInterference } from '../engine/assembly-verifier';
 import { getCheckpointer } from './checkpointer';
 import { resolveSearchProvider } from '../research/search-provider';
-import { chooseApproach, type DesignBrief } from '../research/design-brief';
+import { chooseApproach, approachBlock, type ChosenApproach, type DesignBrief } from '../research/design-brief';
 import {
   runResearch,
   preResearchSkipReason,
@@ -319,6 +319,18 @@ function summarizeSpec(spec: AssemblySpec): string {
   }
 
   return lines.join('\n');
+}
+
+/**
+ * One markdown line naming the chosen prior-art approach and its sources,
+ * ahead of the explanation. Server-rendered like everything else the chat
+ * shows; the client never sees the brief object outside the gate.
+ */
+function withApproachLine(explanation: string, chosen: ChosenApproach | undefined): string {
+  if (!chosen) return explanation;
+  const sources = chosen.approach.sources.map((s) => `[${s.title}](${s.url})`).join(', ');
+  const line = `Design approach: ${chosen.approach.name}${sources ? ` — sources: ${sources}` : ''}`;
+  return explanation ? `${line}\n\n${explanation}` : line;
 }
 
 /**
@@ -621,6 +633,13 @@ export function createCadAgent(
           "Design Contract:\nThe user has pinned these values and constraints; treat them as given.\n\n" + contractDetails.join("\n\n")
         ));
       }
+    }
+
+    // The approach chosen at the research gate, rebuilt from the contract on
+    // every pass so a spec-gate revise stays bound to it. Never appended to
+    // `messages` - see the return below for why that matters.
+    if (state.designContract?.researchApproach) {
+      messages.push(new HumanMessage(approachBlock(state.designContract.researchApproach)));
     }
 
     // A prior spec was sent back for revision at the human review gate.
@@ -1196,13 +1215,15 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
 
   // Node 5: respondToUser
   async function respondToUser(state: AgentStateType): Promise<Partial<AgentStateType>> {
+    const explanation = withApproachLine(state.explanation, state.designContract?.researchApproach);
+
     if (state.isValid) {
       onProgress?.({
         type: 'ready',
         message: 'Mechanical model compiled and verified successfully! 3D preview is ready.',
         code: state.currentCode,
         stl: state.stlContent || undefined,
-        explanation: state.explanation,
+        explanation,
         // specGate stamps the approved spec into designContract, but until now
         // nothing sent it back, so the write had no reader and every later
         // turn re-POSTed a spec-less contract and re-opened the gate.
@@ -1218,7 +1239,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
         type: 'error',
         message: `Unable to automatically resolve compilation error: ${errorMsg}`,
         code: state.currentCode,
-        explanation: state.explanation,
+        explanation,
         timestamp: Date.now(),
       });
     }

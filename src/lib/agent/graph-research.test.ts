@@ -195,3 +195,81 @@ describe('research node and gate', () => {
     expect(events.some((e) => e.type === 'thinking' && /no valid brief/.test(e.message))).toBe(true);
   });
 });
+
+describe('Architect binding', () => {
+  beforeEach(() => {
+    process.env.CADAI_VISUAL_CRITIC = 'off';
+    process.env.CADAI_MAX_ATTEMPTS = '1';
+    process.env.CADAI_RESEARCH = 'on';
+    process.env.CADAI_RESEARCH_STUB = '1';
+    invokeMock.mockReset();
+  });
+
+  const block = (c: string) => c.includes('Design Approach (chosen by the user from prior-art research)');
+
+  it('hands the Architect the chosen approach exactly once, on every pass, and never in the history', async () => {
+    invokeMock.mockResolvedValueOnce(plan).mockResolvedValueOnce(briefReply);
+    const agent = createCadAgent(undefined, 'test-model');
+    const config = newConfig();
+    await agent.invoke({ messages: [new HumanMessage('a 40mm wall bracket')] }, config);
+
+    invokeMock.mockResolvedValueOnce(gatedSpec());
+    await agent.invoke(new Command({ resume: { action: 'approve', chosenApproachId: 'a2' } }), config);
+    const architect1 = contentsOf(2);
+    expect(architect1.filter(block)).toHaveLength(1);
+    expect(architect1.some((c) => c.includes('Name: Folded channel'))).toBe(true);
+    expect(architect1.some((c) => c.includes('DESIGN APPROACH'))).toBe(true); // the preamble rule
+
+    // A spec-gate revise re-runs the Architect: still exactly one block.
+    invokeMock.mockResolvedValueOnce(baseSpec()).mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
+    await agent.invoke(new Command({ resume: { action: 'revise', comment: 'thinner' } }), config);
+    const architect2 = contentsOf(3);
+    expect(architect2.filter(block)).toHaveLength(1);
+    expect(architect2.some((c) => c.includes('thinner'))).toBe(true);
+
+    const state = (await agent.getState(config)).values;
+    expect(state.messages.some((m: any) => block(String(m.content)))).toBe(false);
+  });
+
+  it('binds a later turn from the contract alone, with no research calls', async () => {
+    invokeMock.mockResolvedValueOnce(baseSpec()).mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
+    const agent = createCadAgent(undefined, 'test-model');
+    const result = await agent.invoke(
+      {
+        messages: [new HumanMessage('a 40mm box')],
+        designContract: {
+          standing: {},
+          pinnedParams: {},
+          researchApproach: {
+            partClass: 'box',
+            chosenAt: 1,
+            approach: { id: 'a1', name: 'Lidded shell', construction: 'c', strengths: [], weaknesses: [], sources: [], grounding: 'recalled' },
+          },
+        },
+      },
+      newConfig()
+    );
+    expect(result.researchSkipReason).toBe('already_researched');
+    expect(contentsOf(0).filter(block)).toHaveLength(1);
+    expect(contentsOf(0).some((c) => c.includes('Name: Lidded shell'))).toBe(true);
+  });
+
+  it('names the approach and its sources at the top of the final explanation', async () => {
+    const events: StreamEventPayload[] = [];
+    invokeMock
+      .mockResolvedValueOnce(plan)
+      .mockResolvedValueOnce(briefReply)
+      .mockResolvedValueOnce(baseSpec())
+      .mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
+    const agent = createCadAgent((e) => events.push(e), 'test-model');
+    const config = newConfig();
+    await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
+    await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
+
+    const ready = events.find((e) => e.type === 'ready');
+    expect(ready?.explanation?.startsWith('Design approach: Plate and gusset')).toBe(true);
+    expect(ready?.explanation).toContain(`[FDM brackets](${STUB_HITS[0].url})`);
+    expect(ready?.explanation).toContain('Assembly Spec: test_box');
+    expect(ready?.designContract?.researchApproach?.approach.id).toBe('a1');
+  });
+});

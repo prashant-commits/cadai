@@ -39,10 +39,11 @@ const words = (s: string) => s.trim().split(/\s+/).length;
  * preamble on its node's calls, so a rewrite that quietly doubles one of them
  * costs tokens on every run - this makes that a failing test rather than a
  * slow drift.
+ * ARCHITECT_PREAMBLE was 519/520 before the DESIGN APPROACH rule; raised once for it.
  */
 const WORD_BUDGET: Record<string, number> = {
   CAD_AI_SYSTEM_PROMPT: 1300,
-  ARCHITECT_PREAMBLE: 520,
+  ARCHITECT_PREAMBLE: 560,
   DRAFTER_PREAMBLE: 560,
   DRAFTER_PLACEMENT_CONTRACT: 260,
   CRITIC_PREAMBLE: 460,
@@ -100,6 +101,8 @@ describe('system prompts', () => {
     expect(ARCHITECT_PREAMBLE).toContain('stressPoints[].gusset');
     expect(DRAFTER_PREAMBLE).toMatch(/never model a gusset/i);
     expect(REPAIR_PREAMBLE).toMatch(/never model or remove one/i);
+    // The research layer binds the Architect by prompt, not by schema.
+    expect(ARCHITECT_PREAMBLE).toContain('DESIGN APPROACH');
     // The drafter implements and the repair node must not undo.
     expect(DRAFTER_PREAMBLE).toContain('stressPoints');
     expect(REPAIR_PREAMBLE).toMatch(/never delete/i);
