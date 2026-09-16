@@ -65,7 +65,7 @@ per prompt. Use `--limit 2 --no-langfuse` for a quick local smoke test.
 ## Technologies Used
 - Next.js (App Router)
 - Model Context Protocol (MCP) SDK
-- LangGraph & Google Gemini
+- LangGraph & the Experiential Labs model gateway
 - Three.js / React Three Fiber
 - Monaco Editor
 - OpenSCAD WASM

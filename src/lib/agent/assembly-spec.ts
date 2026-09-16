@@ -4,9 +4,11 @@ import { z } from 'zod';
  * A 3-vector in millimetres (positions) or degrees (rotations).
  *
  * Deliberately a length-constrained array and NOT z.tuple(): a tuple compiles
- * to JSON Schema `prefixItems`, which Gemini's response_schema rejects outright
- * with a 400. That killed every structured-output call the Architect made, so
- * the spec came back null and the review gate rendered empty.
+ * to JSON Schema `prefixItems`, which not every constrained decoder accepts.
+ * The Google route rejected it outright with a 400, which killed every
+ * structured-output call the Architect made, so the spec came back null and the
+ * review gate rendered empty. An array of three costs nothing extra and works
+ * everywhere, so it stays the portable choice.
  */
 const Vec3 = z.array(z.number()).length(3);
 

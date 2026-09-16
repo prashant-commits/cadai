@@ -62,12 +62,14 @@ describe('AssemblySpecSchema', () => {
   });
 });
 
-describe('Gemini response_schema compatibility', () => {
-  // A z.tuple() here compiles to `prefixItems`, which Gemini's response_schema
-  // does not know: the API 400s, withStructuredOutput throws on every attempt,
-  // and the Architect silently yields a null spec that renders as an empty
-  // review gate. Assert the whole schema stays inside the subset Gemini parses.
-  it('emits no JSON Schema keyword Gemini rejects', () => {
+describe('structured-output schema portability', () => {
+  // A z.tuple() here compiles to `prefixItems`, which not every constrained
+  // decoder knows. On the Google route it 400d outright: withStructuredOutput
+  // threw on every attempt and the Architect silently yielded a null spec that
+  // rendered as an empty review gate. Keeping the schema inside a conservative
+  // subset costs nothing and keeps the next provider from reintroducing that
+  // failure, so assert it whatever we are routing to today.
+  it('emits no JSON Schema keyword a constrained decoder may reject', () => {
     const json = JSON.stringify(z.toJSONSchema(AssemblySpecSchema));
     for (const keyword of ['prefixItems', 'oneOf', 'not', 'additionalItems', '$ref']) {
       expect(json, `schema must not use "${keyword}"`).not.toContain(`"${keyword}"`);

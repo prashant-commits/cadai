@@ -82,7 +82,7 @@ export function getLangfuseCallbackHandler(options?: {
     return new CallbackHandler({
       userId: options?.userId,
       sessionId: options?.sessionId,
-      tags: options?.tags || ['cadai', 'langgraph', 'gemini'],
+      tags: options?.tags || ['cadai', 'langgraph', 'explabs'],
       // Renamed from `metadata` in v3/v4 to `traceMetadata` in v5.
       traceMetadata: options?.metadata,
     });
