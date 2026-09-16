@@ -1327,7 +1327,8 @@ describe('bridgeGraphStream', () => {
       ['custom', { t: 'delta', text: 'a', node: 'architectNode' }],
       ['custom', { t: 'delta', text: 'b', node: 'architectNode' }],
     ]);
-    expect(out.filter((e) => e.t === 'section')).toHaveLength(1);
+    // Exactly one OPEN. A trailing close is correct and is asserted separately.
+    expect(out.filter((e) => e.t === 'section' && e.state === 'open')).toHaveLength(1);
   });
 
   it('closes the open section when a different node starts', async () => {
