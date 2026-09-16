@@ -1,5 +1,5 @@
 import { DBSchema } from 'idb';
-import { AgentProgress, ChatMessage, DesignContract, ModelInfo } from '@/types';
+import { AgentProgress, ChatMessage, DesignContract, GateRecord, MessageStatus, ModelInfo } from '@/types';
 
 export const DB_NAME = 'cadai-db';
 export const DB_VERSION = 1;
@@ -44,6 +44,10 @@ export interface MessageRow {
   content: string;
   image?: string;
   progressUpdates?: AgentProgress[];
+  transcript?: string;
+  gates?: Record<string, GateRecord>;
+  status?: MessageStatus;
+  runId?: string;
   timestamp: number;
   hasCode: boolean;
 }

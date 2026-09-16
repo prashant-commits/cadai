@@ -382,4 +382,53 @@ describe('thread-storage', () => {
       expect(createInitialThread().selectedModel).toBe(DEFAULT_TEXT_MODEL);
     });
   });
+
+  it('round-trips a message carrying a transcript, gates and status', async () => {
+    const t = thread();
+    await upsertThread(t);
+    t.messages.push({
+      id: 'assistant-1',
+      role: 'assistant',
+      content: 'Built bracket_body, 62 x 40 x 18 mm.',
+      transcript: '<!--s:architectNode|Architect|ok-->Bounding box: 62 x 40 x 18 mm<!--/s-->',
+      gates: {
+        g1: {
+          payload: { kind: 'spec', spec: null, contract: null, revisionCount: 0 },
+          status: 'approved',
+          decision: { action: 'approve', comment: 'looks right' },
+          decidedAt: 1_700_000_000_000,
+        },
+      },
+      status: 'complete',
+      runId: 'run-abc',
+      timestamp: Date.now(),
+    });
+
+    await upsertMessage(t.id, t.messages[0]);
+    const { threads } = await loadAllThreads();
+    const msg = threads.find((th) => th.id === t.id)!.messages.find((m) => m.id === 'assistant-1')!;
+
+    expect(msg.transcript).toContain('architectNode');
+    expect(msg.gates!.g1.status).toBe('approved');
+    expect(msg.gates!.g1.decision!.comment).toBe('looks right');
+    expect(msg.status).toBe('complete');
+    expect(msg.runId).toBe('run-abc');
+  });
+
+  it('loads a legacy message that has none of the new fields', async () => {
+    const t = thread();
+    await upsertThread(t);
+    t.messages.push({
+      id: 'legacy-1', role: 'assistant', content: 'old message', timestamp: Date.now(),
+    });
+
+    await upsertMessage(t.id, t.messages[0]);
+    const { threads } = await loadAllThreads();
+    const msg = threads.find((th) => th.id === t.id)!.messages.find((m) => m.id === 'legacy-1')!;
+
+    expect(msg.content).toBe('old message');
+    expect(msg.transcript).toBeUndefined();
+    expect(msg.gates).toBeUndefined();
+    expect(msg.status).toBeUndefined();
+  });
 });

@@ -165,6 +165,10 @@ function toMessageRow(threadId: string, message: ChatMessage): MessageRow {
     content: message.content,
     image: message.image,
     progressUpdates: message.progressUpdates,
+    transcript: message.transcript,
+    gates: message.gates,
+    status: message.status,
+    runId: message.runId,
     timestamp: message.timestamp,
     hasCode: message.code !== undefined,
   };
@@ -192,6 +196,10 @@ async function assembleThread(
       };
       if (m.image !== undefined) message.image = m.image;
       if (m.progressUpdates !== undefined) message.progressUpdates = m.progressUpdates;
+      if (m.transcript !== undefined) message.transcript = m.transcript;
+      if (m.gates !== undefined) message.gates = m.gates;
+      if (m.status !== undefined) message.status = m.status;
+      if (m.runId !== undefined) message.runId = m.runId;
 
       const code = codeByRowId.get(m.rowId);
       if (code !== undefined) message.code = code;

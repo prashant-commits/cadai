@@ -119,10 +119,41 @@ export interface AgentProgress {
   runId?: string;
 }
 
+/** Where one gate got to. `open` is the only state that accepts input. */
+export type GateStatus = 'open' | 'approved' | 'revised' | 'denied';
+
+/** How far the assistant message's own turn got. */
+export type MessageStatus = 'streaming' | 'awaiting_input' | 'complete' | 'interrupted' | 'error';
+
+/**
+ * One human-in-the-loop gate, as it appears in the transcript.
+ *
+ * The payload rides here rather than inside the markdown: embedding a
+ * multi-kilobyte spec would mean escaping it through the renderer and
+ * re-parsing it on every read. The markdown carries only `<!--gate:<id>-->`.
+ */
+export interface GateRecord {
+  payload: GatePayload;
+  decision?: GateDecision;
+  status: GateStatus;
+  decidedAt?: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
+  /**
+   * The compact summary. This is the ONLY field replayed to the model: every
+   * prior message's `content` is re-POSTed on the next turn, so the full
+   * thinking transcript must not live here or context cost compounds per turn.
+   */
   content: string;
+  /** Serialised TranscriptNode[]; display only, never leaves the browser. */
+  transcript?: string;
+  gates?: Record<string, GateRecord>;
+  status?: MessageStatus;
+  /** The paused run behind an open gate on this message. */
+  runId?: string;
   image?: string;
   code?: string;
   progressUpdates?: AgentProgress[];
