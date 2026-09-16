@@ -21,9 +21,9 @@ The request: one more layer before the final geometry is decided that searches t
 7. **The Architect is bound by prompt, not by schema.** The chosen approach is injected into `architectNode` as a `HumanMessage` block in the same position and style as the Design Contract block, and `ARCHITECT_PREAMBLE` gains one instruction to build that construction and record any deviation in `assumptions[]`. `AssemblySpecSchema` is not changed: provenance lives in graph state and the explanation, never in a field the constrained decoder must emit.
 8. **Research uses the same model as every other node** via `getChatModel()`. Two structured-output calls per pass: query generation, then brief synthesis. Both request schemas pass through the exported `boundNumbers()` from `assembly-spec.ts`, because the decoder degeneration it guards against was reproduced on DeepSeek and is not a Gemini artefact.
 9. **Research degrades to today's behaviour and never fails a run.** A missing `TAVILY_API_KEY`, a provider error or timeout, zero usable hits, or a brief that fails validation after bounded retries all skip straight to `architectNode`, with the reason in a `thinking` progress event and in `researchSkipReason` on state. `CADAI_RESEARCH=off` disables the node, mirroring `CADAI_MAX_ATTEMPTS` and `CADAI_VISUAL_CRITIC`.
-10. **Research runs exactly once per thread.** A follow-up turn in a thread that already holds a `designBrief` skips research (reason `already_researched`). The earlier brief and choice stay in state, so every later Architect pass in that thread remains bound to the approach chosen once. A user who wants fresh prior art starts a new thread. No content heuristic decides whether a request "deserves" research in v1; the gate's one-click approve of the recommendation is the skip.
-11. **One new branch in the gate card, nothing else in the UI.** `GatePayload` gains `{ kind: 'research'; brief: DesignBrief }` and `GateDecision` gains `chosenApproachId?: string`. `gate-inline-ui.tsx` renders approach cards with a radio selection, source links and the grounding mark. `chat-panel.tsx` needs no change: `showGateGeometry` already ignores every kind but `accept`.
-12. **The final answer names the approach.** When a brief was used, `respondToUser` prepends one markdown line to the explanation — the chosen approach's name and its source links — so the sources reach the streamed chat message, rendered by the server like every other model output.
+10. **Research runs exactly once per thread.** Graph state is per run (`runCheckpointKey(threadId, runId)` in `/api/chat`), so the choice travels the way an approved spec does: `researchGate` stamps it into `designContract.researchApproach`, `respondToUser` already returns the contract on `ready`, the client's `setThreadContract` merges that field alongside `spec`, and every later turn re-POSTs it. `researchNode` skips with `already_researched` when the incoming contract already carries an approach, and every later Architect pass in the thread stays bound to it. A user who wants fresh prior art starts a new thread. No content heuristic decides whether a request "deserves" research in v1; the gate's one-click approve of the recommendation is the skip.
+11. **One new branch in the gate card, nothing else in the UI.** `GatePayload` gains `{ kind: 'research'; brief: DesignBrief }`, `GateDecision` gains `chosenApproachId?: string`, and `DesignContract` gains `researchApproach?: ChosenApproach`. `gate-inline-ui.tsx` renders approach cards with a radio selection, source links and the grounding mark. `chat-panel.tsx` needs no change: `showGateGeometry` already ignores every kind but `accept`; `app-store.ts`'s `setThreadContract` gains one line so the merged contract keeps `researchApproach`.
+12. **The final answer names the approach.** When the contract carries an approach, `respondToUser` prepends one markdown line to the explanation — the chosen approach's name and its source links — so the sources reach the streamed chat message, rendered by the server like every other model output.
 13. **Measured before it is called an improvement.** `eval/generation/run.ts` gains `--research on|off` and two new rates, `researchRan` and `citedApproachChosen`. The existing auto-approve loop already resumes every interrupt with `{ action: 'approve' }`; with no `chosenApproachId` the gate falls back to `recommendedId`, so no eval-specific gate code is needed. Rates are recorded before and after, as the placement work was.
 
 ## Module layout
@@ -33,11 +33,11 @@ New directory `src/lib/research/`, mirroring how `src/lib/design/` holds determi
 | File | Responsibility |
 |---|---|
 | `search-provider.ts` | `SearchProvider` interface, `SearchHit`, `tavilyProvider(apiKey)`, `stubProvider(hits)`, and `resolveSearchProvider()` which returns the Tavily provider when `TAVILY_API_KEY` is set and `null` otherwise. URL normalisation helper used by grounding. |
-| `design-brief.ts` | zod `DesignBriefSchema`, `ApproachSchema`, `SourceSchema`; the two bounded request schemas (`queryPlanRequestSchema()`, `briefRequestSchema()`); `groundApproaches(approaches, hits)` which sets `grounding` and prunes unmatched source URLs; `effectiveApproach(brief, chosenId)`. |
+| `design-brief.ts` | zod `DesignBriefSchema`, `ApproachSchema`, `SourceSchema`; the two bounded request schemas (`queryPlanRequestSchema()`, `briefRequestSchema()`); `groundApproaches(approaches, hits)` which sets `grounding` and prunes unmatched source URLs; `assembleBrief(plan, response, hits)` which re-keys ids positionally and repairs `recommendedId`; `chooseApproach(brief, id)`; the `ChosenApproach` type; `approachBlock(chosen)` rendering the Architect's binding text. |
 | `research-prompts.ts` | `RESEARCHER_PREAMBLE`, the query-plan prompt and the brief-synthesis prompt. Kept out of `system-prompt.ts` so the Architect and Drafter prompts do not grow. |
 | `research-node.ts` | `runResearch({ prompt, contract, provider, model, onProgress })` returning `{ brief, queries, skipReason }`. Pure with respect to graph state so it is testable without LangGraph. |
 
-`graph.ts` gains the `researchNode` and `researchGate` node functions, two routing functions, three state fields, and the Architect binding block. `gate-policy.ts` is unchanged.
+`graph.ts` gains the `researchNode` and `researchGate` node functions, two routing functions, two state fields, and the Architect binding block. `gate-policy.ts` is unchanged.
 
 ## Data
 
@@ -84,9 +84,10 @@ Two URLs match when they are equal after normalisation: lowercase scheme and hos
 
 ```ts
 designBrief:          DesignBrief | null   // replace reducer, default null
-chosenApproachId:     string | null        // replace reducer, default null
 researchSkipReason:   string | null        // replace reducer, default null; null means research ran
 ```
+
+The chosen approach is not graph state: it lives in `designContract.researchApproach` as `{ partClass, approach, chosenAt }`, stamped by the gate and merged by the client, because state does not survive a turn.
 
 `gateAction` and `gateFeedback` are reused. `researchNode` clears both on return, exactly as `architectNode` does, so gate state left over from an earlier turn cannot reach the Architect through the research path as if the human had just said it.
 
@@ -94,13 +95,13 @@ researchSkipReason:   string | null        // replace reducer, default null; nul
 
 ### `researchNode`
 
-1. Compute the skip reason, in this order: `CADAI_RESEARCH=off` → `disabled`; no provider → `no_provider`; `state.designBrief` already set → `already_researched`. On any skip, return `{ designBrief: state.designBrief, researchSkipReason, gateAction: null, gateFeedback: null }` and emit a `thinking` event naming the reason.
+1. Compute the skip reason, in this order: `CADAI_RESEARCH=off` → `disabled`; no provider → `no_provider`; `state.designContract?.researchApproach` already set → `already_researched`. On any skip, return `{ researchSkipReason, gateAction: null, gateFeedback: null }` and emit a `thinking` event naming the reason.
 2. Emit `thinking`: "Design Researcher: planning searches…". Call the model with the query-plan schema on the first human message plus the Design Contract's standing constraints. Output: `{ partClass, queries }` with 2–4 queries. Bounded to 2 attempts; on failure skip with `query_plan_failed`.
 3. Run every query through the provider in parallel with a 15 s `AbortController` timeout each. A query that errors or times out contributes no hits and is logged; only when *every* query fails is the pass skipped with `search_failed`. De-duplicate, cap at 12 hits. Zero hits → skip with `no_hits`.
 4. Emit `thinking`: "Design Researcher: comparing N sources…". Call the model with the brief-synthesis schema on the request, `partClass` and the numbered hits. Bounded to 2 attempts; on failure skip with `brief_failed`.
 5. `groundApproaches`, repair `recommendedId`, attach `searchQueries`, validate with the full zod schema. Return `{ designBrief, researchSkipReason: null, gateAction: null, gateFeedback: null }`.
 
-Every skip leaves `designBrief` as it was (null on a fresh thread), so the routing below sends the run to the Architect with nothing else changed.
+Every skip leaves `designBrief` null, so the routing below sends the run to the Architect with nothing else changed.
 
 ### `researchGate`
 
@@ -108,7 +109,7 @@ Interrupts with `{ kind: 'research', brief }`. On resume:
 
 - `cancel` → `{ gateAction: 'cancel' }`.
 - `revise` (never offered by the UI, but the shared `GateDecision` type permits it) → handled exactly as `approve` with no `chosenApproachId`.
-- `approve` → `{ gateAction: 'approve', chosenApproachId: decision.chosenApproachId if it names an approach, else brief.recommendedId }`. An unknown id falls back rather than rejecting the approval, matching how `specGate` treats a malformed edited spec.
+- `approve` → `chooseApproach(brief, decision.chosenApproachId)` (the named approach, else the recommendation; an unknown id falls back rather than rejecting the approval, matching how `specGate` treats a malformed edited spec) is stamped into the contract: `{ gateAction: 'approve', designContract: { ...(state.designContract ?? { standing: {}, pinnedParams: {} }), researchApproach: { partClass, approach, chosenAt } } }`.
 
 ### Routing
 
@@ -120,11 +121,11 @@ researchGate ─┬─ cancel ────────────────�
               └─ otherwise ───────────────────────────────────→ architectNode
 ```
 
-After an approve `chosenApproachId` is always set, because the gate falls back to `recommendedId`; `effectiveApproach` keeps that same fallback as a guard only, and it is the path the eval's blanket `{ action: 'approve' }` takes.
+After an approve the contract always carries an approach, because the gate falls back to `recommendedId`; that is the path the eval's blanket `{ action: 'approve' }` takes.
 
 ### Architect binding
 
-`architectNode` computes `effectiveApproach(state.designBrief, state.chosenApproachId)`. When non-null it pushes, after the Design Contract block and before the revise-feedback block:
+`architectNode` reads `state.designContract?.researchApproach`. When present it pushes `approachBlock(...)`, after the Design Contract block and before the revise-feedback block:
 
 ```
 Design Approach (chosen by the user from prior-art research):
@@ -140,7 +141,7 @@ Build this construction: the same bodies and the same joining scheme. If a physi
 
 > DESIGN APPROACH. When a chosen approach is given, its construction is the topology you build: the same bodies and the same joining scheme. Deviate only for a physical constraint, and record every deviation in assumptions[].
 
-The block is rebuilt on every Architect pass from state, so a spec-gate revise stays bound to the same approach, and nothing is appended to `messages` — the same reasoning that keeps the spec out of `messages` today.
+The block is rebuilt on every Architect pass from the contract, so a spec-gate revise stays bound to the same approach, and nothing is appended to `messages` — the same reasoning that keeps the spec out of `messages` today.
 
 ## UI
 
@@ -153,9 +154,10 @@ Test-first, in the style of the existing suites; no test makes a live search or 
 | Suite | Proves |
 |---|---|
 | `search-provider.test.ts` | Tavily adapter maps a canned response body to `SearchHit[]`, truncates content, caps at 5, throws on non-2xx, aborts on timeout; `resolveSearchProvider()` returns null with no key; URL normalisation cases. |
-| `design-brief.test.ts` | Request schemas contain no `grounding`/`searchQueries`, are bounded, and stay in sync with the zod schema (field-set equality); `groundApproaches` labels cited/recalled, prunes unmatched URLs, never drops an approach, sorts cited-first stably; `recommendedId` repair; `effectiveApproach` fallback. |
+| `design-brief.test.ts` | Request schemas contain no `grounding`/`searchQueries`, are bounded, and stay in sync with the zod schema (field-set equality); `groundApproaches` labels cited/recalled, prunes unmatched URLs, never drops an approach, sorts cited-first stably; `assembleBrief` re-keys ids positionally, carries the recommendation across the sort and repairs an unknown one; `chooseApproach` fallback; `approachBlock` output. |
 | `research-node.test.ts` | Each skip reason in order; parallel search with one failing query still yields a brief; all failing → `search_failed`; bounded retries on both model calls; hit cap of 12. |
-| `graph-research.test.ts` | Modelled on `graph-hil.test.ts` with queued canned model replies and a stub provider: node order and exact model-call counts; the chosen approach reaches the Architect prompt exactly once and survives a spec-gate revise; unknown `chosenApproachId` falls back to the recommendation; a `revise` decision at the research gate behaves as approve of the recommendation; missing key skips research and the run still reaches the Drafter; `already_researched` on a second turn; cancel routes to `respondToUser`; `gateAction`/`gateFeedback` are cleared. |
+| `graph-research.test.ts` | Modelled on `graph-hil.test.ts` with queued canned model replies and a stub provider: node order and exact model-call counts; the chosen approach reaches the Architect prompt exactly once and survives a spec-gate revise; unknown `chosenApproachId` falls back to the recommendation and the choice is stamped into `designContract.researchApproach`; a `revise` decision at the research gate behaves as approve of the recommendation; missing key skips research and the run still reaches the Drafter; a second turn whose contract already carries an approach skips research and still binds the Architect; cancel routes to `respondToUser`; `gateAction`/`gateFeedback` are cleared. |
+| `app-store.test.ts` (extend) | `setThreadContract` keeps `researchApproach` from the server contract, alongside `spec`. |
 | `system-prompt.test.ts` (extend) | The DESIGN APPROACH instruction is present and edge-treatment rules are unchanged. |
 | `eval/generation/metrics.test.ts` (extend) | `researchRan` and `citedApproachChosen` rates. |
 
