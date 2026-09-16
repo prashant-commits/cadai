@@ -87,7 +87,7 @@ describe('research node and gate', () => {
 
   it('researches first, pauses with a grounded brief, and stamps the choice into the contract', async () => {
     invokeMock.mockResolvedValueOnce(plan).mockResolvedValueOnce(briefReply);
-    const agent = createCadAgent( 'test-model');
+    const agent = createCadAgent('test-model');
     const config = newConfig();
 
     const paused = await agent.invoke({ messages: [new HumanMessage('a wall bracket')] }, config);
@@ -121,7 +121,7 @@ describe('research node and gate', () => {
     for (const decision of [{ action: 'approve', chosenApproachId: 'nope' }, { action: 'revise', comment: 'again' }]) {
       invokeMock.mockReset();
       invokeMock.mockResolvedValueOnce(plan).mockResolvedValueOnce(briefReply).mockResolvedValueOnce(gatedSpec());
-      const agent = createCadAgent( 'test-model');
+      const agent = createCadAgent('test-model');
       const config = newConfig();
       await agent.invoke({ messages: [new HumanMessage('a wall bracket')] }, config);
       const next = await agent.invoke(new Command({ resume: decision }), config);
@@ -135,7 +135,7 @@ describe('research node and gate', () => {
 
   it('cancel at the research gate ends the run', async () => {
     invokeMock.mockResolvedValueOnce(plan).mockResolvedValueOnce(briefReply);
-    const agent = createCadAgent( 'test-model');
+    const agent = createCadAgent('test-model');
     const config = newConfig();
     await agent.invoke({ messages: [new HumanMessage('a wall bracket')] }, config);
     const done = await agent.invoke(new Command({ resume: { action: 'cancel' } }), config);
@@ -172,7 +172,7 @@ describe('research node and gate', () => {
       arrange();
       // No research calls: the first model call is the Architect, then the drafter.
       invokeMock.mockResolvedValueOnce(baseSpec()).mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
-      const agent = createCadAgent( 'test-model');
+      const agent = createCadAgent('test-model');
       const config = newConfig();
       const result = await agent.invoke({ messages: [new HumanMessage('a 40mm box')], ...input }, config);
       expect(result.researchSkipReason, reason).toBe(reason);
@@ -192,9 +192,23 @@ describe('research node and gate', () => {
       .mockResolvedValueOnce(baseSpec())
       .mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
     const agent = createCadAgent('test-model');
-    const result = await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, newConfig());
-    expect(result.researchSkipReason).toBe('brief_failed');
-    expect(result.isValid).toBe(true);
+    const config = newConfig();
+
+    // "reports why" is the load-bearing half: a silent degradation to an
+    // unresearched draft is exactly what the user must not get.
+    const custom: Array<Record<string, any>> = [];
+    for await (const [mode, payload] of await agent.stream(
+      { messages: [new HumanMessage('a 40mm box')] },
+      { ...config, streamMode: ['custom'] }
+    )) {
+      if (mode === 'custom') custom.push(payload as Record<string, any>);
+    }
+    const markdown = custom.filter((c) => c.t === 'delta').map((c) => c.text).join('');
+    expect(markdown).toMatch(/no valid brief/);
+
+    const result = await agent.getState(config);
+    expect(result.values.researchSkipReason).toBe('brief_failed');
+    expect(result.values.isValid).toBe(true);
   });
 });
 
@@ -235,7 +249,7 @@ describe('Architect binding', () => {
 
   it('binds a later turn from the contract alone, with no research calls', async () => {
     invokeMock.mockResolvedValueOnce(baseSpec()).mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
-    const agent = createCadAgent( 'test-model');
+    const agent = createCadAgent('test-model');
     const result = await agent.invoke(
       {
         messages: [new HumanMessage('a 40mm box')],
@@ -262,7 +276,7 @@ describe('Architect binding', () => {
       .mockResolvedValueOnce(briefReply)
       .mockResolvedValueOnce(baseSpec())
       .mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
-    const agent = createCadAgent( 'test-model');
+    const agent = createCadAgent('test-model');
     const config = newConfig();
 
     // Sources are a citation list for the human, so they belong in the

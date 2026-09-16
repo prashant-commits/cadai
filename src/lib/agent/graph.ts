@@ -524,9 +524,30 @@ export function createCadAgent(
   // Drafter uses engineering lookup tools
   const drafterModel = model.bindTools([getFunctionalCadModuleTool]);
 
+  /**
+   * Surfaces why research did not run.
+   *
+   * RESEARCH_SKIP_MESSAGES was written to reach the UI, and did until the
+   * onProgress channel was removed; without this the pipeline silently
+   * degrades to an unresearched draft with nothing said about it. `disabled`
+   * and `already_researched` are normal states, not degradations, so they stay
+   * quiet.
+   */
+  function noteResearchSkip(
+    config: LangGraphRunnableConfig | undefined,
+    reason: ResearchSkipReason
+  ): void {
+    if (reason === 'disabled' || reason === 'already_researched') return;
+    write(config, 'researchNode', {
+      t: 'delta',
+      text: `Design research produced no valid brief: ${RESEARCH_SKIP_MESSAGES[reason]}. Continuing to the Architect.
+`,
+    });
+  }
+
   // Node 0: researchNode. Runs once per thread, before the Architect, and
   // every failure degrades to the Architect running exactly as it did before.
-  async function researchNode(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
+  async function researchNode(state: AgentStateType, config?: LangGraphRunnableConfig): Promise<Partial<AgentStateType>> {
     // Cleared on every path, as architectNode does: a decision left over from
     // an earlier turn's gate must not reach the Architect as fresh feedback.
     const cleared = { gateAction: null, gateFeedback: null } as const;
@@ -538,7 +559,7 @@ export function createCadAgent(
       alreadyChosen: !!state.designContract?.researchApproach,
     });
     if (pre) {
-
+      noteResearchSkip(config, pre);
       return { ...cleared, researchSkipReason: pre };
     }
 
@@ -550,7 +571,7 @@ export function createCadAgent(
       config,
     });
     if (!brief) {
-
+      if (skipReason) noteResearchSkip(config, skipReason);
       return { ...cleared, researchSkipReason: skipReason };
     }
 
