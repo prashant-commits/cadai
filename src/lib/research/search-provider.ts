@@ -119,8 +119,15 @@ export const STUB_HITS: SearchHit[] = [
  * The provider the graph uses, or null when research cannot run - in which
  * case the node degrades to the Architect running exactly as it did before,
  * rather than failing the run.
+ *
+ * Typed as a plain string dict, not NodeJS.ProcessEnv: Next.js's own global.d.ts
+ * declares ProcessEnv.NODE_ENV as required, which would force every caller
+ * (including tests passing a bare {TAVILY_API_KEY: ...} literal) to fake that
+ * field. process.env satisfies this shape regardless.
  */
-export function resolveSearchProvider(env: NodeJS.ProcessEnv = process.env): SearchProvider | null {
+export function resolveSearchProvider(
+  env: Record<string, string | undefined> = process.env
+): SearchProvider | null {
   if (env.CADAI_RESEARCH_STUB === '1') return stubProvider(STUB_HITS);
   const key = env.TAVILY_API_KEY;
   return key ? tavilyProvider(key) : null;
