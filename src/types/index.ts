@@ -57,7 +57,8 @@ export interface ContractDiff {
   rejected: Array<{ name: string; value: ParamValue; reason: string }>;  // violates standing bounds
 }
 
-export type { VariantId, VariantReview } from '../lib/agent/spec-variants';
+import type { VariantId, VariantReview } from '../lib/agent/spec-variants';
+export type { VariantId, VariantReview };
 
 export interface GateVariant {
   id: VariantId;
