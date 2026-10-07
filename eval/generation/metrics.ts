@@ -14,10 +14,6 @@ export interface GenerationMetrics {
   shellsOk: boolean | null;
   errorKinds: string[];
   attempts: number;
-  /** Research produced a brief this run (false on any skip reason). */
-  researchRan: boolean;
-  /** Whether the approach the Architect was bound to had a real source; null when research did not run. */
-  citedApproachChosen: boolean | null;
   wallMs: number;
 }
 
@@ -35,9 +31,6 @@ export function metricsFromState(
   const hasModel = !!state.modelInfo;
   const specHasExtents = !!state.assemblySpec?.components?.some((c) => (c as { localExtents?: unknown }).localExtents);
 
-  const researchRan = !state.researchSkipReason && !!state.designBrief;
-  const chosen = state.designContract?.researchApproach;
-
   return {
     id,
     model,
@@ -51,8 +44,6 @@ export function metricsFromState(
     shellsOk: hasModel ? !has('shells') : null,
     errorKinds: [...new Set(errors.map((v) => v.kind))],
     attempts: state.attemptCount ?? 0,
-    researchRan,
-    citedApproachChosen: researchRan && chosen ? chosen.approach.grounding === 'cited' : null,
     wallMs,
   };
 }
@@ -74,8 +65,6 @@ export function summarize(rows: GenerationMetrics[]): Record<string, string> {
     localFrameOk: rate(rows, (m) => m.localFrameOk),
     extentsOk: rate(rows, (m) => m.extentsOk),
     shellsOk: rate(rows, (m) => m.shellsOk),
-    researchRan: rate(rows, (m) => m.researchRan),
-    citedApproachChosen: rate(rows, (m) => m.citedApproachChosen),
     meanWallMs: String(mean),
   };
 }
@@ -93,8 +82,6 @@ export function scoresFor(m: GenerationMetrics): Array<{ name: string; value: nu
   bool('local_frame_ok', m.localFrameOk);
   bool('extents_ok', m.extentsOk);
   bool('shells_ok', m.shellsOk);
-  bool('research_ran', m.researchRan);
-  bool('cited_approach_chosen', m.citedApproachChosen);
   out.push({ name: 'wall_ms', value: m.wallMs, dataType: 'NUMERIC' });
   return out;
 }

@@ -2,7 +2,6 @@ import { StateGraph, Annotation, END, START, interrupt } from '@langchain/langgr
 import type { LangGraphRunnableConfig } from '@langchain/langgraph';
 import { BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
 import type { RunnableConfig } from '@langchain/core/runnables';
-import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { createSpecRenderer } from './spec-markdown';
 import { composeRunSummary } from './run-summary';
@@ -23,12 +22,11 @@ import {
   composeAssembly,
   stripGeneratedAssembly,
   stripTopLevelGeometry,
-  hasGeneratedAssembly,
   analyzeTopLevel,
   instantiationFor,
 } from '../design/compose-assembly';
 import { measureModuleFrames, type ModuleFrame } from '../engine/module-frames';
-import { placementSummary, PlacementReport } from '../design/placement-report';
+import { PlacementReport } from '../design/placement-report';
 import { auditPlacement } from './placement-audit';
 import { auditSpecCoherence } from './spec-coherence';
 import { auditModuleGuards } from '../design/module-guards';
@@ -38,14 +36,7 @@ import { auditSpecShapes } from './spec-shape-audit';
 import { checkInterference } from '../engine/assembly-verifier';
 import { nullsToUndefined } from './strict-schema';
 import { getCheckpointer } from './checkpointer';
-import { resolveSearchProvider } from '../research/search-provider';
-import { chooseApproach, approachBlock, type ChosenApproach, type DesignBrief } from '../research/design-brief';
-import {
-  runResearch,
-  preResearchSkipReason,
-  RESEARCH_SKIP_MESSAGES,
-  type ResearchSkipReason,
-} from '../research/research-node';
+
 
 const MAX_SPEC_REVISIONS = 2;
 const MAX_ACCEPT_REVISIONS = 2;
@@ -324,13 +315,6 @@ function summarizeSpec(spec: AssemblySpec): string {
  * One markdown line naming the chosen prior-art approach and its sources,
  * ahead of the explanation. Server-rendered like everything else the chat
  * shows; the client never sees the brief object outside the gate.
- */
-function withApproachLine(explanation: string, chosen: ChosenApproach | undefined): string {
-  if (!chosen) return explanation;
-  const sources = chosen.approach.sources.map((s) => `[${s.title}](${s.url})`).join(', ');
-  const line = `Design approach: ${chosen.approach.name}${sources ? ` — sources: ${sources}` : ''}`;
-  return explanation ? `${line}\n\n${explanation}` : line;
-}
 
 /**
  * Renders the user's gate answers as "Q -> A" lines for the architect prompt.
@@ -471,18 +455,7 @@ export const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => 0,
   }),
-  // Research runs once, before the Architect. The brief is per run; the
-  // CHOICE is not state at all - it lives in designContract.researchApproach
-  // so it survives to the next turn (see specGate for the same pattern).
-  designBrief: Annotation<DesignBrief | null>({
-    reducer: (_, y) => y,
-    default: () => null,
-  }),
-  // null means research ran; a reason means the Architect ran as before.
-  researchSkipReason: Annotation<ResearchSkipReason | null>({
-    reducer: (_, y) => y,
-    default: () => null,
-  }),
+
 });
 
 export type AgentStateType = typeof AgentState.State;
@@ -524,101 +497,6 @@ export function createCadAgent(
   // Drafter uses engineering lookup tools
   const drafterModel = model.bindTools([getFunctionalCadModuleTool]);
 
-  /**
-   * Surfaces why research did not run.
-   *
-   * RESEARCH_SKIP_MESSAGES was written to reach the UI, and did until the
-   * onProgress channel was removed; without this the pipeline silently
-   * degrades to an unresearched draft with nothing said about it. `disabled`
-   * and `already_researched` are normal states, not degradations, so they stay
-   * quiet.
-   */
-  function noteResearchSkip(
-    config: LangGraphRunnableConfig | undefined,
-    reason: ResearchSkipReason
-  ): void {
-    if (reason === 'disabled' || reason === 'already_researched') return;
-    write(config, 'researchNode', {
-      t: 'delta',
-      text: `Design research produced no valid brief: ${RESEARCH_SKIP_MESSAGES[reason]}. Continuing to the Architect.
-`,
-    });
-  }
-
-  // Node 0: researchNode. Runs once per thread, before the Architect, and
-  // every failure degrades to the Architect running exactly as it did before.
-  async function researchNode(state: AgentStateType, config?: LangGraphRunnableConfig): Promise<Partial<AgentStateType>> {
-    // Cleared on every path, as architectNode does: a decision left over from
-    // an earlier turn's gate must not reach the Architect as fresh feedback.
-    const cleared = { gateAction: null, gateFeedback: null } as const;
-
-    const provider = resolveSearchProvider();
-    const pre = preResearchSkipReason({
-      enabled: process.env.CADAI_RESEARCH !== 'off',
-      provider,
-      alreadyChosen: !!state.designContract?.researchApproach,
-    });
-    if (pre) {
-      noteResearchSkip(config, pre);
-      return { ...cleared, researchSkipReason: pre };
-    }
-
-    const { brief, skipReason } = await runResearch({
-      request: firstHumanText(state.messages),
-      constraints: contractLines(state.designContract),
-      provider: provider!,
-      model,
-      config,
-    });
-    if (!brief) {
-      if (skipReason) noteResearchSkip(config, skipReason);
-      return { ...cleared, researchSkipReason: skipReason };
-    }
-
-    return { ...cleared, designBrief: brief, researchSkipReason: null };
-  }
-
-  // Node: researchGate. Pauses with the brief; the human picks an approach.
-  // Same interrupt()/Command({ resume }) channel as specGate.
-  async function researchGate(state: AgentStateType, config?: LangGraphRunnableConfig): Promise<Partial<AgentStateType>> {
-    const brief = state.designBrief!; // routed here only when set
-    const payload: GatePayload = { kind: 'research', brief };
-    const decision = interrupt(payload) as GateDecision;
-
-    if (decision.action === 'cancel') {
-      return { gateAction: 'cancel' };
-    }
-
-    // No revise here: a thread gets one research pass. Anything else,
-    // including a stray 'revise', approves - the named approach when the id
-    // is known, else the recommendation, rather than rejecting the approval
-    // (the same lenience specGate shows a malformed edited spec).
-    const approach = chooseApproach(brief, decision.action === 'approve' ? decision.chosenApproachId : undefined);
-
-    // Sources belong in the transcript, not in the run summary: the summary
-    // becomes ChatMessage.content, which is replayed to the model on every
-    // later turn, and a citation list is for the human to read once.
-    const sourceLinks = approach.sources.map((src) => `[${src.title}](${src.url})`).join(', ');
-    write(config, 'researchGate', {
-      t: 'delta',
-      text: `Design approach: ${approach.name}${sourceLinks ? `
-
-Sources: ${sourceLinks}` : ''}
-`,
-    });
-
-    // The choice goes into the contract, not state: state is per run, and
-    // the contract is what respondToUser returns and the next turn re-POSTs.
-    const baseContract: DesignContract = state.designContract ?? { standing: {}, pinnedParams: {} };
-    return {
-      gateAction: 'approve',
-      designContract: {
-        ...baseContract,
-        researchApproach: { partClass: brief.partClass, approach, chosenAt: Date.now() },
-      },
-    };
-  }
-
   // Node 1: architectNode
   async function architectNode(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
 
@@ -647,12 +525,7 @@ Sources: ${sourceLinks}` : ''}
       }
     }
 
-    // The approach chosen at the research gate, rebuilt from the contract on
-    // every pass so a spec-gate revise stays bound to it. Never appended to
-    // `messages` - see the return below for why that matters.
-    if (state.designContract?.researchApproach) {
-      messages.push(new HumanMessage(approachBlock(state.designContract.researchApproach)));
-    }
+
 
     // A prior spec was sent back for revision at the human review gate.
     if (state.gateAction === 'revise' && state.gateFeedback) {
@@ -818,7 +691,7 @@ ${contract}`;
 
       for (const toolCall of response.tool_calls) {
         if (toolCall.name === 'get_functional_cad_module') {
-          const moduleKey = (toolCall.args as any)?.moduleKey || 'fastener_hardware';
+
 
 
           // Pass `config` so the tool run is parented to this node's span.
@@ -1102,7 +975,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
 
       for (const toolCall of response.tool_calls) {
         if (toolCall.name === 'get_functional_cad_module') {
-          const moduleKey = (toolCall.args as any)?.moduleKey || 'fastener_hardware';
+
 
 
           // Pass `config` so the tool run is parented to this node's span.
@@ -1248,7 +1121,6 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       violations: state.specViolations,
       attempts: state.attemptCount,
       isValid: state.isValid,
-      approach: state.designContract?.researchApproach,
     });
 
     write(config, 'respondToUser', {
@@ -1441,22 +1313,8 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     return 'respondToUser';
   }
 
-  // Conditional Edge: route from researchNode
-  function checkResearchRoute(state: AgentStateType) {
-    if (state.designBrief && !state.researchSkipReason) return 'researchGate';
-    return 'architectNode';
-  }
-
-  // Conditional Edge: route from researchGate
-  function checkResearchGateRoute(state: AgentStateType) {
-    if (state.gateAction === 'cancel') return 'respondToUser';
-    return 'architectNode';
-  }
-
   // Build the graph
   const workflow = new StateGraph(AgentState)
-    .addNode('researchNode', researchNode)
-    .addNode('researchGate', researchGate)
     .addNode('architectNode', architectNode)
     .addNode('specGate', specGate)
     .addNode('drafterNode', drafterNode)
@@ -1465,15 +1323,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     .addNode('visualCritic', visualCritic)
     .addNode('acceptGate', acceptGate)
     .addNode('respondToUser', respondToUser)
-    .addEdge(START, 'researchNode')
-    .addConditionalEdges('researchNode', checkResearchRoute, {
-      researchGate: 'researchGate',
-      architectNode: 'architectNode'
-    })
-    .addConditionalEdges('researchGate', checkResearchGateRoute, {
-      architectNode: 'architectNode',
-      respondToUser: 'respondToUser'
-    })
+    .addEdge(START, 'architectNode')
     .addConditionalEdges('architectNode', checkSpecRoute, {
       specGate: 'specGate',
       drafterNode: 'drafterNode'
@@ -1501,7 +1351,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     })
     .addEdge('respondToUser', END);
 
-  // interrupt() calls inside researchGate/specGate/acceptGate are what actually pause the
+  // interrupt() calls inside specGate/acceptGate are what actually pause the
   // graph and carry data across the boundary; a checkpointer is required for
   // that pause to survive past this single invoke() call, which is exactly
   // what durably holding a run open across an HTTP request needs.

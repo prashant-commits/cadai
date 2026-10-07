@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Check, X, RefreshCw } from 'lucide-react';
 import { GateDecision, GatePayload } from '@/types';
 
@@ -16,13 +16,6 @@ export function GateDock({ gate, onResume }: GateDockProps) {
   // suggestion back as a confirmed fact rather than leaving it ambiguous.
   const [answers, setAnswers] = useState<Record<string, string>>({});
 
-  // The radio selection at the research gate. Reset whenever a new gate
-  // arrives so a choice made on one brief cannot carry over to another.
-  const [chosenId, setChosenId] = useState<string | null>(null);
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => setChosenId(null), [gate]);
-  const isResearch = gate?.kind === 'research';
-
   const answerFor = (q: { id: string; suggestedAnswer?: string }) =>
     answers[q.id] ?? q.suggestedAnswer ?? '';
 
@@ -36,10 +29,7 @@ export function GateDock({ gate, onResume }: GateDockProps) {
     return Object.keys(out).length ? out : undefined;
   };
 
-  const title =
-    gate?.kind === 'research' ? 'Choose a Design Approach'
-    : gate?.kind === 'accept' ? 'Review Compiled Model'
-    : 'Approval Required';
+  const title = gate?.kind === 'accept' ? 'Review Compiled Model' : 'Approval Required';
 
   return (
     <div className="border-t border-slate-800 bg-slate-900/90 px-3 py-2 space-y-2">
@@ -89,46 +79,15 @@ export function GateDock({ gate, onResume }: GateDockProps) {
             </div>
           ) : null}
         </>
-      ) : gate.kind === 'research' ? (
-        <div className="space-y-2">
-          <div role="radiogroup" aria-label="Design approach" className="space-y-2">
-            {gate.brief.approaches.map((a) => {
-              const selected = (chosenId ?? gate.brief.recommendedId) === a.id;
-              return (
-                <label
-                  key={a.id}
-                  className={`block rounded-lg border p-2 cursor-pointer transition-colors ${
-                    selected ? 'border-emerald-500/60 bg-emerald-900/10' : 'border-slate-700 bg-slate-950/40 hover:border-slate-600'
-                  }`}
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <input
-                      type="radio"
-                      name="approach"
-                      value={a.id}
-                      checked={selected}
-                      onChange={() => setChosenId(a.id)}
-                      className="accent-emerald-500"
-                    />
-                    <span className="text-xs font-semibold text-slate-100">{a.name}</span>
-                  </div>
-                </label>
-              );
-            })}
-          </div>
-        </div>
       ) : gate.kind === 'accept' ? null : null}
 
       <div className="space-y-2">
-        {/* One research pass per thread: no comment box and no Revise here. */}
-        {!isResearch && (
-          <textarea
-            value={comment}
-            onChange={(e) => setComment(e.target.value)}
-            placeholder="Add comments or request changes (optional)..."
-            className="w-full h-16 bg-slate-900 border border-slate-700 rounded p-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 resize-none"
-          />
-        )}
+        <textarea
+          value={comment}
+          onChange={(e) => setComment(e.target.value)}
+          placeholder="Add comments or request changes (optional)..."
+          className="w-full h-16 bg-slate-900 border border-slate-700 rounded p-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 resize-none"
+        />
         <div className="flex items-center justify-end gap-2">
           <button
             onClick={() => onResume({ action: 'cancel' })}
@@ -136,27 +95,24 @@ export function GateDock({ gate, onResume }: GateDockProps) {
           >
             <X className="w-3.5 h-3.5" /> Deny
           </button>
-          {!isResearch && (
-            <button
-              onClick={() => onResume({ action: 'revise', comment, answers: collectedAnswers() })}
-              className="flex items-center gap-1 px-3 py-1.5 rounded bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 text-xs transition-colors"
-            >
-              <RefreshCw className="w-3.5 h-3.5" /> Revise
-            </button>
-          )}
+          <button
+            onClick={() => onResume({ action: 'revise', comment, answers: collectedAnswers() })}
+            className="flex items-center gap-1 px-3 py-1.5 rounded bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 text-xs transition-colors"
+          >
+            <RefreshCw className="w-3.5 h-3.5" /> Revise
+          </button>
           <button
             onClick={() =>
               onResume({
                 action: 'approve',
-                comment: isResearch ? undefined : comment || undefined,
+                comment: comment || undefined,
                 answers: collectedAnswers(),
                 spec: gate?.kind === 'spec' ? gate.spec ?? undefined : undefined,
-                chosenApproachId: gate?.kind === 'research' ? chosenId ?? gate.brief.recommendedId : undefined,
               })
             }
             className="flex items-center gap-1 px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow transition-colors"
           >
-            <Check className="w-3.5 h-3.5" /> {isResearch ? 'Use this approach' : 'Approve'}
+            <Check className="w-3.5 h-3.5" /> Approve
           </button>
         </div>
       </div>

@@ -94,7 +94,7 @@ COHERENCE IS CHECKED BEFORE ANY GEOMETRY EXISTS. boundingBox must equal the exte
 
 DESIGN CONTRACT. Standing constraints (overall size, minimum wall) are hard limits; pinned parameters are exact. Both are facts.
 
-DESIGN APPROACH. When a chosen approach is given, its construction is the topology you build: same bodies, same joining scheme. Deviate only for a physical constraint and record it in assumptions[].
+
 
 PER COMPONENT:
 - name: snake_case; becomes \`module <name>()\` verbatim.

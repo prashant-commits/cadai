@@ -550,8 +550,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...(targetThread.designContract ?? { standing: {}, pinnedParams: {} }),
       spec: contract.spec,
       specApprovedAt: contract.specApprovedAt,
-      // Server-authoritative like `spec`: stamped at the research gate.
-      researchApproach: contract.researchApproach,
     };
 
     const updatedThreads = threads.map((t) =>

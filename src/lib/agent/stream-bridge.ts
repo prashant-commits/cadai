@@ -3,8 +3,6 @@ import type { StreamEvent } from './stream-events';
 
 /** Human labels for graph nodes. An unlisted node falls back to its own id. */
 export const NODE_LABELS: Record<string, string> = {
-  researchNode: 'Design Researcher',
-  researchGate: 'Approach Review',
   architectNode: 'Mechanical Architect',
   specGate: 'Spec Review',
   drafterNode: 'Parametric Drafter',

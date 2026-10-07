@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { metricsFromState, summarize, scoresFor } from './metrics';
+import { metricsFromState, summarize, scoresFor, GenerationMetrics } from './metrics';
 
 const violation = (kind: string, severity: 'error' | 'warning' = 'error') =>
   ({ kind, severity, field: '', expected: '', measured: '', message: '' }) as any;
@@ -21,56 +21,26 @@ describe('metricsFromState', () => {
     }, 1234);
     expect(m).toMatchObject({
       id: 'p1', specOk: true, composed: true, compileOk: true, floorOk: false,
-      floatingCount: 1, localFrameOk: false, shellsOk: true, attempts: 1, wallMs: 1234, researchRan: false, citedApproachChosen: null,
+      floatingCount: 1, localFrameOk: false, shellsOk: true, attempts: 1, wallMs: 1234,
     });
     expect(m.errorKinds).toEqual(['floor', 'floating']);
   });
 
   it('returns nulls for measurements that could not be taken', () => {
-    const m = metricsFromState('p2', 'm', { assemblySpec: null, currentCode: '', isValid: false, attemptCount: 0, validation: null, modelInfo: null, specViolations: [], placementReport: null, researchSkipReason: null, designBrief: null }, 1);
+    const m = metricsFromState('p2', 'm', { assemblySpec: null, currentCode: '', isValid: false, attemptCount: 0, validation: null, modelInfo: null, specViolations: [], placementReport: null }, 1);
     expect(m.specOk).toBe(false);
     expect(m.compileOk).toBe(false);
     expect(m.floorOk).toBeNull();
     expect(m.floatingCount).toBeNull();
     expect(m.localFrameOk).toBeNull();
-    expect(m.researchRan).toBe(false);
-    expect(m.citedApproachChosen).toBeNull();
-  });
-
-  it('records whether research ran and whether the chosen approach was cited', () => {
-    const chosen = (grounding: 'cited' | 'recalled') => ({
-      partClass: 'x',
-      chosenAt: 1,
-      approach: { id: 'a1', name: 'n', construction: 'c', strengths: [], weaknesses: [], sources: [], grounding },
-    });
-    const ran = metricsFromState('p3', 'm', {
-      researchSkipReason: null,
-      designBrief: { partClass: 'x', approaches: [], recommendedId: 'a1', searchQueries: [] } as any,
-      designContract: { standing: {}, pinnedParams: {}, researchApproach: chosen('cited') },
-      specViolations: [],
-    }, 1);
-    expect(ran.researchRan).toBe(true);
-    expect(ran.citedApproachChosen).toBe(true);
-
-    const skipped = metricsFromState('p4', 'm', { researchSkipReason: 'no_provider', designBrief: null, specViolations: [] }, 1);
-    expect(skipped.researchRan).toBe(false);
-    expect(skipped.citedApproachChosen).toBeNull();
-
-    const recalled = metricsFromState('p5', 'm', {
-      researchSkipReason: null,
-      designBrief: { partClass: 'x', approaches: [], recommendedId: 'a1', searchQueries: [] } as any,
-      designContract: { standing: {}, pinnedParams: {}, researchApproach: chosen('recalled') },
-      specViolations: [],
-    }, 1);
-    expect(recalled.citedApproachChosen).toBe(false);
   });
 });
 
 describe('summarize', () => {
   it('reports rates over non-null values', () => {
-    const rows = [
-      { id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: true, floatingCount: 0, localFrameOk: true, extentsOk: null, shellsOk: true, errorKinds: [], attempts: 1, wallMs: 10, researchRan: false, citedApproachChosen: null },
-      { id: 'b', model: 'm', specOk: true, composed: false, compileOk: true, floorOk: false, floatingCount: null, localFrameOk: null, extentsOk: null, shellsOk: false, errorKinds: ['floor'], attempts: 1, wallMs: 20, researchRan: false, citedApproachChosen: null },
+    const rows: GenerationMetrics[] = [
+      { id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: true, floatingCount: 0, localFrameOk: true, extentsOk: null, shellsOk: true, errorKinds: [], attempts: 1, wallMs: 10 },
+      { id: 'b', model: 'm', specOk: true, composed: false, compileOk: true, floorOk: false, floatingCount: null, localFrameOk: null, extentsOk: null, shellsOk: false, errorKinds: ['floor'], attempts: 1, wallMs: 20 },
     ];
     const s = summarize(rows);
     expect(s.composed).toBe('1/2');
@@ -78,15 +48,14 @@ describe('summarize', () => {
     expect(s.noFloating).toBe('1/1');
     expect(s.localFrameOk).toBe('1/1');
     expect(s.extentsOk).toBe('0/0');
-    expect(s.researchRan).toBe('0/2');
-    expect(s.citedApproachChosen).toBe('0/0');
     expect(s.meanWallMs).toBe('15');
   });
 });
 
 describe('scoresFor', () => {
   it('emits boolean scores and skips unmeasured ones', () => {
-    const names = scoresFor({ id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: null, floatingCount: null, localFrameOk: true, extentsOk: null, shellsOk: true, errorKinds: [], attempts: 1, wallMs: 10, researchRan: false, citedApproachChosen: null }).map((s) => s.name);
-    expect(names).toEqual(['spec_ok', 'composed', 'compile_ok', 'local_frame_ok', 'shells_ok', 'research_ran', 'wall_ms']);
+    const metrics: GenerationMetrics = { id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: null, floatingCount: null, localFrameOk: true, extentsOk: null, shellsOk: true, errorKinds: [], attempts: 1, wallMs: 10 };
+    const names = scoresFor(metrics).map((s) => s.name);
+    expect(names).toEqual(['spec_ok', 'composed', 'compile_ok', 'local_frame_ok', 'shells_ok', 'wall_ms']);
   });
 });

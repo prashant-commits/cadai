@@ -26,7 +26,6 @@ afterAll(async () => {
 describe('graph custom-channel writes', () => {
   beforeEach(() => {
     process.env.CADAI_VISUAL_CRITIC = 'off';
-    process.env.CADAI_RESEARCH = 'off';
     invokeMock.mockReset();
     streamMock.mockReset();
   });

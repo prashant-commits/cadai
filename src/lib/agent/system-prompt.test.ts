@@ -117,8 +117,7 @@ describe('system prompts', () => {
     expect(ARCHITECT_PREAMBLE).toContain('stressPoints[].gusset');
     expect(DRAFTER_PREAMBLE).toMatch(/never model a gusset/i);
     expect(REPAIR_PREAMBLE).toMatch(/never model or remove one/i);
-    // The research layer binds the Architect by prompt, not by schema.
-    expect(ARCHITECT_PREAMBLE).toContain('DESIGN APPROACH');
+
     // The drafter implements and the repair node must not undo.
     expect(DRAFTER_PREAMBLE).toContain('stressPoints');
     expect(REPAIR_PREAMBLE).toMatch(/never delete/i);
