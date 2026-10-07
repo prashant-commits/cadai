@@ -1,5 +1,7 @@
+import type { AssemblySpec } from '@/lib/agent/assembly-spec';
 import type { AgentStateType } from '@/lib/agent/graph';
 import { isZeroVec } from '@/lib/design/placement-geometry';
+import { judgeCompiledModel, type VisualCritique } from './judge';
 
 export interface GenerationMetrics {
   id: string;
@@ -23,8 +25,50 @@ export interface GenerationMetrics {
   reviewRounds: number;
   /** The recommended variant's `review.validated`, or null when it has no review. */
   chosenValidated: boolean | null;
-  /** Null while the critic is off. True when no `kind: 'visual'` violation remains. */
+  /**
+   * The standalone judge's verdict. Null when the critic is off, there is
+   * no STL, or the judge call failed. True only when the judge says the
+   * part matches and reported no major finding. A missing graph violation
+   * is not a match: the graph critic never runs after an audit error.
+   */
   visualMatch: boolean | null;
+  /** Findings the judge returned. Null when the part was not judged. */
+  visualFindings: number | null;
+}
+
+export interface VisualScore {
+  visualMatch: boolean | null;
+  visualFindings: number | null;
+}
+
+const UNJUDGED: VisualScore = { visualMatch: null, visualFindings: null };
+
+/** True when the judge matched the request and raised no major finding. */
+export function scoreCritique(critique: VisualCritique | null): VisualScore {
+  if (!critique) return UNJUDGED;
+  const findings = critique.findings ?? [];
+  return {
+    visualMatch: critique.matchesIntent && !findings.some((finding) => finding.severity === 'major'),
+    visualFindings: findings.length,
+  };
+}
+
+/**
+ * Judge the compiled STL when the critic arm is on. Does nothing otherwise,
+ * and does not read specViolations.
+ */
+export async function measureVisualMatch(input: {
+  criticOn: boolean;
+  stl: string | null | undefined;
+  request: string;
+  spec: AssemblySpec | null;
+}): Promise<VisualScore> {
+  if (!input.criticOn || !input.stl) return UNJUDGED;
+  return scoreCritique(await judgeCompiledModel({
+    stl: input.stl,
+    request: input.request,
+    spec: input.spec,
+  }));
 }
 
 /**
@@ -66,6 +110,7 @@ export function metricsFromState(
   state: Partial<AgentStateType>,
   wallMs: number,
   capture?: SpecGateCapture | null,
+  visual?: VisualScore | null,
 ): GenerationMetrics {
   const violations = state.specViolations ?? [];
   const errors = violations.filter((v) => v.severity === 'error');
@@ -85,7 +130,7 @@ export function metricsFromState(
     ?? capture?.recommendedId
     ?? state.specBrief?.recommendedId
     ?? null;
-  const criticOn = process.env.CADAI_VISUAL_CRITIC === 'on';
+  const judged = visual ?? UNJUDGED;
 
   return {
     id,
@@ -102,7 +147,8 @@ export function metricsFromState(
     attempts: state.attemptCount ?? 0,
     wallMs,
     ...variantStats(variants, recommendedId),
-    visualMatch: criticOn ? !violations.some((v) => v.kind === 'visual') : null,
+    visualMatch: judged.visualMatch,
+    visualFindings: judged.visualFindings,
   };
 }
 
@@ -111,9 +157,10 @@ function rate(rows: GenerationMetrics[], pick: (m: GenerationMetrics) => boolean
   return `${vals.filter(Boolean).length}/${vals.length}`;
 }
 
-function meanOf(rows: GenerationMetrics[], pick: (m: GenerationMetrics) => number): string {
-  if (rows.length === 0) return '0';
-  return String(Math.round(rows.reduce((sum, row) => sum + pick(row), 0) / rows.length));
+function meanOf(rows: GenerationMetrics[], pick: (m: GenerationMetrics) => number | null): string {
+  const vals = rows.map(pick).filter((value): value is number => value !== null);
+  if (vals.length === 0) return '0';
+  return String(Math.round(vals.reduce((sum, value) => sum + value, 0) / vals.length));
 }
 
 export function summarize(rows: GenerationMetrics[]): Record<string, string> {
@@ -132,6 +179,7 @@ export function summarize(rows: GenerationMetrics[]): Record<string, string> {
     meanReviewRounds: meanOf(rows, (m) => m.reviewRounds),
     chosenValidated: rate(rows, (m) => m.chosenValidated),
     visualMatch: rate(rows, (m) => m.visualMatch),
+    meanVisualFindings: meanOf(rows, (m) => m.visualFindings),
     meanWallMs: meanOf(rows, (m) => m.wallMs),
   };
 }
@@ -154,6 +202,7 @@ export function scoresFor(m: GenerationMetrics): Array<{ name: string; value: nu
   out.push({ name: 'review_rounds', value: m.reviewRounds, dataType: 'NUMERIC' });
   bool('chosen_validated', m.chosenValidated);
   bool('visual_match', m.visualMatch);
+  if (m.visualFindings !== null) out.push({ name: 'visual_findings', value: m.visualFindings, dataType: 'NUMERIC' });
   out.push({ name: 'wall_ms', value: m.wallMs, dataType: 'NUMERIC' });
   return out;
 }

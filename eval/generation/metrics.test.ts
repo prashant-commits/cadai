@@ -1,13 +1,16 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { metricsFromState, summarize, scoresFor, GenerationMetrics } from './metrics';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('./judge', async () => {
+  const actual = await vi.importActual<typeof import('./judge')>('./judge');
+  return { ...actual, judgeCompiledModel: vi.fn() };
+});
+
+import { criticUserContent, judgeCompiledModel } from './judge';
+import { measureVisualMatch, metricsFromState, summarize, scoresFor, GenerationMetrics } from './metrics';
 import type { SpecBrief, SpecVariant } from '@/lib/agent/spec-variants';
 import type { SpecViolation } from '@/lib/agent/spec-audit';
 
-const criticEnv = process.env.CADAI_VISUAL_CRITIC;
-afterEach(() => {
-  if (criticEnv === undefined) delete process.env.CADAI_VISUAL_CRITIC;
-  else process.env.CADAI_VISUAL_CRITIC = criticEnv;
-});
+const judgeMock = vi.mocked(judgeCompiledModel);
 
 function variant(id: SpecVariant['id'], review: SpecVariant['review']): SpecVariant {
   return {
@@ -24,7 +27,7 @@ const visual: SpecViolation = {
 };
 
 const counted = {
-  variantCount: 0, variantsValidated: 0, reviewRounds: 0, chosenValidated: null, visualMatch: null,
+  variantCount: 0, variantsValidated: 0, reviewRounds: 0, chosenValidated: null, visualMatch: null, visualFindings: null,
 } as const;
 
 const violation = (kind: string, severity: 'error' | 'warning' = 'error') =>
@@ -64,7 +67,6 @@ describe('metricsFromState', () => {
   });
 
   it('counts variants still on the final state and ignores a stale capture', () => {
-    delete process.env.CADAI_VISUAL_CRITIC;
     const m = metricsFromState('p3', 'm', {
       specVariants: [
         variant('A', { validated: true, findings: [], attempts: 1 }),
@@ -82,10 +84,10 @@ describe('metricsFromState', () => {
     expect(m.reviewRounds).toBe(4);
     expect(m.chosenValidated).toBe(false);
     expect(m.visualMatch).toBeNull();
+    expect(m.visualFindings).toBeNull();
   });
 
   it('uses the spec-gate capture once the drafter has cleared the variants', () => {
-    process.env.CADAI_VISUAL_CRITIC = 'on';
     const m = metricsFromState('p4', 'm', { specVariants: [], specBrief: null, specViolations: [] }, 10, {
       variants: [
         { id: 'A', review: { validated: true, attempts: 2 } },
@@ -97,26 +99,87 @@ describe('metricsFromState', () => {
     expect(m.variantsValidated).toBe(1);
     expect(m.reviewRounds).toBe(5);
     expect(m.chosenValidated).toBe(true);
-    expect(m.visualMatch).toBe(true);
+    expect(m.visualMatch).toBeNull();
+    expect(m.visualFindings).toBeNull();
   });
 
-  it('reports visualMatch false when a visual violation survives and the critic is on', () => {
-    process.env.CADAI_VISUAL_CRITIC = 'on';
-    const m = metricsFromState('p5', 'm', {
-      specVariants: [variant('A', null)],
-      specBrief: brief('A'),
-      specViolations: [visual],
+  it('does not treat a missing visual violation as a match', () => {
+    const unjudged = metricsFromState('p5', 'm', {
+      specViolations: [violation('interference')],
+      stlContent: 'solid x',
+      isValid: false,
     }, 1);
-    expect(m.chosenValidated).toBeNull();
-    expect(m.visualMatch).toBe(false);
+    expect(unjudged.visualMatch).toBeNull();
+    expect(unjudged.visualFindings).toBeNull();
+
+    const judged = metricsFromState('p5', 'm', {
+      specViolations: [violation('interference')],
+    }, 1, null, { visualMatch: false, visualFindings: 2 });
+    expect(judged.visualMatch).toBe(false);
+    expect(judged.visualFindings).toBe(2);
+  });
+});
+
+describe('measureVisualMatch', () => {
+  beforeEach(() => judgeMock.mockReset());
+
+  it('stays null when the critic is off or there is no STL', async () => {
+    const off = await measureVisualMatch({ criticOn: false, stl: 'solid', request: 'a stand', spec: null });
+    const empty = await measureVisualMatch({ criticOn: true, stl: '', request: 'a stand', spec: null });
+    expect(off).toEqual({ visualMatch: null, visualFindings: null });
+    expect(empty).toEqual({ visualMatch: null, visualFindings: null });
+    expect(judgeMock).not.toHaveBeenCalled();
+  });
+
+  it('stays null when the judge call fails', async () => {
+    judgeMock.mockResolvedValue(null);
+    const score = await measureVisualMatch({ criticOn: true, stl: 'solid', request: 'a stand', spec: null });
+    expect(score).toEqual({ visualMatch: null, visualFindings: null });
+  });
+
+  it('is true when the judge matches and reports no major finding', async () => {
+    judgeMock.mockResolvedValue({
+      matchesIntent: true,
+      findings: [{ issue: 'a small mark', severity: 'minor', view: 'front' }],
+    });
+    const score = await measureVisualMatch({ criticOn: true, stl: 'solid', request: 'a 30 degree stand', spec: null });
+    expect(score).toEqual({ visualMatch: true, visualFindings: 1 });
+    expect(judgeMock).toHaveBeenCalledWith({ stl: 'solid', request: 'a 30 degree stand', spec: null });
+  });
+
+  it('is false when intent does not match or a finding is major', async () => {
+    judgeMock.mockResolvedValue({
+      matchesIntent: true,
+      findings: [{ issue: 'the arm points down', severity: 'major', view: 'front' }],
+    });
+    const major = await measureVisualMatch({ criticOn: true, stl: 'solid', request: 'a stand', spec: null });
+    expect(major).toEqual({ visualMatch: false, visualFindings: 1 });
+
+    judgeMock.mockResolvedValue({ matchesIntent: false, findings: [] });
+    const rejected = await measureVisualMatch({ criticOn: true, stl: 'solid', request: 'a stand', spec: null });
+    expect(rejected).toEqual({ visualMatch: false, visualFindings: 0 });
+  });
+});
+
+describe('criticUserContent', () => {
+  it('quotes the user request and labels each view image', () => {
+    const content = criticUserContent('a 30 degree stand', null, [
+      { name: 'front', dataUrl: 'data:image/png;base64,aa' },
+      { name: 'iso', dataUrl: 'data:image/png;base64,bb' },
+    ]);
+    const text = content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
+    expect(text).toContain('"a 30 degree stand"');
+    expect(text).toContain('View: front');
+    expect(text).toContain('View: iso');
+    expect(content.filter((part) => part.type === 'image_url')).toHaveLength(2);
   });
 });
 
 describe('summarize', () => {
   it('reports rates over non-null values', () => {
     const rows: GenerationMetrics[] = [
-      { id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: true, floatingCount: 0, localFrameOk: true, extentsOk: null, shellsOk: true, errorKinds: [], attempts: 1, wallMs: 10, variantCount: 2, variantsValidated: 2, reviewRounds: 1, chosenValidated: true, visualMatch: true },
-      { id: 'b', model: 'm', specOk: true, composed: false, compileOk: true, floorOk: false, floatingCount: null, localFrameOk: null, extentsOk: null, shellsOk: false, errorKinds: ['floor'], attempts: 1, wallMs: 20, variantCount: 0, variantsValidated: 0, reviewRounds: 3, chosenValidated: false, visualMatch: null },
+      { id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: true, floatingCount: 0, localFrameOk: true, extentsOk: null, shellsOk: true, errorKinds: [], attempts: 1, wallMs: 10, variantCount: 2, variantsValidated: 2, reviewRounds: 1, chosenValidated: true, visualMatch: true, visualFindings: 2 },
+      { id: 'b', model: 'm', specOk: true, composed: false, compileOk: true, floorOk: false, floatingCount: null, localFrameOk: null, extentsOk: null, shellsOk: false, errorKinds: ['floor'], attempts: 1, wallMs: 20, variantCount: 0, variantsValidated: 0, reviewRounds: 3, chosenValidated: false, visualMatch: null, visualFindings: null },
     ];
     const s = summarize(rows);
     expect(s.composed).toBe('1/2');
@@ -129,6 +192,7 @@ describe('summarize', () => {
     expect(s.meanReviewRounds).toBe('2');
     expect(s.chosenValidated).toBe('1/2');
     expect(s.visualMatch).toBe('1/1');
+    expect(s.meanVisualFindings).toBe('2');
     expect(s.meanWallMs).toBe('15');
   });
 });
@@ -148,11 +212,12 @@ describe('scoresFor', () => {
       id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: null,
       floatingCount: null, localFrameOk: null, extentsOk: null, shellsOk: null, errorKinds: [],
       attempts: 1, wallMs: 10, variantCount: 2, variantsValidated: 1, reviewRounds: 3,
-      chosenValidated: false, visualMatch: true,
+      chosenValidated: false, visualMatch: true, visualFindings: 2,
     };
     const scores = scoresFor(metrics);
     expect(scores.find((s) => s.name === 'chosen_validated')).toEqual({ name: 'chosen_validated', value: 0, dataType: 'BOOLEAN' });
     expect(scores.find((s) => s.name === 'visual_match')).toEqual({ name: 'visual_match', value: 1, dataType: 'BOOLEAN' });
+    expect(scores.find((s) => s.name === 'visual_findings')).toEqual({ name: 'visual_findings', value: 2, dataType: 'NUMERIC' });
     expect(scores.find((s) => s.name === 'review_rounds')?.value).toBe(3);
   });
 });
