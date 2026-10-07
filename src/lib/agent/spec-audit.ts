@@ -29,6 +29,8 @@ export interface SpecViolation {
     | 'handedness'
     /** A hole the spec declared is missing, displaced or the wrong size. */
     | 'feature'
+    /** A shape schema constraint was violated (e.g. tube without innerD). */
+    | 'shape'
     /** Emitted by the Design Inspector from rendered views. Always a warning. */
     | 'visual';
   field: string;
