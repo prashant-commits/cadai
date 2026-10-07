@@ -1,3 +1,4 @@
+import type { GateVariant } from '@/types';
 import { AssemblySpec } from './assembly-spec';
 
 export type VariantId = 'A' | 'B' | 'C';
@@ -75,5 +76,27 @@ export function processPlannerVariants(
     ? recommendedId
     : (deduped[0]?.id ?? 'A');
   return { variants: deduped, recommendedId: resolvedRecId };
+}
+
+export function gateVariants(payload: {
+  variants?: GateVariant[];
+  spec?: AssemblySpec | null;
+}): GateVariant[] {
+  if (payload.variants && payload.variants.length > 0) {
+    return payload.variants;
+  }
+  if (payload.spec) {
+    return [
+      {
+        id: 'A',
+        name: payload.spec.assemblyName,
+        idea: '',
+        spec: payload.spec,
+        sheetSvg: null,
+        review: null,
+      },
+    ];
+  }
+  return payload.variants ?? [];
 }
 

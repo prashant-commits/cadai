@@ -12,7 +12,7 @@ import { validateOpenScadCode } from './code-validator';
 import { getFunctionalCadModuleTool } from './engineering-tools';
 import { AssemblySpec, AssemblySpecSchema, variantSpecRequestSchema } from './assembly-spec';
 import { ValidationResult, ScadDiagnostic } from '../engine/scad-compiler';
-import { ModelInfo, GatePayload, GateDecision, DesignContract } from '@/types';
+import { ModelInfo, GatePayload, GateDecision, GateVariant, DesignContract } from '@/types';
 import { SpecViolation, auditSpec } from './spec-audit';
 import { analyzeStl } from '../engine/geometry-utils';
 import { renderStlViews, RenderedView } from '../engine/stl-renderer';
@@ -1403,11 +1403,36 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
   // resume, returns exactly the value passed to Command({ resume }) - there is
   // no other channel between the paused graph and the human's decision.
   async function specGate(state: AgentStateType): Promise<Partial<AgentStateType>> {
+    let variants: GateVariant[] = (state.specVariants || []).map((v) => ({
+      id: v.id,
+      name: v.name,
+      idea: v.idea,
+      spec: v.spec,
+      sheetSvg: v.sheetSvg,
+      review: v.review,
+      ...(v.error ? { error: v.error } : {}),
+    }));
+    if (variants.length === 0 && state.assemblySpec) {
+      variants = [
+        {
+          id: 'A',
+          name: state.assemblySpec.assemblyName,
+          idea: '',
+          spec: state.assemblySpec,
+          sheetSvg: null,
+          review: null,
+        },
+      ];
+    }
     const payload: GatePayload = {
       kind: 'spec',
-      spec: state.assemblySpec,
+      brief: state.specBrief?.markdown ?? '',
+      variants,
+      recommendedId: state.specBrief?.recommendedId ?? 'A',
+      openQuestions: state.specBrief?.openQuestions ?? state.assemblySpec?.openQuestions ?? [],
       contract: state.designContract,
       revisionCount: state.specRevisionCount,
+      spec: state.assemblySpec,
     };
     const decision = interrupt(payload) as GateDecision;
 

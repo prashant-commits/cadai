@@ -5,6 +5,7 @@ import {
   SpecVariant,
   recommendedVariant,
   processPlannerVariants,
+  gateVariants,
 } from './spec-variants';
 import { AssemblySpec } from './assembly-spec';
 import { HumanMessage } from '@langchain/core/messages';
@@ -129,6 +130,49 @@ describe('spec-variants helpers', () => {
       ];
       const result = processPlannerVariants(input, 'C', 2);
       expect(result.recommendedId).toBe('A');
+    });
+  });
+
+  describe('gateVariants', () => {
+    it('returns payload.variants when present', () => {
+      const variants = [
+        {
+          id: 'A' as const,
+          name: 'Box A',
+          idea: 'idea 1',
+          spec: null,
+          sheetSvg: null,
+          review: null,
+        },
+        {
+          id: 'B' as const,
+          name: 'Box B',
+          idea: 'idea 2',
+          spec: null,
+          sheetSvg: null,
+          review: null,
+        },
+      ];
+      expect(gateVariants({ variants })).toEqual(variants);
+    });
+
+    it('returns a single variant A for legacy payload with only spec', () => {
+      const spec = baseSpec({ assemblyName: 'legacy_box' });
+      const result = gateVariants({ spec });
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual({
+        id: 'A',
+        name: 'legacy_box',
+        idea: '',
+        spec,
+        sheetSvg: null,
+        review: null,
+      });
+    });
+
+    it('returns empty array when neither variants nor spec are present', () => {
+      expect(gateVariants({})).toEqual([]);
+      expect(gateVariants({ spec: null })).toEqual([]);
     });
   });
 });
