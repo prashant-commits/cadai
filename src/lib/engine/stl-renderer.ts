@@ -1,7 +1,7 @@
 import { deflateSync } from 'zlib';
 
 /**
- * Server-side multi-view renderer for ASCII STL.
+ * Server-side multi-view renderer for ASCII STL and coloured triangle lists.
  *
  * Exists because nothing in the stack can produce an image of the geometry:
  * the bundled openscad-wasm has no PNG path (no `--imgsize`, no lodepng, no
@@ -17,10 +17,19 @@ import { deflateSync } from 'zlib';
  * also the right output for this job - a vision model judging "is this the part
  * that was asked for" is helped by clean unambiguous form, not by materials.
  *
+ * The coloured path (`renderTriangleViews`) uses the same camera, scale, and
+ * pixel mapping as the grayscale STL path, and returns that camera so a vector
+ * overlay can land on the pixel the raster already chose.
+ *
  * NODE ONLY. Imported by the agent graph; never import from a client component.
  */
 
 export type ViewName = 'front' | 'right' | 'top' | 'iso';
+
+export type Vec3 = [number, number, number];
+
+/** 0..255 per channel. */
+export type RGB = [number, number, number];
 
 export interface RenderedView {
   name: ViewName;
@@ -34,7 +43,40 @@ export interface RenderOptions {
   views?: ViewName[];
 }
 
-type Vec3 = [number, number, number];
+export interface ColoredTriangle {
+  a: Vec3;
+  b: Vec3;
+  c: Vec3;
+  color: RGB;
+}
+
+export interface ViewCamera {
+  name: ViewName;
+  /** Square edge in px. */
+  size: number;
+  /** World point at the image centre. */
+  center: Vec3;
+  /** px per mm. Identical for every view of one render. */
+  scale: number;
+  /** Orthonormal basis used for this view. */
+  right: Vec3;
+  up: Vec3;
+  forward: Vec3;
+}
+
+export interface TriangleViewOptions {
+  /** Square edge length in pixels. */
+  size?: number;
+  views?: ViewName[];
+  /** RGB background. Defaults to the grayscale renderer's dark field. */
+  background?: RGB;
+  /**
+   * World points that must fit in the frame (guide geometry drawn later as an
+   * overlay). They enlarge the bounding sphere used for centre and scale, and
+   * are not drawn.
+   */
+  extraBounds?: Vec3[];
+}
 
 interface Triangle {
   a: Vec3;
@@ -69,6 +111,8 @@ const EYE_DIRECTIONS: Record<ViewName, Vec3> = {
   iso: [1, -1, 0.75],
 };
 
+const DEFAULT_RGB_BACKGROUND: RGB = [BACKGROUND, BACKGROUND, BACKGROUND];
+
 function sub(p: Vec3, q: Vec3): Vec3 {
   return [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
 }
@@ -86,6 +130,10 @@ function norm(p: Vec3): Vec3 {
   const len = Math.hypot(p[0], p[1], p[2]);
   if (len === 0) return [0, 0, 0];
   return [p[0] / len, p[1] / len, p[2] / len];
+}
+
+function clampByte(n: number): number {
+  return Math.max(0, Math.min(255, n));
 }
 
 /**
@@ -130,23 +178,97 @@ function cameraBasis(eyeDir: Vec3): { right: Vec3; up: Vec3; forward: Vec3 } {
   return { right, up, forward };
 }
 
-function renderView(
-  tris: Triangle[],
-  center: Vec3,
-  radius: number,
-  eyeDir: Vec3,
-  size: number
-): Uint8Array {
-  const { right, up, forward } = cameraBasis(eyeDir);
+function toView(camera: ViewCamera, p: Vec3): Vec3 {
+  const d = sub(p, camera.center);
+  return [dot(d, camera.right), dot(d, camera.up), dot(d, camera.forward)];
+}
 
-  const pixels = new Uint8Array(size * size).fill(BACKGROUND);
-  const depth = new Float64Array(size * size).fill(Infinity);
+/**
+ * Projects a world point (mm) to image pixel coordinates [x, y] (y grows
+ * downward) for this view. The rasterizer calls this, and only this, so an
+ * overlay that uses it lands on the same pixel.
+ */
+export function projectToView(camera: ViewCamera, p: Vec3): [number, number] {
+  const v = toView(camera, p);
+  const half = camera.size / 2;
+  return [half + v[0] * camera.scale, half - v[1] * camera.scale];
+}
 
+function boundingSphere(points: Vec3[]): { center: Vec3; radius: number } {
+  const min: Vec3 = [Infinity, Infinity, Infinity];
+  const max: Vec3 = [-Infinity, -Infinity, -Infinity];
+  for (const v of points) {
+    for (let i = 0; i < 3; i++) {
+      if (v[i] < min[i]) min[i] = v[i];
+      if (v[i] > max[i]) max[i] = v[i];
+    }
+  }
+
+  const center: Vec3 = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
+
+  let radius = 0;
+  for (const v of points) {
+    const d = Math.hypot(v[0] - center[0], v[1] - center[1], v[2] - center[2]);
+    if (d > radius) radius = d;
+  }
+
+  return { center, radius };
+}
+
+function frameScale(radius: number, size: number): number {
   // One shared scale across every view, derived from the bounding sphere, so
-  // the four images are directly comparable - a part that looks small from the
-  // top really is small.
-  const scale = radius > 0 ? ((size / 2) * (1 - MARGIN)) / radius : 1;
-  const half = size / 2;
+  // the images are directly comparable - a part that looks small from the top
+  // really is small.
+  return radius > 0 ? ((size / 2) * (1 - MARGIN)) / radius : 1;
+}
+
+function makeCamera(name: ViewName, center: Vec3, scale: number, size: number): ViewCamera {
+  const { right, up, forward } = cameraBasis(EYE_DIRECTIONS[name]);
+  return {
+    name,
+    size,
+    center: [center[0], center[1], center[2]],
+    scale,
+    right,
+    up,
+    forward,
+  };
+}
+
+function frameCameras(points: Vec3[], size: number, viewNames: ViewName[]): ViewCamera[] {
+  const { center, radius } = boundingSphere(points);
+  const scale = frameScale(radius, size);
+  return viewNames.map((name) => makeCamera(name, center, scale, size));
+}
+
+interface RasterOptions {
+  mode: 'gray' | 'rgb';
+  background: RGB;
+}
+
+/**
+ * Flat-shaded z-buffer. Grayscale keeps the STL critic's ramp
+ * (`40 + intensity * 215`); colour multiplies the triangle RGB by the same
+ * intensity, then both apply the same depth cue per channel.
+ */
+function rasterize(
+  tris: { a: Vec3; b: Vec3; c: Vec3; color?: RGB }[],
+  camera: ViewCamera,
+  opts: RasterOptions
+): Uint8Array {
+  const { size } = camera;
+  const channels = opts.mode === 'gray' ? 1 : 3;
+  const pixels = new Uint8Array(size * size * channels);
+  if (channels === 1) {
+    pixels.fill(opts.background[0]);
+  } else {
+    for (let i = 0; i < size * size; i++) {
+      pixels[i * 3] = opts.background[0];
+      pixels[i * 3 + 1] = opts.background[1];
+      pixels[i * 3 + 2] = opts.background[2];
+    }
+  }
+  const depth = new Float64Array(size * size).fill(Infinity);
 
   // Light sits up and to the left of the camera. A pure headlight
   // (light along the view axis) flattens every face to the same value and
@@ -154,10 +276,10 @@ function renderView(
   const light = norm([-0.4, 0.6, -1]);
 
   for (const tri of tris) {
-    const local: Vec3[] = [sub(tri.a, center), sub(tri.b, center), sub(tri.c, center)];
-
-    // View space: x right, y up, z into the screen.
-    const view = local.map((p): Vec3 => [dot(p, right), dot(p, up), dot(p, forward)]);
+    const view = [tri.a, tri.b, tri.c].map((p) => toView(camera, p));
+    const screen = [tri.a, tri.b, tri.c].map((p) => projectToView(camera, p));
+    const sx = [screen[0][0], screen[1][0], screen[2][0]];
+    const sy = [screen[0][1], screen[1][1], screen[2][1]];
 
     const n = norm(cross(sub(view[1], view[0]), sub(view[2], view[0])));
     if (n[0] === 0 && n[1] === 0 && n[2] === 0) continue; // degenerate
@@ -167,11 +289,19 @@ function renderView(
     // normal toward the camera so such faces still shade sensibly.
     const facing: Vec3 = n[2] > 0 ? [-n[0], -n[1], -n[2]] : n;
     const intensity = AMBIENT + (1 - AMBIENT) * Math.max(0, dot(facing, light));
-    const shade = Math.max(0, Math.min(255, Math.round(40 + intensity * 215)));
 
-    // Screen space. Y is negated because image rows run downward.
-    const sx = view.map((p) => half + p[0] * scale);
-    const sy = view.map((p) => half - p[1] * scale);
+    let shaded: RGB;
+    if (opts.mode === 'gray') {
+      const shade = clampByte(Math.round(40 + intensity * 215));
+      shaded = [shade, shade, shade];
+    } else {
+      const color = tri.color ?? DEFAULT_RGB_BACKGROUND;
+      shaded = [
+        clampByte(Math.round(color[0] * intensity)),
+        clampByte(Math.round(color[1] * intensity)),
+        clampByte(Math.round(color[2] * intensity)),
+      ];
+    }
 
     const minX = Math.max(0, Math.floor(Math.min(sx[0], sx[1], sx[2])));
     const maxX = Math.min(size - 1, Math.ceil(Math.max(sx[0], sx[1], sx[2])));
@@ -197,7 +327,13 @@ function renderView(
         const idx = y * size + x;
         if (z < depth[idx]) {
           depth[idx] = z;
-          pixels[idx] = shade;
+          if (channels === 1) {
+            pixels[idx] = shaded[0];
+          } else {
+            pixels[idx * 3] = shaded[0];
+            pixels[idx * 3 + 1] = shaded[1];
+            pixels[idx * 3 + 2] = shaded[2];
+          }
         }
       }
     }
@@ -216,18 +352,25 @@ function renderView(
 
   const span = furthest - nearest;
   if (span > 1e-9) {
-    for (let i = 0; i < pixels.length; i++) {
+    for (let i = 0; i < size * size; i++) {
       if (depth[i] === Infinity) continue;
       const t = (depth[i] - nearest) / span; // 0 near, 1 far
-      const lit = pixels[i] * (1 - DEPTH_CUE * t);
-      pixels[i] = Math.max(0, Math.min(255, Math.round(lit)));
+      const factor = 1 - DEPTH_CUE * t;
+      if (channels === 1) {
+        pixels[i] = clampByte(Math.round(pixels[i] * factor));
+      } else {
+        for (let c = 0; c < 3; c++) {
+          const o = i * 3 + c;
+          pixels[o] = clampByte(Math.round(pixels[o] * factor));
+        }
+      }
     }
   }
 
   return pixels;
 }
 
-// ---- Minimal PNG encoder (grayscale, 8-bit) ----
+// ---- Minimal PNG encoder (grayscale 8-bit, and RGB 8-bit colour type 2) ----
 
 let crcTable: Uint32Array | null = null;
 function crc32(buf: Uint8Array): number {
@@ -283,6 +426,69 @@ export function encodeGrayscalePng(pixels: Uint8Array, size: number): Buffer {
   ]);
 }
 
+/** Encodes an 8-bit RGB raster as a PNG (colour type 2). */
+function encodeRgbPng(pixels: Uint8Array, size: number): Buffer {
+  const stride = size * 3;
+  const raw = Buffer.alloc((stride + 1) * size);
+  for (let y = 0; y < size; y++) {
+    raw[y * (stride + 1)] = 0;
+    Buffer.from(pixels.buffer, pixels.byteOffset + y * stride, stride).copy(
+      raw,
+      y * (stride + 1) + 1
+    );
+  }
+
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // colour type 2 = truecolor
+  ihdr[10] = 0; // deflate
+  ihdr[11] = 0; // adaptive filtering
+  ihdr[12] = 0; // no interlace
+
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(raw, { level: 9 })),
+    chunk('IEND', new Uint8Array(0)),
+  ]);
+}
+
+function scenePoints(tris: { a: Vec3; b: Vec3; c: Vec3 }[], extraBounds?: Vec3[]): Vec3[] {
+  const points: Vec3[] = [];
+  for (const t of tris) points.push(t.a, t.b, t.c);
+  if (extraBounds) points.push(...extraBounds);
+  return points;
+}
+
+/**
+ * Renders coloured triangles from several fixed angles.
+ *
+ * Returns RGB PNGs plus the cameras used, so callers can overlay vector
+ * graphics on the same pixels. An empty triangle list with no extra bounds
+ * yields no views.
+ */
+export function renderTriangleViews(
+  tris: ColoredTriangle[],
+  opts: TriangleViewOptions = {}
+): { views: RenderedView[]; cameras: ViewCamera[] } {
+  const size = opts.size ?? DEFAULT_SIZE;
+  const viewNames = opts.views ?? DEFAULT_VIEWS;
+  const background = opts.background ?? DEFAULT_RGB_BACKGROUND;
+  const points = scenePoints(tris, opts.extraBounds);
+  if (points.length === 0) return { views: [], cameras: [] };
+
+  const cameras = frameCameras(points, size, viewNames);
+  const views = cameras.map((camera) => {
+    const pixels = rasterize(tris, camera, { mode: 'rgb', background });
+    const png = encodeRgbPng(pixels, size);
+    return { name: camera.name, dataUrl: `data:image/png;base64,${png.toString('base64')}` };
+  });
+
+  return { views, cameras };
+}
+
 /**
  * Renders an ASCII STL from several fixed angles.
  *
@@ -291,35 +497,15 @@ export function encodeGrayscalePng(pixels: Uint8Array, size: number): Buffer {
  */
 export function renderStlViews(stl: string, opts: RenderOptions = {}): RenderedView[] {
   const size = opts.size ?? DEFAULT_SIZE;
-  const views = opts.views ?? DEFAULT_VIEWS;
+  const viewNames = opts.views ?? DEFAULT_VIEWS;
 
   const tris = parseStlTriangles(stl);
   if (tris.length === 0) return [];
 
-  const min: Vec3 = [Infinity, Infinity, Infinity];
-  const max: Vec3 = [-Infinity, -Infinity, -Infinity];
-  for (const t of tris) {
-    for (const v of [t.a, t.b, t.c]) {
-      for (let i = 0; i < 3; i++) {
-        if (v[i] < min[i]) min[i] = v[i];
-        if (v[i] > max[i]) max[i] = v[i];
-      }
-    }
-  }
-
-  const center: Vec3 = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
-
-  let radius = 0;
-  for (const t of tris) {
-    for (const v of [t.a, t.b, t.c]) {
-      const d = Math.hypot(v[0] - center[0], v[1] - center[1], v[2] - center[2]);
-      if (d > radius) radius = d;
-    }
-  }
-
-  return views.map((name) => {
-    const pixels = renderView(tris, center, radius, EYE_DIRECTIONS[name], size);
+  const cameras = frameCameras(scenePoints(tris), size, viewNames);
+  return cameras.map((camera) => {
+    const pixels = rasterize(tris, camera, { mode: 'gray', background: DEFAULT_RGB_BACKGROUND });
     const png = encodeGrayscalePng(pixels, size);
-    return { name, dataUrl: `data:image/png;base64,${png.toString('base64')}` };
+    return { name: camera.name, dataUrl: `data:image/png;base64,${png.toString('base64')}` };
   });
 }
