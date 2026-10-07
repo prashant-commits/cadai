@@ -18,6 +18,10 @@
  * which selects the recommended variant. A run can pause at the spec gate
  * after several reviewer rounds, so the previous cap of 4 is too small.
  *
+ * With --critic on, visualMatch comes from a standalone judge of the final
+ * STL. The graph's own critic only runs after every deterministic check
+ * passes, so "no visual violation" is not a match.
+ *
  * Results land in eval/results/<tag>-<model>-<timestamp>.json and, when
  * LANGFUSE_* keys are set, as a Langfuse experiment run on dataset
  * "cadai-generation" with one score per metric.
@@ -44,7 +48,7 @@ import { createCadAgent, type AgentStateType } from '@/lib/agent/graph';
 import { gateVariants } from '@/lib/agent/spec-variants';
 import { getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor, initLangfuseTracing } from '@/lib/tracing/langfuse';
-import { GenerationMetrics, SpecGateCapture, metricsFromState, scoresFor, summarize } from './metrics';
+import { GenerationMetrics, SpecGateCapture, measureVisualMatch, metricsFromState, scoresFor, summarize } from './metrics';
 
 const DATASET = 'cadai-generation';
 
@@ -143,8 +147,16 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
   const state = (await agent.getState(config)).values as AgentStateType;
   await getCheckpointer().deleteThread(key);
 
-  const m = metricsFromState(item.id, args.model, state, Date.now() - t0, specGate);
-  console.log(`${item.id}: composed=${m.composed} floor=${m.floorOk} floating=${m.floatingCount} localFrame=${m.localFrameOk} errors=[${m.errorKinds.join(',')}] ${m.wallMs} ms`);
+  // Judge every compiled mesh, including ones the graph never showed the
+  // critic because an audit error skipped that node.
+  const visual = await measureVisualMatch({
+    criticOn: process.env.CADAI_VISUAL_CRITIC === 'on',
+    stl: state.stlContent,
+    request: item.prompt,
+    spec: state.assemblySpec ?? null,
+  });
+  const m = metricsFromState(item.id, args.model, state, Date.now() - t0, specGate, visual);
+  console.log(`${item.id}: composed=${m.composed} floor=${m.floorOk} floating=${m.floatingCount} localFrame=${m.localFrameOk} errors=[${m.errorKinds.join(',')}] visual=${m.visualMatch} findings=${m.visualFindings} ${m.wallMs} ms`);
   // Written per prompt so a killed run keeps what it finished.
   fs.appendFileSync(jsonl, JSON.stringify(m) + '\n');
   return m;
