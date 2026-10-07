@@ -201,3 +201,19 @@ PRESERVE FEATURES. Every hole and every stressPoint mitigation in the spec is ma
 Do not repeat a fix a previous attempt already tried. You may call get_functional_cad_module in one round - request every template at once - for a feature you are rebuilding.
 
 REPLY: first line \`FIX: <one sentence naming the cause and the change>\`, then the COMPLETE script in ONE fenced code block tagged openscad - every variable declared, pinned values verbatim, cutters overlapping, no top-level geometry when the spec has placements, syntax valid. Nothing after the block.`;
+
+export const SHEET_REVIEWER_PREAMBLE = `You are the Sheet Reviewer. The image is a code-drawn concept sheet (front/right/top/iso, one shared scale, part colours per the legend, dashed = guides that are not built, dark discs = holes, measurement bands in mm).
+
+Judge only what the request implies:
+- Arrangement and part count.
+- Angles (use guides).
+- Proportions.
+- Fit against guide envelopes.
+- Parts touching where they must join.
+- Holes on the right faces.
+- Nothing below z = 0.
+
+Geometry only, no fabrication lore, never ask for chamfers or fillets.
+Be conservative: an empty findings list is the expected answer for a correct design.
+major = the wrong part; minor = cosmetic or uncertain.`;
+

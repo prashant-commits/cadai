@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { createSpecRenderer } from './spec-markdown';
 import { composeRunSummary } from './run-summary';
 import type { StreamEvent } from './stream-events';
-import { CAD_AI_SYSTEM_PROMPT, ARCHITECT_PLANNER_PREAMBLE, ARCHITECT_VARIANT_PREAMBLE, DRAFTER_PREAMBLE, REPAIR_PREAMBLE, CRITIC_PREAMBLE, DRAFTER_PLACEMENT_CONTRACT } from './system-prompt';
+import { CAD_AI_SYSTEM_PROMPT, ARCHITECT_PLANNER_PREAMBLE, ARCHITECT_VARIANT_PREAMBLE, DRAFTER_PREAMBLE, REPAIR_PREAMBLE, CRITIC_PREAMBLE, DRAFTER_PLACEMENT_CONTRACT, SHEET_REVIEWER_PREAMBLE } from './system-prompt';
 import { extractOpenScadCode } from './code-extractor';
 import { validateOpenScadCode } from './code-validator';
 import { getFunctionalCadModuleTool } from './engineering-tools';
@@ -18,6 +18,10 @@ import { analyzeStl } from '../engine/geometry-utils';
 import { renderStlViews, RenderedView } from '../engine/stl-renderer';
 import { shouldGateSpec, shouldGateAccept } from './gate-policy';
 import { getChatModel } from './model-provider';
+import { isVisionModel, DEFAULT_MODEL } from './models';
+import { renderVariantSheet } from '../spec-sheet/sheet-svg';
+import { blockoutScad } from '../spec-sheet/blockout-scad';
+import { svgToPngDataUrl } from '../spec-sheet/rasterize';
 import {
   composeAssembly,
   stripGeneratedAssembly,
@@ -44,6 +48,7 @@ import {
   processPlannerVariants,
   VariantId,
   ReviewFinding,
+  VariantReview,
 } from './spec-variants';
 
 const MAX_SPEC_REVISIONS = 2;
@@ -222,6 +227,9 @@ function contractLines(contract: DesignContract | null): string {
 function criticSpecSummary(spec: AssemblySpec | null): string {
   if (!spec) return '';
   const lines: string[] = [];
+  if (spec.sheet) {
+    lines.push(`Design sheet:\n${spec.sheet}`);
+  }
   for (const c of spec.components ?? []) {
     const extras = [];
     if (c.bedFace) extras.push(`expected bed face ${c.bedFace}`);
@@ -232,6 +240,28 @@ function criticSpecSummary(spec: AssemblySpec | null): string {
     lines.push(`- ${s.risk}-risk stress point at ${s.component ? `${s.component} ` : ''}${s.location}; the spec demands: ${s.mitigation}`);
   }
   return lines.length ? `\n\nApproved spec, in outline:\n${lines.join('\n')}` : '';
+}
+
+function skeletonSummary(spec: AssemblySpec | null): string {
+  if (!spec) return '';
+  const lines: string[] = [];
+  if (spec.components?.length) {
+    lines.push('Parts:');
+    for (const c of spec.components) {
+      const kind = c.shape?.kind ?? 'box';
+      const ext = c.localExtents ? `[${c.localExtents.join(', ')}]` : 'unknown';
+      const pos = c.position ? `[${c.position.join(', ')}]` : '[0, 0, 0]';
+      const rot = c.rotation ? `[${c.rotation.join(', ')}]` : '[0, 0, 0]';
+      lines.push(`- ${c.name} (${kind}): extents ${ext}, position ${pos}, rotation ${rot}`);
+    }
+  }
+  if (spec.guides?.length) {
+    lines.push('Guides:');
+    for (const g of spec.guides) {
+      lines.push(`- [${g.kind}] ${g.label}`);
+    }
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -318,34 +348,6 @@ function summarizeSpec(spec: AssemblySpec): string {
 
   return lines.join('\n');
 }
-
-/**
- * One markdown line naming the chosen prior-art approach and its sources,
- * ahead of the explanation. Server-rendered like everything else the chat
- * shows; the client never sees the brief object outside the gate.
-
-/**
- * Renders the user's gate answers as "Q -> A" lines for the architect prompt.
- * Matches answers back to their question text by id; an id with no matching
- * question is still passed through, since a stale id is better surfaced to the
- * architect than silently dropped.
- */
-function answeredQuestionLines(
-  spec: AssemblySpec | null,
-  answers?: Record<string, string>
-): string[] {
-  if (!answers) return [];
-  const byId = new Map((spec?.openQuestions ?? []).map((q) => [q.id, q.question]));
-  const lines: string[] = [];
-  for (const [id, answer] of Object.entries(answers)) {
-    const text = answer?.trim();
-    if (!text) continue;
-    lines.push(`- ${byId.get(id) ?? id}: ${text}`);
-  }
-  return lines.length ? ['The user answered your open questions:', ...lines] : [];
-}
-
-
 
 export interface AttemptRecord {
   n: number; phase: 'draft' | 'repair'; code: string;
@@ -505,10 +507,9 @@ function write(
 export function createCadAgent(
   modelName?: string
 ) {
-  const model = getChatModel(modelName);
-  // Resolved separately: no DeepSeek text route accepts image input, so the
-  // critic falls back to a multimodal slug instead of failing the whole run.
-  const visionModel = getChatModel(modelName);
+  const selectedModel = modelName || process.env.CADAI_MODEL || DEFAULT_MODEL;
+  const model = getChatModel(selectedModel);
+  const criticModel = process.env.CADAI_CRITIC_MODEL ? getChatModel(process.env.CADAI_CRITIC_MODEL) : model;
   
   // Architect operates in two steps: a planner call that streams a brief and
   // 1-3 candidate variant outlines, followed by parallel variant specifier calls
@@ -519,6 +520,16 @@ export function createCadAgent(
 
   // Drafter uses engineering lookup tools
   const drafterModel = model.bindTools([getFunctionalCadModuleTool]);
+
+  const SheetReviewSchema = z.object({
+    matchesRequest: z.boolean(),
+    findings: z.array(
+      z.object({
+        issue: z.string(),
+        severity: z.enum(['minor', 'major']),
+      })
+    ),
+  });
 
   // Node 1: architectNode
 
@@ -560,6 +571,7 @@ export function createCadAgent(
     previousSpec?: { sheet: string; skeleton: unknown },
     findings?: ReviewFinding[],
     notes?: string[],
+    previousSheetSvg?: string | null,
     config?: RunnableConfig
   ): Promise<SpecVariant> {
     const variantMessages = [...baseMessages];
@@ -599,13 +611,36 @@ export function createCadAgent(
         `Review findings:\n${findings.map((f) => `[${f.severity.toUpperCase()}] ${f.issue}`).join('\n')}`,
         notes?.length ? `Human notes:\n${notes.join('\n')}` : '',
       ].filter(Boolean);
-      variantMessages.push(new HumanMessage(promptParts.join('\n\n')));
+
+      let prevSheetPngUrl: string | null = null;
+      if (previousSheetSvg) {
+        try {
+          prevSheetPngUrl = await svgToPngDataUrl(previousSheetSvg);
+        } catch (e) {
+          console.warn('generateVariantSpec: failed to rasterize previous sheet for revision', e);
+        }
+      }
+
+      if (prevSheetPngUrl) {
+        variantMessages.push(
+          new HumanMessage({
+            content: [
+              { type: 'text', text: promptParts.join('\n\n') },
+              { type: 'text', text: 'Previous concept sheet render:' },
+              { type: 'image_url', image_url: { url: prevSheetPngUrl } },
+            ],
+          })
+        );
+      } else {
+        variantMessages.push(new HumanMessage(promptParts.join('\n\n')));
+      }
     } else {
-      const promptText = [
+      const promptParts = [
         ...planContextParts,
         `Generate the Assembly Spec for Variant ${variant.id}: ${variant.name} - ${variant.idea}`,
-      ].join('\n\n');
-      variantMessages.push(new HumanMessage(promptText));
+        notes?.length ? `Human notes:\n${notes.join('\n')}` : '',
+      ].filter(Boolean);
+      variantMessages.push(new HumanMessage(promptParts.join('\n\n')));
     }
 
     const variantModel = model.withStructuredOutput(variantSpecRequestSchema(), {
@@ -842,7 +877,19 @@ export function createCadAgent(
       }
 
       const promises = deduped.map((v) =>
-        generateVariantSpec(v, deduped, brief!, variantBaseMessages, 0, 0, undefined, undefined, undefined, config)
+        generateVariantSpec(
+          v,
+          deduped,
+          brief!,
+          variantBaseMessages,
+          0,
+          0,
+          undefined,
+          undefined,
+          state.humanSpecNotes,
+          null,
+          config
+        )
       );
       variants = await Promise.all(promises);
 
@@ -877,10 +924,18 @@ export function createCadAgent(
           v.spec ? { sheet: v.spec.sheet, skeleton: prevSkeleton } : undefined,
           findings,
           state.humanSpecNotes,
+          v.sheetSvg,
           config
         );
       });
       variants = await Promise.all(promises);
+    }
+
+    if (process.env.CADAI_SPEC_SHEETS !== 'off' && !isVisionModel(selectedModel)) {
+      write(config, 'architectNode', {
+        t: 'delta',
+        text: '\nConcept sheets skipped: model does not support vision.\n',
+      });
     }
 
     const reviewDeadline = state.reviewDeadline === null && process.env.VERCEL
@@ -911,39 +966,271 @@ export function createCadAgent(
     };
   }
 
+  // Node: specIllustrator
+  async function specIllustrator(
+    state: AgentStateType,
+    config?: RunnableConfig
+  ): Promise<Partial<AgentStateType>> {
+    const variants = [...(state.specVariants || [])];
+    const updatedVariants = await Promise.all(
+      variants.map(async (v) => {
+        if (v.spec === null || v.sheetSvg !== null) {
+          return v;
+        }
+        try {
+          const result = renderVariantSheet({
+            id: v.id,
+            name: v.name,
+            idea: v.idea,
+            spec: v.spec,
+            notes: state.humanSpecNotes,
+          });
+          const compCount = v.spec.components?.length ?? 0;
+          const guideCount = v.spec.guides?.length ?? 0;
+          let text = `Sheet ${v.id} drawn: ${compCount} part${compCount === 1 ? '' : 's'}, ${guideCount} guide${guideCount === 1 ? '' : 's'}`;
+          if (result.skipped && result.skipped.length > 0) {
+            text += `, ${result.skipped.map((s) => `${s.name} drawn as a box: ${s.reason}`).join(', ')}`;
+          }
+          write(config, 'specIllustrator', { t: 'delta', text: text + '\n' });
+          return {
+            ...v,
+            sheetSvg: result.svg,
+          };
+        } catch (e) {
+          console.error(`specIllustrator: failed to draw sheet for variant ${v.id}:`, e);
+          write(config, 'specIllustrator', {
+            t: 'delta',
+            text: `Sheet ${v.id}: drawing failed\n`,
+          });
+          return {
+            ...v,
+            sheetSvg: null,
+            review: {
+              validated: false,
+              findings: [],
+              attempts: 0,
+              note: 'sheet could not be drawn',
+            },
+          };
+        }
+      })
+    );
+
+    return {
+      specVariants: updatedVariants,
+    };
+  }
+
+  // Node: specReviewer
+  async function specReviewer(
+    state: AgentStateType,
+    config?: RunnableConfig
+  ): Promise<Partial<AgentStateType>> {
+    const maxRetries = Number(process.env.CADAI_SPEC_REVIEW_RETRIES ?? 5);
+    const deadline = state.reviewDeadline;
+    const deadlineExpired = deadline !== null && Date.now() >= deadline;
+
+    const request = firstHumanText(state.messages) || 'the user request above';
+    const contract = contractLines(state.designContract);
+    const reviewerModel = model
+      .withStructuredOutput(SheetReviewSchema)
+      .withConfig({ tags: ['nostream'] });
+
+    const reviewerSystem = new SystemMessage(SHEET_REVIEWER_PREAMBLE);
+
+    const updatedVariants = await Promise.all(
+      (state.specVariants || []).map(async (v) => {
+        if (!v.sheetSvg || v.review !== null) {
+          return v;
+        }
+
+        const attempts = v.retries + 1;
+        let pngDataUrl: string;
+        try {
+          pngDataUrl = await svgToPngDataUrl(v.sheetSvg);
+        } catch (e) {
+          console.error(`specReviewer: failed to rasterize sheet for variant ${v.id}:`, e);
+          const reviewObj: VariantReview = {
+            validated: false,
+            findings: [],
+            attempts,
+            note: 'review unavailable',
+          };
+          write(config, 'specReviewer', {
+            t: 'delta',
+            text: `Sheet ${v.id}: not validated after ${reviewObj.attempts} attempt${reviewObj.attempts === 1 ? '' : 's'}\n`,
+          });
+          return {
+            ...v,
+            review: reviewObj,
+          };
+        }
+
+        const skel = skeletonSummary(v.spec);
+        const humanNotes = (state.humanSpecNotes ?? []).length
+          ? `Human notes:\n${(state.humanSpecNotes ?? []).join('\n')}\n\n`
+          : '';
+
+        const promptText =
+          `The user asked for:\n"${request}"\n\n` +
+          humanNotes +
+          (contract ? `${contract}\n\n` : '') +
+          `Variant ${v.id}: ${v.name}\nIdea: ${v.idea}\n\n` +
+          (v.spec?.sheet ? `Design Sheet:\n${v.spec.sheet}\n\n` : '') +
+          (skel ? `Skeleton:\n${skel}\n\n` : '') +
+          `Evaluate whether this concept sheet matches the request.`;
+
+        const content: Array<Record<string, unknown>> = [
+          { type: 'text', text: promptText },
+          { type: 'image_url', image_url: { url: pngDataUrl } },
+        ];
+
+        let reviewResult: z.infer<typeof SheetReviewSchema> | null = null;
+        try {
+          reviewResult = (await reviewerModel.invoke(
+            [reviewerSystem, new HumanMessage({ content: content as never })],
+            config
+          )) as z.infer<typeof SheetReviewSchema>;
+        } catch (e) {
+          console.error(`specReviewer: model review call failed for variant ${v.id}:`, e);
+          const reviewObj: VariantReview = {
+            validated: false,
+            findings: [],
+            attempts,
+            note: 'review unavailable',
+          };
+          write(config, 'specReviewer', {
+            t: 'delta',
+            text: `Sheet ${v.id}: not validated after ${reviewObj.attempts} attempt${reviewObj.attempts === 1 ? '' : 's'}\n`,
+          });
+          return {
+            ...v,
+            review: reviewObj,
+          };
+        }
+
+        const hasMajor = reviewResult.findings.some((f) => f.severity === 'major');
+        const validated = Boolean(reviewResult.matchesRequest && !hasMajor);
+        const reviewObj: VariantReview = {
+          validated,
+          findings: reviewResult.findings,
+          attempts,
+        };
+
+        const canRetry = hasMajor && v.retries < maxRetries && !deadlineExpired;
+        const nextRetries = canRetry ? v.retries + 1 : v.retries;
+
+        if (validated) {
+          write(config, 'specReviewer', { t: 'delta', text: `Sheet ${v.id}: validated\n` });
+          for (const f of reviewObj.findings) {
+            write(config, 'specReviewer', { t: 'delta', text: `  - [${f.severity}] ${f.issue}\n` });
+          }
+        } else if (canRetry) {
+          const majorCount = reviewObj.findings.filter((f) => f.severity === 'major').length;
+          write(config, 'specReviewer', {
+            t: 'delta',
+            text: `Sheet ${v.id}: ${majorCount} major finding${majorCount === 1 ? '' : 's'} -> revising (retry ${nextRetries}/${maxRetries})\n`,
+          });
+          for (const f of reviewObj.findings) {
+            write(config, 'specReviewer', { t: 'delta', text: `  - [${f.severity}] ${f.issue}\n` });
+          }
+        } else {
+          write(config, 'specReviewer', {
+            t: 'delta',
+            text: `Sheet ${v.id}: not validated after ${attempts} attempt${attempts === 1 ? '' : 's'}\n`,
+          });
+          for (const f of reviewObj.findings) {
+            write(config, 'specReviewer', { t: 'delta', text: `  - [${f.severity}] ${f.issue}\n` });
+          }
+        }
+
+        return {
+          ...v,
+          review: reviewObj,
+          retries: nextRetries,
+          needsRevision: canRetry,
+        };
+      })
+    );
+
+    return {
+      specVariants: updatedVariants,
+    };
+  }
+
   async function drafterNode(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
     // A missing spec degrades to unconstrained drafting rather than skipping the
     // draft entirely - an empty script gives the repair loop nothing to work with.
     const contract = contractLines(state.designContract);
 
-    let drafterPrompt = '';
-    if (state.assemblySpec) {
-      const { sheet, ...skeleton } = state.assemblySpec;
-      drafterPrompt = `Implement the Architect Spec below as one complete OpenSCAD script. Honour every field: each stressPoint mitigation built exactly as sized, joints at their declared clearance, every edge sharp.
-
-Architect Spec Sheet:
-${sheet}
-
-Architect Skeleton (JSON):
-${JSON.stringify(skeleton, null, 2)}
-${contract}`;
-    } else {
-      drafterPrompt = `Write one complete OpenSCAD script for the user's request above. No Architect Spec is available: derive the sizes yourself and declare them as parameters, choose a bedFace and lay it on z = 0, and apply the corner-softening categories and stress-point mitigations the part needs, naming them in your rationale.
-${contract}`;
-    }
-
-    // Only impose the module-at-origin contract when there are real coordinates
-    // to honour; otherwise the drafter should assemble the part itself as before.
     const drafterSystem =
       CAD_AI_SYSTEM_PROMPT +
       '\n\n' +
       DRAFTER_PREAMBLE +
       (specHasComponents(state.assemblySpec) ? '\n\n' + DRAFTER_PLACEMENT_CONTRACT : '');
 
+    const chosenVariant =
+      state.specVariants?.find(
+        (v) =>
+          v.sheetSvg &&
+          (v.spec?.assemblyName === state.assemblySpec?.assemblyName ||
+            v.id === state.specBrief?.recommendedId)
+      ) ?? state.specVariants?.find((v) => v.sheetSvg);
+
+    let drafterHumanMessage: HumanMessage;
+    if (state.assemblySpec) {
+      const { sheet, ...skeleton } = state.assemblySpec;
+      const guidesText = state.assemblySpec.guides?.length
+        ? `\n\nGuides (context only - never model these):\n${state.assemblySpec.guides.map((g) => `- [${g.kind}] ${g.label}`).join('\n')}`
+        : '';
+
+      const reviewFindingsText =
+        chosenVariant?.review && !chosenVariant.review.validated && chosenVariant.review.findings.length > 0
+          ? `\n\nOpen review findings:\n${chosenVariant.review.findings.map((f) => `- [${f.severity}] ${f.issue}`).join('\n')}`
+          : '';
+
+      const startingScriptText =
+        process.env.CADAI_DRAFTER_START !== 'scratch'
+          ? `\n\nStarting script:\nThis starting script already has one module per component with its exact base shape and declared holes. Keep each module's base dimensions; add the features the sheet names; do not add top-level placement.\n\`\`\`openscad\n${blockoutScad(state.assemblySpec).code}\n\`\`\``
+          : '';
+
+      const promptText = `Implement the Architect Spec below as one complete OpenSCAD script. Honour every field: each stressPoint mitigation built exactly as sized, joints at their declared clearance, every edge sharp.
+
+Architect Spec Sheet:
+${sheet}
+
+Architect Skeleton (JSON):
+${JSON.stringify(skeleton, null, 2)}
+${contract}${guidesText}${reviewFindingsText}${startingScriptText}`;
+
+      let pngDataUrl: string | null = null;
+      if (chosenVariant?.sheetSvg && isVisionModel(selectedModel)) {
+        try {
+          pngDataUrl = await svgToPngDataUrl(chosenVariant.sheetSvg);
+        } catch (e) {
+          console.warn('drafterNode: failed to rasterize concept sheet for drafter', e);
+        }
+      }
+
+      if (pngDataUrl) {
+        const content: Array<Record<string, unknown>> = [
+          { type: 'text', text: promptText },
+          { type: 'image_url', image_url: { url: pngDataUrl } },
+        ];
+        drafterHumanMessage = new HumanMessage({ content: content as never });
+      } else {
+        drafterHumanMessage = new HumanMessage(promptText);
+      }
+    } else {
+      const promptText = `Write one complete OpenSCAD script for the user's request above. No Architect Spec is available: derive the sizes yourself and declare them as parameters, choose a bedFace and lay it on z = 0, and apply the corner-softening categories and stress-point mitigations the part needs, naming them in your rationale.
+${contract}`;
+      drafterHumanMessage = new HumanMessage(promptText);
+    }
+
     const messages: BaseMessage[] = [
       new SystemMessage(drafterSystem),
       ...state.messages,
-      new HumanMessage(drafterPrompt)
+      drafterHumanMessage,
     ];
 
     let response = await drafterModel.invoke(messages, config);
@@ -994,6 +1281,8 @@ ${contract}`;
       // mislabelled as a comment about the compiled geometry.
       gateAction: null,
       gateFeedback: null,
+      specVariants: [],
+      specBrief: null,
     };
   }
 
@@ -1222,7 +1511,7 @@ Current Broken Code:
 ${stripGeneratedAssembly(state.currentCode)}
 \`\`\`
 ${humanRevision}
-${state.assemblySpec ? `Assembly Spec (every stressPoint mitigation in it is mandatory; edges stay sharp):\n${JSON.stringify(state.assemblySpec, null, 2)}\n` : ''}${contractLines(state.designContract)}
+${state.assemblySpec ? `Assembly Spec (every stressPoint mitigation in it is mandatory; edges stay sharp):\n${state.assemblySpec.sheet ? `Design Sheet:\n${state.assemblySpec.sheet}\n\n` : ''}${JSON.stringify(state.assemblySpec, null, 2)}\n` : ''}${contractLines(state.designContract)}
 Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`openscad ... \`\`\` block.`;
 
     const fixMessages = [
@@ -1347,7 +1636,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
 
     let critique: VisualCritique | null = null;
     try {
-      critique = (await visionModel
+      critique = (await criticModel
         .withStructuredOutput(VisualCritiqueSchema)
         .invoke(
           [
@@ -1402,7 +1691,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
   // caller via isInterrupted()/INTERRUPT on the invoke() result) and, on
   // resume, returns exactly the value passed to Command({ resume }) - there is
   // no other channel between the paused graph and the human's decision.
-  async function specGate(state: AgentStateType): Promise<Partial<AgentStateType>> {
+  async function specGate(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
     let variants: GateVariant[] = (state.specVariants || []).map((v) => ({
       id: v.id,
       name: v.name,
@@ -1440,35 +1729,91 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       return { gateAction: 'cancel' };
     }
 
-    // Answers to openQuestions are the whole point of asking them, so they
-    // count on BOTH branches - a revise that answers two questions must carry
-    // those answers, not just the free-text comment.
-    const answerLines = answeredQuestionLines(state.assemblySpec, decision.answers);
-
     if (decision.action === 'revise') {
-      const parts = [decision.comment?.trim(), answerLines.length ? answerLines.join('\n') : ''].filter(Boolean);
+      const recId = state.specBrief?.recommendedId ?? 'A';
+      const chosenId = decision.chosenVariantId ?? recId;
+      let chosenVariant = (state.specVariants || []).find((v) => v.id === chosenId);
+      if (!chosenVariant && (state.specVariants || []).length > 0) {
+        chosenVariant = (state.specVariants || []).find((v) => v.id === recId) ?? state.specVariants[0];
+      }
+      if (!chosenVariant && state.assemblySpec) {
+        chosenVariant = {
+          id: 'A',
+          name: state.assemblySpec.assemblyName,
+          idea: '',
+          spec: state.assemblySpec,
+          version: 1,
+          sheetSvg: null,
+          review: null,
+          retries: 0,
+          needsRevision: true,
+        };
+      }
+      const updatedVariants: SpecVariant[] = chosenVariant
+        ? [{ ...chosenVariant, needsRevision: true, retries: 0, review: null }]
+        : [];
+
+      const allQuestions = [
+        ...(state.specBrief?.openQuestions ?? []),
+        ...(state.assemblySpec?.openQuestions ?? []),
+        ...(state.specVariants ?? []).flatMap((v) => v.spec?.openQuestions ?? []),
+      ];
+      const byId = new Map(allQuestions.map((q) => [q.id, q.question]));
+      const answerNoteLines: string[] = [];
+      if (decision.answers) {
+        for (const [id, answer] of Object.entries(decision.answers)) {
+          const text = answer?.trim();
+          if (text) {
+            const qText = byId.get(id);
+            answerNoteLines.push(qText ? `${qText}: ${text}` : `${id}: ${text}`);
+          }
+        }
+      }
+
+      const newNotes = [...(state.humanSpecNotes ?? [])];
+      if (decision.comment?.trim()) {
+        newNotes.push(decision.comment.trim());
+      }
+      newNotes.push(...answerNoteLines);
+
+      const feedbackParts = [decision.comment?.trim(), ...answerNoteLines].filter(Boolean);
+      const gateFeedback = feedbackParts.join('\n') || 'The user requested changes.';
+
       return {
         gateAction: 'revise',
-        gateFeedback: parts.length
-          ? parts.join('\n')
-          : 'The user requested changes but did not specify what.',
+        gateFeedback,
+        specVariants: updatedVariants,
+        humanSpecNotes: newNotes,
+        reviewDeadline: null,
         specRevisionCount: state.specRevisionCount + 1,
       };
     }
 
-    // Approve. A client-edited spec must be re-validated - it crossed a
-    // network boundary as plain JSON and is no longer a trusted AssemblySpec.
-    let approvedSpec = state.assemblySpec;
-    if (decision.spec) {
-      const parsed = AssemblySpecSchema.safeParse(decision.spec);
-      if (parsed.success) approvedSpec = normalizeSpec(parsed.data);
-      // On failure, fall back to the last known-good spec rather than reject
-      // the whole approval over a malformed edit.
+    // Approve.
+    const recId = state.specBrief?.recommendedId ?? 'A';
+    const chosenId = decision.chosenVariantId ?? recId;
+    let chosenVariant = (state.specVariants || []).find((v) => v.id === chosenId);
+    if (!chosenVariant) {
+      chosenVariant = (state.specVariants || []).find((v) => v.id === recId);
+    }
+    const recVariant = (state.specVariants || []).find((v) => v.id === recId);
+
+    let chosenSpec = chosenVariant?.spec ?? null;
+    if (!chosenSpec && recVariant?.spec) {
+      write(config, 'specGate', {
+        t: 'delta',
+        text: `Chosen variant ${chosenId} has no spec; falling back to recommended variant ${recId}.\n`,
+      });
+      chosenSpec = recVariant.spec;
     }
 
-    // An answered question is no longer open: promote it to a recorded
-    // assumption so the drafter and the audit both see a settled fact, and
-    // drop it from openQuestions so a later gate does not re-ask it.
+    let baseApproved = chosenSpec ?? state.assemblySpec;
+    if (decision.spec) {
+      const parsed = AssemblySpecSchema.safeParse(decision.spec);
+      if (parsed.success) baseApproved = normalizeSpec(parsed.data);
+    }
+    let approvedSpec = baseApproved ? mergeBriefIntoSpec(baseApproved, state.specBrief) : null;
+
     if (approvedSpec && decision.answers) {
       const answered = new Set(
         (approvedSpec.openQuestions ?? [])
@@ -1554,6 +1899,23 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     return 'drafterNode';
   }
 
+  function routeAfterArchitect(state: AgentStateType) {
+    const sheetsEnabled = process.env.CADAI_SPEC_SHEETS !== 'off';
+    const hasSpec = (state.specVariants || []).some((v) => v.spec !== null);
+    if (sheetsEnabled && isVisionModel(selectedModel) && hasSpec) {
+      return 'specIllustrator';
+    }
+    return checkSpecRoute(state);
+  }
+
+  function routeAfterReviewer(state: AgentStateType) {
+    const needsRevision = (state.specVariants || []).some((v) => v.needsRevision);
+    if (needsRevision) {
+      return 'architectNode';
+    }
+    return checkSpecRoute(state);
+  }
+
   // Conditional Edge: route from specGate
   function checkReviseRoute(state: AgentStateType) {
     if (state.gateAction === 'cancel') return 'respondToUser';
@@ -1604,6 +1966,8 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
   // Build the graph
   const workflow = new StateGraph(AgentState)
     .addNode('architectNode', architectNode)
+    .addNode('specIllustrator', specIllustrator)
+    .addNode('specReviewer', specReviewer)
     .addNode('specGate', specGate)
     .addNode('drafterNode', drafterNode)
     .addNode('validateCode', validateCode)
@@ -1612,9 +1976,16 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     .addNode('acceptGate', acceptGate)
     .addNode('respondToUser', respondToUser)
     .addEdge(START, 'architectNode')
-    .addConditionalEdges('architectNode', checkSpecRoute, {
+    .addConditionalEdges('architectNode', routeAfterArchitect, {
+      specIllustrator: 'specIllustrator',
       specGate: 'specGate',
-      drafterNode: 'drafterNode'
+      drafterNode: 'drafterNode',
+    })
+    .addEdge('specIllustrator', 'specReviewer')
+    .addConditionalEdges('specReviewer', routeAfterReviewer, {
+      architectNode: 'architectNode',
+      specGate: 'specGate',
+      drafterNode: 'drafterNode',
     })
     .addConditionalEdges('specGate', checkReviseRoute, {
       architectNode: 'architectNode',

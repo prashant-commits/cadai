@@ -6,6 +6,7 @@ import {
   DRAFTER_PLACEMENT_CONTRACT,
   CRITIC_PREAMBLE,
   REPAIR_PREAMBLE,
+  SHEET_REVIEWER_PREAMBLE,
 } from './system-prompt';
 import { validateOpenScadCode } from './code-validator';
 
@@ -16,6 +17,7 @@ const PROMPTS: Record<string, string> = {
   DRAFTER_PLACEMENT_CONTRACT,
   CRITIC_PREAMBLE,
   REPAIR_PREAMBLE,
+  SHEET_REVIEWER_PREAMBLE,
 };
 
 /** Every fenced block tagged `openscad`, with the prompt it came from. */
@@ -52,6 +54,7 @@ const WORD_BUDGET: Record<string, number> = {
   DRAFTER_PLACEMENT_CONTRACT: 260,
   CRITIC_PREAMBLE: 460,
   REPAIR_PREAMBLE: 500,
+  SHEET_REVIEWER_PREAMBLE: 250,
 };
 
 /**

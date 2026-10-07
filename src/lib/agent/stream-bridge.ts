@@ -4,6 +4,8 @@ import type { StreamEvent } from './stream-events';
 /** Human labels for graph nodes. An unlisted node falls back to its own id. */
 export const NODE_LABELS: Record<string, string> = {
   architectNode: 'Mechanical Architect',
+  specIllustrator: 'Concept Sheets',
+  specReviewer: 'Sheet Reviewer',
   specGate: 'Spec Review',
   drafterNode: 'Parametric Drafter',
   validateCode: 'Physical Validator',
