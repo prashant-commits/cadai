@@ -261,3 +261,19 @@ export function assemblySpecRequestSchema(): Record<string, unknown> {
   
   return boundNumbers(toStrictJsonSchema(withReqFields)) as Record<string, unknown>;
 }
+
+export function variantSpecRequestSchema(): Record<string, unknown> {
+  const json = z.toJSONSchema(AssemblySpecSchema) as Record<string, unknown>;
+  delete json.$schema;
+  if (json.properties) {
+    delete (json.properties as Record<string, unknown>).specApprovedAt;
+    delete (json.properties as Record<string, unknown>).openQuestions;
+    
+    // Ensure top-level components is required before strict transform
+    json.required = [...new Set<string>([...((json.required as string[]) ?? []), 'components'])];
+  }
+  
+  const withReqFields = requireComponentFields(json, ['position', 'localExtents', 'shape']);
+  
+  return boundNumbers(toStrictJsonSchema(withReqFields)) as Record<string, unknown>;
+}

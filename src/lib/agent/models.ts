@@ -25,16 +25,14 @@ export const DEFAULT_MODEL = 'gpt-5.6-luna';
  * slug we no longer serve loads on the default instead of erroring.
  */
 export const GATEWAY_MODELS = [
-  { slug: DEFAULT_MODEL, label: 'GPT-5.6 Luna — Multimodal & Recommended' },
-  { slug: 'deepseek-v4-flash', label: 'DeepSeek v4 Flash' },
-  { slug: 'deepseek-v4.1-flash', label: 'DeepSeek v4.1 Flash' },
-  { slug: 'deepseek-v4-pro', label: 'DeepSeek v4 Pro' },
-  { slug: 'deepseek-v3.1', label: 'DeepSeek v3.1 — fastest' },
-  { slug: 'deepseek-v3.2', label: 'DeepSeek v3.2' },
-  { slug: 'glm-5.3-flash', label: 'GLM-5.3 Flash' },
-  { slug: 'qwen3.8-27b', label: 'Qwen3.8 27B' },
+  { slug: 'gpt-5.6-luna', label: 'GPT-5.6 Luna - Recommended' },
+  { slug: 'gpt-6-luna', label: 'GPT-6 Luna' },
 ] as const;
 
 export function isGatewayModel(slug: string | undefined): boolean {
   return GATEWAY_MODELS.some((m) => m.slug === slug);
+}
+
+export function isVisionModel(slug: string | undefined): boolean {
+  return isGatewayModel(slug);
 }

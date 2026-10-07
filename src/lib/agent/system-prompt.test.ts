@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   CAD_AI_SYSTEM_PROMPT,
-  ARCHITECT_PREAMBLE,
+  ARCHITECT_VARIANT_PREAMBLE, ARCHITECT_PLANNER_PREAMBLE,
   DRAFTER_PREAMBLE,
   DRAFTER_PLACEMENT_CONTRACT,
   CRITIC_PREAMBLE,
@@ -11,7 +11,7 @@ import { validateOpenScadCode } from './code-validator';
 
 const PROMPTS: Record<string, string> = {
   CAD_AI_SYSTEM_PROMPT,
-  ARCHITECT_PREAMBLE,
+  ARCHITECT_VARIANT_PREAMBLE, ARCHITECT_PLANNER_PREAMBLE,
   DRAFTER_PREAMBLE,
   DRAFTER_PLACEMENT_CONTRACT,
   CRITIC_PREAMBLE,
@@ -39,14 +39,14 @@ const words = (s: string) => s.trim().split(/\s+/).length;
  * preamble on its node's calls, so a rewrite that quietly doubles one of them
  * costs tokens on every run - this makes that a failing test rather than a
  * slow drift.
- * ARCHITECT_PREAMBLE was 519/520 before the DESIGN APPROACH rule; raised once for it.
+ * ARCHITECT_VARIANT_PREAMBLE was 519/520 before the DESIGN APPROACH rule; raised once for it.
  * Raised again when spec coherence and declared holes became enforced checks:
  * removing the fabrication framing paid for them, so the cost that actually
  * matters - system prompt plus preamble, per call - stayed within 3 %.
  */
 const WORD_BUDGET: Record<string, number> = {
   CAD_AI_SYSTEM_PROMPT: 900,
-  ARCHITECT_PREAMBLE: 680,
+  ARCHITECT_VARIANT_PREAMBLE: 680, ARCHITECT_PLANNER_PREAMBLE: 680,
   DRAFTER_PREAMBLE: 560,
   DRAFTER_PLACEMENT_CONTRACT: 260,
   CRITIC_PREAMBLE: 460,
@@ -99,7 +99,7 @@ describe('system prompts', () => {
   it('teaches every node the spec fields for flat faces and stress points, and no edge treatments', () => {
     for (const field of ['bedFace', 'stressPoints']) {
       expect(CAD_AI_SYSTEM_PROMPT).toContain(field);
-      expect(ARCHITECT_PREAMBLE).toContain(field);
+      expect(ARCHITECT_VARIANT_PREAMBLE).toContain(field);
     }
     // Edge treatments were removed from generation: no prompt may ask for or
     // teach a chamfer, fillet, round, elephant-foot or lead-in. Sentences that
@@ -114,7 +114,7 @@ describe('system prompts', () => {
     }
     expect(CAD_AI_SYSTEM_PROMPT).toMatch(/Edges stay sharp/);
     // Gussets are declared as numbers by the Architect and built by code.
-    expect(ARCHITECT_PREAMBLE).toContain('stressPoints[].gusset');
+    expect(ARCHITECT_VARIANT_PREAMBLE).toContain('stressPoints[].gusset');
     expect(DRAFTER_PREAMBLE).toMatch(/never model a gusset/i);
     expect(REPAIR_PREAMBLE).toMatch(/never model or remove one/i);
 
@@ -132,10 +132,10 @@ describe('system prompts', () => {
       expect(text, `${name} still offers a print layout`).not.toMatch(/print layout/i);
     }
     for (const field of ['localExtents', 'positionNote']) {
-      expect(ARCHITECT_PREAMBLE).toContain(field);
+      expect(ARCHITECT_VARIANT_PREAMBLE).toContain(field);
     }
     expect(CAD_AI_SYSTEM_PROMPT).toMatch(/ground plane; nothing is ever below it/);
-    expect(ARCHITECT_PREAMBLE).toMatch(/below z = 0/);
+    expect(ARCHITECT_VARIANT_PREAMBLE).toMatch(/below z = 0/);
     expect(DRAFTER_PREAMBLE).toMatch(/below z = 0/);
     expect(DRAFTER_PREAMBLE).toContain('localExtents');
     expect(DRAFTER_PLACEMENT_CONTRACT).toContain('localExtents');
@@ -152,18 +152,18 @@ describe('system prompts', () => {
     expect(CAD_AI_SYSTEM_PROMPT).toMatch(/Edges stay sharp/);
     expect(CAD_AI_SYSTEM_PROMPT).toMatch(/nothing is ever below it/);
     // Scope discipline: the request is the brief, not a starting point.
-    expect(ARCHITECT_PREAMBLE).toMatch(/BUILD WHAT WAS ASKED FOR/);
+    expect(ARCHITECT_PLANNER_PREAMBLE).toMatch(/BUILD WHAT WAS ASKED FOR/);
   });
 
   it('teaches the checks that close the placement blind spots', () => {
     // Spec self-coherence: the only check that can catch the Architect.
-    expect(ARCHITECT_PREAMBLE).toMatch(/COHERENCE IS CHECKED/);
+    expect(ARCHITECT_VARIANT_PREAMBLE).toMatch(/COHERENCE IS CHECKED/);
     expect(REPAIR_PREAMBLE).toContain('coherence');
     // Rotation semantics, the arithmetic that produced wrong angled joints.
     expect(CAD_AI_SYSTEM_PROMPT).toMatch(/about its OWN min corner/);
     expect(CAD_AI_SYSTEM_PROMPT).toMatch(/180 - a/);
     // Declared holes, probed after the compile.
-    for (const text of [CAD_AI_SYSTEM_PROMPT, ARCHITECT_PREAMBLE, DRAFTER_PREAMBLE]) {
+    for (const text of [CAD_AI_SYSTEM_PROMPT, ARCHITECT_VARIANT_PREAMBLE, DRAFTER_PREAMBLE]) {
       expect(text).toContain('holes');
     }
     expect(REPAIR_PREAMBLE).toContain('feature');

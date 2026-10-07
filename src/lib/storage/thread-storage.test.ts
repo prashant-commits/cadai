@@ -80,7 +80,7 @@ describe('thread-storage', () => {
   });
 
   it('round-trips threads, messages and per-message code across the three stores', async () => {
-    const target = thread({ id: 'thread-a', stlContent: 'solid x', selectedModel: 'deepseek-v4-pro' });
+    const target = thread({ id: 'thread-a', stlContent: 'solid x', selectedModel: 'gpt-6-luna' });
     await upsertThread(target);
     await upsertMessage('thread-a', {
       id: 'm2',
@@ -354,7 +354,7 @@ describe('thread-storage', () => {
     });
 
     it('keeps a slug the gateway still serves', () => {
-      expect(coerceModelSlug('deepseek-v4-pro')).toBe('deepseek-v4-pro');
+      expect(coerceModelSlug('gpt-6-luna')).toBe('gpt-6-luna');
       expect(coerceModelSlug('gpt-5.6-luna')).toBe('gpt-5.6-luna');
     });
 
@@ -371,11 +371,18 @@ describe('thread-storage', () => {
       expect(threads[0].selectedModel).toBe(DEFAULT_MODEL);
     });
 
-    it('leaves a thread saved with a live gateway slug alone', async () => {
-      await upsertThread(thread({ id: 'thread-a', selectedModel: 'deepseek-v3.1' }));
+    it('loads a thread saved with a retired deepseek slug on the default model', async () => {
+      await upsertThread(thread({ id: 'thread-a', selectedModel: 'deepseek-v4-flash' }));
 
       const { threads } = await loadAllThreads();
-      expect(threads[0].selectedModel).toBe('deepseek-v3.1');
+      expect(threads[0].selectedModel).toBe(DEFAULT_MODEL);
+    });
+
+    it('leaves a thread saved with a live gateway slug alone', async () => {
+      await upsertThread(thread({ id: 'thread-a', selectedModel: 'gpt-6-luna' }));
+
+      const { threads } = await loadAllThreads();
+      expect(threads[0].selectedModel).toBe('gpt-6-luna');
     });
 
     it('starts a new thread on the gateway default', () => {

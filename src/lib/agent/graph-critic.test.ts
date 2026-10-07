@@ -17,6 +17,7 @@ vi.mock('@langchain/openai', () => {
     // one call index, so every ordering assertion in this file still holds.
     async *stream(...args: unknown[]) { yield await invokeMock(...args); }
     withStructuredOutput() { return this; }
+    withConfig() { return this; }
     bindTools() { return this; }
   }
   return { ChatOpenAI: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
@@ -59,7 +60,8 @@ function gatePayload(result: any) {
 
 /** A clean run: architect, then a drafter whose code compiles and matches. */
 function queueCleanRun() {
-  invokeMock.mockResolvedValueOnce(baseSpec());
+  invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
+    invokeMock.mockResolvedValueOnce(baseSpec());
   invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
 }
 
@@ -79,7 +81,7 @@ describe('visual critic', () => {
     await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, { configurable: { thread_id: newKey() } });
 
     // Call 2 is the critic.
-    const criticMessages = invokeMock.mock.calls[2][0] as any[];
+    const criticMessages = invokeMock.mock.calls[3][0] as any[];
     const human = criticMessages[criticMessages.length - 1];
     const parts = human.content as Array<Record<string, any>>;
 
@@ -143,6 +145,7 @@ describe('visual critic', () => {
   it('does not critique code that failed to compile', async () => {
     // Broken syntax on every attempt: the run exhausts its budget and ends
     // without ever producing geometry worth looking at.
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce(baseSpec());
     invokeMock.mockResolvedValue(draftResponse('cube([40,40,40);'));
 
@@ -177,6 +180,6 @@ describe('visual critic', () => {
     await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, { configurable: { thread_id: newKey() } });
 
     // Architect + drafter only - no third call was made.
-    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(invokeMock).toHaveBeenCalledTimes(3);
   });
 });

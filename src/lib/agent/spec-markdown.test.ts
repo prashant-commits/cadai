@@ -56,4 +56,20 @@ describe('createSpecRenderer', () => {
     r.push({ assemblyName: 'bracket_body' });
     expect(r.push({ assemblyName: 'bracket_body', __done: true })).toContain('bracket_body');
   });
+
+  it('renders components with shape, extents, and position', () => {
+    const r = createSpecRenderer();
+    const out = r.push({
+      components: [
+        {
+          name: 'box_plate',
+          shape: { kind: 'box' },
+          localExtents: [40, 30, 5],
+          position: [0, 0, 0],
+        },
+      ],
+      __done: true,
+    });
+    expect(out).toContain('- box_plate: box 40x30x5 mm @ [0, 0, 0]');
+  });
 });
