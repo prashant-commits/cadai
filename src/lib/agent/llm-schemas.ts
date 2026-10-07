@@ -41,8 +41,8 @@ export const ArchitectPlanSchema = z.object({
       z.object({
         id: z.string(),
         question: z.string(),
-        // NOT optional: strict json_schema requires every property in `required`.
-        options: z.array(z.string()),
+        // `.default`, not `.optional()`: strict json_schema lists defaulted keys as required, and a reply that omits it still parses.
+        options: z.array(z.string()).default([]),
         suggestedAnswer: z.string().default(''),
       })
     )
