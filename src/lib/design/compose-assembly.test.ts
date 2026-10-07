@@ -17,6 +17,8 @@ function spec(components: AssemblySpec['components']): AssemblySpec {
     stressPoints: [],
     assumptions: [],
     openQuestions: [],
+    sheet: '',
+    guides: []
   };
 }
 
