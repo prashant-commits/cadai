@@ -97,7 +97,7 @@ describe('system prompts', () => {
   });
 
   it('teaches every node the spec fields for flat faces and stress points, and no edge treatments', () => {
-    for (const field of ['bedFace', 'matingFaces', 'stressPoints']) {
+    for (const field of ['bedFace', 'stressPoints']) {
       expect(CAD_AI_SYSTEM_PROMPT).toContain(field);
       expect(ARCHITECT_PREAMBLE).toContain(field);
     }
@@ -132,7 +132,7 @@ describe('system prompts', () => {
       expect(text, `${name} still talks about PRINT pose authoring`).not.toMatch(/PRINT pose/);
       expect(text, `${name} still offers a print layout`).not.toMatch(/print layout/i);
     }
-    for (const field of ['localExtents', 'positionNote', 'useModules']) {
+    for (const field of ['localExtents', 'positionNote']) {
       expect(ARCHITECT_PREAMBLE).toContain(field);
     }
     expect(CAD_AI_SYSTEM_PROMPT).toMatch(/ground plane; nothing is ever below it/);

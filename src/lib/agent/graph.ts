@@ -34,7 +34,9 @@ import { auditSpecCoherence } from './spec-coherence';
 import { auditModuleGuards } from '../design/module-guards';
 import { auditHoles } from './hole-audit';
 import { normalizeSpec } from './spec-normalize';
+import { auditSpecShapes } from './spec-shape-audit';
 import { checkInterference } from '../engine/assembly-verifier';
+import { nullsToUndefined } from './strict-schema';
 import { getCheckpointer } from './checkpointer';
 import { resolveSearchProvider } from '../research/search-provider';
 import { chooseApproach, approachBlock, type ChosenApproach, type DesignBrief } from '../research/design-brief';
@@ -224,7 +226,6 @@ function criticSpecSummary(spec: AssemblySpec | null): string {
   for (const c of spec.components ?? []) {
     const extras = [];
     if (c.bedFace) extras.push(`expected bed face ${c.bedFace}`);
-    if (c.matingFaces?.length) extras.push(`flat mating faces: ${c.matingFaces.join(', ')}`);
     lines.push(`- ${c.name}: ${c.description}${extras.length ? ` (${extras.join('; ')})` : ''}`);
   }
   for (const s of spec.stressPoints ?? []) {
@@ -296,10 +297,9 @@ function summarizeSpec(spec: AssemblySpec): string {
     );
   }
   for (const c of spec.components ?? []) {
-    if (!c.bedFace && !c.matingFaces?.length) continue;
+    if (!c.bedFace) continue;
     const parts = [];
     if (c.bedFace) parts.push(`bed face ${c.bedFace}`);
-    if (c.matingFaces?.length) parts.push(`mating faces: ${c.matingFaces.join(', ')}`);
     lines.push(`${c.name} - ${parts.join('; ')}`);
   }
   for (const s of spec.stressPoints ?? []) {
@@ -698,9 +698,7 @@ Sources: ${sourceLinks}` : ''}
         if (tail) write(config, 'architectNode', { t: 'delta', text: tail });
         // The model was given a JSON Schema, so what comes back is an untyped
         // object; zod is what turns it into an AssemblySpec, and a reply that
-        // satisfied the decoder but not the contract must count as a failure
-        // and retry rather than flow onward half-formed.
-        const parsed = AssemblySpecSchema.safeParse(raw);
+        const parsed = AssemblySpecSchema.safeParse(nullsToUndefined(raw));
         if (parsed.success) {
           const candidate = normalizeSpec(parsed.data);
           // Coherence is pure arithmetic over the spec's own numbers, so it can
@@ -711,7 +709,10 @@ Sources: ${sourceLinks}` : ''}
           // wrong. On the last attempt it is accepted anyway: a spec that is
           // merely inconsistent still beats no spec, and validateCode repeats
           // the check so the violation is never lost.
-          const incoherent = auditSpecCoherence(candidate).filter((v) => v.severity === 'error');
+          const incoherent = [
+            ...auditSpecCoherence(candidate).filter((v) => v.severity === 'error'),
+            ...auditSpecShapes(candidate).filter((v) => v.severity === 'error')
+          ];
           if (incoherent.length > 0 && attempt < MAX_ARCHITECT_ATTEMPTS - 1) {
             lastError = incoherent.map((v) => v.message).join(' ');
             console.warn(
@@ -787,7 +788,7 @@ Sources: ${sourceLinks}` : ''}
     // draft entirely - an empty script gives the repair loop nothing to work with.
     const contract = contractLines(state.designContract);
     const drafterPrompt = state.assemblySpec
-      ? `Implement the Architect Spec below as one complete OpenSCAD script. Honour every field: matingFaces flat, each stressPoint mitigation built exactly as sized, joints at their declared clearance, every edge sharp.
+      ? `Implement the Architect Spec below as one complete OpenSCAD script. Honour every field: each stressPoint mitigation built exactly as sized, joints at their declared clearance, every edge sharp.
 
 Architect Spec:
 ${JSON.stringify(state.assemblySpec, null, 2)}
@@ -909,6 +910,7 @@ ${contract}`;
     // or a spec that skipped the gate has never been through it, and a repair
     // prompt that never sees the contradiction cannot resolve it.
     specViolations.push(...auditSpecCoherence(state.assemblySpec));
+    specViolations.push(...auditSpecShapes(state.assemblySpec));
 
     // Handedness: static, because a mirrored part measures identically to the
     // one the spec asked for and no geometric check can separate them.

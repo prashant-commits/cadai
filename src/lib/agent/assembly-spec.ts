@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { toStrictJsonSchema } from './strict-schema';
 
 /**
  * A 3-vector in millimetres (positions) or degrees (rotations).
@@ -12,6 +13,10 @@ import { z } from 'zod';
  */
 const Vec3 = z.array(z.number()).length(3);
 
+export const Vec2 = z.array(z.number()).length(2);           // NOT z.tuple (prefixItems breaks decoders)
+export const AxisSchema = z.enum(['x', 'y', 'z']);
+export const PlaneSchema = z.enum(['xy', 'xz', 'yz']);
+
 /**
  * The local face of a component that lies on the build plate when it is
  * printed. Declared by the Architect so the Drafter authors that face planar
@@ -20,6 +25,30 @@ const Vec3 = z.array(z.number()).length(3);
  */
 export const BedFaceSchema = z.enum(['-Z', '+Z', '-X', '+X', '-Y', '+Y']);
 export type BedFace = z.infer<typeof BedFaceSchema>;
+
+export const ShapeKindSchema = z.enum(['box', 'cylinder', 'tube', 'shell', 'profile']);
+export const ShapeSchema = z.object({
+  kind: ShapeKindSchema,
+  axis: AxisSchema.optional(),        // cylinder, tube
+  innerD: z.number().optional(),      // tube
+  wall: z.number().optional(),        // shell
+  openFace: BedFaceSchema.optional(), // shell: the open face, same six-value enum as bedFace
+  plane: PlaneSchema.optional(),      // profile
+  points: z.array(Vec2).optional(),   // profile outline
+  holes: z.array(z.array(Vec2)).optional(), // profile inner outlines
+});
+export type Shape = z.infer<typeof ShapeSchema>;
+
+export const GuideSchema = z.object({
+  label: z.string(),
+  kind: z.enum(['envelope', 'line']),
+  shape: ShapeSchema.optional(),       // envelope; absent = box
+  localExtents: Vec3.optional(),       // envelope
+  position: Vec3.optional(),           // envelope: min corner in assembly coordinates
+  rotation: Vec3.optional(),           // envelope: degrees about its own min corner, applied first
+  points: z.array(Vec3).optional(),    // line: 2..12 points in assembly coordinates
+});
+export type Guide = z.infer<typeof GuideSchema>;
 
 /*
  * Edge treatments (chamfers, fillets, rounds, elephant-foot, lead-ins) were
@@ -100,17 +129,8 @@ export const StressPointSchema = z.object({
 });
 export type StressPoint = z.infer<typeof StressPointSchema>;
 
-const DimensionsSchema = z.object({
-  length: z.number().optional(),
-  width: z.number().optional(),
-  height: z.number().optional(),
-  depth: z.number().optional(),
-  diameter: z.number().optional(),
-  radius: z.number().optional(),
-  thickness: z.number().optional(),
-});
-
 export const AssemblySpecSchema = z.object({
+  sheet: z.string().default(''),
   assemblyName: z.string(),
   boundingBox: z.object({ width: z.number(), length: z.number(), height: z.number() }),
   jointContracts: z.array(z.object({
@@ -123,14 +143,11 @@ export const AssemblySpecSchema = z.object({
      */
     partA: z.string().optional(),
     partB: z.string().optional(),
-    dimensions: DimensionsSchema.optional()
   })).optional(),
   components: z.array(z.object({
     /** snake_case; becomes `module <name>()` verbatim. Normalised after parsing by spec-normalize.ts. */
     name: z.string(),
     description: z.string(),
-    /** Dominant construction of the part; a hint for the drafter, not a constraint. */
-    form: z.enum(['box', 'cylinder', 'profile_extrude', 'revolve', 'shell', 'other']).optional(),
     /**
      * The module's exact size in its own frame, [x, y, z] mm. Required in the
      * request schema; measured after every compile and audited as `extents`.
@@ -161,16 +178,10 @@ export const AssemblySpecSchema = z.object({
      * a hole described only in `description` is not checked by anything.
      */
     holes: z.array(HoleSpecSchema).optional(),
-    /** Engineering registry keys the drafter must fetch for this part. */
-    useModules: z.array(z.string()).optional(),
     bedFace: BedFaceSchema.optional(),
-    /**
-     * Planar datum/mating faces that must stay flat and free of cosmetic
-     * rounding because another part registers against them, e.g.
-     * "+Z (lid seat)". Free text: the face plus what it mates with.
-     */
-    matingFaces: z.array(z.string()).optional(),
+    shape: ShapeSchema.optional(),
   })).optional(),
+  guides: z.array(GuideSchema).default([]),
   /** Stress concentrations the Architect identified, graded and prescribed for. */
   stressPoints: z.array(StressPointSchema).default([]),
   assumptions: z.array(z.object({
@@ -236,8 +247,17 @@ function requireComponentFields(json: Record<string, unknown>, fields: string[])
 export function assemblySpecRequestSchema(): Record<string, unknown> {
   const json = z.toJSONSchema(AssemblySpecSchema) as Record<string, unknown>;
   delete json.$schema;
+  if (json.properties) {
+    delete (json.properties as Record<string, unknown>).specApprovedAt;
+    
+    // Ensure top-level `components` is required before strict transform
+    json.required = [...new Set<string>([...((json.required as string[]) ?? []), 'components'])];
+  }
+  
   // The decoder must emit a placement and extents for every component; the
   // zod schema stays lenient so a model that still omits them degrades to
   // [0,0,0] / unmeasured instead of failing the whole spec.
-  return boundNumbers(requireComponentFields(json, ['position', 'localExtents'])) as Record<string, unknown>;
+  const withReqFields = requireComponentFields(json, ['position', 'localExtents', 'shape']);
+  
+  return boundNumbers(toStrictJsonSchema(withReqFields)) as Record<string, unknown>;
 }

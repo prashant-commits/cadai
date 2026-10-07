@@ -18,7 +18,7 @@ describe('normalizeSpec', () => {
       assemblyName: 'holder',
       boundingBox: { width: 100, length: 120, height: 80 },
       components: [
-        { name: 'Wall Mount Backplate', description: 'b', useModules: ['fastener_hardware', 'nope'] },
+        { name: 'Wall Mount Backplate', description: 'b' },
         { name: 'Cup Receptacle', description: 'c', position: [0, 5, 0] },
       ],
       jointContracts: [{ type: 'cantilever_gusset', clearance: 0, partA: 'Wall Mount Backplate', partB: 'Cup Receptacle' }],
@@ -27,7 +27,6 @@ describe('normalizeSpec', () => {
     const n = normalizeSpec(spec);
     expect(n.components?.map((c) => c.name)).toEqual(['wall_mount_backplate', 'cup_receptacle']);
     expect(n.components?.[0].position).toEqual([0, 0, 0]);
-    expect(n.components?.[0].useModules).toEqual(['fastener_hardware']);
     expect(n.components?.[1].position).toEqual([0, 5, 0]);
     expect(n.jointContracts?.[0]).toMatchObject({ partA: 'wall_mount_backplate', partB: 'cup_receptacle' });
     expect(n.stressPoints[0].component).toBe('wall_mount_backplate');
