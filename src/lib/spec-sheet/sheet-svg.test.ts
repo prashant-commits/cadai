@@ -76,27 +76,48 @@ describe('renderVariantSheet', () => {
   });
 
   it('uses a 320 px view and keeps text at least 11 px by default', () => {
-    const spec: AssemblySpec = {
-      sheet: '',
-      assemblyName: 'one',
-      boundingBox: { width: 10, length: 10, height: 10 },
-      components: [
-        {
-          name: 'block',
-          description: 'box',
-          localExtents: [10, 10, 10],
-          position: [0, 0, 0],
-          shape: { kind: 'box' },
-        },
-      ],
-      guides: [],
-      stressPoints: [],
-      assumptions: [],
-      openQuestions: [],
-    };
-    const { svg } = renderVariantSheet({ id: 'B', name: 'plain', spec });
+    const { svg } = renderVariantSheet({ id: 'B', name: 'plain', spec: boxSpec() });
+    expect(svg).not.toContain('Dashed = guide (not built)');
+    expect(svg).not.toContain('Dark discs = holes');
     expect(svg.match(/<image\b[^>]*width="320"/g)).toHaveLength(4);
     const sizes = [...svg.matchAll(/font-size="([0-9.]+)"/g)].map((match) => Number(match[1]));
     for (const size of sizes) expect(size).toBeGreaterThanOrEqual(11);
   });
+
+  it('prints the guide legend only when the spec has guides', () => {
+    const spec = boxSpec();
+    spec.guides = [{ label: 'keep_out', kind: 'line', points: [[0, 0, 12], [10, 0, 12]] }];
+    const { svg } = renderVariantSheet({ id: 'A', name: 'guided', spec }, { viewSize: 48 });
+    expect(svg).toContain('Dashed = guide (not built)');
+    expect(svg).not.toContain('Dark discs = holes');
+  });
+
+  it('prints the hole legend only when a component declares holes', () => {
+    const spec = boxSpec();
+    spec.components![0].holes = [{ d: 3, axis: 'z', at: [5, 5, 10] }];
+    const { svg } = renderVariantSheet({ id: 'C', name: 'drilled', spec }, { viewSize: 48 });
+    expect(svg).toContain('Dark discs = holes');
+    expect(svg).not.toContain('Dashed = guide (not built)');
+  });
 });
+
+function boxSpec(): AssemblySpec {
+  return {
+    sheet: '',
+    assemblyName: 'one',
+    boundingBox: { width: 10, length: 10, height: 10 },
+    components: [
+      {
+        name: 'block',
+        description: 'box',
+        localExtents: [10, 10, 10],
+        position: [0, 0, 0],
+        shape: { kind: 'box' },
+      },
+    ],
+    guides: [],
+    stressPoints: [],
+    assumptions: [],
+    openQuestions: [],
+  };
+}

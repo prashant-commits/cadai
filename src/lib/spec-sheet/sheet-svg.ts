@@ -58,6 +58,12 @@ export function renderVariantSheet(
   });
 
   const idea = input.idea?.trim() ?? '';
+  const legendLines = [
+    ...(input.spec.guides?.length ? ['Dashed = guide (not built)'] : []),
+    ...((input.spec.components ?? []).some((component) => (component.holes?.length ?? 0) > 0)
+      ? ['Dark discs = holes']
+      : []),
+  ];
   const notes = [
     ...(input.notes ?? []).map((note) => note.trim()).filter((note) => note.length > 0),
     ...geo.skipped.map((item) => `${item.name}: ${item.reason}`),
@@ -68,7 +74,7 @@ export function renderVariantSheet(
   const rowGap = 24;
   const captionH = 22;
   const titleH = idea ? 92 : 70;
-  const legendRows = geo.parts.length + 2;
+  const legendRows = geo.parts.length + legendLines.length;
   const legendH = 12 + legendRows * 22;
   const notesH = notes.length > 0 ? 8 + notes.length * 20 : 0;
   const gridW = viewSize * 2 + colGap;
@@ -160,8 +166,9 @@ export function renderVariantSheet(
     body.push(text(margin + 20, y + 11, FONT.legend, part.name, 'fill="#1c1b19"'));
   });
   legendY += geo.parts.length * 22;
-  body.push(text(margin, legendY + 12, FONT.legend, 'Dashed = guide (not built)', 'fill="#5e5a54"'));
-  body.push(text(margin, legendY + 34, FONT.legend, 'Dark discs = holes', 'fill="#5e5a54"'));
+  legendLines.forEach((line, index) => {
+    body.push(text(margin, legendY + 12 + index * 22, FONT.legend, line, 'fill="#5e5a54"'));
+  });
 
   notes.forEach((note, index) => {
     const y = titleH + gridH + legendH + index * 20;

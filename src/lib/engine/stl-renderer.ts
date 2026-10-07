@@ -248,8 +248,9 @@ interface RasterOptions {
 
 /**
  * Flat-shaded z-buffer. Grayscale keeps the STL critic's ramp
- * (`40 + intensity * 215`); colour multiplies the triangle RGB by the same
- * intensity, then both apply the same depth cue per channel.
+ * (`40 + intensity * 215`) and the full depth cue. Colour uses a brighter
+ * ramp (`color * (0.5 + 0.5 * intensity)`) and half that depth cue, so a
+ * face turned away from the light still reads as its legend hue.
  */
 function rasterize(
   tris: { a: Vec3; b: Vec3; c: Vec3; color?: RGB }[],
@@ -296,10 +297,11 @@ function rasterize(
       shaded = [shade, shade, shade];
     } else {
       const color = tri.color ?? DEFAULT_RGB_BACKGROUND;
+      const lit = 0.5 + 0.5 * intensity;
       shaded = [
-        clampByte(Math.round(color[0] * intensity)),
-        clampByte(Math.round(color[1] * intensity)),
-        clampByte(Math.round(color[2] * intensity)),
+        clampByte(Math.round(color[0] * lit)),
+        clampByte(Math.round(color[1] * lit)),
+        clampByte(Math.round(color[2] * lit)),
       ];
     }
 
@@ -355,10 +357,11 @@ function rasterize(
     for (let i = 0; i < size * size; i++) {
       if (depth[i] === Infinity) continue;
       const t = (depth[i] - nearest) / span; // 0 near, 1 far
-      const factor = 1 - DEPTH_CUE * t;
       if (channels === 1) {
+        const factor = 1 - DEPTH_CUE * t;
         pixels[i] = clampByte(Math.round(pixels[i] * factor));
       } else {
+        const factor = 1 - (DEPTH_CUE / 2) * t;
         for (let c = 0; c < 3; c++) {
           const o = i * 3 + c;
           pixels[o] = clampByte(Math.round(pixels[o] * factor));

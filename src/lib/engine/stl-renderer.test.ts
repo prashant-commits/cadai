@@ -435,6 +435,26 @@ describe('renderTriangleViews', () => {
     }
   });
 
+  it('keeps every iso pixel of a red box red and at least 100', () => {
+    const size = 96;
+    const box = boxTriangles(20, 20, 20, 0, 0, 0, red);
+    const { views } = renderTriangleViews(box, {
+      size,
+      views: ['iso'],
+      background: [BACKGROUND, BACKGROUND, BACKGROUND],
+    });
+    const { pixels } = decodeRgbPng(pngBytes(views[0].dataUrl));
+    let drawn = 0;
+    for (let i = 0; i < pixels.length; i += 3) {
+      const pixel: RGB = [pixels[i], pixels[i + 1], pixels[i + 2]];
+      if (pixel[0] === BACKGROUND && pixel[1] === BACKGROUND && pixel[2] === BACKGROUND) continue;
+      drawn += 1;
+      expectRedDominant(pixel);
+      expect(pixel[0]).toBeGreaterThanOrEqual(100);
+    }
+    expect(drawn).toBeGreaterThan(0);
+  });
+
   it('returns nothing when there is no geometry to frame', () => {
     expect(renderTriangleViews([])).toEqual({ views: [], cameras: [] });
   });
