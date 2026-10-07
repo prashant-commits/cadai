@@ -8,7 +8,7 @@ import { ThreadDrawer } from './thread-drawer';
 import { GateDock } from './gate-dock';
 import { readStream } from '@/lib/stream-reader';
 import { serializeTranscript } from '@/lib/agent/transcript';
-import { resumableGate, freezeStreamingMessages } from '@/lib/chat/rehydrate';
+import { resumableGate, freezeStreamingMessages, stripUnchosenSheets } from '@/lib/chat/rehydrate';
 import { compileOpenScad } from '@/lib/engine/openscad-bridge';
 import { parseStlToGeometry } from '@/lib/engine/geometry-utils';
 import { ChatMessage, GatePayload, GateDecision, GateRecord } from '@/types';
@@ -297,6 +297,7 @@ export function ChatPanel() {
     if (openId) {
       gates[openId] = {
         ...gates[openId],
+        payload: stripUnchosenSheets(gates[openId].payload, decision),
         decision,
         decidedAt: Date.now(),
         status:
