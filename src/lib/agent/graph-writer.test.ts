@@ -7,6 +7,7 @@ vi.mock('@langchain/openai', () => {
     invoke = invokeMock;
     stream = streamMock;
     withStructuredOutput() { return this; }
+    withConfig() { return this; }
     bindTools() { return this; }
   }
   return { ChatOpenAI: vi.fn().mockImplementation(function () { return new F(); }) };
@@ -32,18 +33,19 @@ describe('graph custom-channel writes', () => {
 
   it('streams the architect spec as markdown deltas tagged with the node id', async () => {
     // withStructuredOutput().stream() yields progressively-complete objects.
-    streamMock.mockReturnValueOnce(
-      (async function* () {
-        yield { assemblyName: 'bracket_body' };
-        yield { assemblyName: 'bracket_body', boundingBox: { width: 62, length: 40, height: 18 } };
-        yield {
-          assemblyName: 'bracket_body',
-          boundingBox: { width: 62, length: 40, height: 18 },
-          components: [{ name: 'body', description: 'main body' }],
-          assumptions: [], openQuestions: [],
-        };
-      })()
-    );
+    streamMock.mockReturnValueOnce((async function* () {
+      yield { brief: 'b' };
+      yield { brief: 'br' };
+      yield { brief: 'bracket_body', variants: [{id:'A', name:'bracket', idea:'bracket'}] };
+    })());
+    
+    invokeMock.mockResolvedValueOnce({
+      assemblyName: 'bracket_body',
+      sheet: '62 x 40 x 18 mm',
+      boundingBox: { width: 62, length: 40, height: 18 },
+      components: [{ name: 'body', description: 'main body' }],
+      assumptions: [], openQuestions: []
+    });
 
     const agent = createCadAgent( 'deepseek-v4-flash');
     const key = runCheckpointKey('writer-test', 'run-1');

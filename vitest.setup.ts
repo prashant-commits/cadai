@@ -9,3 +9,5 @@ import 'fake-indexeddb/auto';
 // network call; the model layer is mocked at the call site.
 process.env.EXPLABS_API_KEY ||= 'test-explabs-key';
 
+
+process.env.CADAI_MAX_VARIANTS = '1';

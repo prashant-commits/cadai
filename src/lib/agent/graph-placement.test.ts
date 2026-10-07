@@ -17,6 +17,7 @@ vi.mock('@langchain/openai', () => {
     // one call index, so every ordering assertion in this file still holds.
     async *stream(...args: unknown[]) { yield await invokeMock(...args); }
     withStructuredOutput() { return this; }
+    withConfig() { return this; }
     bindTools() { return this; }
   }
   return { ChatOpenAI: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
@@ -95,7 +96,8 @@ describe('deterministic assembly placement', () => {
     const saved = process.env.CADAI_MAX_ATTEMPTS;
     delete process.env.CADAI_MAX_ATTEMPTS;
     try {
-      invokeMock.mockResolvedValueOnce(TWO_PART_SPEC);
+      invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
+    invokeMock.mockResolvedValueOnce(TWO_PART_SPEC);
       invokeMock.mockResolvedValueOnce(draft('module base_plate() { cube([40,40,5); }'));
       invokeMock.mockResolvedValue(draft(MODULES_ONLY));
 
@@ -113,6 +115,7 @@ describe('deterministic assembly placement', () => {
   });
 
   it('compiles placed geometry that the model never positioned itself', async () => {
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce(TWO_PART_SPEC);
     invokeMock.mockResolvedValueOnce(draft(MODULES_ONLY));
 
@@ -137,6 +140,7 @@ describe('deterministic assembly placement', () => {
   });
 
   it('imposes the placement contract whenever the spec has components', async () => {
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce({
       ...TWO_PART_SPEC,
       components: [{ name: 'base_plate', description: 'base' }, { name: 'upright', description: 'arm' }],
@@ -148,13 +152,14 @@ describe('deterministic assembly placement', () => {
     const agent = createCadAgent( 'm');
     await runApproved(agent, { configurable: { thread_id: newKey() } }, 'a 40mm bracket');
 
-    const drafterSystem = String((invokeMock.mock.calls[1][0] as any[])[0].content);
+    const drafterSystem = String((invokeMock.mock.calls[2][0] as any[])[0].content);
     expect(drafterSystem).toContain('PLACEMENT CONTRACT');
   });
 
   it('replaces a model-authored assembly with the spec placement', async () => {
     // The drafter ignored the contract and put the upright 99mm up.
     const authored = `${MODULES_ONLY}\nunion() { base_plate(); translate([0,0,99]) upright(); }`;
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce(TWO_PART_SPEC);
     invokeMock.mockResolvedValueOnce(draft(authored));
 
@@ -175,6 +180,7 @@ describe('deterministic assembly placement', () => {
 module base_plate() { cube([40, 40, 5]); }
 module upright() { translate([-2.5, 0, -30]) cube([5, 40, 30]); }
 `;
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce(TWO_PART_SPEC);
     invokeMock.mockResolvedValueOnce(draft(hanging));
 
@@ -192,6 +198,7 @@ module upright() { translate([-2.5, 0, -30]) cube([5, 40, 30]); }
   });
 
   it('reports a part the spec leaves hovering', async () => {
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce({
       ...TWO_PART_SPEC,
       boundingBox: { width: 40, length: 40, height: 45 },
@@ -216,6 +223,7 @@ module upright() { translate([-2.5, 0, -30]) cube([5, 40, 30]); }
   });
 
   it('generates the spec\'s gussets so the drafter never models one', async () => {
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce({
       ...TWO_PART_SPEC,
       stressPoints: [{
@@ -239,6 +247,7 @@ module upright() { translate([-2.5, 0, -30]) cube([5, 40, 30]); }
   });
 
   it('normalises free-text component names before drafting', async () => {
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce({
       ...TWO_PART_SPEC,
       components: [
@@ -258,6 +267,7 @@ module upright() { translate([-2.5, 0, -30]) cube([5, 40, 30]); }
   });
 
   it('keeps placement spec-driven across a repair', async () => {
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce(TWO_PART_SPEC);
     // Draft: modules are broken, so a repair is forced.
     invokeMock.mockResolvedValueOnce(draft('module base_plate() { cube([40,40,5); }'));
@@ -305,7 +315,8 @@ module peg() {
 
     it('flags parts that interpenetrate despite a declared clearance', async () => {
       // Peg starts at z=5, inside a base that runs to z=10: 10x10x5 of overlap.
-      invokeMock.mockResolvedValueOnce(fitSpec(5, 15));
+      invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
+    invokeMock.mockResolvedValueOnce(fitSpec(5, 15));
       invokeMock.mockResolvedValueOnce(draft(FIT_MODULES));
       // An interference violation is an error, so a repair is attempted.
       invokeMock.mockResolvedValue(draft(FIT_MODULES));
@@ -326,7 +337,8 @@ module peg() {
 
     it('stays silent when the parts genuinely clear each other', async () => {
       // Peg floats above the base with a real gap.
-      invokeMock.mockResolvedValueOnce(fitSpec(15, 25));
+      invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
+    invokeMock.mockResolvedValueOnce(fitSpec(15, 25));
       invokeMock.mockResolvedValueOnce(draft(FIT_MODULES));
       invokeMock.mockResolvedValue(draft(FIT_MODULES));
 
@@ -342,6 +354,7 @@ module peg() {
   it('shows the repair model the modules without the generated block', async () => {
     // A spec that declares 99mm tall while the parts build to 35mm: the draft
     // composes and compiles, then fails the bbox audit, forcing a real repair.
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce({
       ...TWO_PART_SPEC,
       boundingBox: { width: 40, length: 40, height: 99 },
@@ -354,7 +367,7 @@ module peg() {
     await runApproved(agent, config, 'a 40mm bracket');
 
     // Call 2 is the repair.
-    const repairPrompt = (invokeMock.mock.calls[2][0] as any[])
+    const repairPrompt = (invokeMock.mock.calls[3][0] as any[])
       .map((m) => String(m.content))
       .join('\n');
 
@@ -376,7 +389,8 @@ module upright() { translate([0, 0, -30]) cube([5, 40, 30]); }
 base_plate();
 translate([0, 0, 5]) upright();
 `;
-      invokeMock.mockResolvedValueOnce(TWO_PART_SPEC);
+      invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
+    invokeMock.mockResolvedValueOnce(TWO_PART_SPEC);
       invokeMock.mockResolvedValueOnce(draft(authored));
       invokeMock.mockResolvedValue(draft(authored));
 
@@ -407,8 +421,9 @@ module base() { cube([40, 40, 10]); }
 module peg() { cube([10, 10, 10]); }
 union() { base(); translate([10, 10, 15]) peg(); }
 `;
-      invokeMock.mockResolvedValueOnce({
-        assemblyName: 'fit', boundingBox: { width: 40, length: 40, height: 25 },
+      invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
+    invokeMock.mockResolvedValueOnce({
+      assemblyName: 'fit', boundingBox: { width: 40, length: 40, height: 25 },
         components: [
           { name: 'base', description: 'base', position: [0, 0, 0] },
           { name: 'peg', description: 'peg', position: [10, 10, 15] },

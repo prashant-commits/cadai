@@ -22,6 +22,7 @@ vi.mock('@langchain/openai', () => {
     // one call index, so every ordering assertion in this file still holds.
     async *stream(...args: unknown[]) { yield await invokeMock(...args); }
     withStructuredOutput() { return this; }
+    withConfig() { return this; }
     bindTools() { return this; }
   }
   return { ChatOpenAI: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
@@ -108,8 +109,8 @@ describe('HIL gating (interrupt/resume)', () => {
   it('pauses at the spec gate with a real payload, and an edited+approved spec becomes the enforced contract', async () => {
     // Architect proposes a spec with an assumption, forcing the gate
     // regardless of prompt wording (deterministic, no prompt-parsing needed).
-    invokeMock.mockResolvedValueOnce(
-      baseSpec({ assumptions: [{ field: 'wall_thickness', value: '2.4mm', rationale: 'default FDM wall' }] })
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
+    invokeMock.mockResolvedValueOnce(baseSpec({ assumptions: [{ field: 'wall_thickness', value: '2.4mm', rationale: 'default FDM wall' }] })
     );
 
     const agent = createCadAgent( 'test-model');
@@ -143,6 +144,7 @@ describe('HIL gating (interrupt/resume)', () => {
   });
 
   it('rejects a malformed edited spec and falls back to the last known-good one', async () => {
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce(baseSpec({ assumptions: [{ field: 'x', value: 'y', rationale: 'z' }] }));
 
     const agent = createCadAgent( 'test-model');
@@ -165,6 +167,7 @@ describe('HIL gating (interrupt/resume)', () => {
 
   it('revise loops back to the architect with the human feedback, capped, then proceeds', async () => {
     // First pass: gated by an assumption.
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce(baseSpec({ assumptions: [{ field: 'x', value: 'y', rationale: 'z' }] }));
 
     const agent = createCadAgent( 'test-model');
@@ -177,6 +180,7 @@ describe('HIL gating (interrupt/resume)', () => {
 
     // Second architect pass (post-revise): no assumptions this time. Then
     // the run proceeds straight through drafting to a clean compile.
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce(baseSpec());
     invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
 
@@ -187,8 +191,8 @@ describe('HIL gating (interrupt/resume)', () => {
 
     // Architect was re-invoked (2nd call), then the run proceeded through
     // drafting (3rd call) since the revised spec no longer gates.
-    expect(invokeMock).toHaveBeenCalledTimes(3);
-    const secondCallMessages = invokeMock.mock.calls[1][0] as any[];
+    expect(invokeMock).toHaveBeenCalledTimes(5);
+    const secondCallMessages = invokeMock.mock.calls[2][0] as any[];
     const sawFeedback = secondCallMessages.some(
       (m) => typeof m.content === 'string' && m.content.includes('use M4 bolts, not M3')
     );
@@ -202,6 +206,7 @@ describe('HIL gating (interrupt/resume)', () => {
   });
 
   it('cancel at the spec gate stops the run and deletes the checkpoint', async () => {
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce(baseSpec({ assumptions: [{ field: 'x', value: 'y', rationale: 'z' }] }));
 
     const agent = createCadAgent( 'test-model');
@@ -215,12 +220,13 @@ describe('HIL gating (interrupt/resume)', () => {
     expect(isInterrupted(resumed)).toBe(false);
     // Cancel routes straight to respondToUser without drafting/validating.
     expect(resumed.currentCode).toBe('');
-    expect(invokeMock).toHaveBeenCalledTimes(1); // architect only, never drafter
+    expect(invokeMock).toHaveBeenCalledTimes(2); // architect only, never drafter
   });
 
   it('gates at accept after a repair, and revise routes back into fixCode with a bumped attempt budget', async () => {
     // No assumptions/joints/multi-component, and the prompt has a dimension,
     // so the spec gate never fires - this run goes straight to drafting.
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce(baseSpec());
     // Drafter emits broken syntax, forcing a repair.
     invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40);'));
@@ -251,7 +257,7 @@ describe('HIL gating (interrupt/resume)', () => {
     );
 
     // The revise decision reached fixCode's own prompt.
-    const fixCallMessages = invokeMock.mock.calls[3][0] as any[];
+    const fixCallMessages = invokeMock.mock.calls[4][0] as any[];
     const sawFeedback = fixCallMessages.some(
       (m) => typeof m.content === 'string' && m.content.includes('make it 45mm tall')
     );
@@ -283,7 +289,8 @@ describe('HIL gating (interrupt/resume)', () => {
       const chatThreadId = newThreadId();
 
       // TURN 1: no assumptions and a dimension in the prompt, so no gate.
-      invokeMock.mockResolvedValueOnce(baseSpec());
+      invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
+    invokeMock.mockResolvedValueOnce(baseSpec());
       invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
       await agent.invoke(
         { messages: [new HumanMessage('a 40mm box')] },
@@ -293,7 +300,8 @@ describe('HIL gating (interrupt/resume)', () => {
       // TURN 2: same chat thread, new run. The client re-sends the whole
       // conversation, exactly as chat-panel.tsx does.
       invokeMock.mockClear();
-      invokeMock.mockResolvedValueOnce(baseSpec({ boundingBox: { width: 80, length: 80, height: 80 } }));
+      invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
+    invokeMock.mockResolvedValueOnce(baseSpec({ boundingBox: { width: 80, length: 80, height: 80 } }));
       invokeMock.mockResolvedValueOnce(draftResponse('cube([80,80,80]);'));
       await agent.invoke(
         {
@@ -324,10 +332,12 @@ describe('HIL gating (interrupt/resume)', () => {
 
       // TURN 1 gates on an assumption, and the human revises with very
       // specific feedback before the run completes.
-      invokeMock.mockResolvedValueOnce(baseSpec({ assumptions: [{ field: 'x', value: 'y', rationale: 'z' }] }));
+      invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
+    invokeMock.mockResolvedValueOnce(baseSpec({ assumptions: [{ field: 'x', value: 'y', rationale: 'z' }] }));
       await agent.invoke({ messages: [new HumanMessage('a 40mm bracket')] }, turn1);
 
-      invokeMock.mockResolvedValueOnce(baseSpec());
+      invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
+    invokeMock.mockResolvedValueOnce(baseSpec());
       invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
       await agent.invoke(
         new Command({ resume: { action: 'revise', comment: 'USE M4 BOLTS NOT M3' } }),
@@ -342,8 +352,8 @@ describe('HIL gating (interrupt/resume)', () => {
 
       // TURN 2 is an unrelated request on the same chat thread.
       invokeMock.mockClear();
-      invokeMock.mockResolvedValueOnce(
-        baseSpec({ assemblyName: 'phone_stand', boundingBox: { width: 90, length: 60, height: 10 } })
+      invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
+    invokeMock.mockResolvedValueOnce(baseSpec({ assemblyName: 'phone_stand', boundingBox: { width: 90, length: 60, height: 10 } })
       );
       invokeMock.mockResolvedValueOnce(draftResponse('cube([90,60,10]);'));
       await agent.invoke(
@@ -365,13 +375,14 @@ describe('HIL gating (interrupt/resume)', () => {
       const config = { configurable: { thread_id: newRunKey(newThreadId()) } };
 
       // Architect pass 1: gates, and proposes a 40mm box.
-      invokeMock.mockResolvedValueOnce(
-        baseSpec({ assumptions: [{ field: 'x', value: 'y', rationale: 'z' }] })
+      invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
+    invokeMock.mockResolvedValueOnce(baseSpec({ assumptions: [{ field: 'x', value: 'y', rationale: 'z' }] })
       );
       await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
 
       // Architect pass 2: the revised spec is 55mm wide and no longer gates.
-      invokeMock.mockResolvedValueOnce(baseSpec({ boundingBox: { width: 55, length: 40, height: 40 } }));
+      invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
+    invokeMock.mockResolvedValueOnce(baseSpec({ boundingBox: { width: 55, length: 40, height: 40 } }));
       invokeMock.mockResolvedValueOnce(draftResponse('cube([55,40,40]);'));
       await agent.invoke(
         new Command({ resume: { action: 'revise', comment: 'make it 55 wide' } }),
@@ -380,8 +391,8 @@ describe('HIL gating (interrupt/resume)', () => {
 
       // Call 2 is the drafter. Exactly one spec reaches it, and it is the
       // revised one - the superseded 40mm spec must not still be in context.
-      const drafterSaw = contentsOf(2);
-      expect(drafterSaw.filter((c) => c.includes('Architect Spec:'))).toHaveLength(1);
+      const drafterSaw = contentsOf(4);
+      expect(drafterSaw.filter((c) => c.includes('Architect Spec Sheet:'))).toHaveLength(1);
       expect(drafterSaw.some((c) => c.includes('"width": 55'))).toBe(true);
       expect(drafterSaw.some((c) => c.includes('"width": 40'))).toBe(false);
 
@@ -396,6 +407,7 @@ describe('HIL gating (interrupt/resume)', () => {
     const config = { configurable: { thread_id: newRunKey(newThreadId()) } };
 
     // No gate: single component, no assumptions, dimension in the prompt.
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce(baseSpec());
     // Attempt 1: broken syntax -> compile failure.
     invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40);'));
@@ -411,7 +423,7 @@ describe('HIL gating (interrupt/resume)', () => {
 
     // architect + draft + 2 repairs. Three calls would mean the semantic
     // failure was dropped without a repair attempt.
-    expect(invokeMock).toHaveBeenCalledTimes(4);
+    expect(invokeMock).toHaveBeenCalledTimes(5);
 
     const state = (await agent.getState(config)).values;
     expect(state.compileFailures).toBe(1);
@@ -427,6 +439,7 @@ describe('HIL gating (interrupt/resume)', () => {
     const agent = createCadAgent( 'test-model');
     const config = { configurable: { thread_id: newRunKey(newThreadId()) } };
 
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce(baseSpec());
     invokeMock.mockResolvedValueOnce(draftResponse('cube([90,90,90]);')); // compiles, wrong size
     invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
@@ -435,7 +448,7 @@ describe('HIL gating (interrupt/resume)', () => {
 
     // Call 2 is the repair. It must be told the script compiled, so it does
     // not go hunting for a syntax error that isn't there.
-    const repairPrompt = contentsOf(2).join('\n');
+    const repairPrompt = contentsOf(3).join('\n');
     expect(repairPrompt).toContain('COMPILED SUCCESSFULLY');
     expect(repairPrompt).toContain('GEOMETRY error');
     expect(repairPrompt).not.toContain('compilation or geometry error');
@@ -445,13 +458,14 @@ describe('HIL gating (interrupt/resume)', () => {
     const agent = createCadAgent( 'test-model');
     const config = { configurable: { thread_id: newRunKey(newThreadId()) } };
 
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce(baseSpec());
     invokeMock.mockResolvedValueOnce(draftResponse('cube([90,90,90]);')); // compiles, wrong size
     invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
 
     await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
 
-    const repairPrompt = contentsOf(2).join('\n');
+    const repairPrompt = contentsOf(3).join('\n');
     // Numbers analyzeStl always computed but the repair prompt never carried.
     expect(repairPrompt).toContain('bottom area');
     expect(repairPrompt).toContain('z = 0');
@@ -468,8 +482,8 @@ describe('HIL gating (interrupt/resume)', () => {
     const agent = createCadAgent( 'test-model');
     const config = { configurable: { thread_id: newRunKey(newThreadId()) } };
 
-    invokeMock.mockResolvedValueOnce(
-      baseSpec({
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
+    invokeMock.mockResolvedValueOnce(baseSpec({
         components: [{ name: 'box', description: 'a box', bedFace: '-Z', matingFaces: ['+Z (lid seat)'] }],
         stressPoints: [
           { location: 'floor/wall junction', loadCase: '20 N bending', risk: 'high', mitigation: '1.8 mm gusset every 25 mm' },
@@ -491,7 +505,7 @@ describe('HIL gating (interrupt/resume)', () => {
 
     // Call 1 is the drafter. The spec JSON must reach it whole, and the
     // contract it is audited against must be spelled out rather than implied.
-    const drafterPrompt = contentsOf(1).join('\n');
+    const drafterPrompt = contentsOf(2).join('\n');
     expect(drafterPrompt).toContain('1.8 mm gusset every 25 mm');
     expect(drafterPrompt).toContain('"bedFace": "-Z"');
     expect(drafterPrompt).toContain('wall_t = 2.4;');
@@ -508,8 +522,8 @@ describe('HIL gating (interrupt/resume)', () => {
     const agent = createCadAgent( 'test-model');
     const config = { configurable: { thread_id: newRunKey(newThreadId()) } };
 
-    invokeMock.mockResolvedValueOnce(
-      baseSpec({
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
+    invokeMock.mockResolvedValueOnce(baseSpec({
         openQuestions: [
           { id: 'q1', question: 'What bolt size?', suggestedAnswer: 'M3' },
           { id: 'q2', question: 'Wall thickness?', suggestedAnswer: '2.4mm' },
@@ -540,11 +554,12 @@ describe('HIL gating (interrupt/resume)', () => {
     const agent = createCadAgent( 'test-model');
     const config = { configurable: { thread_id: newRunKey(newThreadId()) } };
 
-    invokeMock.mockResolvedValueOnce(
-      baseSpec({ openQuestions: [{ id: 'q1', question: 'What bolt size?', suggestedAnswer: 'M3' }] })
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
+    invokeMock.mockResolvedValueOnce(baseSpec({ openQuestions: [{ id: 'q1', question: 'What bolt size?', suggestedAnswer: 'M3' }] })
     );
     await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
 
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce(baseSpec());
     invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
     await agent.invoke(
@@ -554,13 +569,14 @@ describe('HIL gating (interrupt/resume)', () => {
 
     // The re-invoked architect must see BOTH the free-text comment and the
     // answer - previously only the comment survived.
-    const architectPrompt = contentsOf(1).join('\n');
+    const architectPrompt = contentsOf(2).join('\n');
     expect(architectPrompt).toContain('thinner walls');
     expect(architectPrompt).toContain('What bolt size?');
     expect(architectPrompt).toContain('M4');
   });
 
   it('approving at the accept gate proceeds straight to respondToUser', async () => {
+    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
     invokeMock.mockResolvedValueOnce(baseSpec());
     invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40);')); // broken
     invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40]);')); // repaired
