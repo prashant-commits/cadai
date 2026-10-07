@@ -1,5 +1,31 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { metricsFromState, summarize, scoresFor, GenerationMetrics } from './metrics';
+import type { SpecBrief, SpecVariant } from '@/lib/agent/spec-variants';
+import type { SpecViolation } from '@/lib/agent/spec-audit';
+
+const criticEnv = process.env.CADAI_VISUAL_CRITIC;
+afterEach(() => {
+  if (criticEnv === undefined) delete process.env.CADAI_VISUAL_CRITIC;
+  else process.env.CADAI_VISUAL_CRITIC = criticEnv;
+});
+
+function variant(id: SpecVariant['id'], review: SpecVariant['review']): SpecVariant {
+  return {
+    id, name: id, idea: '', spec: null, version: 1, sheetSvg: null, review, retries: 0, needsRevision: false,
+  };
+}
+
+function brief(recommendedId: SpecBrief['recommendedId']): SpecBrief {
+  return { markdown: '', assumptions: [], openQuestions: [], recommendedId };
+}
+
+const visual: SpecViolation = {
+  kind: 'visual', severity: 'warning', field: 'geometry', expected: 'match', measured: 'off', message: 'off',
+};
+
+const counted = {
+  variantCount: 0, variantsValidated: 0, reviewRounds: 0, chosenValidated: null, visualMatch: null,
+} as const;
 
 const violation = (kind: string, severity: 'error' | 'warning' = 'error') =>
   ({ kind, severity, field: '', expected: '', measured: '', message: '' }) as any;
@@ -33,14 +59,64 @@ describe('metricsFromState', () => {
     expect(m.floorOk).toBeNull();
     expect(m.floatingCount).toBeNull();
     expect(m.localFrameOk).toBeNull();
+    expect(m.variantCount).toBe(0);
+    expect(m.chosenValidated).toBeNull();
+  });
+
+  it('counts variants still on the final state and ignores a stale capture', () => {
+    delete process.env.CADAI_VISUAL_CRITIC;
+    const m = metricsFromState('p3', 'm', {
+      specVariants: [
+        variant('A', { validated: true, findings: [], attempts: 1 }),
+        variant('B', { validated: false, findings: [], attempts: 4 }),
+        variant('C', null),
+      ],
+      specBrief: brief('B'),
+      specViolations: [visual],
+    }, 10, {
+      variants: [{ id: 'A', review: { validated: true, attempts: 9 } }],
+      recommendedId: 'A',
+    });
+    expect(m.variantCount).toBe(3);
+    expect(m.variantsValidated).toBe(1);
+    expect(m.reviewRounds).toBe(4);
+    expect(m.chosenValidated).toBe(false);
+    expect(m.visualMatch).toBeNull();
+  });
+
+  it('uses the spec-gate capture once the drafter has cleared the variants', () => {
+    process.env.CADAI_VISUAL_CRITIC = 'on';
+    const m = metricsFromState('p4', 'm', { specVariants: [], specBrief: null, specViolations: [] }, 10, {
+      variants: [
+        { id: 'A', review: { validated: true, attempts: 2 } },
+        { id: 'B', review: { validated: false, attempts: 5 } },
+      ],
+      recommendedId: 'A',
+    });
+    expect(m.variantCount).toBe(2);
+    expect(m.variantsValidated).toBe(1);
+    expect(m.reviewRounds).toBe(5);
+    expect(m.chosenValidated).toBe(true);
+    expect(m.visualMatch).toBe(true);
+  });
+
+  it('reports visualMatch false when a visual violation survives and the critic is on', () => {
+    process.env.CADAI_VISUAL_CRITIC = 'on';
+    const m = metricsFromState('p5', 'm', {
+      specVariants: [variant('A', null)],
+      specBrief: brief('A'),
+      specViolations: [visual],
+    }, 1);
+    expect(m.chosenValidated).toBeNull();
+    expect(m.visualMatch).toBe(false);
   });
 });
 
 describe('summarize', () => {
   it('reports rates over non-null values', () => {
     const rows: GenerationMetrics[] = [
-      { id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: true, floatingCount: 0, localFrameOk: true, extentsOk: null, shellsOk: true, errorKinds: [], attempts: 1, wallMs: 10 },
-      { id: 'b', model: 'm', specOk: true, composed: false, compileOk: true, floorOk: false, floatingCount: null, localFrameOk: null, extentsOk: null, shellsOk: false, errorKinds: ['floor'], attempts: 1, wallMs: 20 },
+      { id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: true, floatingCount: 0, localFrameOk: true, extentsOk: null, shellsOk: true, errorKinds: [], attempts: 1, wallMs: 10, variantCount: 2, variantsValidated: 2, reviewRounds: 1, chosenValidated: true, visualMatch: true },
+      { id: 'b', model: 'm', specOk: true, composed: false, compileOk: true, floorOk: false, floatingCount: null, localFrameOk: null, extentsOk: null, shellsOk: false, errorKinds: ['floor'], attempts: 1, wallMs: 20, variantCount: 0, variantsValidated: 0, reviewRounds: 3, chosenValidated: false, visualMatch: null },
     ];
     const s = summarize(rows);
     expect(s.composed).toBe('1/2');
@@ -48,14 +124,35 @@ describe('summarize', () => {
     expect(s.noFloating).toBe('1/1');
     expect(s.localFrameOk).toBe('1/1');
     expect(s.extentsOk).toBe('0/0');
+    expect(s.meanVariantCount).toBe('1');
+    expect(s.meanVariantsValidated).toBe('1');
+    expect(s.meanReviewRounds).toBe('2');
+    expect(s.chosenValidated).toBe('1/2');
+    expect(s.visualMatch).toBe('1/1');
     expect(s.meanWallMs).toBe('15');
   });
 });
 
 describe('scoresFor', () => {
   it('emits boolean scores and skips unmeasured ones', () => {
-    const metrics: GenerationMetrics = { id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: null, floatingCount: null, localFrameOk: true, extentsOk: null, shellsOk: true, errorKinds: [], attempts: 1, wallMs: 10 };
+    const metrics: GenerationMetrics = { id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: null, floatingCount: null, localFrameOk: true, extentsOk: null, shellsOk: true, errorKinds: [], attempts: 1, wallMs: 10, ...counted };
     const names = scoresFor(metrics).map((s) => s.name);
-    expect(names).toEqual(['spec_ok', 'composed', 'compile_ok', 'local_frame_ok', 'shells_ok', 'wall_ms']);
+    expect(names).toEqual([
+      'spec_ok', 'composed', 'compile_ok', 'local_frame_ok', 'shells_ok',
+      'variant_count', 'variants_validated', 'review_rounds', 'wall_ms',
+    ]);
+  });
+
+  it('scores the chosen variant and the visual match when they were measured', () => {
+    const metrics: GenerationMetrics = {
+      id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: null,
+      floatingCount: null, localFrameOk: null, extentsOk: null, shellsOk: null, errorKinds: [],
+      attempts: 1, wallMs: 10, variantCount: 2, variantsValidated: 1, reviewRounds: 3,
+      chosenValidated: false, visualMatch: true,
+    };
+    const scores = scoresFor(metrics);
+    expect(scores.find((s) => s.name === 'chosen_validated')).toEqual({ name: 'chosen_validated', value: 0, dataType: 'BOOLEAN' });
+    expect(scores.find((s) => s.name === 'visual_match')).toEqual({ name: 'visual_match', value: 1, dataType: 'BOOLEAN' });
+    expect(scores.find((s) => s.name === 'review_rounds')?.value).toBe(3);
   });
 });

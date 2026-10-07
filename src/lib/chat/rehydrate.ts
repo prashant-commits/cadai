@@ -1,4 +1,4 @@
-import type { ChatMessage, GatePayload } from '@/types';
+import type { ChatMessage, GateDecision, GatePayload } from '@/types';
 
 export interface ResumableGate {
   messageId: string;
@@ -26,6 +26,23 @@ export function resumableGate(messages: ChatMessage[]): ResumableGate | null {
     }
   }
   return null;
+}
+
+/**
+ * IndexedDB keeps the chosen sheet only. Every other variant's `sheetSvg`
+ * becomes null. A legacy payload has no `variants` array, so it is returned
+ * unchanged. Open gates are not passed through here: a reload must still
+ * show every sheet.
+ */
+export function stripUnchosenSheets(payload: GatePayload, decision: GateDecision): GatePayload {
+  if (payload.kind !== 'spec' || !payload.variants || payload.variants.length === 0) return payload;
+  const keep = decision.chosenVariantId ?? payload.recommendedId;
+  return {
+    ...payload,
+    variants: payload.variants.map((variant) =>
+      variant.id === keep ? variant : { ...variant, sheetSvg: null },
+    ),
+  };
 }
 
 /**
