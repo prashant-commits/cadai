@@ -67,6 +67,11 @@ const MAX_SEMANTIC_REPAIRS = 1;
 
 type VisualCritique = z.infer<typeof VisualCritiqueSchema>;
 
+/** Up to 3 of the variant's own assumptions as sheet notes ("field: value", ~60 chars each). */
+function sheetNotes(spec: AssemblySpec): string[] {
+  return (spec.assumptions ?? []).slice(0, 3).map((a) => `${a.field}: ${a.value}`.slice(0, 60)); // 3 notes, 60 chars: task S2-fix sheet-note budget
+}
+
 /** True when the spec names at least one component: placement is then always code-driven. */
 function specHasComponents(spec: AssemblySpec | null): boolean {
   return !!spec?.components?.length;
@@ -930,7 +935,7 @@ export function createCadAgent(
             name: v.name,
             idea: v.idea,
             spec: v.spec,
-            notes: state.humanSpecNotes,
+            notes: sheetNotes(v.spec),
           });
           const compCount = v.spec.components?.length ?? 0;
           const guideCount = v.spec.guides?.length ?? 0;
