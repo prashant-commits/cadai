@@ -6,7 +6,7 @@ import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/trac
 import { deleteRunCheckpoint, getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { Command } from '@langchain/langgraph';
 import { GateDecision } from '@/types';
-import { DEFAULT_TEXT_MODEL } from '@/lib/agent/models';
+import { DEFAULT_MODEL } from '@/lib/agent/models';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -78,9 +78,9 @@ export async function POST(req: NextRequest) {
       // throw outside the try.
       const langfuseHandler = getLangfuseCallbackHandler({
         sessionId: threadId,
-        tags: ['cadai', model || DEFAULT_TEXT_MODEL, 'resume'],
+        tags: ['cadai', model || DEFAULT_MODEL, 'resume'],
         metadata: {
-          model: model || DEFAULT_TEXT_MODEL,
+          model: model || DEFAULT_MODEL,
         },
       });
 

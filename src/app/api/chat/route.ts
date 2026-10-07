@@ -6,7 +6,7 @@ import type { StreamEvent } from '@/lib/agent/stream-events';
 import { deleteRunCheckpoint, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/tracing/langfuse';
 import { DesignContract } from '@/types';
-import { DEFAULT_TEXT_MODEL } from '@/lib/agent/models';
+import { DEFAULT_MODEL } from '@/lib/agent/models';
 import { randomUUID } from 'crypto';
 
 export const runtime = 'nodejs';
@@ -77,9 +77,9 @@ export async function POST(req: NextRequest) {
       // throw outside the try.
       const langfuseHandler = getLangfuseCallbackHandler({
         sessionId: threadId,
-        tags: ['cadai', model || DEFAULT_TEXT_MODEL],
+        tags: ['cadai', model || DEFAULT_MODEL],
         metadata: {
-          model: model || DEFAULT_TEXT_MODEL,
+          model: model || DEFAULT_MODEL,
         },
       });
 

@@ -1,14 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { ChatOpenAI } from '@langchain/openai';
-import { getChatModel, getVisionModel } from './model-provider';
-import { EXPLABS_BASE_URL, DEFAULT_TEXT_MODEL, DEFAULT_VISION_MODEL } from './models';
+import { getChatModel } from './model-provider';
+import { EXPLABS_BASE_URL, DEFAULT_MODEL } from './models';
 
 const saved = { ...process.env };
 
 beforeEach(() => {
   process.env.EXPLABS_API_KEY = 'test-explabs-key';
   delete process.env.CADAI_MODEL;
-  delete process.env.CADAI_VISION_MODEL;
 });
 
 afterEach(() => {
@@ -24,9 +23,9 @@ describe('getChatModel', () => {
     expect(model.clientConfig.baseURL).toBe(EXPLABS_BASE_URL);
   });
 
-  it('defaults to the model measured to produce valid Assembly Specs', () => {
-    expect(getChatModel().model).toBe(DEFAULT_TEXT_MODEL);
-    expect(DEFAULT_TEXT_MODEL).toBe('deepseek-v4-flash');
+  it('defaults to the multimodal model', () => {
+    expect(getChatModel().model).toBe(DEFAULT_MODEL);
+    expect(DEFAULT_MODEL).toBe('gpt-5.6-luna');
   });
 
   it('lets CADAI_MODEL override the default without touching the picker', () => {
@@ -45,26 +44,5 @@ describe('getChatModel', () => {
   it('explains which key is missing rather than failing at request time', () => {
     delete process.env.EXPLABS_API_KEY;
     expect(() => getChatModel('deepseek-v4-flash')).toThrow(/EXPLABS_API_KEY/);
-  });
-});
-
-describe('getVisionModel', () => {
-  // The critic is the only node that sends images. Routing it to a DeepSeek
-  // text slug makes the gateway reject the call outright ("The selected model
-  // route cannot accept image input"), which is what this fallback prevents.
-  it('falls back to a multimodal slug when the selected model cannot see', () => {
-    const vision = getVisionModel('deepseek-v4-flash');
-    expect(vision).toBeInstanceOf(ChatOpenAI);
-    expect(vision.model).toBe(DEFAULT_VISION_MODEL);
-  });
-
-  it('reuses the selected model when it is already the multimodal one', () => {
-    const vision = getVisionModel(DEFAULT_VISION_MODEL);
-    expect(vision.model).toBe(DEFAULT_VISION_MODEL);
-  });
-
-  it('honours a CADAI_VISION_MODEL override', () => {
-    process.env.CADAI_VISION_MODEL = 'some-other-vision-slug';
-    expect(getVisionModel('deepseek-v4-flash').model).toBe('some-other-vision-slug');
   });
 });

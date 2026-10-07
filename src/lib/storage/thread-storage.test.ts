@@ -13,7 +13,7 @@ import {
   upsertThread,
 } from './thread-storage';
 import { DB_NAME } from './db-schema';
-import { DEFAULT_TEXT_MODEL } from '@/lib/agent/models';
+import { DEFAULT_MODEL } from '@/lib/agent/models';
 
 function deleteDatabase(): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -349,8 +349,8 @@ describe('thread-storage', () => {
   // a stale slug has to be rewritten as the thread is read, not left to error.
   describe('model slug coercion', () => {
     it('rewrites a retired gemini slug to the gateway default', () => {
-      expect(coerceModelSlug('gemini-3.6-flash')).toBe(DEFAULT_TEXT_MODEL);
-      expect(coerceModelSlug('gemini-2.5-flash-lite')).toBe(DEFAULT_TEXT_MODEL);
+      expect(coerceModelSlug('gemini-3.6-flash')).toBe(DEFAULT_MODEL);
+      expect(coerceModelSlug('gemini-2.5-flash-lite')).toBe(DEFAULT_MODEL);
     });
 
     it('keeps a slug the gateway still serves', () => {
@@ -359,16 +359,16 @@ describe('thread-storage', () => {
     });
 
     it('falls back to the default for an absent, empty or unknown slug', () => {
-      expect(coerceModelSlug(undefined)).toBe(DEFAULT_TEXT_MODEL);
-      expect(coerceModelSlug('')).toBe(DEFAULT_TEXT_MODEL);
-      expect(coerceModelSlug('some-model-we-never-served')).toBe(DEFAULT_TEXT_MODEL);
+      expect(coerceModelSlug(undefined)).toBe(DEFAULT_MODEL);
+      expect(coerceModelSlug('')).toBe(DEFAULT_MODEL);
+      expect(coerceModelSlug('some-model-we-never-served')).toBe(DEFAULT_MODEL);
     });
 
     it('loads a thread saved with a gemini slug on the default model', async () => {
       await upsertThread(thread({ id: 'thread-a', selectedModel: 'gemini-3.6-flash' }));
 
       const { threads } = await loadAllThreads();
-      expect(threads[0].selectedModel).toBe(DEFAULT_TEXT_MODEL);
+      expect(threads[0].selectedModel).toBe(DEFAULT_MODEL);
     });
 
     it('leaves a thread saved with a live gateway slug alone', async () => {
@@ -379,7 +379,7 @@ describe('thread-storage', () => {
     });
 
     it('starts a new thread on the gateway default', () => {
-      expect(createInitialThread().selectedModel).toBe(DEFAULT_TEXT_MODEL);
+      expect(createInitialThread().selectedModel).toBe(DEFAULT_MODEL);
     });
   });
 

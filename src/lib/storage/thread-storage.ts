@@ -1,6 +1,6 @@
 import { IDBPDatabase, IDBPTransaction, openDB } from 'idb';
 import { ChatMessage, ChatThread } from '@/types';
-import { DEFAULT_TEXT_MODEL, isGatewayModel } from '@/lib/agent/models';
+import { DEFAULT_MODEL, isGatewayModel } from '@/lib/agent/models';
 import {
   ACTIVE_THREAD_META_KEY,
   CadaiDB,
@@ -52,7 +52,7 @@ difference() {
  * outside the current catalogue loads on the default instead.
  */
 export function coerceModelSlug(slug: string | undefined): string {
-  return isGatewayModel(slug) ? (slug as string) : DEFAULT_TEXT_MODEL;
+  return isGatewayModel(slug) ? (slug as string) : DEFAULT_MODEL;
 }
 
 export function createInitialThread(): ChatThread {
@@ -62,7 +62,7 @@ export function createInitialThread(): ChatThread {
     title: 'Demo Rounded Box',
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    selectedModel: DEFAULT_TEXT_MODEL,
+    selectedModel: DEFAULT_MODEL,
     code: DEFAULT_OPENSCAD_CODE,
     messages: [
       {

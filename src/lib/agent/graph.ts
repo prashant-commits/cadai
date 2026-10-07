@@ -17,7 +17,7 @@ import { SpecViolation, auditSpec } from './spec-audit';
 import { analyzeStl } from '../engine/geometry-utils';
 import { renderStlViews, RenderedView } from '../engine/stl-renderer';
 import { shouldGateSpec, shouldGateAccept } from './gate-policy';
-import { getChatModel, getVisionModel } from './model-provider';
+import { getChatModel } from './model-provider';
 import {
   composeAssembly,
   stripGeneratedAssembly,
@@ -484,7 +484,7 @@ export function createCadAgent(
   const model = getChatModel(modelName);
   // Resolved separately: no DeepSeek text route accepts image input, so the
   // critic falls back to a multimodal slug instead of failing the whole run.
-  const visionModel = getVisionModel(modelName);
+  const visionModel = getChatModel(modelName);
   
   // Architect uses structured output. It is handed the BOUNDED JSON Schema, not
   // the zod object: an unbounded {"type":"number"} lets a constrained decoder
