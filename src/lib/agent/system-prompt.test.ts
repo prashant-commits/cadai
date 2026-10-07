@@ -45,8 +45,9 @@ const words = (s: string) => s.trim().split(/\s+/).length;
  * matters - system prompt plus preamble, per call - stayed within 3 %.
  */
 const WORD_BUDGET: Record<string, number> = {
-  CAD_AI_SYSTEM_PROMPT: 900,
-  ARCHITECT_VARIANT_PREAMBLE: 680, ARCHITECT_PLANNER_PREAMBLE: 680,
+  CAD_AI_SYSTEM_PROMPT: 1100,
+  ARCHITECT_VARIANT_PREAMBLE: 900,
+  ARCHITECT_PLANNER_PREAMBLE: 680,
   DRAFTER_PREAMBLE: 560,
   DRAFTER_PLACEMENT_CONTRACT: 260,
   CRITIC_PREAMBLE: 460,
@@ -170,6 +171,29 @@ describe('system prompts', () => {
     // Handedness, which no measurement can see.
     expect(DRAFTER_PREAMBLE).toMatch(/mirror\(\)/);
     expect(REPAIR_PREAMBLE).toContain('handedness');
+  });
+
+  it('teaches explicit shape semantics, measurement rules, design contract, and drops retired fields', () => {
+    // Plane mapping and cylinder diameter rule in vocabulary
+    expect(CAD_AI_SYSTEM_PROMPT).toMatch(/xz\s*->\s*\(x,\s*z\),\s*extruded along y/i);
+    expect(CAD_AI_SYSTEM_PROMPT).toMatch(/two cross-axis extents are equal and are the diameter/i);
+
+    // ARCHITECT_VARIANT_PREAMBLE contains WHAT WILL BE MEASURED, DESIGN CONTRACT, and gusset fields
+    expect(ARCHITECT_VARIANT_PREAMBLE).toContain('WHAT WILL BE MEASURED');
+    expect(ARCHITECT_VARIANT_PREAMBLE).toContain('DESIGN CONTRACT');
+    expect(ARCHITECT_VARIANT_PREAMBLE).toContain('corner [x, y, z]');
+    expect(ARCHITECT_VARIANT_PREAMBLE).toContain("along ('x' | 'y')");
+    expect(ARCHITECT_VARIANT_PREAMBLE).toContain("floorDir ('+' | '-')");
+    expect(ARCHITECT_VARIANT_PREAMBLE).toContain('legMm');
+    expect(ARCHITECT_VARIANT_PREAMBLE).toContain('thicknessMm');
+    expect(ARCHITECT_VARIANT_PREAMBLE).toContain('at[]');
+
+    // No prompt mentions retired spec fields
+    for (const [name, text] of Object.entries(PROMPTS)) {
+      expect(text, `${name} still mentions retired spec fields`).not.toMatch(
+        /\b(dimensions|form|useModules|matingFaces)\b/
+      );
+    }
   });
 
   it('stays within its word budget', () => {

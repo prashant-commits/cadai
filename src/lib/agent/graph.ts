@@ -36,7 +36,15 @@ import { auditSpecShapes } from './spec-shape-audit';
 import { checkInterference } from '../engine/assembly-verifier';
 import { nullsToUndefined } from './strict-schema';
 import { getCheckpointer } from './checkpointer';
-
+import {
+  SpecVariant,
+  SpecBrief,
+  mergeBriefIntoSpec,
+  recommendedVariant,
+  processPlannerVariants,
+  VariantId,
+  ReviewFinding,
+} from './spec-variants';
 
 const MAX_SPEC_REVISIONS = 2;
 const MAX_ACCEPT_REVISIONS = 2;
@@ -353,8 +361,6 @@ export interface AttemptRecord {
   diagnosis: string;
 }
 
-import { SpecVariant, SpecBrief, mergeBriefIntoSpec, recommendedVariant, processPlannerVariants, VariantId, ReviewFinding } from './spec-variants';
-
 export const AgentState = Annotation.Root({
   specBrief: Annotation<SpecBrief | null>({
     reducer: (_, y) => y,
@@ -504,30 +510,51 @@ export function createCadAgent(
   // critic falls back to a multimodal slug instead of failing the whole run.
   const visionModel = getChatModel(modelName);
   
-  // Architect uses structured output. It is handed the BOUNDED JSON Schema, not
-  // the zod object: an unbounded {"type":"number"} lets a constrained decoder
-  // emit digits forever and truncate the document. What comes back is still
-  // validated against the zod schema below, so the contract is unchanged.
+  // Architect operates in two steps: a planner call that streams a brief and
+  // 1-3 candidate variant outlines, followed by parallel variant specifier calls
+  // producing structured Assembly Specs. Variant calls use structured output
+  // handed the BOUNDED JSON Schema, not the zod object: an unbounded
+  // {"type":"number"} lets a constrained decoder emit digits forever and truncate
+  // the document. What comes back is validated against the zod schema and normalized.
 
-
-
-  
   // Drafter uses engineering lookup tools
   const drafterModel = model.bindTools([getFunctionalCadModuleTool]);
 
   // Node 1: architectNode
 
   const ArchitectPlanSchema = z.object({
-    brief: z.string(),
-    assumptions: z.array(z.object({ field: z.string(), value: z.string(), rationale: z.string() })),
-    openQuestions: z.array(z.object({ id: z.string(), question: z.string(), options: z.array(z.string()), suggestedAnswer: z.string() })),
-    variants: z.array(z.object({ id: z.enum(['A', 'B', 'C']), name: z.string(), idea: z.string() })).min(1).max(3),
-    recommendedId: z.enum(['A', 'B', 'C'])
+    brief: z.string().default(''),
+    assumptions: z
+      .array(z.object({ field: z.string(), value: z.string(), rationale: z.string() }))
+      .default([]),
+    openQuestions: z
+      .array(
+        z.object({
+          id: z.string(),
+          question: z.string(),
+          options: z.array(z.string()).optional(),
+          suggestedAnswer: z.string().default(''),
+        })
+      )
+      .default([]),
+    variants: z
+      .array(
+        z.object({
+          id: z.enum(['A', 'B', 'C']),
+          name: z.string(),
+          idea: z.string(),
+        })
+      )
+      .min(1)
+      .max(3),
+    recommendedId: z.enum(['A', 'B', 'C']).default('A'),
   });
 
   async function generateVariantSpec(
     variant: { id: VariantId; name: string; idea: string },
-    messages: BaseMessage[],
+    allVariants: { id: VariantId; name: string; idea: string }[],
+    brief: SpecBrief,
+    baseMessages: BaseMessage[],
     version: number,
     retries: number,
     previousSpec?: { sheet: string; skeleton: unknown },
@@ -535,16 +562,50 @@ export function createCadAgent(
     notes?: string[],
     config?: RunnableConfig
   ): Promise<SpecVariant> {
-    const variantMessages = [...messages];
+    const variantMessages = [...baseMessages];
+
+    const planContextParts: string[] = [];
+    if (brief.markdown) {
+      planContextParts.push(`Planner Brief:\n${brief.markdown}`);
+    }
+    if (brief.assumptions && brief.assumptions.length > 0) {
+      const assumptionsText = brief.assumptions
+        .map((a) => `- ${a.field}: ${a.value} (${a.rationale})`)
+        .join('\n');
+      planContextParts.push(`Shared Assumptions:\n${assumptionsText}`);
+    }
+    if (brief.openQuestions && brief.openQuestions.length > 0) {
+      const questionsText = brief.openQuestions
+        .map((q) => `- ${q.question}${q.suggestedAnswer ? ` (suggested: ${q.suggestedAnswer})` : ''}`)
+        .join('\n');
+      planContextParts.push(`The user will be asked:\n${questionsText}`);
+    }
+    const otherVariants = allVariants.filter((v) => v.id !== variant.id);
+    if (otherVariants.length > 0) {
+      const othersText = otherVariants
+        .map((o) => `- Variant ${o.id}: ${o.name} - ${o.idea}`)
+        .join('\n');
+      planContextParts.push(
+        `Other variants planned (this variant must stay structurally distinct):\n${othersText}`
+      );
+    }
+
     if (previousSpec && findings) {
-      variantMessages.push(new HumanMessage(
-        `Revise this variant (${variant.id}). Previous skeleton:\n` + JSON.stringify(previousSpec.skeleton, null, 2) +
-        `\n\nPrevious sheet:\n` + previousSpec.sheet +
-        `\n\nReview findings:\n` + findings.map(f => `[${f.severity.toUpperCase()}] ${f.issue}`).join('\n') +
-        (notes?.length ? `\n\nHuman notes:\n` + notes.join('\n') : '')
-      ));
+      const promptParts = [
+        ...planContextParts,
+        `Revise this variant (${variant.id}): ${variant.name} - ${variant.idea}.`,
+        `Previous skeleton:\n${JSON.stringify(previousSpec.skeleton, null, 2)}`,
+        `Previous sheet:\n${previousSpec.sheet}`,
+        `Review findings:\n${findings.map((f) => `[${f.severity.toUpperCase()}] ${f.issue}`).join('\n')}`,
+        notes?.length ? `Human notes:\n${notes.join('\n')}` : '',
+      ].filter(Boolean);
+      variantMessages.push(new HumanMessage(promptParts.join('\n\n')));
     } else {
-      variantMessages.push(new HumanMessage(`Generate the Assembly Spec for Variant ${variant.id}: ${variant.name} - ${variant.idea}`));
+      const promptText = [
+        ...planContextParts,
+        `Generate the Assembly Spec for Variant ${variant.id}: ${variant.name} - ${variant.idea}`,
+      ].join('\n\n');
+      variantMessages.push(new HumanMessage(promptText));
     }
 
     const variantModel = model.withStructuredOutput(variantSpecRequestSchema(), {
@@ -554,9 +615,15 @@ export function createCadAgent(
     });
 
     let spec: AssemblySpec | null = null;
-    let lastError = 'No valid spec after 3 attempts.';
+    let hadProviderError = false;
+    let rawLastError: string | null = null;
     let coherenceFeedback: SpecViolation[] | null = null;
 
+    // THREE attempts, not two. Decoder degeneration is per-attempt and
+    // independent, so retries compound: at the ~0.8 per-attempt success rate
+    // measured on the bounded schema, two attempts leave a 4% chance of
+    // reaching the review gate with no spec at all and three leave under 1%.
+    // Two attempts is what let a real run surface an empty approval card.
     for (let attempt = 0; attempt < MAX_ARCHITECT_ATTEMPTS && !spec; attempt++) {
       const retryPrompt = coherenceFeedback
         ? 'Your previous Assembly Spec was internally inconsistent:\n' +
@@ -564,44 +631,78 @@ export function createCadAgent(
           '\nRecompute the placement arithmetic and emit a spec whose boundingBox equals the extent of its ' +
           'own components once each is rotated about its origin and moved to its position.'
         : 'Your previous reply did not yield a valid Assembly Spec. Emit the structured spec now, with every dimension in millimetres and at most two decimal places.';
-      
-      const attemptMessages = attempt === 0 ? variantMessages : [...variantMessages, new HumanMessage(retryPrompt)];
-      
+
+      const attemptMessages =
+        attempt === 0 ? variantMessages : [...variantMessages, new HumanMessage(retryPrompt)];
+
       try {
         const raw = await variantModel.withConfig({ tags: ['nostream'] }).invoke(attemptMessages, config);
-        
+
         // The model was given a JSON Schema, so what comes back is an untyped
         // object; zod is what turns it into an AssemblySpec, and a reply that
         // violates the schema fails to parse.
         const parsed = AssemblySpecSchema.safeParse(nullsToUndefined(raw));
         if (parsed.success) {
           const candidate = normalizeSpec(parsed.data);
-          const errors = [...auditSpecCoherence(candidate), ...auditSpecShapes(candidate)].filter(v => v.severity === 'error');
-          if (errors.length > 0 && attempt < MAX_ARCHITECT_ATTEMPTS - 1) {
-            coherenceFeedback = errors;
+          // Coherence is pure arithmetic (do the components fit the bounding box?),
+          // so there is no point drafting geometry from a spec that already contradicts
+          // itself. Handing the contradiction back is strictly cheaper than discovering
+          // it after a draft and a compile, and the Architect is the only node that can
+          // say which number was wrong. On the last attempt it is accepted anyway: a spec
+          // that is merely inconsistent still beats no spec, and validateCode repeats
+          // the check so the violation is never lost.
+          const incoherent = [
+            ...auditSpecCoherence(candidate).filter((v) => v.severity === 'error'),
+            ...auditSpecShapes(candidate).filter((v) => v.severity === 'error'),
+          ];
+          if (incoherent.length > 0 && attempt < MAX_ARCHITECT_ATTEMPTS - 1) {
+            rawLastError = incoherent.map((v) => v.message).join(' ');
+            console.warn(
+              `architectNode: spec is self-inconsistent (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}):`,
+              rawLastError
+            );
+            coherenceFeedback = incoherent;
             continue;
           }
           spec = candidate;
         } else {
-          lastError = parsed.error.message;
+          rawLastError = `Spec failed validation: ${parsed.error.issues
+            .slice(0, 3)
+            .map((i) => `${i.path.join('.')} ${i.message}`)
+            .join('; ')}`;
+          console.error(
+            `architectNode: variant ${variant.id} spec rejected (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}):`,
+            rawLastError
+          );
         }
       } catch (e: unknown) {
-        lastError = e instanceof Error ? e.message : String(e);
-        console.error(`architectNode variant ${variant.id} failed:`, lastError);
+        hadProviderError = true;
+        rawLastError = e instanceof Error ? e.message : String(e);
+        // The raw provider error goes to the log ONLY. It was being sliced into
+        // the UI, which is how a provider's 400 payload ended up rendered as the
+        // agent's own output.
+        console.error(
+          `architectNode: variant ${variant.id} structured output failed (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}):`,
+          rawLastError
+        );
       }
     }
+
+    const shortErrorLabel = hadProviderError
+      ? 'No valid spec after 3 attempts (provider error).'
+      : 'No valid spec after 3 attempts.';
 
     if (spec) {
       const renderer = createSpecRenderer();
       const tail = renderer.push({ ...(spec as object), __done: true });
-      write(config, 'architectNode', { 
-        t: 'delta', 
-        text: `\n\n### Variant ${variant.id} - ${variant.name}\n*${variant.idea}*\n\n${spec.sheet}\n\n${tail}`
+      write(config, 'architectNode', {
+        t: 'delta',
+        text: `\n\n### Variant ${variant.id} - ${variant.name}\n*${variant.idea}*\n\n${spec.sheet}\n\n${tail}`,
       });
     } else {
-      write(config, 'architectNode', { 
-        t: 'delta', 
-        text: `\n\n### Variant ${variant.id} - ${variant.name}\n*${variant.idea}*\n\nNo valid spec after 3 attempts.\n`
+      write(config, 'architectNode', {
+        t: 'delta',
+        text: `\n\n### Variant ${variant.id} - ${variant.name}\n*${variant.idea}*\n\n${shortErrorLabel}\n`,
       });
     }
 
@@ -615,15 +716,12 @@ export function createCadAgent(
       review: null,
       retries,
       needsRevision: false,
-      error: spec ? undefined : lastError,
+      error: spec ? undefined : shortErrorLabel,
     };
   }
 
   async function architectNode(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
-    const messages: BaseMessage[] = [
-      new SystemMessage(CAD_AI_SYSTEM_PROMPT + "\n\n" + ARCHITECT_PLANNER_PREAMBLE + "\n\n" + ARCHITECT_VARIANT_PREAMBLE),
-      ...state.messages,
-    ];
+    const conversationMessages: BaseMessage[] = [...state.messages];
 
     if (state.designContract) {
       const contractDetails = [];
@@ -636,9 +734,9 @@ export function createCadAgent(
         );
         contractDetails.push("Pinned Parameters (MUST BE EXACTLY THESE VALUES):\n" + JSON.stringify(pins, null, 2));
       }
-      
+
       if (contractDetails.length > 0) {
-        messages.push(new HumanMessage(
+        conversationMessages.push(new HumanMessage(
           "Design Contract:\nThe user has pinned these values and constraints; treat them as given.\n\n" + contractDetails.join("\n\n")
         ));
       }
@@ -649,8 +747,11 @@ export function createCadAgent(
     const isFresh = variants.length === 0 || state.gateAction === 'revise';
 
     if (isFresh) {
+      const plannerSystemMessage = new SystemMessage(CAD_AI_SYSTEM_PROMPT + "\n\n" + ARCHITECT_PLANNER_PREAMBLE);
+      const plannerMessages: BaseMessage[] = [plannerSystemMessage, ...conversationMessages];
+
       if (state.gateAction === 'revise' && state.gateFeedback) {
-        messages.push(new HumanMessage(`The previous Assembly Spec was rejected at human review. Revise it accordingly:\n${state.gateFeedback}`));
+        plannerMessages.push(new HumanMessage(`The previous Assembly Spec was rejected at human review. Revise it accordingly:\n${state.gateFeedback}`));
       }
 
       const plannerModel = model.withStructuredOutput(ArchitectPlanSchema, {
@@ -659,65 +760,131 @@ export function createCadAgent(
         includeRaw: false,
       });
 
-      let plan;
-      try {
-        let streamBrief = '';
-        const stream = await plannerModel.withConfig({ tags: ['nostream'] }).stream(messages, config);
-        for await (const chunk of stream) {
-          if (chunk.brief && chunk.brief !== streamBrief) {
-            const delta = chunk.brief.slice(streamBrief.length);
-            write(config, 'architectNode', { t: 'delta', text: delta });
-            streamBrief = chunk.brief;
+      let plan: z.infer<typeof ArchitectPlanSchema> | null = null;
+      let lastPlannerError: string | null = null;
+
+      // THREE attempts, not two. Decoder degeneration is per-attempt and
+      // independent, so retries compound: at the ~0.8 per-attempt success rate
+      // measured on the bounded schema, two attempts leave a 4% chance of
+      // reaching the review gate with no spec at all and three leave under 1%.
+      // Two attempts is what let a real run surface an empty approval card.
+      for (let attempt = 0; attempt < MAX_ARCHITECT_ATTEMPTS && !plan; attempt++) {
+        const attemptMessages = attempt === 0
+          ? plannerMessages
+          : [
+              ...plannerMessages,
+              new HumanMessage('Your previous reply did not yield a valid plan. Plan 1-3 structural variants now.'),
+            ];
+
+        try {
+          let streamBrief = '';
+          const stream = await plannerModel.withConfig({ tags: ['nostream'] }).stream(attemptMessages, config);
+          let chunkObj: unknown = null;
+          for await (const chunk of stream) {
+            if (chunk.brief && chunk.brief !== streamBrief) {
+              const delta = chunk.brief.slice(streamBrief.length);
+              write(config, 'architectNode', { t: 'delta', text: delta });
+              streamBrief = chunk.brief;
+            }
+            chunkObj = chunk;
           }
-          plan = chunk; // last chunk has the full object
+          const parsedPlan = ArchitectPlanSchema.safeParse(nullsToUndefined(chunkObj));
+          if (parsedPlan.success && parsedPlan.data.variants.length > 0) {
+            plan = parsedPlan.data;
+          } else {
+            lastPlannerError = parsedPlan.success
+              ? 'Planner response missing variants.'
+              : parsedPlan.error.message;
+          }
+        } catch (e: unknown) {
+          lastPlannerError = e instanceof Error ? e.message : String(e);
+          // The raw provider error goes to the log ONLY. It was being sliced into
+          // the UI, which is how a provider's 400 payload ended up rendered as the
+          // agent's own output.
+          console.error(`architectNode: planner attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS} failed:`, lastPlannerError);
         }
-      } catch (e: unknown) {
-        console.error('Planner failed:', e);
-        write(config, 'architectNode', { t: 'delta', text: '\nPlanner failed.' });
-        return { explanation: 'Planner failed to generate variants.' };
       }
 
-      if (!plan || !plan.variants) return { explanation: 'Planner failed to generate valid plan.' };
+      let deduped: { id: VariantId; name: string; idea: string }[];
+      if (!plan || !plan.variants || plan.variants.length === 0) {
+        write(config, 'architectNode', {
+          t: 'delta',
+          text: '\nPlanning failed after 3 attempts; speccing a single variant as requested.\n',
+        });
+        brief = {
+          markdown: '',
+          assumptions: [],
+          openQuestions: [],
+          recommendedId: 'A' as VariantId,
+        };
+        deduped = [
+          { id: 'A' as VariantId, name: 'As requested', idea: 'the design the request describes' },
+        ];
+      } else {
+        const { variants: processedVariants, recommendedId } = processPlannerVariants(
+          plan.variants,
+          plan.recommendedId,
+          Number(process.env.CADAI_MAX_VARIANTS ?? 3)
+        );
+        deduped = processedVariants;
+        brief = {
+          markdown: plan.brief || '',
+          assumptions: plan.assumptions || [],
+          openQuestions: plan.openQuestions || [],
+          recommendedId: recommendedId as VariantId,
+        };
+      }
 
-      const { variants: deduped, recommendedId } = processPlannerVariants(
-        plan.variants,
-        plan.recommendedId,
-        Number(process.env.CADAI_MAX_VARIANTS ?? 3)
+      const variantSystemMessage = new SystemMessage(CAD_AI_SYSTEM_PROMPT + "\n\n" + ARCHITECT_VARIANT_PREAMBLE);
+      const variantBaseMessages: BaseMessage[] = [variantSystemMessage, ...conversationMessages];
+      if (state.gateAction === 'revise' && state.gateFeedback) {
+        variantBaseMessages.push(new HumanMessage(`The previous Assembly Spec was rejected at human review. Revise it accordingly:\n${state.gateFeedback}`));
+      }
+
+      const promises = deduped.map((v) =>
+        generateVariantSpec(v, deduped, brief!, variantBaseMessages, 0, 0, undefined, undefined, undefined, config)
       );
-
-      brief = {
-        markdown: plan.brief || '',
-        assumptions: plan.assumptions || [],
-        openQuestions: plan.openQuestions || [],
-        recommendedId: recommendedId as VariantId,
-      };
-
-      const promises = deduped.map(v => generateVariantSpec(v, messages, 0, 0, undefined, undefined, undefined, config));
       variants = await Promise.all(promises);
 
     } else {
       // Revision mode
-      const promises = variants.map(v => {
+      const variantSystemMessage = new SystemMessage(CAD_AI_SYSTEM_PROMPT + "\n\n" + ARCHITECT_VARIANT_PREAMBLE);
+      const variantBaseMessages: BaseMessage[] = [variantSystemMessage, ...conversationMessages];
+
+      const currentBrief = brief ?? {
+        markdown: '',
+        assumptions: [],
+        openQuestions: [],
+        recommendedId: 'A' as VariantId,
+      };
+
+      const plannedList = variants.map((v) => ({ id: v.id, name: v.name, idea: v.idea }));
+
+      const promises = variants.map((v) => {
         if (!v.needsRevision) return Promise.resolve(v);
-        
-        const findings = [...(v.review?.findings || [])].sort((a, b) => (a.severity === 'major' && b.severity !== 'major' ? -1 : 1));
+
+        const findings = [...(v.review?.findings || [])].sort((a, b) =>
+          a.severity === 'major' && b.severity !== 'major' ? -1 : 1
+        );
         const prevSkeleton = v.spec ? { ...v.spec, sheet: undefined } : undefined;
         return generateVariantSpec(
-          v, 
-          messages, 
-          v.version, 
-          v.retries, 
+          v,
+          plannedList,
+          currentBrief,
+          variantBaseMessages,
+          v.version,
+          v.retries,
           v.spec ? { sheet: v.spec.sheet, skeleton: prevSkeleton } : undefined,
-          findings, 
-          state.humanSpecNotes, 
+          findings,
+          state.humanSpecNotes,
           config
         );
       });
       variants = await Promise.all(promises);
     }
 
-    const reviewDeadline = state.reviewDeadline === null && process.env.VERCEL 
-      ? Date.now() + Number(process.env.CADAI_SPEC_REVIEW_BUDGET_MS ?? 240000) 
+    const reviewDeadline = state.reviewDeadline === null && process.env.VERCEL
+      ? Date.now() + Number(process.env.CADAI_SPEC_REVIEW_BUDGET_MS ?? 240000)
       : state.reviewDeadline;
 
     const recommended = recommendedVariant(variants, brief);
@@ -730,18 +897,25 @@ export function createCadAgent(
       reviewDeadline,
       assemblySpec,
       explanation,
+      // Deliberately contributes NOTHING to `messages`. The spec already
+      // reaches both consumers through their own prompts (drafterPrompt and
+      // fixPrompt), and `messages` is a concat reducer, so appending here made
+      // a revise loop stack two or three contradictory specs into the drafter's
+      // context with nothing marking which one was live. `assemblySpec` is the
+      // single source of truth; `explanation` carries the human-readable copy.
+      //
+      // Consumed above, so cleared: leaving these set let one gate's feedback
+      // reappear at a later node as if the human had just said it.
       gateAction: null,
       gateFeedback: null,
     };
   }
 
   async function drafterNode(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
-
-
     // A missing spec degrades to unconstrained drafting rather than skipping the
     // draft entirely - an empty script gives the repair loop nothing to work with.
     const contract = contractLines(state.designContract);
-    
+
     let drafterPrompt = '';
     if (state.assemblySpec) {
       const { sheet, ...skeleton } = state.assemblySpec;
@@ -754,10 +928,12 @@ Architect Skeleton (JSON):
 ${JSON.stringify(skeleton, null, 2)}
 ${contract}`;
     } else {
-      drafterPrompt = `Write one complete OpenSCAD script for the user's request above. No Architect Spec is available: derive the dimensions yourself and declare them as parameters, choose a bedFace and lay it on z = 0, and apply the corner-softening categories and stress-point mitigations the part needs, naming them in your rationale.
+      drafterPrompt = `Write one complete OpenSCAD script for the user's request above. No Architect Spec is available: derive the sizes yourself and declare them as parameters, choose a bedFace and lay it on z = 0, and apply the corner-softening categories and stress-point mitigations the part needs, naming them in your rationale.
 ${contract}`;
     }
 
+    // Only impose the module-at-origin contract when there are real coordinates
+    // to honour; otherwise the drafter should assemble the part itself as before.
     const drafterSystem =
       CAD_AI_SYSTEM_PROMPT +
       '\n\n' +

@@ -289,4 +289,136 @@ describe('architect variants graph execution', () => {
     expect(varB?.needsRevision).toBe(false);
     expect(varB?.retries).toBe(1); // kept
   });
+
+  it('planner and variant calls use separate system messages and variant prompt contains brief and other variants', async () => {
+    const saved = process.env.CADAI_MAX_VARIANTS;
+    process.env.CADAI_MAX_VARIANTS = '2';
+    try {
+      invokeMock.mockResolvedValueOnce({
+        brief: 'Planner brief description',
+        assumptions: [{ field: 'wall', value: '2mm', rationale: 'rigidity' }],
+        openQuestions: [{ id: 'q1', question: 'Add logo?', suggestedAnswer: 'no' }],
+        variants: [
+          { id: 'A', name: 'Alpha', idea: 'Idea Alpha' },
+          { id: 'B', name: 'Beta', idea: 'Idea Beta' },
+        ],
+        recommendedId: 'A',
+      });
+      invokeMock.mockResolvedValueOnce(baseSpec({ assemblyName: 'spec_alpha' }));
+      invokeMock.mockResolvedValueOnce(baseSpec({ assemblyName: 'spec_beta' }));
+      invokeMock.mockResolvedValueOnce({ content: '```openscad\ncube(10);\n```', tool_calls: [] });
+
+      const agent = createCadAgent('m');
+      const config = { configurable: { thread_id: `test-prompts-${Date.now()}` } };
+      await agent.invoke({ messages: [new HumanMessage('dual variant stand')] }, config);
+
+      expect(invokeMock).toHaveBeenCalled();
+      const plannerCallMessages = invokeMock.mock.calls[0][0];
+      const variantACallMessages = invokeMock.mock.calls[1][0];
+      const variantBCallMessages = invokeMock.mock.calls[2][0];
+
+      // 1. Planner and variant calls use DIFFERENT system messages
+      const plannerSysMsg = plannerCallMessages[0];
+      const variantSysMsg = variantACallMessages[0];
+      expect(plannerSysMsg.content).toContain('Mechanical Architect Planner');
+      expect(plannerSysMsg.content).not.toContain('Mechanical Architect Specifier');
+      expect(variantSysMsg.content).toContain('Mechanical Architect Specifier');
+      expect(variantSysMsg.content).not.toContain('Mechanical Architect Planner');
+
+      // 2. Variant prompt contains planner brief
+      const varAHumanMsg = variantACallMessages[variantACallMessages.length - 1];
+      expect(varAHumanMsg.content).toContain('Planner brief description');
+      expect(varAHumanMsg.content).toContain('Shared Assumptions');
+      expect(varAHumanMsg.content).toContain('The user will be asked');
+      expect(varAHumanMsg.content).toContain('Add logo?');
+
+      // 3. Variant prompt contains other variants' names and ideas
+      expect(varAHumanMsg.content).toContain('Variant B: Beta - Idea Beta');
+      const varAOtherSection = varAHumanMsg.content.split('Other variants planned')[1]?.split('Generate the Assembly Spec')[0];
+      expect(varAOtherSection).toContain('Variant B: Beta - Idea Beta');
+      expect(varAOtherSection).not.toContain('Variant A');
+
+      const varBHumanMsg = variantBCallMessages[variantBCallMessages.length - 1];
+      expect(varBHumanMsg.content).toContain('Variant A: Alpha - Idea Alpha');
+      const varBOtherSection = varBHumanMsg.content.split('Other variants planned')[1]?.split('Generate the Assembly Spec')[0];
+      expect(varBOtherSection).toContain('Variant A: Alpha - Idea Alpha');
+      expect(varBOtherSection).not.toContain('Variant B');
+    } finally {
+      if (saved !== undefined) process.env.CADAI_MAX_VARIANTS = saved;
+      else delete process.env.CADAI_MAX_VARIANTS;
+    }
+  });
+
+  it('planner failing 3 times specs exactly one fallback variant, writes transcript notice, and has no raw error in state or transcript', async () => {
+    const saved = process.env.CADAI_MAX_VARIANTS;
+    process.env.CADAI_MAX_VARIANTS = '3';
+    try {
+      // Planner fails 3 times
+      invokeMock.mockRejectedValueOnce(new Error('500 Internal Server Error {"details":"giant payload"}'));
+      invokeMock.mockRejectedValueOnce(new Error('500 Internal Server Error {"details":"giant payload"}'));
+      invokeMock.mockRejectedValueOnce(new Error('500 Internal Server Error {"details":"giant payload"}'));
+      // Fallback variant A is specced
+      invokeMock.mockResolvedValueOnce(baseSpec({ assemblyName: 'fallback_a' }));
+      // Drafter
+      invokeMock.mockResolvedValueOnce({ content: '```openscad\ncube(20);\n```', tool_calls: [] });
+
+      const deltas: string[] = [];
+      const agent = createCadAgent('m');
+      const config = {
+        configurable: { thread_id: `test-fallback-${Date.now()}` },
+        writer: (ev: Record<string, unknown>) => {
+          if (ev?.node === 'architectNode' && ev?.t === 'delta' && typeof ev.text === 'string') {
+            deltas.push(ev.text);
+          }
+        },
+      };
+      await agent.invoke({ messages: [new HumanMessage('make a clip')] }, config);
+
+      const state = (await agent.getState(config)).values;
+      // Exactly one fallback variant was specced
+      expect(state.specVariants).toHaveLength(1);
+      const varA = (state.specVariants as SpecVariant[])[0];
+      expect(varA.id).toBe('A');
+      expect(varA.name).toBe('As requested');
+      expect(varA.idea).toBe('the design the request describes');
+      expect(varA.spec?.assemblyName).toBe('fallback_a');
+      expect(varA.error).toBeUndefined();
+
+      // Transcript says planning failed and single variant is being specced
+      const fullDelta = deltas.join('');
+      expect(fullDelta).toMatch(/planning failed.*single variant/i);
+      // No raw error in transcript or state
+      expect(fullDelta).not.toContain('500 Internal Server Error');
+      expect(fullDelta).not.toContain('giant payload');
+    } finally {
+      if (saved !== undefined) process.env.CADAI_MAX_VARIANTS = saved;
+      else delete process.env.CADAI_MAX_VARIANTS;
+    }
+  });
+
+  it('variant failing with provider error sets short label error without leaking raw error into state', async () => {
+    invokeMock.mockResolvedValueOnce({
+      brief: 'Plan brief',
+      variants: [{ id: 'A', name: 'VarA', idea: 'Idea A' }],
+      recommendedId: 'A',
+    });
+    // Variant A fails 3 times with provider error
+    invokeMock.mockRejectedValueOnce(new Error('400 Bad Request {"error":"invalid token"}'));
+    invokeMock.mockRejectedValueOnce(new Error('400 Bad Request {"error":"invalid token"}'));
+    invokeMock.mockRejectedValueOnce(new Error('400 Bad Request {"error":"invalid token"}'));
+    // Drafter
+    invokeMock.mockResolvedValueOnce({ content: '```openscad\ncube(20);\n```', tool_calls: [] });
+
+    const agent = createCadAgent('m');
+    const config = { configurable: { thread_id: `test-var-err-${Date.now()}` } };
+    await agent.invoke({ messages: [new HumanMessage('make a box')] }, config);
+
+    const state = (await agent.getState(config)).values;
+    const varA = (state.specVariants as SpecVariant[])[0];
+    expect(varA.spec).toBeNull();
+    expect(varA.error).toBe('No valid spec after 3 attempts (provider error).');
+    expect(varA.error).not.toContain('400 Bad Request');
+    expect(varA.error).not.toContain('invalid token');
+  });
 });
+
