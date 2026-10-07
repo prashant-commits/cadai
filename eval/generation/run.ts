@@ -5,8 +5,18 @@
  *   npm run eval:generation -- --model deepseek-v4-flash --tag baseline
  *   npm run eval:generation -- --seed-dataset          # once, creates the Langfuse dataset
  *   npm run eval:generation -- --no-langfuse --limit 2 # local only
+ *   npm run eval:generation -- --sheets off --drafter-start scratch --critic on
  *
- * The auto-approve loop in runOne() covers gates too.
+ * Flags are written onto the process before createCadAgent. The graph reads
+ * them when the run actually executes:
+ *   --sheets on|off                  CADAI_SPEC_SHEETS     (default on)
+ *   --drafter-start blockout|scratch CADAI_DRAFTER_START   (default blockout)
+ *   --critic on|off                  CADAI_VISUAL_CRITIC   (default off)
+ *   --critic-model <slug>            CADAI_CRITIC_MODEL    (default gpt-5.6-luna)
+ *
+ * runOne auto-approves up to 12 gates. Each resume is { action: 'approve' },
+ * which selects the recommended variant. A run can pause at the spec gate
+ * after several reviewer rounds, so the previous cap of 4 is too small.
  *
  * Results land in eval/results/<tag>-<model>-<timestamp>.json and, when
  * LANGFUSE_* keys are set, as a Langfuse experiment run on dataset
@@ -16,23 +26,45 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
 import { HumanMessage } from '@langchain/core/messages';
-import { Command, isInterrupted } from '@langchain/langgraph';
-
 for (const f of ['.env', '.env.local']) {
   try { process.loadEnvFile(f); } catch { /* absent is fine */ }
 }
-// Eval defaults: no automatic repair, no critic. Explicit env still wins.
+// Eval defaults: no automatic repair, sheets on, drafter starts from the
+// blockout, critic off, one shared judge model. An env var already set in the
+// shell still wins until a flag below overrides it.
 process.env.CADAI_MAX_ATTEMPTS ??= '1';
+process.env.CADAI_SPEC_SHEETS ??= 'on';
+process.env.CADAI_DRAFTER_START ??= 'blockout';
 process.env.CADAI_VISUAL_CRITIC ??= 'off';
+process.env.CADAI_CRITIC_MODEL ??= 'gpt-5.6-luna';
 
+import { Command, INTERRUPT, isInterrupted } from '@langchain/langgraph';
+import type { GatePayload } from '@/types';
 import { createCadAgent, type AgentStateType } from '@/lib/agent/graph';
+import { gateVariants } from '@/lib/agent/spec-variants';
 import { getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor, initLangfuseTracing } from '@/lib/tracing/langfuse';
-import { GenerationMetrics, metricsFromState, scoresFor, summarize } from './metrics';
+import { GenerationMetrics, SpecGateCapture, metricsFromState, scoresFor, summarize } from './metrics';
 
 const DATASET = 'cadai-generation';
 
-interface Args { model: string; tag: string; limit: number; only: string[]; langfuse: boolean; seed: boolean }
+interface Args {
+  model: string;
+  tag: string;
+  limit: number;
+  only: string[];
+  langfuse: boolean;
+  seed: boolean;
+  sheets?: 'on' | 'off';
+  drafterStart?: 'blockout' | 'scratch';
+  critic?: 'on' | 'off';
+  criticModel?: string;
+}
+
+function onOff(value: string | undefined): 'on' | 'off' | undefined {
+  return value === 'on' || value === 'off' ? value : undefined;
+}
+
 function parseArgs(argv: string[]): Args {
   const a: Args = { model: 'deepseek-v4-flash', tag: 'run', limit: Infinity, only: [], langfuse: true, seed: false };
   for (let i = 0; i < argv.length; i++) {
@@ -43,8 +75,37 @@ function parseArgs(argv: string[]): Args {
     else if (v === '--only') a.only = argv[++i].split(',').map((s) => s.trim()).filter(Boolean);
     else if (v === '--no-langfuse') a.langfuse = false;
     else if (v === '--seed-dataset') a.seed = true;
+    else if (v === '--sheets') a.sheets = onOff(argv[++i]);
+    else if (v === '--drafter-start') {
+      const start = argv[++i];
+      if (start === 'blockout' || start === 'scratch') a.drafterStart = start;
+    }
+    else if (v === '--critic') a.critic = onOff(argv[++i]);
+    else if (v === '--critic-model') {
+      const slug = argv[++i];
+      if (slug) a.criticModel = slug;
+    }
   }
   return a;
+}
+
+/** Flags override the defaults. Unset flags leave an explicit shell env alone. */
+function applyEvalEnv(args: Args) {
+  if (args.sheets) process.env.CADAI_SPEC_SHEETS = args.sheets;
+  if (args.drafterStart) process.env.CADAI_DRAFTER_START = args.drafterStart;
+  if (args.critic) process.env.CADAI_VISUAL_CRITIC = args.critic;
+  if (args.criticModel) process.env.CADAI_CRITIC_MODEL = args.criticModel;
+}
+
+/** Last spec-gate interrupt. Later accept-gate interrupts leave it in place. */
+function captureSpecGate(result: unknown, previous: SpecGateCapture | null): SpecGateCapture | null {
+  if (!isInterrupted<GatePayload>(result)) return previous;
+  const payload = result[INTERRUPT][0]?.value;
+  if (!payload || payload.kind !== 'spec') return previous;
+  return {
+    variants: gateVariants(payload).map((variant) => ({ id: variant.id, review: variant.review })),
+    recommendedId: payload.recommendedId ?? null,
+  };
 }
 
 const RESULTS_DIR = path.join(__dirname, '..', 'results');
@@ -65,19 +126,24 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
   console.log(`\n=== ${item.id} ===`);
   // Node-by-node progress in the log has been removed as part of the stream refactoring.
   // Agent creation is now simpler - progress is streamed directly to the client.
+  // The graph reads these flags at run time, so they have to be set first.
+  applyEvalEnv(args);
   const agent = createCadAgent(args.model);
   const key = runCheckpointKey(`eval-${args.tag}`, `${item.id}-${Date.now()}`);
   const config = { configurable: { thread_id: key }, callbacks: handler ? [handler] : undefined };
 
   const t0 = Date.now();
+  let specGate: SpecGateCapture | null = null;
   let result = await agent.invoke({ messages: [new HumanMessage(item.prompt)] }, config);
-  for (let i = 0; i < 4 && isInterrupted(result); i++) {
+  for (let i = 0; i < 12 && isInterrupted(result); i++) {
+    specGate = captureSpecGate(result, specGate);
     result = await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
   }
+  specGate = captureSpecGate(result, specGate);
   const state = (await agent.getState(config)).values as AgentStateType;
   await getCheckpointer().deleteThread(key);
 
-  const m = metricsFromState(item.id, args.model, state, Date.now() - t0);
+  const m = metricsFromState(item.id, args.model, state, Date.now() - t0, specGate);
   console.log(`${item.id}: composed=${m.composed} floor=${m.floorOk} floating=${m.floatingCount} localFrame=${m.localFrameOk} errors=[${m.errorKinds.join(',')}] ${m.wallMs} ms`);
   // Written per prompt so a killed run keeps what it finished.
   fs.appendFileSync(jsonl, JSON.stringify(m) + '\n');
@@ -111,10 +177,14 @@ async function main() {
     return;
   }
 
+  applyEvalEnv(args);
   const items = (args.only.length ? prompts.filter((p) => args.only.includes(p.id)) : prompts).slice(0, args.limit);
-  console.log(`Eval: ${items.length} prompt(s) on ${args.model}, tag "${args.tag}". ` +
-    `Expect roughly ${items.length * 2}-${items.length * 5} model calls (architect retries + drafter tool round)` +
-    `. Starting in 5 s, Ctrl+C to abort.`);
+  console.log(`Eval: ${items.length} prompt(s) on ${args.model}, tag "${args.tag}", ` +
+    `sheets ${process.env.CADAI_SPEC_SHEETS}, drafter-start ${process.env.CADAI_DRAFTER_START}, ` +
+    `critic ${process.env.CADAI_VISUAL_CRITIC} (${process.env.CADAI_CRITIC_MODEL}). ` +
+    `Expect roughly ${items.length * 4}-${items.length * 24} model calls ` +
+    `(planner, per-variant review rounds, drafter tool round, optional critic). ` +
+    `Starting in 5 s, Ctrl+C to abort.`);
   await new Promise((r) => setTimeout(r, 5000));
 
   fs.mkdirSync(RESULTS_DIR, { recursive: true });

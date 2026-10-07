@@ -15,13 +15,57 @@ export interface GenerationMetrics {
   errorKinds: string[];
   attempts: number;
   wallMs: number;
+  /** Variants the architect planned on the last pass that still had them. */
+  variantCount: number;
+  /** How many of those variants have `review.validated`. */
+  variantsValidated: number;
+  /** Highest `review.attempts` across those variants. */
+  reviewRounds: number;
+  /** The recommended variant's `review.validated`, or null when it has no review. */
+  chosenValidated: boolean | null;
+  /** Null while the critic is off. True when no `kind: 'visual'` violation remains. */
+  visualMatch: boolean | null;
+}
+
+/**
+ * Variant list captured at the spec-gate interrupt. The drafter clears
+ * `specVariants` after the gate, so the final state can no longer answer
+ * "how many did the architect plan".
+ */
+export interface SpecGateCapture {
+  variants: Array<{
+    id: string;
+    review?: { validated: boolean; attempts: number } | null;
+  }>;
+  recommendedId?: string | null;
+}
+
+function variantStats(
+  variants: SpecGateCapture['variants'],
+  recommendedId: string | null,
+): Pick<GenerationMetrics, 'variantCount' | 'variantsValidated' | 'reviewRounds' | 'chosenValidated'> {
+  let reviewRounds = 0;
+  let variantsValidated = 0;
+  for (const variant of variants) {
+    const attempts = variant.review?.attempts ?? 0;
+    if (attempts > reviewRounds) reviewRounds = attempts;
+    if (variant.review?.validated) variantsValidated += 1;
+  }
+  const chosen = recommendedId ? variants.find((variant) => variant.id === recommendedId) : undefined;
+  return {
+    variantCount: variants.length,
+    variantsValidated,
+    reviewRounds,
+    chosenValidated: chosen?.review ? chosen.review.validated : null,
+  };
 }
 
 export function metricsFromState(
   id: string,
   model: string,
   state: Partial<AgentStateType>,
-  wallMs: number
+  wallMs: number,
+  capture?: SpecGateCapture | null,
 ): GenerationMetrics {
   const violations = state.specViolations ?? [];
   const errors = violations.filter((v) => v.severity === 'error');
@@ -30,6 +74,18 @@ export function metricsFromState(
   const measured = report?.components.filter((c) => c.measured) ?? [];
   const hasModel = !!state.modelInfo;
   const specHasExtents = !!state.assemblySpec?.components?.some((c) => (c as { localExtents?: unknown }).localExtents);
+
+  // Prefer the variants still on the final state. Once the drafter has cleared
+  // them, fall back to the list runOne copied off the spec-gate interrupt.
+  const live = state.specVariants ?? [];
+  const variants = live.length > 0
+    ? live.map((variant) => ({ id: variant.id, review: variant.review }))
+    : (capture?.variants ?? []);
+  const recommendedId = (live.length > 0 ? state.specBrief?.recommendedId : undefined)
+    ?? capture?.recommendedId
+    ?? state.specBrief?.recommendedId
+    ?? null;
+  const criticOn = process.env.CADAI_VISUAL_CRITIC === 'on';
 
   return {
     id,
@@ -45,6 +101,8 @@ export function metricsFromState(
     errorKinds: [...new Set(errors.map((v) => v.kind))],
     attempts: state.attemptCount ?? 0,
     wallMs,
+    ...variantStats(variants, recommendedId),
+    visualMatch: criticOn ? !violations.some((v) => v.kind === 'visual') : null,
   };
 }
 
@@ -53,8 +111,12 @@ function rate(rows: GenerationMetrics[], pick: (m: GenerationMetrics) => boolean
   return `${vals.filter(Boolean).length}/${vals.length}`;
 }
 
+function meanOf(rows: GenerationMetrics[], pick: (m: GenerationMetrics) => number): string {
+  if (rows.length === 0) return '0';
+  return String(Math.round(rows.reduce((sum, row) => sum + pick(row), 0) / rows.length));
+}
+
 export function summarize(rows: GenerationMetrics[]): Record<string, string> {
-  const mean = rows.length ? Math.round(rows.reduce((a, m) => a + m.wallMs, 0) / rows.length) : 0;
   return {
     n: String(rows.length),
     specOk: rate(rows, (m) => m.specOk),
@@ -65,7 +127,12 @@ export function summarize(rows: GenerationMetrics[]): Record<string, string> {
     localFrameOk: rate(rows, (m) => m.localFrameOk),
     extentsOk: rate(rows, (m) => m.extentsOk),
     shellsOk: rate(rows, (m) => m.shellsOk),
-    meanWallMs: String(mean),
+    meanVariantCount: meanOf(rows, (m) => m.variantCount),
+    meanVariantsValidated: meanOf(rows, (m) => m.variantsValidated),
+    meanReviewRounds: meanOf(rows, (m) => m.reviewRounds),
+    chosenValidated: rate(rows, (m) => m.chosenValidated),
+    visualMatch: rate(rows, (m) => m.visualMatch),
+    meanWallMs: meanOf(rows, (m) => m.wallMs),
   };
 }
 
@@ -82,6 +149,11 @@ export function scoresFor(m: GenerationMetrics): Array<{ name: string; value: nu
   bool('local_frame_ok', m.localFrameOk);
   bool('extents_ok', m.extentsOk);
   bool('shells_ok', m.shellsOk);
+  out.push({ name: 'variant_count', value: m.variantCount, dataType: 'NUMERIC' });
+  out.push({ name: 'variants_validated', value: m.variantsValidated, dataType: 'NUMERIC' });
+  out.push({ name: 'review_rounds', value: m.reviewRounds, dataType: 'NUMERIC' });
+  bool('chosen_validated', m.chosenValidated);
+  bool('visual_match', m.visualMatch);
   out.push({ name: 'wall_ms', value: m.wallMs, dataType: 'NUMERIC' });
   return out;
 }
