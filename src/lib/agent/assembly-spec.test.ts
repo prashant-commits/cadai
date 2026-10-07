@@ -49,6 +49,28 @@ describe('AssemblySpecSchema', () => {
     expect(spec.stressPoints[0].risk).toBe('high');
   });
 
+  it('rejects more than six mating faces, or the same face twice', () => {
+    const six = ['+Z', '-Z', '+X', '-X', '+Y', '-Y'];
+    expect(
+      AssemblySpecSchema.safeParse({
+        ...minimal,
+        components: [{ name: 'b', description: 'b', matingFaces: six }],
+      }).success,
+    ).toBe(true);
+    expect(
+      AssemblySpecSchema.safeParse({
+        ...minimal,
+        components: [{ name: 'b', description: 'b', matingFaces: [...six, 'again'] }],
+      }).success,
+    ).toBe(false);
+    expect(
+      AssemblySpecSchema.safeParse({
+        ...minimal,
+        components: [{ name: 'b', description: 'b', matingFaces: ['+Z (lid seat)', '+Z (lid seat)'] }],
+      }).success,
+    ).toBe(false);
+  });
+
   it('rejects a bed face or risk outside the vocabulary the prompts teach', () => {
     expect(
       AssemblySpecSchema.safeParse({ ...minimal, components: [{ name: 'b', description: 'b', bedFace: 'bottom' }] }).success
@@ -128,6 +150,14 @@ describe('assemblySpecRequestSchema', () => {
 
   it('drops $schema, which providers reject as an unknown field', () => {
     expect(assemblySpecRequestSchema().$schema).toBeUndefined();
+  });
+
+  // `.max(6)` on the zod array is what puts maxItems here. A refine does not
+  // strip it (checked against zod 4 toJSONSchema), so the decoder is capped
+  // without a second write in assemblySpecRequestSchema().
+  it('caps matingFaces at 6 items in the schema the decoder sees', () => {
+    const json = assemblySpecRequestSchema() as any;
+    expect(json.properties.components.items.properties.matingFaces.maxItems).toBe(6);
   });
 
   // The bound belongs to the request only. Binary floating point makes

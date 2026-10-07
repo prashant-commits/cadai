@@ -15,6 +15,13 @@ export const NODE_LABELS: Record<string, string> = {
   respondToUser: 'Result',
 };
 
+/**
+ * Nodes that call a structured-output model. Their `messages`-mode chunks are
+ * the decoder's raw JSON tokens (and, when it degenerates, runaway repetition),
+ * which must never reach the UI; they render their own markdown over `custom`.
+ */
+const STRUCTURED_NODES = new Set(['researchNode', 'architectNode', 'visualCritic']);
+
 type CustomPayload = StreamEvent & { node?: string };
 
 /**
@@ -68,6 +75,7 @@ export async function bridgeGraphStream(
       const [msg, meta] = payload as [{ content?: unknown }, { langgraph_node?: string }];
       const text = typeof msg?.content === 'string' ? msg.content : '';
       if (!text) continue;
+      if (STRUCTURED_NODES.has(meta?.langgraph_node ?? '')) continue;
       openFor(meta?.langgraph_node ?? 'agent');
       emit({ t: 'delta', text });
       continue;

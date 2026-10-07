@@ -168,8 +168,17 @@ export const AssemblySpecSchema = z.object({
      * Planar datum/mating faces that must stay flat and free of cosmetic
      * rounding because another part registers against them, e.g.
      * "+Z (lid seat)". Free text: the face plus what it mates with.
+     *
+     * Capped at six distinct entries. An unbounded string array lets a
+     * constrained decoder repeat the same face until the token limit.
+     * `.max(6)` is emitted as JSON Schema `maxItems` by `z.toJSONSchema`, so
+     * `assemblySpecRequestSchema()` constrains the decoder; the refine only
+     * rejects duplicates on the way back in.
      */
-    matingFaces: z.array(z.string()).optional(),
+    matingFaces: z.array(z.string()).max(6).refine(
+      (faces) => new Set(faces).size === faces.length,
+      { message: 'mating faces must be unique' },
+    ).optional(),
   })).optional(),
   /** Stress concentrations the Architect identified, graded and prescribed for. */
   stressPoints: z.array(StressPointSchema).default([]),
