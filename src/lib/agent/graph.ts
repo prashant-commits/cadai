@@ -40,6 +40,7 @@ import { auditSpecShapes } from './spec-shape-audit';
 import { checkInterference } from '../engine/assembly-verifier';
 import { nullsToUndefined } from './strict-schema';
 import { getCheckpointer } from './checkpointer';
+import { VisualCritiqueSchema, SheetReviewSchema, ArchitectPlanSchema } from './llm-schemas';
 import {
   SpecVariant,
   SpecBrief,
@@ -64,22 +65,6 @@ const MAX_ACCEPT_REVISIONS = 2;
  */
 const MAX_SEMANTIC_REPAIRS = 1;
 
-/** What the Design Inspector is allowed to say about a set of renders. */
-const VisualCritiqueSchema = z.object({
-  matchesIntent: z.boolean(),
-  findings: z
-    .array(
-      z.object({
-        issue: z.string().describe('What is visibly wrong, in one sentence.'),
-        severity: z.enum(['minor', 'major']),
-        // NOT optional. The vision default (gpt-5.6-luna) enforces OpenAI
-        // strict json_schema, which rejects any property missing from
-        // `required` with a 400 before the model ever runs.
-        view: z.string().describe('front | right | top | iso, or "" if it applies to all views'),
-      })
-    )
-    .default([]),
-});
 type VisualCritique = z.infer<typeof VisualCritiqueSchema>;
 
 /** True when the spec names at least one component: placement is then always code-driven. */
@@ -521,45 +506,7 @@ export function createCadAgent(
   // Drafter uses engineering lookup tools
   const drafterModel = model.bindTools([getFunctionalCadModuleTool]);
 
-  const SheetReviewSchema = z.object({
-    matchesRequest: z.boolean(),
-    findings: z.array(
-      z.object({
-        issue: z.string(),
-        severity: z.enum(['minor', 'major']),
-      })
-    ),
-  });
-
   // Node 1: architectNode
-
-  const ArchitectPlanSchema = z.object({
-    brief: z.string().default(''),
-    assumptions: z
-      .array(z.object({ field: z.string(), value: z.string(), rationale: z.string() }))
-      .default([]),
-    openQuestions: z
-      .array(
-        z.object({
-          id: z.string(),
-          question: z.string(),
-          options: z.array(z.string()).optional(),
-          suggestedAnswer: z.string().default(''),
-        })
-      )
-      .default([]),
-    variants: z
-      .array(
-        z.object({
-          id: z.enum(['A', 'B', 'C']),
-          name: z.string(),
-          idea: z.string(),
-        })
-      )
-      .min(1)
-      .max(3),
-    recommendedId: z.enum(['A', 'B', 'C']).default('A'),
-  });
 
   async function generateVariantSpec(
     variant: { id: VariantId; name: string; idea: string },
