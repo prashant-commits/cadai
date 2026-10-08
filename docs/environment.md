@@ -10,3 +10,4 @@
 - `CADAI_CRITIC_MODEL` (default: the selected model): model override for the design critic.
 - `CADAI_VISUAL_CRITIC` (default off): `on` enables the render-based visual critic.
 - `CADAI_MAX_ATTEMPTS` (default `1`): global cap on drafter repair attempts per run.
+- `CADAI_CHECKPOINT_TTL_MS` (default `86400000`, 24 h): paused runs whose newest checkpoint is older than this are deleted, at startup and at most once an hour on write.
