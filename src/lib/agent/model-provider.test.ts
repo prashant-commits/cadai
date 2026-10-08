@@ -46,3 +46,13 @@ describe('getChatModel', () => {
     expect(() => getChatModel('deepseek-v4-flash')).toThrow(/EXPLABS_API_KEY/);
   });
 });
+
+describe('model catalogue', () => {
+  it('offers gpt-6-sol as a vision model while the default stays gpt-5.6-luna', async () => {
+    const { GATEWAY_MODELS, isVisionModel, DEFAULT_MODEL } = await import('./models');
+    expect(GATEWAY_MODELS.map((m) => m.slug)).toEqual(['gpt-5.6-luna', 'gpt-6-luna', 'gpt-6-sol']);
+    expect(GATEWAY_MODELS[2].label).toBe('GPT-6 Sol - higher quality (paid)');
+    expect(isVisionModel('gpt-6-sol')).toBe(true);
+    expect(DEFAULT_MODEL).toBe('gpt-5.6-luna');
+  });
+});

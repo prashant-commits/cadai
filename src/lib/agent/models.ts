@@ -23,10 +23,15 @@ export const DEFAULT_MODEL = 'gpt-5.6-luna';
  * gateway serves, so that a new model can be tried without a code change. The
  * list exists so the UI has one source of truth and so a thread saved under a
  * slug we no longer serve loads on the default instead of erroring.
+ *
+ * gpt-6-sol: probed on the gateway on 2026-10-08. It accepts images and returned
+ * a valid strict variant spec with 0 audit errors in 66 s. It costs $2/$10 per M
+ * tokens, about 10x gpt-5.6-luna, hence the "(paid)" label and the unchanged default.
  */
 export const GATEWAY_MODELS = [
   { slug: 'gpt-5.6-luna', label: 'GPT-5.6 Luna - Recommended' },
   { slug: 'gpt-6-luna', label: 'GPT-6 Luna' },
+  { slug: 'gpt-6-sol', label: 'GPT-6 Sol - higher quality (paid)' },
 ] as const;
 
 export function isGatewayModel(slug: string | undefined): boolean {
