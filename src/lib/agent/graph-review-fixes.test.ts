@@ -391,7 +391,7 @@ describe('M1: a failed revision keeps the last good spec', () => {
 });
 
 describe('M3: sheets are not kept in graph state', () => {
-  it('the checkpointed state holds no SVG / base64 PNG, yet the gate payload carries the sheet', async () => {
+  it('the checkpointed variant state holds no SVG / base64 PNG; the one copy lives in the open gate interrupt payload', async () => {
     invokeMock.mockImplementation(async (messages: unknown) => {
       switch (kindOf(messages)) {
         case 'planner': return plan(['A', 'B']);
@@ -478,23 +478,39 @@ describe('M5: placeholders are labelled for the reviewer sheet and the drafter',
     expect(text).not.toContain('exact base shape');
   });
 
-  it('the drafter prompt mentions code-cut cavities for clearance joints', async () => {
+  const jointSpec = (withJoint: boolean) => ({
+    ...boxSpec(),
+    components: [
+      { name: 'base', description: 'host', localExtents: [40, 40, 40], position: [0, 0, 0], shape: { kind: 'box' } },
+      { name: 'tab', description: 'inserted', localExtents: [10, 10, 10], position: [5, 5, 5], shape: { kind: 'box' } },
+    ],
+    ...(withJoint ? { jointContracts: [{ type: 'snap_fit', clearance: 0.2, partA: 'base', partB: 'tab' }] } : {}),
+  });
+  const draftedText = async (withJoint: boolean) => {
+    invokeMock.mockReset();
     invokeMock.mockImplementation(async (messages: unknown) => {
       switch (kindOf(messages)) {
         case 'planner': return plan(['A']);
-        case 'variant': return { ...boxSpec(), components: (spec([]) as { components: unknown[] }).components };
+        case 'variant': return jointSpec(withJoint);
         case 'drafter': return draft;
         default: return pass;
       }
     });
     const config = { configurable: { thread_id: newKey() } };
     const agent = createCadAgent('gpt-5.6-luna');
-    await agent.invoke({ messages: [new HumanMessage('a box')] }, config);
-    await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
-    const drafterCall = invokeMock.mock.calls.map((c) => c[0]).find((m) => kindOf(m) === 'drafter')!;
-    const text = (lastContent(drafterCall) as Array<{ text?: string }>)[0].text!;
-    expect(text).toContain('Mating cavities for clearance joints are cut by code after your script (host = partA)');
-    expect(text).toContain('Do not model slots, sockets or holes for inserted parts; model the inserted part at its skeleton size');
+    const r = await agent.invoke({ messages: [new HumanMessage('a box')] }, config);
+    if (isInterrupted(r)) await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
+    const call = invokeMock.mock.calls.map((c) => c[0]).find((m) => kindOf(m) === 'drafter')!;
+    return (lastContent(call) as Array<{ text?: string }>)[0].text!;
+  };
+
+  it('L3: the drafter is told about code-cut cavities, naming the joint, only when a clearance joint exists', async () => {
+    const withJoint = await draftedText(true);
+    expect(withJoint).toContain('Mating cavities for clearance joints are cut by code after your script (host = partA)');
+    expect(withJoint).toContain('tab into base (0.2 mm)');
+    const without = await draftedText(false);
+    expect(without).not.toContain('Mating cavities');
+    expect(without).not.toContain('Do not model slots');
   });
 });
 
@@ -1002,4 +1018,153 @@ describe('C: the review loop stops when it is not converging', () => {
     const { kinds } = await run([two, two, pass].map((r, i) => (i === 1 ? major('only the hook remains wrong') : r)));
     expect(kinds.filter((k) => k === 'revision')).toHaveLength(2);
   });
+});
+
+
+describe('M3 (final review): a loop that ends past the soft deadline gates instead of drafting', () => {
+  it('planner 100 s, variant 100 s, reviewer 40 s, drafter 60 s, "a 40mm block": gate at 240 s, no drafter call', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(0);
+    process.env.VERCEL = '1';
+    process.env.CADAI_SPEC_REVIEW_BUDGET_MS = '240000';
+    const tick = (ms: number) => vi.setSystemTime(Date.now() + ms);
+    invokeMock.mockImplementation(async (messages: unknown) => {
+      switch (kindOf(messages)) {
+        case 'planner': tick(100000); return plan(['A']);
+        case 'variant': tick(100000); return boxSpec();
+        case 'reviewer': tick(40000); return pass;
+        case 'drafter': tick(60000); return draft;
+        default: return pass;
+      }
+    });
+    const result = await createCadAgent('gpt-5.6-luna').invoke(
+      { messages: [new HumanMessage('a 40mm block')] },
+      { configurable: { thread_id: newKey() } }
+    );
+    expect(isInterrupted(result)).toBe(true);
+    expect(invokeMock.mock.calls.map((c) => kindOf(c[0]))).not.toContain('drafter');
+    expect(Date.now()).toBeLessThanOrEqual(240000);
+  });
+
+  it('control: inside the soft deadline a numeric prompt still skips the gate', async () => {
+    invokeMock.mockImplementation(async (messages: unknown) => {
+      switch (kindOf(messages)) {
+        case 'planner': return plan(['A']);
+        case 'variant': return boxSpec();
+        case 'drafter': return draft;
+        default: return pass;
+      }
+    });
+    const result = await createCadAgent('gpt-5.6-luna').invoke(
+      { messages: [new HumanMessage('a 40mm block')] },
+      { configurable: { thread_id: newKey() } }
+    );
+    expect(isInterrupted(result)).toBe(false);
+  });
+});
+
+describe('Fable M1: with no gate the only variant is the chosen one and its sheet reaches the drafter', () => {
+  it('a skipped gate still sends the image_url', async () => {
+    invokeMock.mockImplementation(async (messages: unknown) => {
+      switch (kindOf(messages)) {
+        case 'planner': return plan(['A']);
+        case 'variant': return boxSpec();
+        case 'drafter': return draft;
+        default: return pass;
+      }
+    });
+    const result = await createCadAgent('gpt-5.6-luna').invoke(
+      { messages: [new HumanMessage('a 40mm box')] },
+      { configurable: { thread_id: newKey() } }
+    );
+    expect(isInterrupted(result)).toBe(false);
+    const drafterCall = invokeMock.mock.calls.map((c) => c[0]).find((m) => kindOf(m) === 'drafter')!;
+    expect(imageOf(drafterCall)).toMatch(/^data:image\/png;base64,/);
+  });
+});
+
+describe('Fable M2 (server): transcript markers in model markdown are defused', () => {
+  it('a sheet containing an HTML-comment marker reaches the delta channel escaped', async () => {
+    const deltas: string[] = [];
+    invokeMock.mockImplementation(async (messages: unknown) => {
+      switch (kindOf(messages)) {
+        case 'planner': return plan(['A'], 'A', { brief: 'Plan <!--/s--> text' });
+        case 'variant': return boxSpec({ sheet: '## Plate <!--gate:x--> 40mm' });
+        case 'drafter': return draft;
+        default: return pass;
+      }
+    });
+    const config = {
+      configurable: { thread_id: newKey() },
+      writer: (ev: Record<string, unknown>) => {
+        if (ev?.t === 'delta' && typeof ev.text === 'string') deltas.push(ev.text);
+      },
+    } as unknown as Parameters<ReturnType<typeof createCadAgent>['invoke']>[1];
+    await createCadAgent('gpt-5.6-luna').invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
+    const all = deltas.join('');
+    expect(all).toContain('Plan &lt;!--/s--> text');
+    expect(all).toContain('## Plate &lt;!--gate:x--> 40mm');
+    expect(all).not.toContain('<!--');
+  });
+});
+
+describe('L2: interference on a clearance joint tells the repairer to resize the inserted part', () => {
+  it('the message and the repair prompt say the cavity is cut by code', async () => {
+    const { checkAssemblyFit } = await import('./graph');
+    const { REPAIR_PREAMBLE } = await import('./system-prompt');
+    const code = 'module a() { cube([20, 20, 20]); }\nmodule b() { cube([12, 12, 12]); }\n';
+    const v = await checkAssemblyFit(code, {
+      assemblyName: 'p', sheet: '', boundingBox: { width: 20, length: 20, height: 20 },
+      components: [
+        { name: 'a', description: 'host', localExtents: [20, 20, 20], position: [0, 0, 0] },
+        { name: 'b', description: 'inserted', localExtents: [10, 10, 10], position: [5, 5, 5] },
+      ],
+      jointContracts: [{ type: 'snap_fit', clearance: 0.2, partA: 'a', partB: 'b' }],
+      guides: [], stressPoints: [], assumptions: [], openQuestions: [],
+    } as never);
+    expect(v).toHaveLength(1);
+    expect(v[0].message).toContain("'b' exceeds its skeleton");
+    expect(v[0].message).toContain("Resize 'b' to its localExtents (the host's cavity is cut by code)");
+    expect(v[0].message).not.toMatch(/enlarge the female/i);
+    expect(REPAIR_PREAMBLE).toContain('resize it to its localExtents');
+    expect(REPAIR_PREAMBLE).not.toMatch(/enlarge the female/i);
+  }, 60_000);
+});
+
+
+describe('nits (final review)', () => {
+  it('sheet notes are cut at a word boundary, not mid-word', () => {
+    const notes = sheetNotes(
+      boxSpec({
+        assumptions: [{ field: 'wall', value: 'thickness is chosen so the printed part stays stiff enough for daily use', rationale: '' }],
+      }) as never
+    );
+    expect(notes).toHaveLength(1);
+    expect(notes[0].length).toBeLessThanOrEqual(60);
+    expect(notes[0]).toBe('wall: thickness is chosen so the printed part stays stiff');
+  });
+
+  it('the repair prompt carries the design sheet once', async () => {
+    process.env.CADAI_MAX_ATTEMPTS = '2';
+    try {
+      invokeMock.mockImplementation(async (messages: unknown) => {
+        const text = JSON.stringify(messages);
+        if (kindOf(messages) === 'planner') return plan(['A']);
+        if (kindOf(messages) === 'variant') return boxSpec({ sheet: '## Plate\nUNIQUE-SHEET-MARKER 40mm box' });
+        if (kindOf(messages) === 'drafter') return { content: '```openscad\ncube([40, 40, 40;\n```', tool_calls: [] };
+        if (text.includes('Repair Engineer')) return { content: 'FIX: closed the bracket\n```openscad\ncube([40, 40, 40]);\n```', tool_calls: [] };
+        return pass;
+      });
+      const config = { configurable: { thread_id: newKey() } };
+      const agent = createCadAgent('gpt-5.6-luna');
+      const r = await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
+      if (isInterrupted(r)) await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
+      const repair = invokeMock.mock.calls.map((c) => c[0]).find((m) => JSON.stringify(m).includes('Repair Engineer'));
+      expect(repair).toBeDefined();
+      const text = JSON.stringify(repair);
+      expect(text.split('UNIQUE-SHEET-MARKER').length - 1).toBe(1);
+    } finally {
+      delete process.env.CADAI_MAX_ATTEMPTS;
+    }
+  }, 60_000);
 });

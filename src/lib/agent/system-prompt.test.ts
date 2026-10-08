@@ -9,7 +9,7 @@ import {
   SHEET_REVIEWER_PREAMBLE,
 } from './system-prompt';
 import { validateOpenScadCode } from './code-validator';
-import { DRAFTER_CLEARANCE_JOINTS_NOTE } from './graph';
+import { clearanceJointsNote } from './graph';
 
 const PROMPTS: Record<string, string> = {
   CAD_AI_SYSTEM_PROMPT,
@@ -223,8 +223,15 @@ describe('system prompts', () => {
     expect(CAD_AI_SYSTEM_PROMPT).toMatch(/cuts the host's cavity/i);
   });
 
-  it('Task D: drafter prompt mentions code-cut cavities', () => {
-    expect(DRAFTER_CLEARANCE_JOINTS_NOTE).toContain('Mating cavities for clearance joints are cut by code after your script (host = partA)');
-    expect(DRAFTER_CLEARANCE_JOINTS_NOTE).toContain('Do not model slots, sockets or holes for inserted parts');
+  it('Task D / L3: the code-cut note names the joints it covers and is empty without clearance joints', () => {
+    const base = { assemblyName: 'x', sheet: '', boundingBox: { width: 1, length: 1, height: 1 }, components: [], guides: [], stressPoints: [], assumptions: [], openQuestions: [] };
+    const withJoint = { ...base, jointContracts: [{ type: 'snap_fit', clearance: 0.2, partA: 'base', partB: 'tab' }] } as never;
+    const note = clearanceJointsNote(withJoint);
+    expect(note).toContain('Mating cavities for clearance joints are cut by code after your script (host = partA)');
+    expect(note).toContain('tab into base (0.2 mm)');
+    expect(note).toContain('Do not model slots, sockets or holes for the inserted parts of these joints');
+    expect(clearanceJointsNote({ ...base } as never)).toBe('');
+    expect(clearanceJointsNote({ ...base, jointContracts: [{ type: 'press_fit', clearance: 0, partA: 'a', partB: 'b' }] } as never)).toBe('');
+    expect(clearanceJointsNote(null)).toBe('');
   });
 });

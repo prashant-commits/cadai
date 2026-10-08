@@ -4,6 +4,7 @@ import { BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage } from
 import type { RunnableConfig } from '@langchain/core/runnables';
 import { z } from 'zod';
 import { createSpecRenderer } from './spec-markdown';
+import { escapeMarkers } from './transcript';
 import { composeRunSummary } from './run-summary';
 import type { StreamEvent } from './stream-events';
 import { CAD_AI_SYSTEM_PROMPT, ARCHITECT_PLANNER_PREAMBLE, ARCHITECT_VARIANT_PREAMBLE, DRAFTER_PREAMBLE, REPAIR_PREAMBLE, CRITIC_PREAMBLE, DRAFTER_PLACEMENT_CONTRACT, SHEET_REVIEWER_PREAMBLE } from './system-prompt';
@@ -75,8 +76,21 @@ function isStandIn(reason: string): boolean {
   return reason.includes('drawn as a box');
 }
 
-export const DRAFTER_CLEARANCE_JOINTS_NOTE =
-  'Mating cavities for clearance joints are cut by code after your script (host = partA). Do not model slots, sockets or holes for inserted parts; model the inserted part at its skeleton size.';
+/** The mating-cavity convention, naming the joints it covers; empty when the spec has no clearance joints. */
+export function clearanceJointsNote(spec: AssemblySpec | null): string {
+  const cuts = spec ? matingCuts(spec) : [];
+  if (cuts.length === 0) return '';
+  const joints = cuts.map((c) => `${c.inserted} into ${c.host} (${c.clearance} mm)`).join(', ');
+  return `Mating cavities for clearance joints are cut by code after your script (host = partA): ${joints}. Do not model slots, sockets or holes for the inserted parts of these joints; model each inserted part at its skeleton size.`;
+}
+
+/** Cuts a note at the last word boundary within `max` characters. */
+function truncateAtWord(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const space = cut.lastIndexOf(' ');
+  return (space > 0 ? cut.slice(0, space) : cut).replace(/[\s,;:(-]+$/, '');
+}
 
 /** Sheet notes, at most 3: placeholders and omissions first (they change how to read the sheet), then code-cut mating cavities, then the variant's own assumptions. */
 export function sheetNotes(spec: AssemblySpec): string[] {
@@ -89,7 +103,7 @@ export function sheetNotes(spec: AssemblySpec): string[] {
     (c) => `${c.host}: cavity cut by code for ${c.inserted} (${c.clearance} mm)`
   );
   const assumptions = (spec.assumptions ?? []).map((a) => `${a.field}: ${a.value}`);
-  return [...placeholders, ...cutNotes, ...assumptions].map((n) => n.slice(0, 60)).slice(0, 3); // 60 chars per note and 3 notes: the sheet's notes strip
+  return [...placeholders, ...cutNotes, ...assumptions].map((n) => truncateAtWord(n, 60)).slice(0, 3); // 60 chars per note and 3 notes: the sheet's notes strip
 }
 
 /** Renders a variant's concept sheet. Deterministic and fast, so state keeps only the spec and this is redrawn on demand. */
@@ -225,10 +239,10 @@ export async function checkAssemblyFit(
         measured: `${result.intersectionVolumeMm3?.toFixed(2) ?? 'unknown'}mm3 of overlap`,
         severity: 'error',
         message:
-          `'${joint.partA}' and '${joint.partB}' interpenetrate by ` +
-          `${result.intersectionVolumeMm3?.toFixed(2) ?? 'an unknown volume'}mm3, but their ` +
+          `'${joint.partB}' exceeds its skeleton: it interpenetrates '${joint.partA}' by ` +
+          `${result.intersectionVolumeMm3?.toFixed(2) ?? 'an unknown volume'}mm3 beyond the cavity code cuts for it, but their ` +
           `${joint.type} joint declares ${joint.clearance}mm of clearance. ` +
-          'Shrink the male feature or enlarge the female one until the parts clear.',
+          `Resize '${joint.partB}' to its localExtents (the host's cavity is cut by code); do not model a slot in '${joint.partA}'.`,
       });
     } catch (e) {
       // An indeterminate probe must not fail the run - the part may be fine.
@@ -355,7 +369,7 @@ const REPAIR_HINTS: Partial<Record<SpecViolation['kind'], string>> = {
   empty: 'The script produced no solid. Check for zero dimensions and for a difference() that removed everything.',
   manifold: 'The solid is not a valid 2-manifold: coincident faces or a zero-thickness membrane. Extend every cutter at least 0.02mm past each face it exits and sink fused parts 0.01mm into each other.',
   shells: 'The result split into more shells than the spec has components: parts that should be joined are not touching. Overlap them by at least 0.01mm.',
-  interference: 'Two parts that must clear each other interpenetrate. Shrink the male feature or enlarge the female one until they clear by the declared joint clearance.',
+  interference: 'The inserted part exceeds its skeleton and pokes past the cavity that code cuts in its host. Resize the inserted part to its localExtents; do not model a slot in the host or enlarge it.',
   clearance: 'A declared clearance was not achieved. Adjust the mating dimensions, not the placement.',
   bbox: 'The measured extents disagree with the spec. Fix the arithmetic behind the offending axis (stacked heights, wall x 2 + cavity, position + size); do not delete features to shrink the box.',
   standing: 'A Design Contract rule was broken: restore the pinned assignment exactly, or raise the wall parameter to the minimum.',
@@ -590,7 +604,10 @@ function write(
   node: string,
   event: StreamEvent
 ): void {
-  config?.writer?.({ ...event, node });
+  // Model markdown (planner brief, variant sheets) goes into transcript sections
+  // delimited by HTML-comment markers, so a literal marker in it must be defused.
+  const safe = event.t === 'delta' ? { ...event, text: escapeMarkers(event.text) } : event;
+  config?.writer?.({ ...safe, node });
 }
 
 /**
@@ -891,7 +908,6 @@ export function createCadAgent(
       });
 
       let plan: z.infer<typeof ArchitectPlanSchema> | null = null;
-      let lastPlannerError: string | null = null;
 
       // THREE attempts, not two. Decoder degeneration is per-attempt and
       // independent, so retries compound: at the ~0.8 per-attempt success rate
@@ -923,16 +939,16 @@ export function createCadAgent(
             if (plan.brief) write(config, 'architectNode', { t: 'delta', text: `${plan.brief}
 ` });
           } else {
-            lastPlannerError = parsedPlan.success
-              ? 'Planner response missing variants.'
-              : parsedPlan.error.message;
+            console.warn(
+              `architectNode: planner attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS} unusable:`,
+              parsedPlan.success ? 'response missing variants' : parsedPlan.error.message
+            );
           }
         } catch (e: unknown) {
-          lastPlannerError = e instanceof Error ? e.message : String(e);
           // The raw provider error goes to the log ONLY. It was being sliced into
           // the UI, which is how a provider's 400 payload ended up rendered as the
           // agent's own output.
-          console.error(`architectNode: planner attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS} failed:`, lastPlannerError);
+          console.error(`architectNode: planner attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS} failed:`, e instanceof Error ? e.message : String(e));
         }
       }
 
@@ -1268,7 +1284,7 @@ export function createCadAgent(
       // rounds that did not get any better, means another full-spec revision will
       // only trade one problem for another. Stop, label, and send it forward.
       const previous = v.previousMajors ?? [];
-      const repeated = hasMajor && previous.length > 0 && repeatsPrevious(previous, majors);
+      const repeated = hasMajor && previous.length > 0 && repeatsPrevious(previous, majors, (v.spec?.components ?? []).map((c) => c.name));
       const improved = previous.length === 0 || majors.length < previous.length;
       const stagnantRounds = hasMajor ? (improved ? 0 : (v.stagnantRounds ?? 0) + 1) : 0;
       const notConverging = hasMajor && (repeated || stagnantRounds >= 2); // 2: consecutive non-improving major rounds
@@ -1332,9 +1348,13 @@ export function createCadAgent(
 
     // The approved variant, found by the id the gate recorded and by nothing
     // else: matching on name or on the recommendation picked the wrong sheet.
+    // With no gate (one validated variant) there is no human choice to contradict,
+    // so the only variant is the chosen one and its sheet is sent too.
     const chosenVariant = state.chosenVariantId
       ? state.specVariants?.find((v) => v.id === state.chosenVariantId)
-      : undefined;
+      : state.specVariants?.length === 1
+        ? state.specVariants[0]
+        : undefined;
 
     let drafterHumanMessage: HumanMessage;
     if (state.assemblySpec) {
@@ -1365,7 +1385,7 @@ export function createCadAgent(
           : '';
 
       const promptText = `Implement the Architect Spec below as one complete OpenSCAD script. Honour every field: each stressPoint mitigation built exactly as sized, joints at their declared clearance, every edge sharp.
-${DRAFTER_CLEARANCE_JOINTS_NOTE}
+${clearanceJointsNote(state.assemblySpec)}
 
 Architect Spec Sheet:
 ${sheet}
@@ -1684,7 +1704,7 @@ Current Broken Code:
 ${stripGeneratedAssembly(state.currentCode)}
 \`\`\`
 ${humanRevision}
-${state.assemblySpec ? `Assembly Spec (every stressPoint mitigation in it is mandatory; edges stay sharp):\n${state.assemblySpec.sheet ? `Design Sheet:\n${state.assemblySpec.sheet}\n\n` : ''}${JSON.stringify(state.assemblySpec, null, 2)}\n` : ''}${contractLines(state.designContract)}
+${state.assemblySpec ? `Assembly Spec (every stressPoint mitigation in it is mandatory; edges stay sharp):\n${state.assemblySpec.sheet ? `Design Sheet:\n${state.assemblySpec.sheet}\n\n` : ''}${JSON.stringify({ ...state.assemblySpec, sheet: undefined }, null, 2)}\n${clearanceJointsNote(state.assemblySpec) ? `${clearanceJointsNote(state.assemblySpec)}\n` : ''}` : ''}${contractLines(state.designContract)}
 Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`openscad ... \`\`\` block.`;
 
     const fixMessages = [
@@ -2102,6 +2122,9 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
   function checkSpecRoute(state: AgentStateType) {
     const prompt = latestHumanText(state.messages);
 
+    // A loop that ended past the soft deadline has no time left to draft in this
+    // request, so a human sees the spec first (and the drafter starts in a new one).
+    if (state.reviewDeadline !== null && Date.now() >= state.reviewDeadline) return 'specGate';
     if (shouldGateSpec(state, prompt)) return 'specGate';
     return 'drafterNode';
   }

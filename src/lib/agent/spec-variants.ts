@@ -23,8 +23,10 @@ export interface SpecVariant {
   version: number;
   /**
    * Version of `spec` the concept sheet was last drawn for (null = not drawn).
-   * The SVG itself is never kept in state - each embeds four base64 PNGs and
-   * the checkpointer rewrites all of state per step - it is re-rendered on demand.
+   * The SVG is not kept in graph state - each embeds four base64 PNGs and the
+   * checkpointer rewrites all of state per step - it is re-rendered on demand.
+   * (One copy per open gate still lives in that gate's interrupt payload, so it
+   * is stored there until the run is resumed, cancelled or expires.)
    */
   drawnVersion: number | null;
   review: VariantReview | null;
@@ -71,22 +73,51 @@ export function recommendedVariant(variants: SpecVariant[], brief: SpecBrief | n
   return variants.find(v => v.spec !== null) || null;
 }
 
-const words = (text: string): Set<string> =>
-  new Set(text.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 0));
+const STOPWORDS = new Set([
+  'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'it', 'its', 'of', 'in', 'on', 'at', 'to', 'for',
+  'and', 'or', 'but', 'not', 'no', 'too', 'very', 'by', 'with', 'as', 'that', 'this', 'which', 'while', 'than',
+  'should', 'must', 'does', 'do', 'has', 'have', 'there', 'from', 'so', 'then',
+]);
 
-/** Word-set Jaccard similarity of two findings, 0..1. */
+const tokens = (text: string): string[] => text.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 0);
+const isNumber = (w: string) => /^[0-9]+$/.test(w);
+
+/** Word-set Jaccard similarity of two findings with stopwords dropped, 0..1. */
 export function findingSimilarity(a: string, b: string): number {
-  const wa = words(a);
-  const wb = words(b);
+  const wa = new Set(tokens(a).filter((w) => !STOPWORDS.has(w)));
+  const wb = new Set(tokens(b).filter((w) => !STOPWORDS.has(w)));
   if (wa.size === 0 && wb.size === 0) return 1;
   let shared = 0;
   for (const w of wa) if (wb.has(w)) shared++;
   return shared / (wa.size + wb.size - shared);
 }
 
-/** Findings that mean the same thing as one the previous round already made: Jaccard >= 0.5 for any pair. */
-export function repeatsPrevious(previous: string[], current: string[]): boolean {
-  return current.some((c) => previous.some((p) => findingSimilarity(p, c) >= 0.5)); // 0.5: the half-shared-words rule agreed for "same finding"
+/** The components a finding talks about: every name that appears in it as whole words (underscores read as spaces). */
+function partsMentioned(text: string, partNames: string[]): string {
+  const padded = ` ${tokens(text).join(' ')} `;
+  return partNames
+    .filter((n) => padded.includes(` ${tokens(n).join(' ')} `))
+    .sort()
+    .join('|');
+}
+
+const numbersIn = (text: string): string => tokens(text).filter(isNumber).sort().join(',');
+
+/**
+ * Whether `current` is the same finding as one the previous round made. Needs
+ * ALL of: the same component(s) named (when names are known), the same numbers
+ * quoted (an angle that moved from 30 to 60 degrees is progress, not a repeat),
+ * and a stopword-free word-set Jaccard >= 0.6.
+ */
+export function repeatsPrevious(previous: string[], current: string[], partNames: string[] = []): boolean {
+  return current.some((c) =>
+    previous.some(
+      (p) =>
+        partsMentioned(p, partNames) === partsMentioned(c, partNames) &&
+        numbersIn(p) === numbersIn(c) &&
+        findingSimilarity(p, c) >= 0.6 // 0.6: more than half the meaningful words, so one differing part word is not a repeat
+    )
+  );
 }
 
 /** CADAI_MAX_VARIANTS, validated: non-numeric or < 1 -> 3, clamped to 1..3. */

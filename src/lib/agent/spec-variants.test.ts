@@ -496,3 +496,30 @@ describe('finding similarity', () => {
     expect(repeatsPrevious(['arm floats above the plate'], ['hook points the wrong way round'])).toBe(false);
   });
 });
+
+
+describe('no-progress similarity (final review L1)', () => {
+  it('the reviewer pairs that share most words but are NOT repeats', async () => {
+    const { repeatsPrevious } = await import('./spec-variants');
+    const parts = ['base_plate', 'backrest', 'front_lip', 'rear_lip'];
+    const notRepeat = (a: string, b: string, names: string[] = parts) => expect(repeatsPrevious([a], [b], names)).toBe(false);
+    notRepeat('The base plate is too thin', 'The backrest is too thin');
+    notRepeat('The front lip is missing', 'The rear lip is missing');
+    notRepeat('The shelf is not supported by the backrest', 'The shelf is not supported by the front lip');
+    // An improving angle: the quoted number moved.
+    notRepeat('Backrest angle is 30 degrees, the request says 65 degrees', 'Backrest angle is 60 degrees, the request says 65 degrees');
+  });
+
+  it('they are not repeats even when no component names are known', async () => {
+    const { repeatsPrevious } = await import('./spec-variants');
+    expect(repeatsPrevious(['The base plate is too thin'], ['The backrest is too thin'])).toBe(false);
+    expect(repeatsPrevious(['The front lip is missing'], ['The rear lip is missing'])).toBe(false);
+    expect(repeatsPrevious(['Backrest angle is 30 degrees'], ['Backrest angle is 60 degrees'])).toBe(false);
+  });
+
+  it('a reworded finding about the same part and numbers is still a repeat', async () => {
+    const { repeatsPrevious } = await import('./spec-variants');
+    expect(repeatsPrevious(['The backrest angle is 30 degrees, not 65'], ['Backrest angle is only 30 degrees instead of 65'], ['backrest'])).toBe(true);
+    expect(repeatsPrevious(['The front lip is missing'], ['Front lip is missing entirely'], ['front_lip'])).toBe(true);
+  });
+});
