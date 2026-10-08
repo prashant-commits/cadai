@@ -16,9 +16,9 @@ export function graphRecursionLimit(): number {
 export function describeGraphError(err: unknown, prefix: string): string {
   const name = err instanceof Error ? err.name : '';
   const text = err instanceof Error ? err.message : String(err);
+  console.error(`${prefix}:`, err); // every error is logged server-side before it is labelled
   if (name === 'GraphRecursionError' || /Recursion limit/i.test(text)) {
     return `${prefix}: the run took more steps than allowed and was stopped.`;
   }
-  console.error(`${prefix}:`, err);
   return `${prefix}; see server logs.`;
 }

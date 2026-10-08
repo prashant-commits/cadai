@@ -72,6 +72,28 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // A paused run is deleted after CADAI_CHECKPOINT_TTL_MS. Streaming a resume
+    // into a missing checkpoint yields no steps and no error, so the client would
+    // show an approved gate and a blank result. Say so instead.
+    const paused = await getCheckpointer().getTuple({ configurable: { thread_id: checkpointKey } });
+    if (!paused) {
+      return new Response(
+        `data: ${JSON.stringify({
+          t: 'error',
+          message: 'This paused run expired (no decision within 24 h). Send the request again.',
+        } satisfies StreamEvent)}
+
+`,
+        {
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            Connection: 'keep-alive',
+          },
+        }
+      );
+    }
+
     // Run the agent graph asynchronously and stream events
     (async () => {
       // Hoisted above the try so the finally block can flush it. The factory
