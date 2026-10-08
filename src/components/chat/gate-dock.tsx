@@ -171,8 +171,8 @@ function VariantCard({
       ) : null}
       {majors.length > 0 ? (
         <ul className="mt-0.5 space-y-0.5">
-          {majors.map((finding) => (
-            <li key={finding.issue} className="text-[11px] text-amber-200/90">{finding.issue}</li>
+          {majors.map((finding, index) => (
+            <li key={`${index}:${finding.severity}`} className="text-[11px] text-amber-200/90">{finding.issue}</li>
           ))}
         </ul>
       ) : null}
