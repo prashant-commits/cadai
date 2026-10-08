@@ -430,6 +430,34 @@ describe('M5: placeholders are labelled for the reviewer sheet and the drafter',
     expect(notes.every((n) => n.length <= 60)).toBe(true);
   });
 
+  it('sheet notes include code-cut cavities for clearance joints, taking precedence over assumptions', () => {
+    const s = {
+      sheet: 'test',
+      assemblyName: 'phone_stand',
+      boundingBox: { width: 100, length: 100, height: 100 },
+      jointContracts: [
+        { type: 'slot_fit', clearance: 0.2, partA: 'base_plate', partB: 'backrest' },
+      ],
+      components: [
+        { name: 'base_plate', description: 'base', localExtents: [100, 100, 10], position: [0, 0, 0] },
+        { name: 'backrest', description: 'back', localExtents: [80, 5, 90], position: [10, 20, 5] },
+      ],
+      assumptions: [
+        { field: 'angle', value: '65 degrees', rationale: '' },
+        { field: 'lip', value: 'added 5mm front lip', rationale: '' },
+        { field: 'extra', value: 'ignored due to cap', rationale: '' },
+      ],
+      guides: [],
+      stressPoints: [],
+      openQuestions: [],
+    };
+    const notes = sheetNotes(s as never);
+    expect(notes).toHaveLength(3);
+    expect(notes[0]).toBe('base_plate: cavity cut by code for backrest (0.2 mm)');
+    expect(notes[1]).toBe('angle: 65 degrees');
+    expect(notes[2]).toBe('lip: added 5mm front lip');
+  });
+
   it('the drafter is told which components are placeholders, not exact base shapes', async () => {
     invokeMock.mockImplementation(async (messages: unknown) => {
       switch (kindOf(messages)) {
@@ -448,6 +476,25 @@ describe('M5: placeholders are labelled for the reviewer sheet and the drafter',
     expect(text).toContain('Placeholders - build these from the skeleton, not from the starting script');
     expect(text).toMatch(/- ghost: not in the starting script/);
     expect(text).not.toContain('exact base shape');
+  });
+
+  it('the drafter prompt mentions code-cut cavities for clearance joints', async () => {
+    invokeMock.mockImplementation(async (messages: unknown) => {
+      switch (kindOf(messages)) {
+        case 'planner': return plan(['A']);
+        case 'variant': return { ...boxSpec(), components: (spec([]) as { components: unknown[] }).components };
+        case 'drafter': return draft;
+        default: return pass;
+      }
+    });
+    const config = { configurable: { thread_id: newKey() } };
+    const agent = createCadAgent('gpt-5.6-luna');
+    await agent.invoke({ messages: [new HumanMessage('a box')] }, config);
+    await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
+    const drafterCall = invokeMock.mock.calls.map((c) => c[0]).find((m) => kindOf(m) === 'drafter')!;
+    const text = (lastContent(drafterCall) as Array<{ text?: string }>)[0].text!;
+    expect(text).toContain('Mating cavities for clearance joints are cut by code after your script (host = partA)');
+    expect(text).toContain('Do not model slots, sockets or holes for inserted parts; model the inserted part at its skeleton size');
   });
 });
 

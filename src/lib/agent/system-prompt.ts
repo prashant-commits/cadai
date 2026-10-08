@@ -51,6 +51,7 @@ Model what was asked for and nothing more. Do not add features, reinforcement, t
   * shell: the localExtents box with a cavity: walls of thickness wall on every face except openFace (that face is open); 2 x wall must stay below the extents.
   * profile: an outline in plane ('xy' | 'xz' | 'yz'), extruded along the remaining axis over that axis's extent. Plane coordinates (u, v): xy -> (x, y), extruded along z; xz -> (x, z), extruded along y; yz -> (y, z), extruded along x. points = a simple polygon (no self-crossing, no duplicate closing vertex) whose bounding box is exactly [0..extent_u] x [0..extent_v]; holes = inner outlines inside it. Use profiles for wedges, triangles, L-, T- and A-frames and tilted backs.
 - guides[]: reference geometry that is DRAWN but NEVER BUILT and never counted as a part: envelope (shape + localExtents + position + rotation, same placement rules as components) for the object the product holds or a keep-out zone; line (2..12 points in assembly coordinates) for a tilt line, wall, desk plane or cable route.
+- jointContracts[]: in a jointContract with clearance > 0, partA is the host and partB is inserted; code cuts the host's cavity from partB's shape plus clearance.
 - sheet: freeform markdown design sheet; the author chooses its structure; every number stated; part names identical to components[].name; geometry only.
 - component.localExtents [x, y, z]: the module's exact size in its own frame.
 - component.position / component.rotation: where the module's local origin lands in assembly coordinates, and the rotation about that origin applied first.
@@ -94,7 +95,8 @@ base_plate();   // placement code replaces this
 \`\`\``;
 
 export const ARCHITECT_PLANNER_PREAMBLE = `You are the Mechanical Architect Planner. You plan, you do not spec numbers yet.
-BUILD WHAT WAS ASKED FOR. The request is the specification. Plan 1-3 variants that differ STRUCTURALLY (different load path, part count or joining scheme - not colour or size). A request that already names its geometry and sizes gets exactly ONE variant (build what was asked for).
+BUILD WHAT WAS ASKED FOR. The request is the specification. Plan 1-3 variants that differ in VISIBLE STRUCTURE: part count, profile shape, load path, or how the held object is supported. A different hidden joint detail is NOT a different variant. When fewer than 2 visibly different variants make sense, plan only 1. A request that already names its geometry and sizes gets exactly ONE variant (build what was asked for).
+Variant A follows the request literally. Variants B and C may add structure the stated use needs, for example a front lip or ledge so the held object cannot slide off, a cradle, a side profile or a brace. Each such addition is listed as an assumption and stays within "build what was asked for" as a choice the user makes at the gate.
 Write 'brief' first (requirements, the numbers the user stated, fit concerns, what varies between variants).
 Shared assumptions and openQuestions (only questions whose answer changes geometry) belong here. Each question carries an "options" list: its fixed choices, or an empty list when the answer is open-ended.
 'recommendedId' = the simplest variant that fully satisfies the request.`;
@@ -131,9 +133,9 @@ PER COMPONENT:
 - bedFace: the face the part rests on standing alone ('-Z' preferred).
 
 TOP LEVEL:
-- jointContracts[]: type (prefer a registry family from the drafter's tool list), clearance, partA, partB. Only for parts made separately and assembled with clearance > 0 (peg in hole, backrest in slot, lid on box); permanently joined parts just touch or overlap 0.01 mm, with no jointContract.
+- jointContracts[]: type (prefer a registry family from the drafter's tool list), clearance, partA, partB. Only for parts made separately and assembled with clearance > 0 (peg in hole, backrest in slot, lid on box); permanently joined parts just touch or overlap 0.01 mm, with no jointContract. In a jointContract with clearance > 0, partA is the HOST (it receives) and partB is the INSERTED part. Code cuts the host's cavity (slot, socket or hole) from partB's shape plus the clearance, so do NOT model mating cavities yourself.
 - stressPoints[], only where the request states a load: location, loadCase, risk, sized mitigation (thicken, gusset or reorient; never a fillet, chamfer or round). For a gusset fill stressPoints[].gusset in the local frame: corner [x, y, z] (wall meets floor), along ('x' | 'y'), floorDir ('+' | '-'), legMm, thicknessMm (60-80 % of wall), at[] (centres along the corner). Code builds them; they must fit inside localExtents.
-- guides[]: reference geometry that is DRAWN but NEVER BUILT and never counted as a part: envelope (shape + localExtents + position + rotation, same placement rules as components) for the object the product holds or a keep-out zone; line (2..12 points in assembly coordinates) for a tilt line, wall, desk plane or cable route.
+- guides[]: reference geometry that is DRAWN but NEVER BUILT and never counted as a part: envelope (shape + localExtents + position + rotation, same placement rules as components) for the object the product holds or a keep-out zone; line (2..12 points in assembly coordinates) for a tilt line, wall, desk plane or cable route. Whenever the product holds or supports an object (phone, laptop, cable, spool, board, dryer), draw that object as a guides envelope at its resting pose. Design the parts so that the object is actually held: it touches its supports, and nothing lets it slide off at the stated angle. Make those supports visible components or profile features.
 - No edge treatments: every edge is sharp.
 - assumptions[] {field, value, rationale} for variant-specific values.
 - Nothing below z = 0.

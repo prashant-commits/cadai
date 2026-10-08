@@ -9,6 +9,7 @@ import {
   SHEET_REVIEWER_PREAMBLE,
 } from './system-prompt';
 import { validateOpenScadCode } from './code-validator';
+import { DRAFTER_CLEARANCE_JOINTS_NOTE } from './graph';
 
 const PROMPTS: Record<string, string> = {
   CAD_AI_SYSTEM_PROMPT,
@@ -48,7 +49,7 @@ const words = (s: string) => s.trim().split(/\s+/).length;
  */
 const WORD_BUDGET: Record<string, number> = {
   CAD_AI_SYSTEM_PROMPT: 1100,
-  ARCHITECT_VARIANT_PREAMBLE: 900,
+  ARCHITECT_VARIANT_PREAMBLE: 1000,
   ARCHITECT_PLANNER_PREAMBLE: 680,
   DRAFTER_PREAMBLE: 560,
   DRAFTER_PLACEMENT_CONTRACT: 260,
@@ -203,5 +204,27 @@ describe('system prompts', () => {
     for (const [name, text] of Object.entries(PROMPTS)) {
       expect(words(text), `${name} is ${words(text)} words`).toBeLessThanOrEqual(WORD_BUDGET[name]);
     }
+  });
+
+  it('Task D: planner preamble requires visible structural difference and literal variant A', () => {
+    expect(ARCHITECT_PLANNER_PREAMBLE).toMatch(/VISIBLE STRUCTURE/);
+    expect(ARCHITECT_PLANNER_PREAMBLE).toMatch(/Variant A follows the request literally/i);
+    expect(ARCHITECT_PLANNER_PREAMBLE).toMatch(/When fewer than 2 visibly different variants make sense, plan only 1/i);
+  });
+
+  it('Task D: variant preamble requires guide for held objects and states host/inserted convention', () => {
+    expect(ARCHITECT_VARIANT_PREAMBLE).toMatch(/holds or supports an object/i);
+    expect(ARCHITECT_VARIANT_PREAMBLE).toMatch(/guides envelope at its resting pose/i);
+    expect(ARCHITECT_VARIANT_PREAMBLE).toMatch(/partA is the HOST/i);
+    expect(ARCHITECT_VARIANT_PREAMBLE).toMatch(/partB is the INSERTED part/i);
+    expect(ARCHITECT_VARIANT_PREAMBLE).toMatch(/do NOT model mating cavities yourself/i);
+    expect(CAD_AI_SYSTEM_PROMPT).toMatch(/partA is the host/i);
+    expect(CAD_AI_SYSTEM_PROMPT).toMatch(/partB is inserted/i);
+    expect(CAD_AI_SYSTEM_PROMPT).toMatch(/cuts the host's cavity/i);
+  });
+
+  it('Task D: drafter prompt mentions code-cut cavities', () => {
+    expect(DRAFTER_CLEARANCE_JOINTS_NOTE).toContain('Mating cavities for clearance joints are cut by code after your script (host = partA)');
+    expect(DRAFTER_CLEARANCE_JOINTS_NOTE).toContain('Do not model slots, sockets or holes for inserted parts');
   });
 });
