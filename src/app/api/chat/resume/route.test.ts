@@ -23,7 +23,7 @@ describe('POST /api/chat/resume', () => {
     const text = await res.text();
     const events = text.split('\n\n').filter(Boolean).map((l) => JSON.parse(l.replace(/^data: /, '')));
     expect(events).toEqual([
-      { t: 'error', message: 'This paused run expired (no decision within 24 h). Send the request again.' },
+      { t: 'error', message: 'This paused run expired or was not found on this server. Send the request again.' },
     ]);
     expect(createAgent).not.toHaveBeenCalled();
   });

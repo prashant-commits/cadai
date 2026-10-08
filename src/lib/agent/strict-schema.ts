@@ -1,14 +1,15 @@
 /** OpenAI-strict transform: every object lists ALL its properties in `required`; a property that was optional becomes `anyOf: [<schema>, { type: 'null' }]`; every object gets `additionalProperties: false`; every `default` keyword is removed. Pure; does not mutate its input. */
-export function toStrictJsonSchema(json: unknown): Record<string, unknown> {
+export function toStrictJsonSchema(json: unknown, inPropertyMap = false): Record<string, unknown> {
   if (Array.isArray(json)) {
-    return json.map(toStrictJsonSchema) as unknown as Record<string, unknown>;
+    return json.map((j) => toStrictJsonSchema(j)) as unknown as Record<string, unknown>;
   }
   
   if (json && typeof json === 'object') {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const out: Record<string, any> = {};
     for (const [k, v] of Object.entries(json)) {
-      out[k] = toStrictJsonSchema(v);
+      // Inside a `properties` map the keys are property NAMES, not keywords.
+      out[k] = toStrictJsonSchema(v, !inPropertyMap && k === 'properties');
     }
 
     if (out.type === 'object' && out.properties) {
@@ -27,8 +28,8 @@ export function toStrictJsonSchema(json: unknown): Record<string, unknown> {
       out.required = allKeys;
     }
 
-    if ('default' in out) {
-      delete out.default;
+    if (!inPropertyMap && 'default' in out) {
+      delete out.default; // the `default` keyword; a property literally named `default` is kept
     }
 
     return out;

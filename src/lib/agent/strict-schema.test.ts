@@ -67,3 +67,20 @@ describe('nullsToUndefined', () => {
     });
   });
 });
+
+describe('toStrictJsonSchema keeps a property literally named `default`', () => {
+  it('removes the default keyword but not a property called default', () => {
+    const out = toStrictJsonSchema({
+      type: 'object',
+      properties: {
+        default: { type: 'string', default: 'x' },
+        other: { type: 'number', default: 3 },
+      },
+      required: ['default', 'other'],
+    }) as { properties: Record<string, Record<string, unknown>>; required: string[] };
+    expect(Object.keys(out.properties)).toEqual(['default', 'other']);
+    expect(out.properties.default).toEqual({ type: 'string' });
+    expect(out.properties.other).toEqual({ type: 'number' });
+    expect(out.required).toEqual(['default', 'other']);
+  });
+});

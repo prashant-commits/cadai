@@ -80,7 +80,7 @@ export async function POST(req: NextRequest) {
       return new Response(
         `data: ${JSON.stringify({
           t: 'error',
-          message: 'This paused run expired (no decision within 24 h). Send the request again.',
+          message: 'This paused run expired or was not found on this server. Send the request again.',
         } satisfies StreamEvent)}
 
 `,

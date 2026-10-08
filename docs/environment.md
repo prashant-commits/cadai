@@ -11,3 +11,5 @@
 - `CADAI_VISUAL_CRITIC` (default off): `on` enables the render-based visual critic.
 - `CADAI_MAX_ATTEMPTS` (default `1`): global cap on drafter repair attempts per run.
 - `CADAI_CHECKPOINT_TTL_MS` (default `86400000`, 24 h): paused runs whose newest checkpoint is older than this are deleted, at startup and at most once an hour on write.
+- `CADAI_MAX_DURATION_MS` (default `300000`, Vercel only): the request's hard limit (the routes' `maxDuration`). Model calls before the spec gate are capped to what is left of it, less a 15 s tail.
+- `CADAI_MODEL_TIMEOUT_MS` (default `240000`): per-call timeout of the model client. On Vercel the review loop lowers it per call to the remaining budget.
