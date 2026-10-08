@@ -382,3 +382,30 @@ The spike is one throwaway scratchpad script, run as a single batch for under $3
   - one vision model everywhere
   - gateway Gemini image slugs acceptable if image generation ever returns
   - implementation goes through the Herdr flow: agy and grok implement, and Claude Opus reviews at the end
+
+## Results (2026-10-08)
+
+Eval: 10 prompts, 1 sample each. `visual` is an independent judge on the compiled model (critic pinned to gpt-5.6-luna). Single samples show direction, not proof.
+
+| Arm | Pipeline | Error-free | Visual match | Avg wall |
+|---|---|---|---|---|
+| A | baseline (deepseek, no sheets) | 1/10 | – | – |
+| B3 | sheets + reviewer, drafter from scratch | 9/10 | – | – |
+| C3 | sheets + reviewer, drafter from blockout | 10/10 | – | – |
+| C4 | C3 + findings-win revisions, mating cuts, fused joints | 10/10 | 9/10 | 73 s |
+
+Model comparison on the hard set (phone_stand, cable_clip, spool_holder), pipeline C4. For Opus the sheet reviewer was pinned to gpt-5.6-luna.
+
+| Model | Error-free | Visual match | Avg wall |
+|---|---|---|---|
+| gpt-5.6-luna (default) | 3/3 | 2/3 (cable_clip failed) | 86 s |
+| gpt-6-sol | 3/3 | 3/3 | 132 s |
+| claude-opus-5.5 | 3/3 | 3/3 | 149 s |
+
+Claude through the gateway needed four changes on the variant-spec call:
+- no `maxItems` or numeric bounds
+- no nullable unions (cap 16)
+- at most 24 optional parameters
+- non-strict tool calling, because strict mode's compiled grammar was too large for the spec
+
+The planner, reviewer and critic keep strict json_schema. The default model stays gpt-5.6-luna; sol and Opus are paid picker options.
