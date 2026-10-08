@@ -127,7 +127,7 @@ PER COMPONENT:
 - localExtents [x, y, z]: the module's exact size in its own frame; code measures it.
 - position / rotation: assembled pose.
 - positionNote: one line deriving each non-zero coordinate.
-- holes[]: every hole a fastener, shaft or dowel passes through, in the LOCAL frame: d (drilled diameter, fit allowance included), axis ('x' | 'y' | 'z'), at [x, y, z] (centre of the mouth ON the face it enters), depth (omit for through), note. Code probes each: a hole described only in prose is checked by nothing, and a missing, moved or oversized hole changes no bounding box or shell count.
+- holes[]: every hole a fastener, shaft or dowel passes through, in the LOCAL frame: d (drilled diameter, fit allowance included), axis ('x' | 'y' | 'z'), at [x, y, z] (centre of the hole's mouth ON the face it enters; the hole runs into the part from there), depth (omit for through), note. Code probes each: a hole described only in prose is checked by nothing, and a missing, moved or oversized hole changes no bounding box or shell count.
 - bedFace: the face the part rests on standing alone ('-Z' preferred).
 
 TOP LEVEL:

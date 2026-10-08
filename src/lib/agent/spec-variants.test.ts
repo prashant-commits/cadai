@@ -5,6 +5,7 @@ import {
   SpecVariant,
   recommendedVariant,
   processPlannerVariants,
+  maxVariantsFromEnv,
   gateVariants,
 } from './spec-variants';
 import { AssemblySpec } from './assembly-spec';
@@ -82,8 +83,8 @@ describe('spec-variants helpers', () => {
 
   it('recommendedVariant fallback', () => {
     const variants: SpecVariant[] = [
-      { id: 'A', name: 'A', idea: 'A', spec: null, version: 1, retries: 0, needsRevision: false, sheetSvg: null, review: null },
-      { id: 'B', name: 'B', idea: 'B', spec: { assemblyName: 'B' } as unknown as AssemblySpec, version: 1, retries: 0, needsRevision: false, sheetSvg: null, review: null },
+      { id: 'A', name: 'A', idea: 'A', spec: null, version: 1, retries: 0, needsRevision: false, drawnVersion: null, review: null },
+      { id: 'B', name: 'B', idea: 'B', spec: { assemblyName: 'B' } as unknown as AssemblySpec, version: 1, retries: 0, needsRevision: false, drawnVersion: null, review: null },
     ];
 
     // Brief recommends A, but A has no spec, so it falls back to B
@@ -94,7 +95,7 @@ describe('spec-variants helpers', () => {
   it('recommendedVariant returns null when empty or all specs null', () => {
     expect(recommendedVariant([], null)).toBeNull();
     const variants: SpecVariant[] = [
-      { id: 'A', name: 'A', idea: 'A', spec: null, version: 1, retries: 0, needsRevision: false, sheetSvg: null, review: null },
+      { id: 'A', name: 'A', idea: 'A', spec: null, version: 1, retries: 0, needsRevision: false, drawnVersion: null, review: null },
     ];
     expect(recommendedVariant(variants, null)).toBeNull();
   });
@@ -111,16 +112,36 @@ describe('spec-variants helpers', () => {
       expect(result.variants.map((v) => v.id)).toEqual(['A', 'B']);
     });
 
-    it('dedupes variant IDs', () => {
+    it('re-letters a repeated variant id to a free letter instead of dropping it', () => {
       const input = [
         { id: 'A' as const, name: 'A1', idea: 'idea A1' },
         { id: 'A' as const, name: 'A2', idea: 'idea A2' },
         { id: 'B' as const, name: 'B', idea: 'idea B' },
       ];
       const result = processPlannerVariants(input, 'B', 3);
-      expect(result.variants).toHaveLength(2);
-      expect(result.variants.map((v) => v.id)).toEqual(['A', 'B']);
+      expect(result.variants.map((v) => `${v.id}:${v.name}`)).toEqual(['A:A1', 'C:A2', 'B:B']);
       expect(result.recommendedId).toBe('B');
+    });
+
+    it('drops a repeat only when no letter is free', () => {
+      const input = [
+        { id: 'A' as const, name: 'A1', idea: '' },
+        { id: 'B' as const, name: 'B', idea: '' },
+        { id: 'C' as const, name: 'C', idea: '' },
+        { id: 'A' as const, name: 'A2', idea: '' },
+      ];
+      expect(processPlannerVariants(input, 'A', 3).variants.map((v) => v.name)).toEqual(['A1', 'B', 'C']);
+    });
+
+    it('validates CADAI_MAX_VARIANTS: non-numeric or < 1 -> 3, clamped to 1..3', () => {
+      expect(maxVariantsFromEnv(undefined)).toBe(3);
+      expect(maxVariantsFromEnv('abc')).toBe(3);
+      expect(maxVariantsFromEnv('0')).toBe(3);
+      expect(maxVariantsFromEnv('-2')).toBe(3);
+      expect(maxVariantsFromEnv('2')).toBe(2);
+      expect(maxVariantsFromEnv('9')).toBe(3);
+      const input = [{ id: 'A' as const, name: 'A', idea: '' }, { id: 'B' as const, name: 'B', idea: '' }];
+      expect(processPlannerVariants(input, 'A', NaN).variants).toHaveLength(2);
     });
 
     it('falls back recommendedId if not in planned variants', () => {
@@ -280,7 +301,7 @@ describe('architect variants graph execution', () => {
       idea: 'Idea A',
       spec: baseSpec({ assemblyName: 'spec_a_v1' }),
       version: 1,
-      sheetSvg: 'svg-a',
+      drawnVersion: 1,
       review: { validated: true, findings: [], attempts: 1 },
       retries: 0,
       needsRevision: false,
@@ -291,7 +312,7 @@ describe('architect variants graph execution', () => {
       idea: 'Idea B',
       spec: baseSpec({ assemblyName: 'spec_b_v1' }),
       version: 1,
-      sheetSvg: 'svg-b',
+      drawnVersion: 1,
       review: {
         validated: false,
         findings: [{ issue: 'wall too thin', severity: 'major' }],
@@ -323,12 +344,12 @@ describe('architect variants graph execution', () => {
     // VarA untouched
     expect(varA?.version).toBe(1);
     expect(varA?.spec?.assemblyName).toBe('spec_a_v1');
-    expect(varA?.sheetSvg).toBe('svg-a');
+    expect(varA?.drawnVersion).toBe(1);
 
     // VarB regenerated with bumped version and cleared flags
     expect(varB?.version).toBe(2);
     expect(varB?.spec?.assemblyName).toBe('spec_b_v2');
-    expect(varB?.sheetSvg).toBeNull();
+    expect(varB?.drawnVersion).toBeNull();
     expect(varB?.review).toBeNull();
     expect(varB?.needsRevision).toBe(false);
     expect(varB?.retries).toBe(1); // kept

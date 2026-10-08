@@ -1,7 +1,20 @@
 import { AssemblySpec } from './assembly-spec';
 import { SpecViolation } from './spec-audit';
+import { placedBounds, Vec3 } from '../design/placement-geometry';
 
-export function isSimplePolygon(points: number[][]): boolean {
+/** Placed minimum z below this (mm) is below the ground plane; 0.05 mm absorbs rounding in the model's own arithmetic. */
+const BELOW_GROUND_TOLERANCE_MM = 0.05;
+
+/** A closing point equal to the first is the same vertex twice; the loop is the points without it. */
+export function withoutClosingPoint(points: number[][]): number[][] {
+  if (points.length < 2) return points;
+  const first = points[0];
+  const last = points[points.length - 1];
+  return first[0] === last[0] && first[1] === last[1] ? points.slice(0, -1) : points;
+}
+
+export function isSimplePolygon(input: number[][]): boolean {
+  const points = withoutClosingPoint(input);
   if (points.length < 3) return false;
   
   // check for self intersections
@@ -51,6 +64,31 @@ export function pointInPolygon(point: number[], polygon: number[][]): boolean {
 export function auditSpecShapes(spec: AssemblySpec | null): SpecViolation[] {
   if (!spec) return [];
   const violations: SpecViolation[] = [];
+
+  // z = 0 is the ground plane and nothing may sit below it. Checked on the
+  // placed (rotated about the origin, then translated) envelope, whatever the shape.
+  for (let i = 0; i < (spec.components?.length || 0); i++) {
+    const comp = spec.components![i];
+    const ext = comp.localExtents as Vec3 | undefined;
+    if (!ext || ext.length < 3 || ext.some((n) => !Number.isFinite(n))) continue;
+    const placed = placedBounds(
+      { min: [0, 0, 0], max: ext },
+      (comp.position ?? [0, 0, 0]) as Vec3,
+      (comp.rotation ?? [0, 0, 0]) as Vec3
+    );
+    const depth = -placed.min[2];
+    if (depth > BELOW_GROUND_TOLERANCE_MM) {
+      const mm = Math.round(depth * 100) / 100;
+      violations.push({
+        kind: 'shape',
+        field: `components[${i}].position`,
+        expected: 'placed minimum z >= 0',
+        measured: `min z ${-mm}`,
+        severity: 'error',
+        message: `'${comp.name}' sits ${mm} mm below the ground plane (z = 0) once placed. Raise its position z or change its rotation so its lowest point is at z >= 0.`,
+      });
+    }
+  }
 
   for (let i = 0; i < (spec.components?.length || 0); i++) {
     const comp = spec.components![i];

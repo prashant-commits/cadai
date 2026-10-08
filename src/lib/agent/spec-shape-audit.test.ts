@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { auditSpecShapes } from './spec-shape-audit';
+import { auditSpecShapes, isSimplePolygon } from './spec-shape-audit';
 import { AssemblySpec } from './assembly-spec';
 
 const baseSpec: AssemblySpec = {
@@ -142,5 +142,45 @@ describe('auditSpecShapes', () => {
       });
       expect(violations[0].message).toContain('< 2 points');
     });
+  });
+});
+
+describe('placed minimum z (nothing below the ground plane)', () => {
+  const spec = (components: unknown[]) =>
+    ({ assemblyName: 'a', sheet: '', boundingBox: { width: 1, length: 1, height: 1 }, components, guides: [], assumptions: [], openQuestions: [] }) as never;
+  const part = (name: string, extra: Record<string, unknown>) => ({
+    name,
+    description: name,
+    localExtents: [10, 10, 10],
+    position: [0, 0, 0],
+    ...extra,
+  });
+
+  it('names the part and the depth for a part placed below z = 0', () => {
+    const v = auditSpecShapes(spec([part('foot', { position: [0, 0, -5] })]));
+    expect(v).toHaveLength(1);
+    expect(v[0]).toMatchObject({ kind: 'shape', severity: 'error' });
+    expect(v[0].message).toContain("'foot'");
+    expect(v[0].message).toContain('5 mm');
+  });
+
+  it('judges the ROTATED envelope: a rotation about the origin can push a part under the plane', () => {
+    // Rotating the 10 mm cube -90 degrees about x sends its y extent to -z.
+    const v = auditSpecShapes(spec([part('flipped', { rotation: [-90, 0, 0] })]));
+    expect(v.some((x) => x.message.includes("'flipped'") && x.message.includes('10 mm'))).toBe(true);
+  });
+
+  it('a part resting exactly on z = 0 (or within rounding) is fine', () => {
+    expect(auditSpecShapes(spec([part('base', {}), part('rounded', { position: [0, 0, -0.02] })]))).toEqual([]);
+  });
+});
+
+describe('isSimplePolygon with a duplicate closing vertex', () => {
+  it('ignores a final point equal to the first', () => {
+    const open = [[0, 0], [10, 0], [10, 10], [0, 10]];
+    expect(isSimplePolygon(open)).toBe(true);
+    expect(isSimplePolygon([...open, [0, 0]])).toBe(true);
+    // A real bow-tie is still rejected, closed or not.
+    expect(isSimplePolygon([[0, 0], [10, 10], [10, 0], [0, 10], [0, 0]])).toBe(false);
   });
 });

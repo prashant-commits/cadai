@@ -2,7 +2,7 @@
 
 - `EXPLABS_API_KEY` (required): API key for the Experiential Labs model gateway.
 - `CADAI_MODEL` (default `gpt-5.6-luna`): model used when the request names none.
-- `CADAI_SPEC_SHEETS` (default `on`): `off` disables concept sheets, the 2D review loop and the variant gate.
+- `CADAI_SPEC_SHEETS` (default `on`): `off` disables concept sheets and the 2D review loop (more than one variant still goes to the gate).
 - `CADAI_SPEC_REVIEW_RETRIES` (default `5`): max automated sheet-review retries before the variant goes to the gate.
 - `CADAI_SPEC_REVIEW_BUDGET_MS` (default `240000`, Vercel only): time budget for the sheet review loop.
 - `CADAI_MAX_VARIANTS` (default `3`): max concept variants the architect plans and specs.
