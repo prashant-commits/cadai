@@ -301,6 +301,51 @@ describe('specGeometry', () => {
     expect(geo.bounds!.min[2]).toBeGreaterThanOrEqual(-0.01);
     expect(geo.bounds!.max[2]).toBeLessThanOrEqual(10.01);
   });
+
+  it('tessellates a clockwise outline that repeats its first point and leaves the hole empty', () => {
+    const geo = specGeometry(
+      partSpec({
+        name: 'plate',
+        description: 'closed outline',
+        localExtents: [30, 20, 8],
+        shape: {
+          kind: 'profile',
+          plane: 'xy',
+          points: [
+            [0, 0],
+            [0, 20],
+            [30, 20],
+            [30, 0],
+            [0, 0],
+          ],
+          holes: [
+            [
+              [10, 6],
+              [20, 6],
+              [20, 14],
+              [10, 14],
+            ],
+          ],
+        },
+      })
+    );
+    expect(geo.skipped).toEqual([]);
+    const centre: [number, number] = [15, 10];
+    const caps = geo.tris.filter((t) => {
+      const zs = [t.a[2], t.b[2], t.c[2]];
+      return Math.max(...zs) - Math.min(...zs) < 1e-6;
+    });
+    expect(caps.length).toBeGreaterThan(0);
+    for (const cap of caps) {
+      const inside = pointInTri2d(
+        centre,
+        [cap.a[0], cap.a[1]],
+        [cap.b[0], cap.b[1]],
+        [cap.c[0], cap.c[1]]
+      );
+      expect(inside).toBe(false);
+    }
+  });
 });
 
 describe('guideGeometry', () => {

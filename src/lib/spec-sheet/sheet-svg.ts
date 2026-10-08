@@ -42,6 +42,11 @@ const FONT = {
 
 const FAMILY = 'DejaVu Sans, Arial, sans-serif';
 
+/** Solid dark grey, distinct from dimension ink and dashed guides. */
+const GROUND_STROKE = '#5a564f';
+/** How far the ground line runs past the footprint, so it is not hidden on the silhouette. */
+const GROUND_PAD = 0.18;
+
 export function renderVariantSheet(
   input: SheetInput,
   opts?: { viewSize?: number }
@@ -50,11 +55,12 @@ export function renderVariantSheet(
   const geo = specGeometry(input.spec);
   const guides = guideGeometry(input.spec);
   const guidePoints = guides.flatMap((guide) => guide.polylines.flat());
+  const ground = groundSegment(geo.bounds);
   const rendered = renderTriangleViews(geo.tris, {
     size: viewSize,
     views: VIEWS,
     background: [255, 255, 255],
-    extraBounds: guidePoints,
+    extraBounds: [...guidePoints, ground[0], ground[1]],
   });
 
   const idea = input.idea?.trim() ?? '';
@@ -131,6 +137,10 @@ export function renderVariantSheet(
     );
     if (!camera) return;
 
+    if (name === 'front' || name === 'right' || name === 'iso') {
+      body.push(groundLine(camera, ground, x, y));
+    }
+
     for (const guide of guides) {
       const d = guidePath(guide.polylines, camera, x, y);
       if (!d) continue;
@@ -177,6 +187,38 @@ export function renderVariantSheet(
 
   body.push('</svg>');
   return { svg: body.join('\n'), skipped: geo.skipped };
+}
+
+/** A z = 0 segment across the footprint. A diagonal reads as a horizontal line in front and right. */
+function groundSegment(bounds: { min: Vec3; max: Vec3 } | null): [Vec3, Vec3] {
+  if (!bounds) return [[-20, -20, 0], [20, 20, 0]];
+  const spanX = Math.max(bounds.max[0] - bounds.min[0], 1);
+  const spanY = Math.max(bounds.max[1] - bounds.min[1], 1);
+  const padX = spanX * GROUND_PAD;
+  const padY = spanY * GROUND_PAD;
+  return [
+    [bounds.min[0] - padX, bounds.min[1] - padY, 0],
+    [bounds.max[0] + padX, bounds.max[1] + padY, 0],
+  ];
+}
+
+function groundLine(camera: ViewCamera, segment: [Vec3, Vec3], ox: number, oy: number): string {
+  const [ax, ay] = projectToView(camera, segment[0]);
+  const [bx, by] = projectToView(camera, segment[1]);
+  const x1 = ox + ax;
+  const y1 = oy + ay;
+  const x2 = ox + bx;
+  const y2 = oy + by;
+  return [
+    `<line x1="${n(x1)}" y1="${n(y1)}" x2="${n(x2)}" y2="${n(y2)}" stroke="${GROUND_STROKE}" stroke-width="1"/>`,
+    text(
+      (x1 + x2) / 2,
+      (y1 + y2) / 2 - 10,
+      FONT.guide,
+      'z = 0',
+      `text-anchor="middle" fill="${GROUND_STROKE}" stroke="#ffffff" stroke-width="3" paint-order="stroke"`
+    ),
+  ].join('\n');
 }
 
 function dimension(
@@ -280,6 +322,7 @@ function text(x: number, y: number, size: number, value: string, attrs: string):
 
 function xmlEscape(value: string): string {
   return value
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')

@@ -92,6 +92,40 @@ describe('renderVariantSheet', () => {
     expect(svg).not.toContain('Dark discs = holes');
   });
 
+  it('draws a z = 0 ground line across the front, right and iso views', () => {
+    const spec = boxSpec();
+    spec.components![0].position = [0, 0, 20];
+    spec.components![0].localExtents = [10, 8, 6];
+    const { svg } = renderVariantSheet({ id: 'A', name: 'raised', spec }, { viewSize: 80 });
+    expect(svg.match(/z = 0/g)).toHaveLength(3);
+
+    const cells = [...svg.matchAll(/<image\b[^>]*>/g)].map((match) => ({
+      x: attr(match[0], 'x'),
+      y: attr(match[0], 'y'),
+      s: attr(match[0], 'width'),
+    }));
+    expect(cells).toHaveLength(4);
+    const used = [...svg.matchAll(/<line\b[^>]*stroke="#5a564f"[^>]*>/g)].map((match) => {
+      const mx = (attr(match[0], 'x1') + attr(match[0], 'x2')) / 2;
+      const my = (attr(match[0], 'y1') + attr(match[0], 'y2')) / 2;
+      return cells.findIndex(
+        (cell) => mx >= cell.x && mx <= cell.x + cell.s && my >= cell.y && my <= cell.y + cell.s
+      );
+    });
+    expect(used.sort((a, b) => a - b)).toEqual([0, 1, 3]);
+  });
+
+  it('rasterizes a name that contains XML-forbidden control characters', async () => {
+    const { svg } = renderVariantSheet(
+      { id: 'A', name: 'lug\f\x07A', spec: boxSpec() },
+      { viewSize: 48 }
+    );
+    expect(svg).toContain('lugA');
+    expect(svg).not.toMatch(/[\x00-\x08\x0B\x0C\x0E-\x1F]/);
+    const png = await svgToPngDataUrl(svg);
+    expect(png.startsWith('data:image/png;base64,')).toBe(true);
+  });
+
   it('prints the hole legend only when a component declares holes', () => {
     const spec = boxSpec();
     spec.components![0].holes = [{ d: 3, axis: 'z', at: [5, 5, 10] }];
@@ -100,6 +134,11 @@ describe('renderVariantSheet', () => {
     expect(svg).not.toContain('Dashed = guide (not built)');
   });
 });
+
+function attr(tag: string, name: string): number {
+  const match = new RegExp(`${name}="([^"]+)"`).exec(tag);
+  return Number(match?.[1]);
+}
 
 function boxSpec(): AssemblySpec {
   return {

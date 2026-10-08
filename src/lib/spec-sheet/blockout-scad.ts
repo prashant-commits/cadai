@@ -44,7 +44,10 @@ export function blockoutScad(spec: AssemblySpec): { code: string; skipped: { nam
     if (decision.kind === 'box') {
       skipped.push({ name: comp.name, reason: `${decision.reason}; drawn as a box` });
     }
-    lines.push(...moduleLines(comp, ext[0], ext[1], ext[2], decision.kind === 'box'), '');
+    lines.push(
+      ...moduleLines(comp, ext[0], ext[1], ext[2], decision.kind === 'box' ? decision.reason : null),
+      ''
+    );
   }
 
   return { code: `${lines.join('\n').trimEnd()}\n`, skipped };
@@ -56,9 +59,9 @@ function identifierIssue(name: string): string | null {
   return null;
 }
 
-function moduleLines(comp: Component, ex: number, ey: number, ez: number, fallback: boolean): string[] {
+function moduleLines(comp: Component, ex: number, ey: number, ez: number, placeholderReason: string | null): string[] {
   const name = comp.name;
-  let body = shapeBody(comp, ex, ey, ez, fallback);
+  let body = shapeBody(comp, ex, ey, ez, placeholderReason !== null);
   const cutters = (comp.holes ?? [])
     .map((hole) => holeLine(name, hole, ex, ey, ez))
     .filter((line): line is string => line !== null);
@@ -71,7 +74,10 @@ function moduleLines(comp: Component, ex: number, ey: number, ez: number, fallba
     ];
   }
   const header = /\d/.test(name) ? `module ${name}() { // local module ${name}` : `module ${name}() {`;
-  return [header, ...indent(body, 4), '}'];
+  const marked = placeholderReason
+    ? [`// PLACEHOLDER: ${placeholderReason} - build from the skeleton`, ...body]
+    : body;
+  return [header, ...indent(marked, 4), '}'];
 }
 
 function shapeBody(comp: Component, ex: number, ey: number, ez: number, fallback: boolean): string[] {
@@ -258,7 +264,11 @@ function loopOf(points: number[][] | undefined): Pt[] | null {
     if (!point || point.length < 2 || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) return null;
     loop.push([point[0], point[1]]);
   }
-  return loop;
+  // Drop a repeated closing vertex before the polygon is emitted.
+  const first = loop[0];
+  const last = loop[loop.length - 1];
+  if (first[0] === last[0] && first[1] === last[1]) loop.pop();
+  return loop.length >= 3 ? loop : null;
 }
 
 function signedArea(pts: Pt[]): number {

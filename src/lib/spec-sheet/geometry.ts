@@ -51,7 +51,7 @@ type Pt2 = [number, number];
 const CURVE_SEGMENTS = 48;
 const DISC_SEGMENTS = 24;
 const GUIDE_SEGMENTS = 16;
-/** Lift a hole disc off its face, inward, so it does not z-fight the surface. */
+/** Lift a hole disc off its face, outward, so it sits in front of the surface and wins the z-buffer. */
 const HOLE_LIFT_MM = 0.05;
 
 const BOX_EDGES: [number, number][] = [
@@ -582,7 +582,13 @@ function asLoop(points: number[][] | undefined): Pt2[] | null {
     if (!p || p.length < 2 || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) return null;
     loop.push([p[0], p[1]]);
   }
-  return loop;
+  // A repeated closing vertex shifts every hole index in triangulateShape.
+  if (samePoint(loop[0], loop[loop.length - 1])) loop.pop();
+  return loop.length >= 3 ? loop : null;
+}
+
+function samePoint(a: Pt2, b: Pt2): boolean {
+  return a[0] === b[0] && a[1] === b[1];
 }
 
 function signedArea(pts: Pt2[]): number {
