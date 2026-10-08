@@ -159,8 +159,9 @@ function rate(rows: GenerationMetrics[], pick: (m: GenerationMetrics) => boolean
 
 function meanOf(rows: GenerationMetrics[], pick: (m: GenerationMetrics) => number | null): string {
   const vals = rows.map(pick).filter((value): value is number => value !== null);
-  if (vals.length === 0) return '0';
-  return String(Math.round(vals.reduce((sum, value) => sum + value, 0) / vals.length));
+  if (vals.length === 0) return '0.0';
+  const mean = vals.reduce((sum, value) => sum + value, 0) / vals.length;
+  return (Math.round(mean * 10) / 10).toFixed(1);
 }
 
 export function summarize(rows: GenerationMetrics[]): Record<string, string> {

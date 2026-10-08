@@ -179,7 +179,7 @@ describe('summarize', () => {
   it('reports rates over non-null values', () => {
     const rows: GenerationMetrics[] = [
       { id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: true, floatingCount: 0, localFrameOk: true, extentsOk: null, shellsOk: true, errorKinds: [], attempts: 1, wallMs: 10, variantCount: 2, variantsValidated: 2, reviewRounds: 1, chosenValidated: true, visualMatch: true, visualFindings: 2 },
-      { id: 'b', model: 'm', specOk: true, composed: false, compileOk: true, floorOk: false, floatingCount: null, localFrameOk: null, extentsOk: null, shellsOk: false, errorKinds: ['floor'], attempts: 1, wallMs: 20, variantCount: 0, variantsValidated: 0, reviewRounds: 3, chosenValidated: false, visualMatch: null, visualFindings: null },
+      { id: 'b', model: 'm', specOk: true, composed: false, compileOk: true, floorOk: false, floatingCount: null, localFrameOk: null, extentsOk: null, shellsOk: false, errorKinds: ['floor'], attempts: 1, wallMs: 21, variantCount: 0, variantsValidated: 0, reviewRounds: 3, chosenValidated: false, visualMatch: null, visualFindings: null },
     ];
     const s = summarize(rows);
     expect(s.composed).toBe('1/2');
@@ -187,13 +187,13 @@ describe('summarize', () => {
     expect(s.noFloating).toBe('1/1');
     expect(s.localFrameOk).toBe('1/1');
     expect(s.extentsOk).toBe('0/0');
-    expect(s.meanVariantCount).toBe('1');
-    expect(s.meanVariantsValidated).toBe('1');
-    expect(s.meanReviewRounds).toBe('2');
+    expect(s.meanVariantCount).toBe('1.0');
+    expect(s.meanVariantsValidated).toBe('1.0');
+    expect(s.meanReviewRounds).toBe('2.0');
     expect(s.chosenValidated).toBe('1/2');
     expect(s.visualMatch).toBe('1/1');
-    expect(s.meanVisualFindings).toBe('2');
-    expect(s.meanWallMs).toBe('15');
+    expect(s.meanVisualFindings).toBe('2.0');
+    expect(s.meanWallMs).toBe('15.5');
   });
 });
 

@@ -2,7 +2,8 @@
  * Generation eval: runs each prompt through the real agent graph with gates
  * auto-approved and automatic repair off, then reports first-draft quality.
  *
- *   npm run eval:generation -- --model deepseek-v4-flash --tag baseline
+ *   npm run eval:generation -- --tag baseline
+ *   npm run eval:generation -- --model deepseek-v4-flash --sheets off --tag baseline
  *   npm run eval:generation -- --seed-dataset          # once, creates the Langfuse dataset
  *   npm run eval:generation -- --no-langfuse --limit 2 # local only
  *   npm run eval:generation -- --sheets off --drafter-start scratch --critic on
@@ -49,6 +50,7 @@ import { gateVariants } from '@/lib/agent/spec-variants';
 import { getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor, initLangfuseTracing } from '@/lib/tracing/langfuse';
 import { GenerationMetrics, SpecGateCapture, measureVisualMatch, metricsFromState, scoresFor, summarize } from './metrics';
+import { EVAL_DEFAULT_MODEL, recursionLimitFromEnv, sheetsModelError } from './run-config';
 
 const DATASET = 'cadai-generation';
 
@@ -70,7 +72,7 @@ function onOff(value: string | undefined): 'on' | 'off' | undefined {
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { model: 'deepseek-v4-flash', tag: 'run', limit: Infinity, only: [], langfuse: true, seed: false };
+  const a: Args = { model: EVAL_DEFAULT_MODEL, tag: 'run', limit: Infinity, only: [], langfuse: true, seed: false };
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i];
     if (v === '--model') a.model = argv[++i];
@@ -134,7 +136,11 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
   applyEvalEnv(args);
   const agent = createCadAgent(args.model);
   const key = runCheckpointKey(`eval-${args.tag}`, `${item.id}-${Date.now()}`);
-  const config = { configurable: { thread_id: key }, callbacks: handler ? [handler] : undefined };
+  const config = {
+    configurable: { thread_id: key },
+    callbacks: handler ? [handler] : undefined,
+    recursionLimit: recursionLimitFromEnv(),
+  };
 
   const t0 = Date.now();
   let specGate: SpecGateCapture | null = null;
@@ -190,6 +196,8 @@ async function main() {
   }
 
   applyEvalEnv(args);
+  const sheetError = sheetsModelError(args.model, process.env.CADAI_SPEC_SHEETS);
+  if (sheetError) throw new Error(sheetError);
   const items = (args.only.length ? prompts.filter((p) => args.only.includes(p.id)) : prompts).slice(0, args.limit);
   console.log(`Eval: ${items.length} prompt(s) on ${args.model}, tag "${args.tag}", ` +
     `sheets ${process.env.CADAI_SPEC_SHEETS}, drafter-start ${process.env.CADAI_DRAFTER_START}, ` +
