@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { readStream, type StreamState } from './stream-reader';
+import { readStream, streamMessagePatch, type StreamState } from './stream-reader';
+import { readOpenedAt } from './chat/rehydrate';
 import type { StreamEvent } from './agent/stream-events';
 
 function sse(events: StreamEvent[]): Response {
@@ -43,6 +44,7 @@ describe('readStream', () => {
     expect(final.awaitingInput).toBe(true);
     expect(final.runId).toBe('run-1');
     expect(final.gates.g1.status).toBe('open');
+    expect(readOpenedAt(final.gates.g1)).toEqual(expect.any(Number));
     expect(final.nodes.at(-1)).toEqual({ kind: 'gate', id: 'g1' });
   });
 
@@ -82,6 +84,25 @@ describe('readStream', () => {
     ]);
     expect(final.error).toBe('gateway refused');
     expect((final.nodes[0] as { status: string }).status).toBe('error');
+  });
+
+  it('turns an error event into an error message instead of a blank complete', async () => {
+    const message = 'This paused run expired (no decision within 24 h). Send the request again.';
+    const { final } = await run([{ t: 'error', message }]);
+    const patch = streamMessagePatch(final);
+    expect(patch.status).toBe('error');
+    expect(patch.content).toBe(`**Error:** ${message}`);
+    expect(patch.content?.trim()).not.toBe('');
+    expect(patch.gates).toBeUndefined();
+
+    const finished = streamMessagePatch({
+      nodes: [],
+      gates: {},
+      summary: 'Built it.',
+      awaitingInput: false,
+    });
+    expect(finished.status).toBe('complete');
+    expect(finished.content).toBe('Built it.');
   });
 });
 

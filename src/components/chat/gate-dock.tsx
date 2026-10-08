@@ -4,10 +4,13 @@ import React, { useEffect, useState } from 'react';
 import { Check, X, RefreshCw } from 'lucide-react';
 import { GateDecision, GatePayload, GateVariant } from '@/types';
 import { gateVariants, type VariantId } from '@/lib/agent/spec-variants';
+import { EXPIRED_GATE_MESSAGE } from '@/lib/chat/rehydrate';
 
 interface GateDockProps {
   gate: GatePayload | null;
   onResume: (decision: GateDecision) => void;
+  /** An open gate older than 24 h. Approve and Revise stay disabled; Deny closes it. */
+  expired?: boolean;
 }
 
 type OpenQuestion = NonNullable<Extract<GatePayload, { kind: 'spec' }>['openQuestions']>[number];
@@ -179,7 +182,7 @@ function VariantCard({
   );
 }
 
-export function GateDock({ gate, onResume }: GateDockProps) {
+export function GateDock({ gate, onResume, expired = false }: GateDockProps) {
   const [comment, setComment] = useState('');
   // questionId -> the user's answer. Seeded lazily from suggestedAnswer so
   // Approve-without-touching-anything still sends the architect's own
@@ -214,6 +217,7 @@ export function GateDock({ gate, onResume }: GateDockProps) {
   return (
     <div className="border-t border-slate-800 bg-slate-900/90 px-3 py-2 space-y-2">
       <div className="text-[11px] font-semibold text-indigo-300">{title}</div>
+      {expired ? <p className="text-xs text-amber-300">{EXPIRED_GATE_MESSAGE}</p> : null}
 
       {!gate ? (
         <p className="text-xs text-slate-500 italic">Waiting for details from the agent...</p>
@@ -298,14 +302,18 @@ export function GateDock({ gate, onResume }: GateDockProps) {
             <X className="w-3.5 h-3.5" /> Deny
           </button>
           <button
+            type="button"
+            disabled={expired}
             onClick={() => onResume(specGateDecision(gate, 'revise', comment, collectedAnswers(), selectedId))}
-            className="flex items-center gap-1 px-3 py-1.5 rounded bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 text-xs transition-colors"
+            className="flex items-center gap-1 px-3 py-1.5 rounded bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <RefreshCw className="w-3.5 h-3.5" /> Revise
           </button>
           <button
+            type="button"
+            disabled={expired}
             onClick={() => onResume(specGateDecision(gate, 'approve', comment, collectedAnswers(), selectedId))}
-            className="flex items-center gap-1 px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow transition-colors"
+            className="flex items-center gap-1 px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <Check className="w-3.5 h-3.5" /> Approve
           </button>
