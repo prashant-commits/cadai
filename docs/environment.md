@@ -13,3 +13,4 @@
 - `CADAI_CHECKPOINT_TTL_MS` (default `86400000`, 24 h): paused runs whose newest checkpoint is older than this are deleted, at startup and at most once an hour on write.
 - `CADAI_MAX_DURATION_MS` (default `300000`, Vercel only): the request's hard limit (the routes' `maxDuration`). Model calls before the spec gate are capped to what is left of it, less a 15 s tail.
 - `CADAI_MODEL_TIMEOUT_MS` (default `240000`): per-call timeout of the model client. On Vercel the review loop lowers it per call to the remaining budget.
+- `CADAI_REVIEWER_MODEL` (default: the run model): pins the sheet reviewer to one model. Use it when comparing models, so each is not judged by its own reviewer (gpt-6-sol validated a lip-less phone stand that the luna reviewer rejected).

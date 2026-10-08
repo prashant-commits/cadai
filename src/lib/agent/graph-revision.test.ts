@@ -12,12 +12,14 @@ const callMock = vi.fn();
 vi.mock('@langchain/openai', () => {
   class FakeChatModel {
     temperature: number | undefined;
-    constructor(params: { temperature?: number }) {
+    model: string | undefined;
+    constructor(params: { temperature?: number; model?: string }) {
       this.temperature = params?.temperature;
+      this.model = params?.model;
     }
-    invoke = (messages: unknown, config?: unknown) => callMock(messages, config, this.temperature);
+    invoke = (messages: unknown, config?: unknown) => callMock(messages, config, this.temperature, this.model);
     async *stream(messages: unknown, config?: unknown) {
-      yield await callMock(messages, config, this.temperature);
+      yield await callMock(messages, config, this.temperature, this.model);
     }
     withStructuredOutput() {
       return this;
@@ -30,7 +32,7 @@ vi.mock('@langchain/openai', () => {
     }
   }
   return {
-    ChatOpenAI: vi.fn().mockImplementation(function (params: { temperature?: number }) {
+    ChatOpenAI: vi.fn().mockImplementation(function (params: { temperature?: number; model?: string }) {
       return new FakeChatModel(params);
     }),
   };
@@ -106,11 +108,11 @@ async function run(revisions: Array<ReturnType<typeof box>>, secondReview = pass
       default: return pass;
     }
   });
-  const result = await createCadAgent('gpt-5.6-luna').invoke(
+  const result = await createCadAgent('gpt-6-sol').invoke(
     { messages: [new HumanMessage('a 40mm phone stand')] },
     { configurable: { thread_id: newKey() } }
   );
-  const calls = callMock.mock.calls.map((c) => ({ messages: c[0], temperature: c[2] as number | undefined, kind: kindOf(c[0]) }));
+  const calls = callMock.mock.calls.map((c) => ({ messages: c[0], temperature: c[2] as number | undefined, model: c[3] as string | undefined, kind: kindOf(c[0]) }));
   return { result, calls };
 }
 
@@ -199,5 +201,23 @@ describe('revision temperature', () => {
     expect(calls.some((c) => c.kind === 'revision')).toBe(true);
     expect(calls.some((c) => c.kind === 'planner' && c.temperature === 0.2)).toBe(true);
     expect(calls.some((c) => c.kind === 'variant' && c.temperature === 0.2)).toBe(true);
+  });
+});
+
+describe('pinned sheet reviewer', () => {
+  it('CADAI_REVIEWER_MODEL routes only the reviewer to that model; unset, the run model reviews', async () => {
+    process.env.CADAI_REVIEWER_MODEL = 'gpt-5.6-luna';
+    try {
+      const { calls } = await run([box(46)]);
+      const reviewers = calls.filter((c) => c.kind === 'reviewer');
+      expect(reviewers.length).toBeGreaterThan(0);
+      expect(reviewers.every((c) => c.model === 'gpt-5.6-luna')).toBe(true);
+      expect(calls.filter((c) => c.kind !== 'reviewer').every((c) => c.model === 'gpt-6-sol')).toBe(true);
+    } finally {
+      delete process.env.CADAI_REVIEWER_MODEL;
+    }
+    callMock.mockReset();
+    const { calls } = await run([box(46)]);
+    expect(calls.every((c) => c.model === 'gpt-6-sol')).toBe(true);
   });
 });

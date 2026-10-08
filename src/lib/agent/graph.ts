@@ -1224,7 +1224,9 @@ export function createCadAgent(
     const reviewStartedAt = Date.now();
     const request = latestHumanText(state.messages) || 'the user request above';
     const contract = contractLines(state.designContract);
-    const reviewerModel = model
+    // CADAI_REVIEWER_MODEL pins the reviewer so a model comparison is not
+    // confounded by each model reviewing its own designs.
+    const reviewerModel = (process.env.CADAI_REVIEWER_MODEL ? getChatModel(process.env.CADAI_REVIEWER_MODEL) : model)
       .withStructuredOutput(SheetReviewSchema)
       .withConfig({ tags: ['nostream'] });
 

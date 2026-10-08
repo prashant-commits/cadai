@@ -14,6 +14,7 @@
  *   --drafter-start blockout|scratch CADAI_DRAFTER_START   (default blockout)
  *   --critic on|off                  CADAI_VISUAL_CRITIC   (default off)
  *   --critic-model <slug>            CADAI_CRITIC_MODEL    (default gpt-5.6-luna)
+ *   --reviewer-model <slug>          CADAI_REVIEWER_MODEL  (default: the run model)
  *
  * runOne auto-approves up to 12 gates. Each resume is { action: 'approve' },
  * which selects the recommended variant. A run can pause at the spec gate
@@ -65,6 +66,7 @@ interface Args {
   drafterStart?: 'blockout' | 'scratch';
   critic?: 'on' | 'off';
   criticModel?: string;
+  reviewerModel?: string;
 }
 
 function onOff(value: string | undefined): 'on' | 'off' | undefined {
@@ -91,6 +93,10 @@ function parseArgs(argv: string[]): Args {
       const slug = argv[++i];
       if (slug) a.criticModel = slug;
     }
+    else if (v === '--reviewer-model') {
+      const slug = argv[++i];
+      if (slug) a.reviewerModel = slug;
+    }
   }
   return a;
 }
@@ -101,6 +107,7 @@ function applyEvalEnv(args: Args) {
   if (args.drafterStart) process.env.CADAI_DRAFTER_START = args.drafterStart;
   if (args.critic) process.env.CADAI_VISUAL_CRITIC = args.critic;
   if (args.criticModel) process.env.CADAI_CRITIC_MODEL = args.criticModel;
+  if (args.reviewerModel) process.env.CADAI_REVIEWER_MODEL = args.reviewerModel;
 }
 
 /** Last spec-gate interrupt. Later accept-gate interrupts leave it in place. */
@@ -201,7 +208,8 @@ async function main() {
   const items = (args.only.length ? prompts.filter((p) => args.only.includes(p.id)) : prompts).slice(0, args.limit);
   console.log(`Eval: ${items.length} prompt(s) on ${args.model}, tag "${args.tag}", ` +
     `sheets ${process.env.CADAI_SPEC_SHEETS}, drafter-start ${process.env.CADAI_DRAFTER_START}, ` +
-    `critic ${process.env.CADAI_VISUAL_CRITIC} (${process.env.CADAI_CRITIC_MODEL}). ` +
+    `critic ${process.env.CADAI_VISUAL_CRITIC} (${process.env.CADAI_CRITIC_MODEL}), ` +
+    `reviewer ${process.env.CADAI_REVIEWER_MODEL ?? `${args.model} (the run model)`}. ` +
     `Expect roughly ${items.length * 4}-${items.length * 24} model calls ` +
     `(planner, per-variant review rounds, drafter tool round, optional critic). ` +
     `Starting in 5 s, Ctrl+C to abort.`);

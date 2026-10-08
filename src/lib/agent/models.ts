@@ -32,6 +32,8 @@ export const GATEWAY_MODELS = [
   { slug: 'gpt-5.6-luna', label: 'GPT-5.6 Luna - Recommended' },
   { slug: 'gpt-6-luna', label: 'GPT-6 Luna' },
   { slug: 'gpt-6-sol', label: 'GPT-6 Sol - higher quality (paid)' },
+  // Vision verified on 2026-10-08; its route only accepts temperature 1 (see FIXED_TEMPERATURE).
+  { slug: 'claude-opus-5.5', label: 'Claude Opus 5.5 - highest quality (paid)' },
 ] as const;
 
 export function isGatewayModel(slug: string | undefined): boolean {

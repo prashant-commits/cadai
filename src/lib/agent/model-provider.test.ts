@@ -23,6 +23,16 @@ describe('getChatModel', () => {
     expect(model.clientConfig.baseURL).toBe(EXPLABS_BASE_URL);
   });
 
+  it('uses 0.2 by default and the requested temperature otherwise', () => {
+    expect(getChatModel('gpt-5.6-luna').temperature).toBe(0.2);
+    expect(getChatModel('gpt-5.6-luna', { temperature: 0.6 }).temperature).toBe(0.6);
+  });
+
+  it('claude-opus-5.5 is pinned to temperature 1, overriding both the default and the revision temperature', () => {
+    expect(getChatModel('claude-opus-5.5').temperature).toBe(1);
+    expect(getChatModel('claude-opus-5.5', { temperature: 0.6 }).temperature).toBe(1);
+  });
+
   it('defaults to the multimodal model', () => {
     expect(getChatModel().model).toBe(DEFAULT_MODEL);
     expect(DEFAULT_MODEL).toBe('gpt-5.6-luna');
@@ -50,8 +60,10 @@ describe('getChatModel', () => {
 describe('model catalogue', () => {
   it('offers gpt-6-sol as a vision model while the default stays gpt-5.6-luna', async () => {
     const { GATEWAY_MODELS, isVisionModel, DEFAULT_MODEL } = await import('./models');
-    expect(GATEWAY_MODELS.map((m) => m.slug)).toEqual(['gpt-5.6-luna', 'gpt-6-luna', 'gpt-6-sol']);
+    expect(GATEWAY_MODELS.map((m) => m.slug)).toEqual(['gpt-5.6-luna', 'gpt-6-luna', 'gpt-6-sol', 'claude-opus-5.5']);
     expect(GATEWAY_MODELS[2].label).toBe('GPT-6 Sol - higher quality (paid)');
+    expect(GATEWAY_MODELS[3].label).toBe('Claude Opus 5.5 - highest quality (paid)');
+    expect(isVisionModel('claude-opus-5.5')).toBe(true);
     expect(isVisionModel('gpt-6-sol')).toBe(true);
     expect(DEFAULT_MODEL).toBe('gpt-5.6-luna');
   });
