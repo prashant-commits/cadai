@@ -125,4 +125,23 @@ describe('toAnthropicCompatibleSchema', () => {
     expect(Object.keys(out.properties)).toEqual(['pattern', 'maxItems']);
     expect(out.properties.pattern).toEqual({ type: 'string' });
   });
+
+  it('removes default keyword and $schema but keeps a property literally named default', async () => {
+    const { toAnthropicCompatibleSchema } = await import('./strict-schema');
+    const out = toAnthropicCompatibleSchema({
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        default: { type: 'string', default: 'val' },
+        foo: { type: 'number', default: 42 },
+      },
+      required: ['default', 'foo'],
+    }) as Loose;
+    expect(out.$schema).toBeUndefined();
+    expect(Object.keys(out.properties)).toEqual(['default', 'foo']);
+    expect(out.properties.default).toEqual({ type: 'string' });
+    expect(out.properties.foo).toEqual({ type: 'number' });
+    expect(out.additionalProperties).toBe(false);
+  });
 });
+

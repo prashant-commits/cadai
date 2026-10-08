@@ -65,14 +65,14 @@ export function nullsToUndefined<T>(value: T): T {
  * SDK ships in node_modules to read the list from, so it is taken from that error
  * and Anthropic's documented limitations. Removed here:
  *   maxItems, minItems (unless 0 or 1), minimum, maximum, exclusiveMinimum,
- *   exclusiveMaximum, multipleOf, minLength, maxLength, pattern.
+ *   exclusiveMaximum, multipleOf, minLength, maxLength, pattern, default, $schema.
  * Kept: additionalProperties:false, required, anyOf, enum, type, items, properties.
  * The reply is still validated against the original zod schema, so a dropped
  * bound is enforced there (and a violation goes through the existing retry).
  */
 const ANTHROPIC_UNSUPPORTED = [
   'maxItems', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum',
-  'multipleOf', 'minLength', 'maxLength', 'pattern',
+  'multipleOf', 'minLength', 'maxLength', 'pattern', 'default', '$schema',
 ];
 
 export function toAnthropicCompatibleSchema(json: unknown, inPropertyMap = false): Record<string, unknown> {
@@ -89,7 +89,11 @@ export function toAnthropicCompatibleSchema(json: unknown, inPropertyMap = false
       }
       out[k] = toAnthropicCompatibleSchema(v, !inPropertyMap && k === 'properties');
     }
+    if (out.type === 'object' || out.properties) {
+      out.additionalProperties = false;
+    }
     return out;
   }
   return json as Record<string, unknown>;
 }
+
