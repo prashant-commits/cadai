@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { graphRecursionLimit, describeGraphError } from './run-limits';
 
 afterEach(() => {
@@ -30,7 +30,15 @@ describe('describeGraphError', () => {
     expect(msg).not.toContain('Recursion limit');
   });
 
-  it('keeps ordinary error text', () => {
-    expect(describeGraphError(new Error('boom'), 'Agent resume failed')).toBe('Agent resume failed: boom');
+  it('sends a short label for any other error and logs the raw text server-side', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const msg = describeGraphError(new Error('400 {"error":{"message":"giant provider payload"}}'), 'Agent execution failed');
+      expect(msg).toBe('Agent execution failed; see server logs.');
+      expect(spy).toHaveBeenCalled();
+      expect(spy.mock.calls.flat().map(String).join(' ')).toContain('giant provider payload');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

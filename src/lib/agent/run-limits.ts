@@ -12,12 +12,13 @@ export function graphRecursionLimit(): number {
   return 3 * (retries + 1) + 2 * attempts + 15;
 }
 
-/** A short label for a graph failure; raw framework text never reaches the UI. */
+/** A short label for a graph failure. Raw error text goes to the server log only, never to the UI. */
 export function describeGraphError(err: unknown, prefix: string): string {
   const name = err instanceof Error ? err.name : '';
   const text = err instanceof Error ? err.message : String(err);
   if (name === 'GraphRecursionError' || /Recursion limit/i.test(text)) {
     return `${prefix}: the run took more steps than allowed and was stopped.`;
   }
-  return `${prefix}: ${text}`;
+  console.error(`${prefix}:`, err);
+  return `${prefix}; see server logs.`;
 }
