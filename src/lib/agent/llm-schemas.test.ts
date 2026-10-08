@@ -38,6 +38,60 @@ describe('structuredFor', () => {
     return { seen, model: { withStructuredOutput(schema: unknown, opts: unknown) { seen.push({ schema, opts }); return 'bound'; } } };
   };
 
+  /**
+   * Test-local walker that counts optional property paths across a schema.
+   * Enters properties (with or without type: 'object'), items, prefixItems,
+   * anyOf, oneOf, allOf, and $defs.
+   */
+  function walkOptionalPaths(schema: unknown, parentPath = ''): string[] {
+    const optional: string[] = [];
+    if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return optional;
+    const node = schema as Record<string, unknown>;
+
+    if (node.properties && typeof node.properties === 'object' && !Array.isArray(node.properties)) {
+      const props = node.properties as Record<string, unknown>;
+      const req = new Set((Array.isArray(node.required) ? node.required : []) as string[]);
+      for (const [k, v] of Object.entries(props)) {
+        const propPath = parentPath ? `${parentPath}.${k}` : k;
+        if (!req.has(k)) {
+          optional.push(propPath);
+        }
+        optional.push(...walkOptionalPaths(v, propPath));
+      }
+    }
+
+    if (node.items && typeof node.items === 'object' && !Array.isArray(node.items)) {
+      optional.push(...walkOptionalPaths(node.items, `${parentPath}[]`));
+    } else if (Array.isArray(node.items)) {
+      for (const item of node.items) {
+        optional.push(...walkOptionalPaths(item, `${parentPath}[]`));
+      }
+    }
+
+    if (Array.isArray(node.prefixItems)) {
+      for (const item of node.prefixItems) {
+        optional.push(...walkOptionalPaths(item, `${parentPath}[]`));
+      }
+    }
+
+    for (const unionKey of ['anyOf', 'oneOf', 'allOf'] as const) {
+      if (Array.isArray(node[unionKey])) {
+        for (const branch of node[unionKey] as unknown[]) {
+          optional.push(...walkOptionalPaths(branch, parentPath));
+        }
+      }
+    }
+
+    if (node.$defs && typeof node.$defs === 'object' && !Array.isArray(node.$defs)) {
+      for (const [defName, def] of Object.entries(node.$defs as Record<string, unknown>)) {
+        const defPath = parentPath ? `${parentPath}.$defs.${defName}` : `$defs.${defName}`;
+        optional.push(...walkOptionalPaths(def, defPath));
+      }
+    }
+
+    return optional;
+  }
+
   function countUnions(schema: unknown): { total: number; nullable: number; genuine: number } {
     let total = 0;
     let nullable = 0;
@@ -182,12 +236,107 @@ describe('structuredFor', () => {
     }
   });
 
-  it('counts optional properties across claudeVariantSpecSchema(): exactly 7 matching expected paths', async () => {
-    const { claudeVariantSpecSchema, getOptionalProperties, CLAUDE_KEEP_OPTIONAL } = await import('./llm-schemas');
+  const LITERAL_R11_OPTIONAL_PATHS = [
+    'components[].bedFace',
+    'components[].holes[].depth',
+    'guides[].shape',
+    'guides[].localExtents',
+    'guides[].position',
+    'guides[].points',
+    'stressPoints[].gusset',
+  ];
+
+  it('counts optional properties across claudeVariantSpecSchema(): exactly the 7 literal R11 table paths via test-local walker (L1)', async () => {
+    const { claudeVariantSpecSchema, getOptionalProperties } = await import('./llm-schemas');
     const schema = claudeVariantSpecSchema();
-    const optionalPaths = getOptionalProperties(schema);
-    expect(optionalPaths).toHaveLength(7);
-    expect(new Set(optionalPaths)).toEqual(CLAUDE_KEEP_OPTIONAL);
+
+    // Test-local walker enters anyOf, oneOf, allOf, $defs, and untyped properties nodes
+    const testWalkerPaths = walkOptionalPaths(schema);
+    expect(testWalkerPaths).toHaveLength(7);
+    expect([...testWalkerPaths].sort()).toEqual([...LITERAL_R11_OPTIONAL_PATHS].sort());
+
+    // Module walker also matches the literal R11 table array
+    const moduleWalkerPaths = getOptionalProperties(schema);
+    expect(moduleWalkerPaths).toHaveLength(7);
+    expect([...moduleWalkerPaths].sort()).toEqual([...LITERAL_R11_OPTIONAL_PATHS].sort());
+  });
+
+  it('requireAllExcept and getOptionalProperties handle walker blind spots: untyped properties, anyOf, oneOf, allOf, $defs (L3)', async () => {
+    const { requireAllExcept, getOptionalProperties } = await import('./llm-schemas');
+
+    const synthetic = {
+      properties: {
+        untyped: {
+          properties: {
+            a: { type: 'string' },
+            b: { type: 'number' },
+          },
+        },
+        unionAny: {
+          anyOf: [
+            {
+              properties: {
+                c: { type: 'string' },
+              },
+            },
+          ],
+        },
+        unionOne: {
+          oneOf: [
+            {
+              properties: {
+                d: { type: 'string' },
+              },
+            },
+          ],
+        },
+        unionAll: {
+          allOf: [
+            {
+              properties: {
+                e: { type: 'string' },
+              },
+            },
+          ],
+        },
+      },
+      $defs: {
+        DefA: {
+          properties: {
+            f: { type: 'string' },
+            g: { type: 'number' },
+          },
+        },
+      },
+    };
+
+    const initialOptional = getOptionalProperties(synthetic);
+    expect(initialOptional).toContain('untyped.a');
+    expect(initialOptional).toContain('untyped.b');
+    expect(initialOptional).toContain('unionAny.c');
+    expect(initialOptional).toContain('unionOne.d');
+    expect(initialOptional).toContain('unionAll.e');
+    expect(initialOptional).toContain('$defs.DefA.f');
+    expect(initialOptional).toContain('$defs.DefA.g');
+
+    // Make everything required except untyped.b and $defs.DefA.g
+    const keepOptional = new Set(['untyped.b', '$defs.DefA.g']);
+    requireAllExcept(synthetic, keepOptional);
+
+    const afterOptional = getOptionalProperties(synthetic);
+    expect(afterOptional.sort()).toEqual(['untyped.b', '$defs.DefA.g'].sort());
+
+    // Test-local walker sees identical optional paths
+    expect(walkOptionalPaths(synthetic).sort()).toEqual(['untyped.b', '$defs.DefA.g'].sort());
+  });
+
+  it('CLAUDE_KEEP_OPTIONAL is immutable and read-only', async () => {
+    const { CLAUDE_KEEP_OPTIONAL } = await import('./llm-schemas');
+    expect(Object.isFrozen(CLAUDE_KEEP_OPTIONAL)).toBe(true);
+    expect(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (CLAUDE_KEEP_OPTIONAL as any).add('foo');
+    }).toThrow();
   });
 
   it('has no anyOf containing { type: "null" } anywhere in the Claude schema', async () => {
@@ -306,53 +455,357 @@ describe('structuredFor', () => {
     // Stress point component: "" is removed
     expect(normalized.stressPoints[0].component).toBeUndefined();
 
-    // Lenient original without the neutral sentinels
-    const lenientOriginal = {
-      sheet: '## Plate\nDesign.',
-      assemblyName: 'plate',
-      boundingBox: { width: 100, length: 50, height: 10 },
-      jointContracts: [{ type: 'butt', clearance: 0.2 }],
+    const parsedNormalized = AssemblySpecSchema.parse(normalized);
+    expect(parsedNormalized.components?.[0].shape).toEqual({ kind: 'box' });
+    expect(parsedNormalized.components?.[1].shape).toEqual({ kind: 'tube', axis: 'z', innerD: 4 });
+  });
+
+  it('provider equivalence: Claude sentinels vs OpenAI null form produce identical downstream consumer outputs (L2)', async () => {
+    const { normalizeClaudeSentinels } = await import('./llm-schemas');
+    const { nullsToUndefined } = await import('./strict-schema');
+    const { AssemblySpecSchema } = await import('./assembly-spec');
+    const { normalizeSpec } = await import('./spec-normalize');
+    const { skeletonSignature } = await import('./spec-variants');
+    const { specGeometry } = await import('../spec-sheet/geometry');
+    const { blockoutScad } = await import('../spec-sheet/blockout-scad');
+
+    const claudeFixture = {
+      sheet: '## Multi-part Assembly\nCovering 5 shapes, 2 guides, blind and through holes.',
+      assemblyName: 'multi_part_assembly',
+      boundingBox: { width: 120, length: 120, height: 60 },
+      jointContracts: [
+        { type: 'butt', clearance: 0.2, partA: '', partB: '' },
+      ],
       components: [
         {
           name: 'box_part',
-          description: 'A box',
+          description: 'A box part with through and blind holes',
           position: [0, 0, 0],
-          localExtents: [100, 50, 10],
+          localExtents: [50, 40, 10],
           rotation: [0, 0, 0],
-          holes: [{ d: 3, axis: 'z', at: [10, 10, 0] }],
-          shape: { kind: 'box' },
+          positionNote: '',
+          holes: [
+            { d: 4, axis: 'z', at: [10, 10, 0], depth: 5, note: '' },
+            { d: 3, axis: 'z', at: [25, 20, 0], note: '' },
+          ],
+          shape: {
+            kind: 'box',
+            axis: 'z',
+            innerD: 0,
+            wall: 0,
+            openFace: '+Z',
+            plane: 'xy',
+            points: [],
+            holes: [],
+          },
+        },
+        {
+          name: 'cylinder_part',
+          description: 'A cylinder part',
+          position: [60, 0, 0],
+          localExtents: [20, 20, 30],
+          rotation: [0, 0, 0],
+          positionNote: '',
+          holes: [],
+          shape: {
+            kind: 'cylinder',
+            axis: 'z',
+            innerD: 0,
+            wall: 0,
+            openFace: '+Z',
+            plane: 'xy',
+            points: [],
+            holes: [],
+          },
         },
         {
           name: 'tube_part',
-          description: 'A tube',
-          position: [10, 10, 0],
-          localExtents: [10, 10, 20],
+          description: 'A tube part',
+          position: [90, 0, 0],
+          localExtents: [20, 20, 30],
           rotation: [0, 0, 0],
+          positionNote: '',
           holes: [],
-          shape: { kind: 'tube', axis: 'z', innerD: 4 },
+          shape: {
+            kind: 'tube',
+            axis: 'z',
+            innerD: 6,
+            wall: 0,
+            openFace: '+Z',
+            plane: 'xy',
+            points: [],
+            holes: [],
+          },
+        },
+        {
+          name: 'shell_part',
+          description: 'A shell part',
+          position: [0, 50, 0],
+          localExtents: [40, 40, 20],
+          rotation: [0, 0, 0],
+          positionNote: '',
+          holes: [],
+          shape: {
+            kind: 'shell',
+            axis: 'z',
+            innerD: 0,
+            wall: 2,
+            openFace: '+Z',
+            plane: 'xy',
+            points: [],
+            holes: [],
+          },
+        },
+        {
+          name: 'profile_part',
+          description: 'A profile part with an inner hole',
+          position: [50, 50, 0],
+          localExtents: [40, 40, 15],
+          rotation: [0, 0, 0],
+          positionNote: '',
+          holes: [],
+          shape: {
+            kind: 'profile',
+            plane: 'xy',
+            points: [[0, 0], [40, 0], [40, 40], [0, 40]],
+            holes: [[[10, 10], [30, 10], [30, 30], [10, 30]]],
+            axis: 'z',
+            innerD: 0,
+            wall: 0,
+            openFace: '+Z',
+          },
         },
       ],
       guides: [
         {
+          label: 'motor_env',
+          kind: 'envelope',
+          position: [0, 0, 0],
+          localExtents: [30, 30, 40],
+          rotation: [0, 0, 0],
+          shape: {
+            kind: 'cylinder',
+            axis: 'z',
+            innerD: 0,
+            wall: 0,
+            openFace: '+Z',
+            plane: 'xy',
+            points: [],
+            holes: [],
+          },
+          points: [],
+        },
+        {
           label: 'line_guide',
           kind: 'line',
-          points: [[0, 0, 0], [10, 10, 0]],
+          points: [[0, 0, 0], [0, 0, 50]],
+          rotation: [0, 0, 0],
+          position: [0, 0, 0],
+          localExtents: [0, 0, 0],
+          shape: {
+            kind: 'box',
+            axis: 'z',
+            innerD: 0,
+            wall: 0,
+            openFace: '+Z',
+            plane: 'xy',
+            points: [],
+            holes: [],
+          },
         },
       ],
       stressPoints: [
         {
-          location: 'centre',
+          component: '',
+          location: 'center',
           loadCase: 'tension',
           risk: 'low',
-          mitigation: 'none',
+          mitigation: 'rib',
         },
       ],
       assumptions: [],
     };
 
-    const parsedNormalized = AssemblySpecSchema.parse(normalized);
-    const parsedOriginal = AssemblySpecSchema.parse(lenientOriginal);
-    expect(parsedNormalized).toEqual(parsedOriginal);
+    const openaiFixture = {
+      sheet: '## Multi-part Assembly\nCovering 5 shapes, 2 guides, blind and through holes.',
+      assemblyName: 'multi_part_assembly',
+      boundingBox: { width: 120, length: 120, height: 60 },
+      jointContracts: [
+        { type: 'butt', clearance: 0.2, partA: null, partB: null },
+      ],
+      components: [
+        {
+          name: 'box_part',
+          description: 'A box part with through and blind holes',
+          position: [0, 0, 0],
+          localExtents: [50, 40, 10],
+          rotation: null,
+          positionNote: null,
+          bedFace: null,
+          holes: [
+            { d: 4, axis: 'z', at: [10, 10, 0], depth: 5, note: null },
+            { d: 3, axis: 'z', at: [25, 20, 0], depth: null, note: null },
+          ],
+          shape: {
+            kind: 'box',
+            axis: null,
+            innerD: null,
+            wall: null,
+            openFace: null,
+            plane: null,
+            points: null,
+            holes: null,
+          },
+        },
+        {
+          name: 'cylinder_part',
+          description: 'A cylinder part',
+          position: [60, 0, 0],
+          localExtents: [20, 20, 30],
+          rotation: null,
+          positionNote: null,
+          bedFace: null,
+          holes: null,
+          shape: {
+            kind: 'cylinder',
+            axis: 'z',
+            innerD: null,
+            wall: null,
+            openFace: null,
+            plane: null,
+            points: null,
+            holes: null,
+          },
+        },
+        {
+          name: 'tube_part',
+          description: 'A tube part',
+          position: [90, 0, 0],
+          localExtents: [20, 20, 30],
+          rotation: null,
+          positionNote: null,
+          bedFace: null,
+          holes: null,
+          shape: {
+            kind: 'tube',
+            axis: 'z',
+            innerD: 6,
+            wall: null,
+            openFace: null,
+            plane: null,
+            points: null,
+            holes: null,
+          },
+        },
+        {
+          name: 'shell_part',
+          description: 'A shell part',
+          position: [0, 50, 0],
+          localExtents: [40, 40, 20],
+          rotation: null,
+          positionNote: null,
+          bedFace: null,
+          holes: null,
+          shape: {
+            kind: 'shell',
+            axis: null,
+            innerD: null,
+            wall: 2,
+            openFace: '+Z',
+            plane: null,
+            points: null,
+            holes: null,
+          },
+        },
+        {
+          name: 'profile_part',
+          description: 'A profile part with an inner hole',
+          position: [50, 50, 0],
+          localExtents: [40, 40, 15],
+          rotation: null,
+          positionNote: null,
+          bedFace: null,
+          holes: null,
+          shape: {
+            kind: 'profile',
+            plane: 'xy',
+            points: [[0, 0], [40, 0], [40, 40], [0, 40]],
+            holes: [[[10, 10], [30, 10], [30, 30], [10, 30]]],
+            axis: null,
+            innerD: null,
+            wall: null,
+            openFace: null,
+          },
+        },
+      ],
+      guides: [
+        {
+          label: 'motor_env',
+          kind: 'envelope',
+          position: [0, 0, 0],
+          localExtents: [30, 30, 40],
+          rotation: null,
+          shape: {
+            kind: 'cylinder',
+            axis: 'z',
+            innerD: null,
+            wall: null,
+            openFace: null,
+            plane: null,
+            points: null,
+            holes: null,
+          },
+          points: null,
+        },
+        {
+          label: 'line_guide',
+          kind: 'line',
+          points: [[0, 0, 0], [0, 0, 50]],
+          rotation: null,
+          position: null,
+          localExtents: null,
+          shape: null,
+        },
+      ],
+      stressPoints: [
+        {
+          component: null,
+          location: 'center',
+          loadCase: 'tension',
+          risk: 'low',
+          mitigation: 'rib',
+          gusset: null,
+        },
+      ],
+      assumptions: [],
+    };
+
+    const claudeCleaned = nullsToUndefined(normalizeClaudeSentinels(claudeFixture));
+    const claudeParsed = AssemblySpecSchema.parse(claudeCleaned);
+    const claudeNormalized = normalizeSpec(claudeParsed);
+
+    const openaiCleaned = nullsToUndefined(openaiFixture);
+    const openaiParsed = AssemblySpecSchema.parse(openaiCleaned);
+    const openaiNormalized = normalizeSpec(openaiParsed);
+
+    // 1. Equal skeletonSignature
+    expect(skeletonSignature(claudeNormalized)).toBe(skeletonSignature(openaiNormalized));
+
+    // 2. Equal specGeometry tris length
+    const claudeGeo = specGeometry(claudeNormalized);
+    const openaiGeo = specGeometry(openaiNormalized);
+    expect(claudeGeo.tris.length).toBe(openaiGeo.tris.length);
+    expect(claudeGeo.tris.length).toBeGreaterThan(0);
+
+    // 3. Equal blockout SCAD code
+    const claudeScad = blockoutScad(claudeNormalized);
+    const openaiScad = blockoutScad(openaiNormalized);
+    expect(claudeScad.code).toBe(openaiScad.code);
+    expect(claudeScad.code).toContain('module box_part()');
+    expect(claudeScad.code).toContain('module cylinder_part()');
+    expect(claudeScad.code).toContain('module tube_part()');
+    expect(claudeScad.code).toContain('module shell_part()');
+    expect(claudeScad.code).toContain('module profile_part()');
   });
 
   it('structuredFor with claude-* pipes through normalizeClaudeSentinels and with non-Claude returns untouched output with byte-identical schema', async () => {

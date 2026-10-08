@@ -78,7 +78,7 @@ function requireComponentFields(json: Record<string, unknown>, fields: string[])
 }
 
 /** The 7 properties kept optional in Claude's variant spec schema because they have no safe neutral value. */
-export const CLAUDE_KEEP_OPTIONAL = new Set([
+const keepSet = new Set([
   'components[].bedFace',
   'components[].holes[].depth',
   'guides[].shape',
@@ -87,6 +87,16 @@ export const CLAUDE_KEEP_OPTIONAL = new Set([
   'guides[].points',
   'stressPoints[].gusset',
 ]);
+(keepSet as unknown as Record<string, unknown>).add = () => {
+  throw new Error('CLAUDE_KEEP_OPTIONAL is read-only');
+};
+(keepSet as unknown as Record<string, unknown>).delete = () => {
+  throw new Error('CLAUDE_KEEP_OPTIONAL is read-only');
+};
+(keepSet as unknown as Record<string, unknown>).clear = () => {
+  throw new Error('CLAUDE_KEEP_OPTIONAL is read-only');
+};
+export const CLAUDE_KEEP_OPTIONAL: ReadonlySet<string> = Object.freeze(keepSet);
 
 /**
  * Walks an object schema and makes every property required, except paths in keepOptional.
@@ -94,13 +104,13 @@ export const CLAUDE_KEEP_OPTIONAL = new Set([
  */
 export function requireAllExcept(
   node: unknown,
-  keepOptional: Set<string>,
+  keepOptional: ReadonlySet<string>,
   parentPath = ''
 ): void {
-  if (!node || typeof node !== 'object') return;
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return;
   const obj = node as Record<string, unknown>;
 
-  if (obj.type === 'object' && isPlainObject(obj.properties)) {
+  if (isPlainObject(obj.properties)) {
     const allProps = Object.keys(obj.properties);
     const requiredProps = allProps.filter((k) => {
       const propPath = parentPath ? `${parentPath}.${k}` : k;
@@ -115,17 +125,37 @@ export function requireAllExcept(
 
     for (const [k, v] of Object.entries(obj.properties)) {
       const propPath = parentPath ? `${parentPath}.${k}` : k;
-      if (v && typeof v === 'object') {
-        const vObj = v as Record<string, unknown>;
-        if (vObj.type === 'array' && isPlainObject(vObj.items)) {
-          requireAllExcept(vObj.items, keepOptional, `${propPath}[]`);
-        } else if (vObj.type === 'object' || isPlainObject(vObj.properties)) {
-          requireAllExcept(vObj, keepOptional, propPath);
-        }
+      requireAllExcept(v, keepOptional, propPath);
+    }
+  }
+
+  if (isPlainObject(obj.items)) {
+    requireAllExcept(obj.items, keepOptional, `${parentPath}[]`);
+  } else if (Array.isArray(obj.items)) {
+    for (const item of obj.items) {
+      requireAllExcept(item, keepOptional, `${parentPath}[]`);
+    }
+  }
+
+  if (Array.isArray(obj.prefixItems)) {
+    for (const item of obj.prefixItems) {
+      requireAllExcept(item, keepOptional, `${parentPath}[]`);
+    }
+  }
+
+  for (const unionKey of ['anyOf', 'oneOf', 'allOf'] as const) {
+    if (Array.isArray(obj[unionKey])) {
+      for (const branch of obj[unionKey] as unknown[]) {
+        requireAllExcept(branch, keepOptional, parentPath);
       }
     }
-  } else if (obj.type === 'array' && isPlainObject(obj.items)) {
-    requireAllExcept(obj.items, keepOptional, `${parentPath}[]`);
+  }
+
+  if (isPlainObject(obj.$defs)) {
+    for (const [defName, def] of Object.entries(obj.$defs as Record<string, unknown>)) {
+      const defPath = parentPath ? `${parentPath}.$defs.${defName}` : `$defs.${defName}`;
+      requireAllExcept(def, keepOptional, defPath);
+    }
   }
 }
 
@@ -134,27 +164,47 @@ export function requireAllExcept(
  */
 export function getOptionalProperties(schema: unknown, parentPath = ''): string[] {
   const optional: string[] = [];
-  if (!schema || typeof schema !== 'object') return optional;
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return optional;
   const node = schema as Record<string, unknown>;
 
-  if (node.type === 'object' && isPlainObject(node.properties)) {
+  if (isPlainObject(node.properties)) {
     const req = new Set((Array.isArray(node.required) ? node.required : []) as string[]);
     for (const [k, v] of Object.entries(node.properties)) {
       const propPath = parentPath ? `${parentPath}.${k}` : k;
       if (!req.has(k)) {
         optional.push(propPath);
       }
-      if (v && typeof v === 'object') {
-        const vObj = v as Record<string, unknown>;
-        if (vObj.type === 'array' && isPlainObject(vObj.items)) {
-          optional.push(...getOptionalProperties(vObj.items, `${propPath}[]`));
-        } else if (vObj.type === 'object' || isPlainObject(vObj.properties)) {
-          optional.push(...getOptionalProperties(vObj, propPath));
-        }
+      optional.push(...getOptionalProperties(v, propPath));
+    }
+  }
+
+  if (isPlainObject(node.items)) {
+    optional.push(...getOptionalProperties(node.items, `${parentPath}[]`));
+  } else if (Array.isArray(node.items)) {
+    for (const item of node.items) {
+      optional.push(...getOptionalProperties(item, `${parentPath}[]`));
+    }
+  }
+
+  if (Array.isArray(node.prefixItems)) {
+    for (const item of node.prefixItems) {
+      optional.push(...getOptionalProperties(item, `${parentPath}[]`));
+    }
+  }
+
+  for (const unionKey of ['anyOf', 'oneOf', 'allOf'] as const) {
+    if (Array.isArray(node[unionKey])) {
+      for (const branch of node[unionKey] as unknown[]) {
+        optional.push(...getOptionalProperties(branch, parentPath));
       }
     }
-  } else if (node.type === 'array' && isPlainObject(node.items)) {
-    optional.push(...getOptionalProperties(node.items, `${parentPath}[]`));
+  }
+
+  if (isPlainObject(node.$defs)) {
+    for (const [defName, def] of Object.entries(node.$defs as Record<string, unknown>)) {
+      const defPath = parentPath ? `${parentPath}.$defs.${defName}` : `$defs.${defName}`;
+      optional.push(...getOptionalProperties(def, defPath));
+    }
   }
 
   return optional;
