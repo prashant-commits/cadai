@@ -32,13 +32,16 @@ describe('graph custom-channel writes', () => {
   });
 
   it('streams the architect spec as markdown deltas tagged with the node id', async () => {
-    // withStructuredOutput().stream() yields progressively-complete objects.
-    streamMock.mockReturnValueOnce((async function* () {
-      yield { brief: 'b' };
-      yield { brief: 'br' };
-      yield { brief: 'bracket_body', variants: [{id:'A', name:'bracket', idea:'bracket'}] };
-    })());
-    
+    // The planner reply is buffered by LangChain's parser, so it arrives whole: a
+    // status line is written when planning starts and the brief when it returns.
+    invokeMock.mockResolvedValueOnce({
+      brief: 'Bracket plan',
+      assumptions: [],
+      openQuestions: [],
+      variants: [{ id: 'A', name: 'bracket', idea: 'bracket' }],
+      recommendedId: 'A',
+    });
+
     invokeMock.mockResolvedValueOnce({
       assemblyName: 'bracket_body',
       sheet: '62 x 40 x 18 mm',
@@ -62,6 +65,8 @@ describe('graph custom-channel writes', () => {
     const deltas = custom.filter((c) => c.t === 'delta' && c.node === 'architectNode');
     expect(deltas.length).toBeGreaterThan(0);
     const md = deltas.map((d) => d.text).join('');
+    expect(md).toContain('Planning up to');
+    expect(md).toContain('Bracket plan');
     expect(md).toContain('bracket_body');
     expect(md).toContain('62 x 40 x 18 mm');
     // The whole point: no JSON reaches the channel.

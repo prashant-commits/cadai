@@ -377,13 +377,13 @@ describe('spec sheets and reviewer loop', () => {
       expect(drafterHumanText).toContain('spec_a');
     });
 
-    it('specGate revise carries notes, resets budget, and notes survive subsequent reviewer round', async () => {
+    it('specGate revise carries notes into the chosen variant, resets budget, and notes survive a subsequent reviewer round', async () => {
       process.env.CADAI_SPEC_REVIEW_RETRIES = '3';
 
       invokeMock.mockResolvedValueOnce({
         brief: 'Plan',
         assumptions: [],
-        openQuestions: [{ id: 'q1', question: 'Bolt size?' }],
+        openQuestions: [{ id: 'q1', question: 'Bolt size?', options: [], suggestedAnswer: '' }],
         variants: [
           { id: 'A', name: 'VarA', idea: 'A' },
           { id: 'B', name: 'VarB', idea: 'B' },
@@ -399,24 +399,16 @@ describe('spec sheets and reviewer loop', () => {
       const config = { configurable: { thread_id: key } };
       const agent = createCadAgent('gpt-5.6-luna');
       await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
+      const callsBeforeRevise = invokeMock.mock.calls.length; // planner, A, B, reviewer x2
 
-      // Revise Variant B
-      invokeMock.mockResolvedValueOnce({
-        brief: 'Revised plan',
-        assumptions: [],
-        openQuestions: [],
-        variants: [{ id: 'B', name: 'VarB', idea: 'B revised' }],
-        recommendedId: 'B',
-      });
+      // Revise Variant B: NO planner call. Call 5 revises B from the human comment,
+      // call 6 reviews it (major -> another round), call 7 revises again, call 8 passes.
       invokeMock.mockResolvedValueOnce(baseSpec({ assemblyName: 'spec_b_revised' }));
-      // Reviewer reports major finding -> triggers subsequent reviewer-driven architect round
       invokeMock.mockResolvedValueOnce({
         matchesRequest: false,
         findings: [{ issue: 'Needs gusset', severity: 'major' }],
       });
-      // Reviewer-driven architect round for B
       invokeMock.mockResolvedValueOnce(baseSpec({ assemblyName: 'spec_b_revised_v2' }));
-      // Reviewer pass 2 -> passes
       invokeMock.mockResolvedValueOnce({ matchesRequest: true, findings: [] });
 
       await agent.invoke(
@@ -431,11 +423,18 @@ describe('spec sheets and reviewer loop', () => {
         config
       );
 
-      // Call 8 is the reviewer-driven architect round
-      const reviewerDrivenArchitectMessages = invokeMock.mock.calls[8][0] as BaseMessage[];
-      const architectPrompt = JSON.stringify(reviewerDrivenArchitectMessages);
-      expect(architectPrompt).toContain('make walls 3mm');
-      expect(architectPrompt).toContain('Bolt size?: M4');
+      const afterRevise = invokeMock.mock.calls.slice(callsBeforeRevise).map((c) => JSON.stringify(c[0]));
+      // First call after the gate is the human-driven revision of B itself.
+      expect(afterRevise[0]).toContain('Revise this variant (B)');
+      expect(afterRevise[0]).toContain('make walls 3mm');
+      expect(afterRevise[0]).toContain('Bolt size?: M4');
+      // No planner call anywhere after the gate.
+      expect(afterRevise.some((t) => t.includes('Mechanical Architect Planner'))).toBe(false);
+      // The notes survive into the reviewer-driven round (3rd call after the gate).
+      expect(afterRevise[2]).toContain('Revise this variant (B)');
+      expect(afterRevise[2]).toContain('make walls 3mm');
+      expect(afterRevise[2]).toContain('Bolt size?: M4');
+      expect(afterRevise[2]).toContain('Needs gusset');
     });
   });
 
@@ -474,7 +473,7 @@ describe('spec sheets and reviewer loop', () => {
 
       // HumanMessage has starting script blockout
       const textPart = parts.find((p) => p.type === 'text')?.text ?? '';
-      expect(textPart).toContain('This starting script already has one module per component');
+      expect(textPart).toContain('This starting script has a module for each component');
       expect(textPart).toContain('module box()');
 
       // State cleanup: specVariants is empty, specBrief is null, messages has no images
@@ -516,7 +515,7 @@ describe('spec sheets and reviewer loop', () => {
       const drafterHuman = drafterMessages[drafterMessages.length - 1];
       const parts = drafterHuman.content as Array<{ type: string; text?: string }>;
       const textPart = parts.find((p) => p.type === 'text')?.text ?? '';
-      expect(textPart).not.toContain('This starting script already has one module per component');
+      expect(textPart).not.toContain('This starting script has a module for each component');
     });
   });
 

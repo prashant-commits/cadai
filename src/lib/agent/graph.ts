@@ -47,6 +47,7 @@ import {
   mergeBriefIntoSpec,
   recommendedVariant,
   processPlannerVariants,
+  maxVariantsFromEnv,
   VariantId,
   ReviewFinding,
   VariantReview,
@@ -67,9 +68,37 @@ const MAX_SEMANTIC_REPAIRS = 1;
 
 type VisualCritique = z.infer<typeof VisualCritiqueSchema>;
 
-/** Up to 3 of the variant's own assumptions as sheet notes ("field: value", ~60 chars each). */
-function sheetNotes(spec: AssemblySpec): string[] {
-  return (spec.assumptions ?? []).slice(0, 3).map((a) => `${a.field}: ${a.value}`.slice(0, 60)); // 3 notes, 60 chars: task S2-fix sheet-note budget
+/** A skipped component's reason means "drawn as a box" for stand-ins; anything else was left out entirely. */
+function isStandIn(reason: string): boolean {
+  return reason.includes('drawn as a box');
+}
+
+/** Sheet notes, at most 3: placeholders and omissions first (they change how to read the sheet), then the variant's own assumptions. */
+export function sheetNotes(spec: AssemblySpec): string[] {
+  const placeholders = blockoutScad(spec).skipped.map((s) =>
+    isStandIn(s.reason)
+      ? `${s.name}: drawn as a box (${s.reason.replace(/;?\s*drawn as a box$/, '')})`
+      : `${s.name}: not drawn (${s.reason})`
+  );
+  const assumptions = (spec.assumptions ?? []).map((a) => `${a.field}: ${a.value}`);
+  return [...placeholders, ...assumptions].map((n) => n.slice(0, 60)).slice(0, 3); // 60 chars per note and 3 notes: the sheet's notes strip
+}
+
+/** Renders a variant's concept sheet. Deterministic and fast, so state keeps only the spec and this is redrawn on demand. */
+function drawSheet(v: SpecVariant): { svg: string; skipped: { name: string; reason: string }[] } {
+  if (!v.spec) throw new Error(`variant ${v.id} has no spec to draw`);
+  return renderVariantSheet({ id: v.id, name: v.name, idea: v.idea, spec: v.spec, notes: sheetNotes(v.spec) });
+}
+
+/** The sheet for a variant that has been drawn, or null when it has none or cannot be redrawn. */
+function drawnSheetSvg(v: SpecVariant): string | null {
+  if (!v.spec || v.drawnVersion === null) return null;
+  try {
+    return drawSheet(v).svg;
+  } catch (e) {
+    console.warn(`drawnSheetSvg: could not redraw sheet ${v.id}:`, e);
+    return null;
+  }
 }
 
 /** True when the spec names at least one component: placement is then always code-driven. */
@@ -165,18 +194,21 @@ async function checkAssemblyFit(
   return violations;
 }
 
-/** The user's own words for this run, for prompts that need the request verbatim. */
-function firstHumanText(messages: BaseMessage[]): string {
-  for (const msg of messages) {
+/** Marks the machine-written human messages validateCode appends; they are not the user's words. */
+const VALIDATION_REPORT_PREFIX = '[Validation Report]';
+
+/** The user's current request: the text of the LATEST human message they wrote (earlier turns are history). */
+function latestHumanText(messages: BaseMessage[]): string {
+  for (const msg of [...messages].reverse()) {
     if (msg._getType() !== 'human') continue;
     const c = msg.content;
-    if (typeof c === 'string') return c;
-    if (Array.isArray(c)) {
-      const text = c.find((p) => (p as { type?: string }).type === 'text') as
-        | { text?: string }
-        | undefined;
-      if (text?.text) return text.text;
+    let text = '';
+    if (typeof c === 'string') text = c;
+    else if (Array.isArray(c)) {
+      const part = c.find((p) => (p as { type?: string }).type === 'text') as { text?: string } | undefined;
+      text = part?.text ?? '';
     }
+    if (text && !text.startsWith(VALIDATION_REPORT_PREFIX)) return text;
   }
   return '';
 }
@@ -370,6 +402,21 @@ export const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => null,
   }),
+  /** When the current architect revision round began (null outside a revision round). */
+  roundStartedAt: Annotation<number | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  /** Measured duration of the last revision round (architect + illustrator + reviewer), for the budget check. */
+  lastRoundMs: Annotation<number | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  /** The variant the human approved; the drafter finds its sheet and findings by this id ONLY. */
+  chosenVariantId: Annotation<VariantId | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
   messages: Annotation<BaseMessage[]>({
     reducer: (x, y) => x.concat(y),
     default: () => [],
@@ -560,7 +607,7 @@ export function createCadAgent(
         `Revise this variant (${variant.id}): ${variant.name} - ${variant.idea}.`,
         `Previous skeleton:\n${JSON.stringify(previousSpec.skeleton, null, 2)}`,
         `Previous sheet:\n${previousSpec.sheet}`,
-        `Review findings:\n${findings.map((f) => `[${f.severity.toUpperCase()}] ${f.issue}`).join('\n')}`,
+        findings.length ? `Review findings:\n${findings.map((f) => `[${f.severity.toUpperCase()}] ${f.issue}`).join('\n')}` : '',
         notes?.length ? `Human notes:\n${notes.join('\n')}` : '',
       ].filter(Boolean);
 
@@ -699,7 +746,7 @@ export function createCadAgent(
       idea: variant.idea,
       spec,
       version: version + 1,
-      sheetSvg: null,
+      drawnVersion: null,
       review: null,
       retries,
       needsRevision: false,
@@ -729,9 +776,18 @@ export function createCadAgent(
       }
     }
 
+    // The Vercel budget runs from the FIRST entry for a request, before the
+    // planner: the planner and the first variant calls are most of the time.
+    const enteredAt = Date.now();
+    const reviewDeadline = state.reviewDeadline ?? (process.env.VERCEL
+      ? enteredAt + Number(process.env.CADAI_SPEC_REVIEW_BUDGET_MS ?? 240000) // 240 s: Vercel maxDuration 300 s minus the drafter's head start
+      : null);
+
     let brief = state.specBrief;
     let variants = [...state.specVariants];
-    const isFresh = variants.length === 0 || state.gateAction === 'revise';
+    // A gate revise arrives WITH the chosen variant in state, so it revises that
+    // variant (previous sheet, skeleton, image, notes) instead of re-planning.
+    const isFresh = variants.length === 0;
 
     if (isFresh) {
       const plannerSystemMessage = new SystemMessage(CAD_AI_SYSTEM_PROMPT + "\n\n" + ARCHITECT_PLANNER_PREAMBLE);
@@ -740,6 +796,12 @@ export function createCadAgent(
       if (state.gateAction === 'revise' && state.gateFeedback) {
         plannerMessages.push(new HumanMessage(`The previous Assembly Spec was rejected at human review. Revise it accordingly:\n${state.gateFeedback}`));
       }
+
+      write(config, 'architectNode', {
+        t: 'delta',
+        text: `Planning up to ${maxVariantsFromEnv(process.env.CADAI_MAX_VARIANTS)} variants...
+`,
+      });
 
       const plannerModel = model.withStructuredOutput(ArchitectPlanSchema, {
         name: 'ArchitectPlan',
@@ -764,20 +826,14 @@ export function createCadAgent(
             ];
 
         try {
-          let streamBrief = '';
-          const stream = await plannerModel.withConfig({ tags: ['nostream'] }).stream(attemptMessages, config);
-          let chunkObj: unknown = null;
-          for await (const chunk of stream) {
-            if (chunk.brief && chunk.brief !== streamBrief) {
-              const delta = chunk.brief.slice(streamBrief.length);
-              write(config, 'architectNode', { t: 'delta', text: delta });
-              streamBrief = chunk.brief;
-            }
-            chunkObj = chunk;
-          }
+          // Not streamed: LangChain buffers a zod-parsed structured reply and yields
+          // it once, so the brief is written when the planner returns.
+          const chunkObj = await plannerModel.withConfig({ tags: ['nostream'] }).invoke(attemptMessages, config);
           const parsedPlan = ArchitectPlanSchema.safeParse(nullsToUndefined(chunkObj));
           if (parsedPlan.success && parsedPlan.data.variants.length > 0) {
             plan = parsedPlan.data;
+            if (plan.brief) write(config, 'architectNode', { t: 'delta', text: `${plan.brief}
+` });
           } else {
             lastPlannerError = parsedPlan.success
               ? 'Planner response missing variants.'
@@ -811,7 +867,7 @@ export function createCadAgent(
         const { variants: processedVariants, recommendedId } = processPlannerVariants(
           plan.variants,
           plan.recommendedId,
-          Number(process.env.CADAI_MAX_VARIANTS ?? 3)
+          maxVariantsFromEnv(process.env.CADAI_MAX_VARIANTS)
         );
         deduped = processedVariants;
         brief = {
@@ -859,14 +915,14 @@ export function createCadAgent(
 
       const plannedList = variants.map((v) => ({ id: v.id, name: v.name, idea: v.idea }));
 
-      const promises = variants.map((v) => {
-        if (!v.needsRevision) return Promise.resolve(v);
+      const promises = variants.map(async (v) => {
+        if (!v.needsRevision) return v;
 
         const findings = [...(v.review?.findings || [])].sort((a, b) =>
           a.severity === 'major' && b.severity !== 'major' ? -1 : 1
         );
         const prevSkeleton = v.spec ? { ...v.spec, sheet: undefined } : undefined;
-        return generateVariantSpec(
+        const revised = await generateVariantSpec(
           v,
           plannedList,
           currentBrief,
@@ -876,9 +932,25 @@ export function createCadAgent(
           v.spec ? { sheet: v.spec.sheet, skeleton: prevSkeleton } : undefined,
           findings,
           state.humanSpecNotes,
-          v.sheetSvg,
+          drawnSheetSvg(v),
           config
         );
+        if (revised.spec === null && v.spec) {
+          // Label, don't drop: the last good spec stays and the card says so.
+          return {
+            ...v,
+            needsRevision: false,
+            error: undefined,
+            review: {
+              validated: false,
+              findings: [],
+              attempts: v.retries + 1,
+              ...v.review,
+              note: `revision failed; showing version ${v.version}`,
+            },
+          };
+        }
+        return revised;
       });
       variants = await Promise.all(promises);
     }
@@ -890,10 +962,6 @@ export function createCadAgent(
       });
     }
 
-    const reviewDeadline = state.reviewDeadline === null && process.env.VERCEL
-      ? Date.now() + Number(process.env.CADAI_SPEC_REVIEW_BUDGET_MS ?? 240000)
-      : state.reviewDeadline;
-
     const recommended = recommendedVariant(variants, brief);
     const assemblySpec = recommended?.spec ? mergeBriefIntoSpec(recommended.spec, brief) : null;
     const explanation = assemblySpec ? summarizeSpec(assemblySpec) : NO_SPEC_EXPLANATION;
@@ -902,6 +970,7 @@ export function createCadAgent(
       specBrief: brief,
       specVariants: variants,
       reviewDeadline,
+      roundStartedAt: isFresh ? null : enteredAt,
       assemblySpec,
       explanation,
       // Deliberately contributes NOTHING to `messages`. The spec already
@@ -926,27 +995,29 @@ export function createCadAgent(
     const variants = [...(state.specVariants || [])];
     const updatedVariants = await Promise.all(
       variants.map(async (v) => {
-        if (v.spec === null || v.sheetSvg !== null) {
+        if (v.spec === null || v.drawnVersion === v.version) {
           return v;
         }
         try {
-          const result = renderVariantSheet({
-            id: v.id,
-            name: v.name,
-            idea: v.idea,
-            spec: v.spec,
-            notes: sheetNotes(v.spec),
-          });
+          // Drawn here to prove it can be (and for the transcript); state keeps
+          // only the version, and every consumer redraws the identical sheet.
+          const result = drawSheet(v);
           const compCount = v.spec.components?.length ?? 0;
           const guideCount = v.spec.guides?.length ?? 0;
           let text = `Sheet ${v.id} drawn: ${compCount} part${compCount === 1 ? '' : 's'}, ${guideCount} guide${guideCount === 1 ? '' : 's'}`;
           if (result.skipped && result.skipped.length > 0) {
-            text += `, ${result.skipped.map((s) => `${s.name} drawn as a box: ${s.reason}`).join(', ')}`;
+            text += `, ${result.skipped
+              .map((s) =>
+                isStandIn(s.reason)
+                  ? `${s.name} drawn as a box: ${s.reason.replace(/;?\s*drawn as a box$/, '')}`
+                  : `${s.name} not drawn: ${s.reason}`
+              )
+              .join(', ')}`;
           }
           write(config, 'specIllustrator', { t: 'delta', text: text + '\n' });
           return {
             ...v,
-            sheetSvg: result.svg,
+            drawnVersion: v.version,
           };
         } catch (e) {
           console.error(`specIllustrator: failed to draw sheet for variant ${v.id}:`, e);
@@ -956,7 +1027,7 @@ export function createCadAgent(
           });
           return {
             ...v,
-            sheetSvg: null,
+            drawnVersion: null,
             review: {
               validated: false,
               findings: [],
@@ -980,9 +1051,14 @@ export function createCadAgent(
   ): Promise<Partial<AgentStateType>> {
     const maxRetries = Number(process.env.CADAI_SPEC_REVIEW_RETRIES ?? 5);
     const deadline = state.reviewDeadline;
-    const deadlineExpired = deadline !== null && Date.now() >= deadline;
+    const now = Date.now();
+    // Another round is allowed only if it can finish inside the budget, judged by
+    // the last round's measured duration (90 s until one has been measured).
+    const estimatedRoundMs = state.lastRoundMs ?? 90000; // 90 s: typical architect revision + sheet + review
+    const deadlineExpired = deadline !== null && now + estimatedRoundMs >= deadline;
+    const lastRoundMs = state.roundStartedAt !== null ? now - state.roundStartedAt : state.lastRoundMs;
 
-    const request = firstHumanText(state.messages) || 'the user request above';
+    const request = latestHumanText(state.messages) || 'the user request above';
     const contract = contractLines(state.designContract);
     const reviewerModel = model
       .withStructuredOutput(SheetReviewSchema)
@@ -992,14 +1068,14 @@ export function createCadAgent(
 
     const updatedVariants = await Promise.all(
       (state.specVariants || []).map(async (v) => {
-        if (!v.sheetSvg || v.review !== null) {
+        if (!v.spec || v.drawnVersion === null || v.drawnVersion !== v.version || v.review !== null) {
           return v;
         }
 
         const attempts = v.retries + 1;
         let pngDataUrl: string;
         try {
-          pngDataUrl = await svgToPngDataUrl(v.sheetSvg);
+          pngDataUrl = await svgToPngDataUrl(drawSheet(v).svg);
         } catch (e) {
           console.error(`specReviewer: failed to rasterize sheet for variant ${v.id}:`, e);
           const reviewObj: VariantReview = {
@@ -1107,6 +1183,8 @@ export function createCadAgent(
 
     return {
       specVariants: updatedVariants,
+      roundStartedAt: null,
+      lastRoundMs,
     };
   }
 
@@ -1121,13 +1199,11 @@ export function createCadAgent(
       DRAFTER_PREAMBLE +
       (specHasComponents(state.assemblySpec) ? '\n\n' + DRAFTER_PLACEMENT_CONTRACT : '');
 
-    const chosenVariant =
-      state.specVariants?.find(
-        (v) =>
-          v.sheetSvg &&
-          (v.spec?.assemblyName === state.assemblySpec?.assemblyName ||
-            v.id === state.specBrief?.recommendedId)
-      ) ?? state.specVariants?.find((v) => v.sheetSvg);
+    // The approved variant, found by the id the gate recorded and by nothing
+    // else: matching on name or on the recommendation picked the wrong sheet.
+    const chosenVariant = state.chosenVariantId
+      ? state.specVariants?.find((v) => v.id === state.chosenVariantId)
+      : undefined;
 
     let drafterHumanMessage: HumanMessage;
     if (state.assemblySpec) {
@@ -1141,9 +1217,15 @@ export function createCadAgent(
           ? `\n\nOpen review findings:\n${chosenVariant.review.findings.map((f) => `- [${f.severity}] ${f.issue}`).join('\n')}`
           : '';
 
+      const blockout = blockoutScad(state.assemblySpec);
+      const placeholdersText = blockout.skipped.length
+        ? `\n\nPlaceholders - build these from the skeleton, not from the starting script:\n${blockout.skipped
+            .map((p) => `- ${p.name}: ${isStandIn(p.reason) ? `a plain box stands in (${p.reason.replace(/;?\s*drawn as a box$/, '')})` : `not in the starting script (${p.reason})`}`)
+            .join('\n')}`
+        : '';
       const startingScriptText =
         process.env.CADAI_DRAFTER_START !== 'scratch'
-          ? `\n\nStarting script:\nThis starting script already has one module per component with its exact base shape and declared holes. Keep each module's base dimensions; add the features the sheet names; do not add top-level placement.\n\`\`\`openscad\n${blockoutScad(state.assemblySpec).code}\n\`\`\``
+          ? `\n\nStarting script:\nThis starting script has a module for each component that could be drawn, with its base shape and declared holes (except the placeholders listed above). Keep each module's base dimensions; add the features the sheet names; do not add top-level placement.\n\`\`\`openscad\n${blockout.code}\n\`\`\``
           : '';
 
       const promptText = `Implement the Architect Spec below as one complete OpenSCAD script. Honour every field: each stressPoint mitigation built exactly as sized, joints at their declared clearance, every edge sharp.
@@ -1153,12 +1235,13 @@ ${sheet}
 
 Architect Skeleton (JSON):
 ${JSON.stringify(skeleton, null, 2)}
-${contract}${guidesText}${reviewFindingsText}${startingScriptText}`;
+${contract}${guidesText}${reviewFindingsText}${placeholdersText}${startingScriptText}`;
 
       let pngDataUrl: string | null = null;
-      if (chosenVariant?.sheetSvg && isVisionModel(selectedModel)) {
+      const chosenSheetSvg = chosenVariant ? drawnSheetSvg(chosenVariant) : null;
+      if (chosenSheetSvg && isVisionModel(selectedModel)) {
         try {
-          pngDataUrl = await svgToPngDataUrl(chosenVariant.sheetSvg);
+          pngDataUrl = await svgToPngDataUrl(chosenSheetSvg);
         } catch (e) {
           console.warn('drafterNode: failed to rasterize concept sheet for drafter', e);
         }
@@ -1174,7 +1257,7 @@ ${contract}${guidesText}${reviewFindingsText}${startingScriptText}`;
         drafterHumanMessage = new HumanMessage(promptText);
       }
     } else {
-      const promptText = `Write one complete OpenSCAD script for the user's request above. No Architect Spec is available: derive the sizes yourself and declare them as parameters, choose a bedFace and lay it on z = 0, and apply the corner-softening categories and stress-point mitigations the part needs, naming them in your rationale.
+      const promptText = `Write one complete OpenSCAD script for the user's request above. No Architect Spec is available: derive the sizes yourself and declare them as parameters, choose a bedFace and lay it on z = 0, and the stress-point mitigations the part needs, naming them in your rationale; every edge stays sharp.
 ${contract}`;
       drafterHumanMessage = new HumanMessage(promptText);
     }
@@ -1235,6 +1318,7 @@ ${contract}`;
       gateFeedback: null,
       specVariants: [],
       specBrief: null,
+      chosenVariantId: null,
     };
   }
 
@@ -1562,7 +1646,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     if (views.length === 0) return {};
 
 
-    const request = firstHumanText(state.messages) || 'the user request above';
+    const request = latestHumanText(state.messages) || 'the user request above';
     const specText = criticSpecSummary(state.assemblySpec);
     const bedFaces = (state.assemblySpec?.components ?? [])
       .filter((c) => c.bedFace)
@@ -1649,7 +1733,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       name: v.name,
       idea: v.idea,
       spec: v.spec,
-      sheetSvg: v.sheetSvg,
+      sheetSvg: drawnSheetSvg(v),
       review: v.review,
       ...(v.error ? { error: v.error } : {}),
     }));
@@ -1681,7 +1765,17 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       return { gateAction: 'cancel' };
     }
 
-    if (decision.action === 'revise') {
+    // A revise beyond the cap is spent: the chosen variant is built as it stands
+    // (checkReviseRoute would otherwise send the drafter a mismatched spec).
+    const overCap = decision.action === 'revise' && state.specRevisionCount + 1 > MAX_SPEC_REVISIONS;
+    if (overCap) {
+      write(config, 'specGate', {
+        t: 'delta',
+        text: 'Revision limit reached; building the chosen variant as it stands (your last comment was not applied).\n',
+      });
+    }
+
+    if (decision.action === 'revise' && !overCap) {
       const recId = state.specBrief?.recommendedId ?? 'A';
       const chosenId = decision.chosenVariantId ?? recId;
       let chosenVariant = (state.specVariants || []).find((v) => v.id === chosenId);
@@ -1695,7 +1789,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
           idea: '',
           spec: state.assemblySpec,
           version: 1,
-          sheetSvg: null,
+          drawnVersion: null,
           review: null,
           retries: 0,
           needsRevision: true,
@@ -1735,6 +1829,10 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
         gateAction: 'revise',
         gateFeedback,
         specVariants: updatedVariants,
+        // Only the chosen variant remains, so it is the recommendation now.
+        specBrief: state.specBrief && updatedVariants[0]
+          ? { ...state.specBrief, recommendedId: updatedVariants[0].id }
+          : state.specBrief,
         humanSpecNotes: newNotes,
         reviewDeadline: null,
         specRevisionCount: state.specRevisionCount + 1,
@@ -1751,20 +1849,40 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     const recVariant = (state.specVariants || []).find((v) => v.id === recId);
 
     let chosenSpec = chosenVariant?.spec ?? null;
+    let approvedVariant = chosenVariant;
     if (!chosenSpec && recVariant?.spec) {
       write(config, 'specGate', {
         t: 'delta',
         text: `Chosen variant ${chosenId} has no spec; falling back to recommended variant ${recId}.\n`,
       });
       chosenSpec = recVariant.spec;
+      approvedVariant = recVariant;
     }
 
-    let baseApproved = chosenSpec ?? state.assemblySpec;
+    // Only RAW variant specs get the brief merged in. state.assemblySpec already
+    // carries it, so merging that one again duplicated assumptions and questions.
+    let baseApproved = chosenSpec;
+    let alreadyMerged = false;
+    if (!baseApproved && state.assemblySpec) {
+      write(config, 'specGate', {
+        t: 'delta',
+        text: 'No variant spec to approve; using the spec the architect last produced.\n',
+      });
+      baseApproved = state.assemblySpec;
+      alreadyMerged = true;
+    }
     if (decision.spec) {
       const parsed = AssemblySpecSchema.safeParse(decision.spec);
-      if (parsed.success) baseApproved = normalizeSpec(parsed.data);
+      if (parsed.success) {
+        baseApproved = normalizeSpec(parsed.data);
+        alreadyMerged = false;
+      }
     }
-    let approvedSpec = baseApproved ? mergeBriefIntoSpec(baseApproved, state.specBrief) : null;
+    let approvedSpec = baseApproved
+      ? alreadyMerged
+        ? baseApproved
+        : mergeBriefIntoSpec(baseApproved, state.specBrief)
+      : null;
 
     if (approvedSpec && decision.answers) {
       const answered = new Set(
@@ -1800,6 +1918,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
 
     return {
       gateAction: 'approve',
+      chosenVariantId: approvedVariant?.id ?? null,
       assemblySpec: stampedSpec,
       designContract: updatedContract,
     };
@@ -1839,13 +1958,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
 
   // Conditional Edge: route from architectNode
   function checkSpecRoute(state: AgentStateType) {
-    let prompt = '';
-    for (const msg of state.messages) {
-      if (msg._getType() === 'human') {
-        prompt = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-        break;
-      }
-    }
+    const prompt = latestHumanText(state.messages);
 
     if (shouldGateSpec(state, prompt)) return 'specGate';
     return 'drafterNode';
