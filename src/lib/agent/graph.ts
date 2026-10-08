@@ -36,7 +36,7 @@ import { auditSpecCoherence } from './spec-coherence';
 import { auditModuleGuards } from '../design/module-guards';
 import { auditHoles } from './hole-audit';
 import { normalizeSpec } from './spec-normalize';
-import { auditSpecShapes } from './spec-shape-audit';
+import { auditSpecShapes, auditSpecGround } from './spec-shape-audit';
 import { checkInterference } from '../engine/assembly-verifier';
 import { nullsToUndefined } from './strict-schema';
 import { getCheckpointer } from './checkpointer';
@@ -99,6 +99,37 @@ function drawnSheetSvg(v: SpecVariant): string | null {
     console.warn(`drawnSheetSvg: could not redraw sheet ${v.id}:`, e);
     return null;
   }
+}
+
+/**
+ * Per-call timeout for the review loop on Vercel: the remaining budget, less 15 s
+ * for the rest of the request, never below 5 s. LangChain turns `config.timeout`
+ * into an abort signal. Off Vercel (no deadline) the config is untouched.
+ */
+const CALL_TAIL_MS = 15000; // 15 s kept back for the gate / response after the last call
+const MIN_CALL_MS = 5000; // a call is not worth starting with less than 5 s
+function remainingCallMs(deadline: number | null): number | null {
+  if (deadline === null || !process.env.VERCEL) return null;
+  return deadline - Date.now() - CALL_TAIL_MS;
+}
+function withBudget(config: RunnableConfig | undefined, deadline: number | null): RunnableConfig | undefined {
+  const left = remainingCallMs(deadline);
+  if (left === null) return config;
+  return { ...(config ?? {}), timeout: Math.max(MIN_CALL_MS, left) };
+}
+
+/** The variant's review with its unresolved spec errors folded in as major findings. */
+function reviewWithSpecErrors(v: SpecVariant, review: VariantReview | null): VariantReview | null {
+  const errors = v.specErrors ?? [];
+  if (errors.length === 0) return review;
+  const have = new Set((review?.findings ?? []).map((f) => f.issue));
+  return {
+    attempts: 0,
+    note: 'spec has unresolved errors',
+    ...(review ?? {}),
+    validated: false,
+    findings: [...errors.filter((e) => !have.has(e.issue)), ...(review?.findings ?? [])],
+  };
 }
 
 /** True when the spec names at least one component: placement is then always code-driven. */
@@ -571,7 +602,8 @@ export function createCadAgent(
     findings?: ReviewFinding[],
     notes?: string[],
     previousSheetSvg?: string | null,
-    config?: RunnableConfig
+    config?: RunnableConfig,
+    deadline: number | null = null
   ): Promise<SpecVariant> {
     const variantMessages = [...baseMessages];
 
@@ -652,6 +684,8 @@ export function createCadAgent(
     let hadProviderError = false;
     let rawLastError: string | null = null;
     let coherenceFeedback: SpecViolation[] | null = null;
+    let specErrors: ReviewFinding[] | undefined;
+    let outOfTime = false;
 
     // THREE attempts, not two. Decoder degeneration is per-attempt and
     // independent, so retries compound: at the ~0.8 per-attempt success rate
@@ -659,6 +693,12 @@ export function createCadAgent(
     // reaching the review gate with no spec at all and three leave under 1%.
     // Two attempts is what let a real run surface an empty approval card.
     for (let attempt = 0; attempt < MAX_ARCHITECT_ATTEMPTS && !spec; attempt++) {
+      // On Vercel, stop retrying once the budget cannot hold another attempt.
+      const left = remainingCallMs(deadline);
+      if (attempt > 0 && left !== null && left < MIN_CALL_MS) {
+        outOfTime = true;
+        break;
+      }
       const retryPrompt = coherenceFeedback
         ? 'Your previous Assembly Spec was internally inconsistent:\n' +
           coherenceFeedback.map((v) => `- ${v.message}`).join('\n') +
@@ -670,7 +710,7 @@ export function createCadAgent(
         attempt === 0 ? variantMessages : [...variantMessages, new HumanMessage(retryPrompt)];
 
       try {
-        const raw = await variantModel.withConfig({ tags: ['nostream'] }).invoke(attemptMessages, config);
+        const raw = await variantModel.withConfig({ tags: ['nostream'] }).invoke(attemptMessages, withBudget(config, deadline));
 
         // The model was given a JSON Schema, so what comes back is an untyped
         // object; zod is what turns it into an AssemblySpec, and a reply that
@@ -688,6 +728,7 @@ export function createCadAgent(
           const incoherent = [
             ...auditSpecCoherence(candidate).filter((v) => v.severity === 'error'),
             ...auditSpecShapes(candidate).filter((v) => v.severity === 'error'),
+            ...auditSpecGround(candidate).filter((v) => v.severity === 'error'),
           ];
           if (incoherent.length > 0 && attempt < MAX_ARCHITECT_ATTEMPTS - 1) {
             rawLastError = incoherent.map((v) => v.message).join(' ');
@@ -699,6 +740,10 @@ export function createCadAgent(
             continue;
           }
           spec = candidate;
+          // Accepted on the last attempt with errors left: label them, never drop them.
+          if (incoherent.length > 0) {
+            specErrors = incoherent.map((v) => ({ severity: 'major' as const, issue: v.message }));
+          }
         } else {
           rawLastError = `Spec failed validation: ${parsed.error.issues
             .slice(0, 3)
@@ -722,9 +767,15 @@ export function createCadAgent(
       }
     }
 
-    const shortErrorLabel = hadProviderError
-      ? 'No valid spec after 3 attempts (provider error).'
-      : 'No valid spec after 3 attempts.';
+    const shortErrorLabel = outOfTime
+      ? 'No valid spec: the time budget ran out.'
+      : hadProviderError
+        ? 'No valid spec after 3 attempts (provider error).'
+        : 'No valid spec after 3 attempts.';
+    // A revision that failed keeps the previous version on the card, so say that.
+    const failureLine = previousSpec
+      ? `revision failed${outOfTime ? ' (time budget)' : hadProviderError ? ' (provider error)' : ''}; keeping version ${version}.`
+      : shortErrorLabel;
 
     if (spec) {
       const renderer = createSpecRenderer();
@@ -736,7 +787,7 @@ export function createCadAgent(
     } else {
       write(config, 'architectNode', {
         t: 'delta',
-        text: `\n\n### Variant ${variant.id} - ${variant.name}\n*${variant.idea}*\n\n${shortErrorLabel}\n`,
+        text: `\n\n### Variant ${variant.id} - ${variant.name}\n*${variant.idea}*\n\n${failureLine}\n`,
       });
     }
 
@@ -751,6 +802,7 @@ export function createCadAgent(
       retries,
       needsRevision: false,
       error: spec ? undefined : shortErrorLabel,
+      ...(specErrors ? { specErrors } : {}),
     };
   }
 
@@ -799,7 +851,7 @@ export function createCadAgent(
 
       write(config, 'architectNode', {
         t: 'delta',
-        text: `Planning up to ${maxVariantsFromEnv(process.env.CADAI_MAX_VARIANTS)} variants...
+        text: `Planning up to ${maxVariantsFromEnv(process.env.CADAI_MAX_VARIANTS)} variant${maxVariantsFromEnv(process.env.CADAI_MAX_VARIANTS) === 1 ? '' : 's'}...
 `,
       });
 
@@ -828,7 +880,7 @@ export function createCadAgent(
         try {
           // Not streamed: LangChain buffers a zod-parsed structured reply and yields
           // it once, so the brief is written when the planner returns.
-          const chunkObj = await plannerModel.withConfig({ tags: ['nostream'] }).invoke(attemptMessages, config);
+          const chunkObj = await plannerModel.withConfig({ tags: ['nostream'] }).invoke(attemptMessages, withBudget(config, reviewDeadline));
           const parsedPlan = ArchitectPlanSchema.safeParse(nullsToUndefined(chunkObj));
           if (parsedPlan.success && parsedPlan.data.variants.length > 0) {
             plan = parsedPlan.data;
@@ -896,7 +948,8 @@ export function createCadAgent(
           undefined,
           state.humanSpecNotes,
           null,
-          config
+          config,
+          reviewDeadline
         )
       );
       variants = await Promise.all(promises);
@@ -933,19 +986,22 @@ export function createCadAgent(
           findings,
           state.humanSpecNotes,
           drawnSheetSvg(v),
-          config
+          config,
+          reviewDeadline
         );
         if (revised.spec === null && v.spec) {
-          // Label, don't drop: the last good spec stays and the card says so.
+          // Label, don't drop: the last good spec stays, with the review it had
+          // (the one a gate revise set aside, if the review was cleared).
           return {
             ...v,
             needsRevision: false,
             error: undefined,
+            previousReview: undefined,
             review: {
               validated: false,
               findings: [],
               attempts: v.retries + 1,
-              ...v.review,
+              ...(v.review ?? v.previousReview),
               note: `revision failed; showing version ${v.version}`,
             },
           };
@@ -1051,13 +1107,6 @@ export function createCadAgent(
   ): Promise<Partial<AgentStateType>> {
     const maxRetries = Number(process.env.CADAI_SPEC_REVIEW_RETRIES ?? 5);
     const deadline = state.reviewDeadline;
-    const now = Date.now();
-    // Another round is allowed only if it can finish inside the budget, judged by
-    // the last round's measured duration (90 s until one has been measured).
-    const estimatedRoundMs = state.lastRoundMs ?? 90000; // 90 s: typical architect revision + sheet + review
-    const deadlineExpired = deadline !== null && now + estimatedRoundMs >= deadline;
-    const lastRoundMs = state.roundStartedAt !== null ? now - state.roundStartedAt : state.lastRoundMs;
-
     const request = latestHumanText(state.messages) || 'the user request above';
     const contract = contractLines(state.designContract);
     const reviewerModel = model
@@ -1066,7 +1115,10 @@ export function createCadAgent(
 
     const reviewerSystem = new SystemMessage(SHEET_REVIEWER_PREAMBLE);
 
-    const updatedVariants = await Promise.all(
+    // Variants that got a fresh model verdict this pass; the retry decision for
+    // them is made AFTER every review has finished, on the fresh round time.
+    const freshlyReviewed = new Set<VariantId>();
+    const reviewed = await Promise.all(
       (state.specVariants || []).map(async (v) => {
         if (!v.spec || v.drawnVersion === null || v.drawnVersion !== v.version || v.review !== null) {
           return v;
@@ -1117,7 +1169,7 @@ export function createCadAgent(
         try {
           reviewResult = (await reviewerModel.invoke(
             [reviewerSystem, new HumanMessage({ content: content as never })],
-            config
+            withBudget(config, deadline)
           )) as z.infer<typeof SheetReviewSchema>;
         } catch (e) {
           console.error(`specReviewer: model review call failed for variant ${v.id}:`, e);
@@ -1137,49 +1189,53 @@ export function createCadAgent(
           };
         }
 
-        const hasMajor = reviewResult.findings.some((f) => f.severity === 'major');
+        // Errors the architect accepted on its last attempt count as major findings.
+        const findings = [...(v.specErrors ?? []), ...reviewResult.findings];
+        const hasMajor = findings.some((f) => f.severity === 'major');
         const validated = Boolean(reviewResult.matchesRequest && !hasMajor);
-        const reviewObj: VariantReview = {
-          validated,
-          findings: reviewResult.findings,
-          attempts,
-        };
-
-        const canRetry = hasMajor && v.retries < maxRetries && !deadlineExpired;
-        const nextRetries = canRetry ? v.retries + 1 : v.retries;
-
-        if (validated) {
-          write(config, 'specReviewer', { t: 'delta', text: `Sheet ${v.id}: validated\n` });
-          for (const f of reviewObj.findings) {
-            write(config, 'specReviewer', { t: 'delta', text: `  - [${f.severity}] ${f.issue}\n` });
-          }
-        } else if (canRetry) {
-          const majorCount = reviewObj.findings.filter((f) => f.severity === 'major').length;
-          write(config, 'specReviewer', {
-            t: 'delta',
-            text: `Sheet ${v.id}: ${majorCount} major finding${majorCount === 1 ? '' : 's'} -> revising (retry ${nextRetries}/${maxRetries})\n`,
-          });
-          for (const f of reviewObj.findings) {
-            write(config, 'specReviewer', { t: 'delta', text: `  - [${f.severity}] ${f.issue}\n` });
-          }
-        } else {
-          write(config, 'specReviewer', {
-            t: 'delta',
-            text: `Sheet ${v.id}: not validated after ${attempts} attempt${attempts === 1 ? '' : 's'}\n`,
-          });
-          for (const f of reviewObj.findings) {
-            write(config, 'specReviewer', { t: 'delta', text: `  - [${f.severity}] ${f.issue}\n` });
-          }
-        }
-
+        freshlyReviewed.add(v.id);
         return {
           ...v,
-          review: reviewObj,
-          retries: nextRetries,
-          needsRevision: canRetry,
+          review: { validated, findings, attempts } as VariantReview,
         };
       })
     );
+
+    // The round that just finished, reviewer included. A retry is allowed only if
+    // another such round still fits before the deadline.
+    const now = Date.now();
+    const lastRoundMs = state.roundStartedAt !== null ? now - state.roundStartedAt : state.lastRoundMs;
+    const estimatedRoundMs = lastRoundMs ?? 90000; // 90 s: typical architect revision + sheet + review
+    const budgetLeft = deadline === null || now + estimatedRoundMs < deadline;
+
+    const updatedVariants = reviewed.map((v) => {
+      if (!freshlyReviewed.has(v.id) || !v.review) return v;
+      const reviewObj = v.review;
+      const hasMajor = reviewObj.findings.some((f) => f.severity === 'major');
+      const canRetry = hasMajor && v.retries < maxRetries && budgetLeft;
+      const nextRetries = canRetry ? v.retries + 1 : v.retries;
+      const attempts = reviewObj.attempts;
+
+      if (reviewObj.validated) {
+        write(config, 'specReviewer', { t: 'delta', text: `Sheet ${v.id}: validated\n` });
+      } else if (canRetry) {
+        const majorCount = reviewObj.findings.filter((f) => f.severity === 'major').length;
+        write(config, 'specReviewer', {
+          t: 'delta',
+          text: `Sheet ${v.id}: ${majorCount} major finding${majorCount === 1 ? '' : 's'} -> revising (retry ${nextRetries}/${maxRetries})\n`,
+        });
+      } else {
+        write(config, 'specReviewer', {
+          t: 'delta',
+          text: `Sheet ${v.id}: not validated after ${attempts} attempt${attempts === 1 ? '' : 's'}\n`,
+        });
+      }
+      for (const f of reviewObj.findings) {
+        write(config, 'specReviewer', { t: 'delta', text: `  - [${f.severity}] ${f.issue}\n` });
+      }
+
+      return { ...v, retries: nextRetries, needsRevision: canRetry };
+    });
 
     return {
       specVariants: updatedVariants,
@@ -1218,13 +1274,18 @@ export function createCadAgent(
           : '';
 
       const blockout = blockoutScad(state.assemblySpec);
+      const scratchStart = process.env.CADAI_DRAFTER_START === 'scratch';
       const placeholdersText = blockout.skipped.length
-        ? `\n\nPlaceholders - build these from the skeleton, not from the starting script:\n${blockout.skipped
-            .map((p) => `- ${p.name}: ${isStandIn(p.reason) ? `a plain box stands in (${p.reason.replace(/;?\s*drawn as a box$/, '')})` : `not in the starting script (${p.reason})`}`)
-            .join('\n')}`
+        ? scratchStart
+          ? `\n\nPlaceholders - parts the concept sheet could not draw exactly; build these from the skeleton:\n${blockout.skipped
+              .map((p) => `- ${p.name}: ${p.reason.replace(/;?\s*drawn as a box$/, '')}`)
+              .join('\n')}`
+          : `\n\nPlaceholders - build these from the skeleton, not from the starting script:\n${blockout.skipped
+              .map((p) => `- ${p.name}: ${isStandIn(p.reason) ? `a plain box stands in (${p.reason.replace(/;?\s*drawn as a box$/, '')})` : `not in the starting script (${p.reason})`}`)
+              .join('\n')}`
         : '';
       const startingScriptText =
-        process.env.CADAI_DRAFTER_START !== 'scratch'
+        !scratchStart
           ? `\n\nStarting script:\nThis starting script has a module for each component that could be drawn, with its base shape and declared holes (except the placeholders listed above). Keep each module's base dimensions; add the features the sheet names; do not add top-level placement.\n\`\`\`openscad\n${blockout.code}\n\`\`\``
           : '';
 
@@ -1257,7 +1318,7 @@ ${contract}${guidesText}${reviewFindingsText}${placeholdersText}${startingScript
         drafterHumanMessage = new HumanMessage(promptText);
       }
     } else {
-      const promptText = `Write one complete OpenSCAD script for the user's request above. No Architect Spec is available: derive the sizes yourself and declare them as parameters, choose a bedFace and lay it on z = 0, and the stress-point mitigations the part needs, naming them in your rationale; every edge stays sharp.
+      const promptText = `Write one complete OpenSCAD script for the user's request above. No Architect Spec is available: derive the sizes yourself and declare them as parameters, choose a bedFace and lay it on z = 0, and apply the stress-point mitigations the part needs, naming them in your rationale; every edge stays sharp.
 ${contract}`;
       drafterHumanMessage = new HumanMessage(promptText);
     }
@@ -1734,7 +1795,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       idea: v.idea,
       spec: v.spec,
       sheetSvg: drawnSheetSvg(v),
-      review: v.review,
+      review: reviewWithSpecErrors(v, v.review),
       ...(v.error ? { error: v.error } : {}),
     }));
     if (variants.length === 0 && state.assemblySpec) {
@@ -1796,7 +1857,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
         };
       }
       const updatedVariants: SpecVariant[] = chosenVariant
-        ? [{ ...chosenVariant, needsRevision: true, retries: 0, review: null }]
+        ? [{ ...chosenVariant, needsRevision: true, retries: 0, review: null, previousReview: chosenVariant.review }]
         : [];
 
       const allQuestions = [
@@ -1864,12 +1925,16 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     let baseApproved = chosenSpec;
     let alreadyMerged = false;
     if (!baseApproved && state.assemblySpec) {
+      // state.assemblySpec was taken from the first variant that has a spec, so the
+      // sheet and findings the drafter gets must be that variant's.
+      const source = recommendedVariant(state.specVariants || [], state.specBrief);
       write(config, 'specGate', {
         t: 'delta',
-        text: 'No variant spec to approve; using the spec the architect last produced.\n',
+        text: `No variant spec to approve; using the spec of variant ${source?.id ?? '?'} (the architect's last).\n`,
       });
       baseApproved = state.assemblySpec;
       alreadyMerged = true;
+      if (source) approvedVariant = source;
     }
     if (decision.spec) {
       const parsed = AssemblySpecSchema.safeParse(decision.spec);

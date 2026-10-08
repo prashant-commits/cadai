@@ -551,7 +551,7 @@ describe('spec sheets and reviewer loop', () => {
       expect(invokeMock).toHaveBeenCalledTimes(3);
     });
 
-    it('tags reviewer call with nostream and avoids raw JSON in transcript deltas', async () => {
+    it('tags the reviewer call with nostream and keeps raw JSON out of reviewer deltas (shallow; graph-no-raw-output.test.ts is the real leak check)', async () => {
       invokeMock.mockResolvedValueOnce({
         brief: 'Plan',
         assumptions: [],

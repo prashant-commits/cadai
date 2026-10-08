@@ -3,6 +3,8 @@ import { AgentStateType } from './graph';
 export function shouldGateSpec(state: AgentStateType, prompt: string): boolean {
   const variants = state.specVariants ?? [];
   if (variants.length > 1) return true;
+  // A spec accepted with unresolved errors always goes to a human, sheets or not.
+  if (variants.some((v) => (v.specErrors?.length ?? 0) > 0)) return true;
   const sheetsActive = process.env.CADAI_SPEC_SHEETS !== 'off' && variants.some((v) => v.review !== null);
   if (sheetsActive) {
     if (variants.some((v) => v.review && !v.review.validated)) return true;
