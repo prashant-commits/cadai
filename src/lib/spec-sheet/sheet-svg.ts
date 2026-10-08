@@ -70,10 +70,7 @@ export function renderVariantSheet(
       ? ['Dark discs = holes']
       : []),
   ];
-  const notes = [
-    ...(input.notes ?? []).map((note) => note.trim()).filter((note) => note.length > 0),
-    ...geo.skipped.map((item) => `${item.name}: ${item.reason}`),
-  ].slice(0, 3);
+  const notes = mergeSheetNotes(input.notes, geo.skipped);
 
   const margin = 28;
   const colGap = 40;
@@ -219,6 +216,29 @@ function groundLine(camera: ViewCamera, segment: [Vec3, Vec3], ox: number, oy: n
       `text-anchor="middle" fill="${GROUND_STROKE}" stroke="#ffffff" stroke-width="3" paint-order="stroke"`
     ),
   ].join('\n');
+}
+
+/**
+ * At most three notes. A skipped stand-in is left out when the caller already
+ * named that part and said it is a box, and identical lines are kept once.
+ */
+function mergeSheetNotes(
+  inputNotes: string[] | undefined,
+  skipped: { name: string; reason: string }[]
+): string[] {
+  const provided = (inputNotes ?? []).map((note) => note.trim()).filter((note) => note.length > 0);
+  const extra = skipped
+    .filter((item) => !provided.some((note) => note.includes(item.name) && note.includes('box')))
+    .map((item) => `${item.name}: ${item.reason}`);
+  const notes: string[] = [];
+  const seen = new Set<string>();
+  for (const note of [...provided, ...extra]) {
+    if (seen.has(note)) continue;
+    seen.add(note);
+    notes.push(note);
+    if (notes.length === 3) break;
+  }
+  return notes;
 }
 
 function dimension(

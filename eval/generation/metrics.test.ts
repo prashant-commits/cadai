@@ -14,7 +14,7 @@ const judgeMock = vi.mocked(judgeCompiledModel);
 
 function variant(id: SpecVariant['id'], review: SpecVariant['review']): SpecVariant {
   return {
-    id, name: id, idea: '', spec: null, version: 1, sheetSvg: null, review, retries: 0, needsRevision: false,
+    id, name: id, idea: '', spec: null, version: 1, drawnVersion: null, review, retries: 0, needsRevision: false,
   };
 }
 

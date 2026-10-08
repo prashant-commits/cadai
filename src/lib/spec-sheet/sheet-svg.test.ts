@@ -84,6 +84,32 @@ describe('renderVariantSheet', () => {
     for (const size of sizes) expect(size).toBeGreaterThanOrEqual(11);
   });
 
+  it('does not repeat a stand-in note the caller already supplied', () => {
+    const spec = standInSpec();
+    const supplied = 'bow: drawn as a box (profile polygon is not simple)';
+    const { svg } = renderVariantSheet(
+      { id: 'A', name: 'stand-in', spec, notes: [supplied] },
+      { viewSize: 48 }
+    );
+    expect(svg.split(supplied).length - 1).toBe(1);
+    expect(svg).not.toContain('bow: profile polygon is not simple; drawn as a box');
+  });
+
+  it('keeps a stand-in note when the caller did not, and never more than three', () => {
+    const spec = standInSpec();
+    const alone = renderVariantSheet({ id: 'A', name: 'stand-in', spec }, { viewSize: 48 }).svg;
+    expect(alone).toContain('bow: profile polygon is not simple; drawn as a box');
+
+    const full = renderVariantSheet(
+      { id: 'A', name: 'stand-in', spec, notes: ['keep the tilt', 'mind the span', 'check the post'] },
+      { viewSize: 48 }
+    ).svg;
+    expect(full).toContain('keep the tilt');
+    expect(full).toContain('mind the span');
+    expect(full).toContain('check the post');
+    expect(full).not.toContain('drawn as a box');
+  });
+
   it('prints the guide legend only when the spec has guides', () => {
     const spec = boxSpec();
     spec.guides = [{ label: 'keep_out', kind: 'line', points: [[0, 0, 12], [10, 0, 12]] }];
@@ -134,6 +160,28 @@ describe('renderVariantSheet', () => {
     expect(svg).not.toContain('Dashed = guide (not built)');
   });
 });
+
+function standInSpec(): AssemblySpec {
+  const spec = boxSpec();
+  spec.components = [
+    {
+      name: 'bow',
+      description: 'self-intersecting outline',
+      localExtents: [20, 10, 5],
+      shape: {
+        kind: 'profile',
+        plane: 'xy',
+        points: [
+          [0, 0],
+          [20, 10],
+          [0, 10],
+          [20, 0],
+        ],
+      },
+    },
+  ];
+  return spec;
+}
 
 function attr(tag: string, name: string): number {
   const match = new RegExp(`${name}="([^"]+)"`).exec(tag);
