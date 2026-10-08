@@ -103,8 +103,10 @@ function drawnSheetSvg(v: SpecVariant): string | null {
 }
 
 /**
- * Per-call timeout for the review loop on Vercel: the remaining budget, less 15 s
- * for the rest of the request, never below 5 s. LangChain turns `config.timeout`
+ * Per-call timeout for the review loop on Vercel: time left to the HARD limit
+ * (request start + maxDuration), less 15 s for the rest of the request, never
+ * below 5 s. Only the gate remains after these calls, so they may use more than
+ * the soft deadline that decides whether a new round starts. LangChain turns `config.timeout`
  * into an abort signal. Off Vercel (no deadline) the config is untouched.
  */
 const CALL_TAIL_MS = 15000; // 15 s kept back for the gate / response after the last call
@@ -125,7 +127,7 @@ function reviewWithSpecErrors(v: SpecVariant, review: VariantReview | null): Var
   if (errors.length === 0) return review;
   const have = new Set((review?.findings ?? []).map((f) => f.issue));
   return {
-    attempts: 0,
+    attempts: v.retries + 1, // the spec has been through this many generation attempts, reviewed or not
     note: 'spec has unresolved errors',
     ...(review ?? {}),
     validated: false,
@@ -438,6 +440,16 @@ export const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => null,
   }),
+  /** Hard limit for model calls before the gate: request start + maxDuration (Vercel only). Per-call caps use this; starting a round uses reviewDeadline. */
+  runDeadline: Annotation<number | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  /** How long the last variant-generation pass took, for the first round estimate. */
+  variantsMs: Annotation<number | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
   /** When the current architect revision round began (null outside a revision round). */
   roundStartedAt: Annotation<number | null>({
     reducer: (_, y) => y,
@@ -700,7 +712,7 @@ export function createCadAgent(
     for (let attempt = 0; attempt < MAX_ARCHITECT_ATTEMPTS && !spec; attempt++) {
       // On Vercel, stop retrying once the budget cannot hold another attempt.
       const left = remainingCallMs(deadline);
-      if (attempt > 0 && left !== null && left < MIN_CALL_MS) {
+      if (left !== null && left < MIN_CALL_MS) {
         outOfTime = true;
         break;
       }
@@ -840,8 +852,13 @@ export function createCadAgent(
       ? enteredAt + Number(process.env.CADAI_SPEC_REVIEW_BUDGET_MS ?? 240000) // 240 s: Vercel maxDuration 300 s minus the drafter's head start
       : null);
 
+    const runDeadline = state.runDeadline ?? (process.env.VERCEL
+      ? enteredAt + Number(process.env.CADAI_MAX_DURATION_MS ?? 300000) // 300 s: the routes' maxDuration
+      : null);
+
     let brief = state.specBrief;
     let variants = [...state.specVariants];
+    let variantsStartedAt = Date.now();
     // A gate revise arrives WITH the chosen variant in state, so it revises that
     // variant (previous sheet, skeleton, image, notes) instead of re-planning.
     const isFresh = variants.length === 0;
@@ -874,7 +891,14 @@ export function createCadAgent(
       // measured on the bounded schema, two attempts leave a 4% chance of
       // reaching the review gate with no spec at all and three leave under 1%.
       // Two attempts is what let a real run surface an empty approval card.
+      let plannerOutOfTime = false;
       for (let attempt = 0; attempt < MAX_ARCHITECT_ATTEMPTS && !plan; attempt++) {
+        // No billed call that cannot finish: stop when the hard limit has no room left.
+        const left = remainingCallMs(runDeadline);
+        if (left !== null && left < MIN_CALL_MS) {
+          plannerOutOfTime = true;
+          break;
+        }
         const attemptMessages = attempt === 0
           ? plannerMessages
           : [
@@ -885,7 +909,7 @@ export function createCadAgent(
         try {
           // Not streamed: LangChain buffers a zod-parsed structured reply and yields
           // it once, so the brief is written when the planner returns.
-          const chunkObj = await plannerModel.withConfig({ tags: ['nostream'] }).invoke(attemptMessages, withBudget(config, reviewDeadline));
+          const chunkObj = await plannerModel.withConfig({ tags: ['nostream'] }).invoke(attemptMessages, withBudget(config, runDeadline));
           const parsedPlan = ArchitectPlanSchema.safeParse(nullsToUndefined(chunkObj));
           if (parsedPlan.success && parsedPlan.data.variants.length > 0) {
             plan = parsedPlan.data;
@@ -909,7 +933,9 @@ export function createCadAgent(
       if (!plan || !plan.variants || plan.variants.length === 0) {
         write(config, 'architectNode', {
           t: 'delta',
-          text: '\nPlanning failed after 3 attempts; speccing a single variant as requested.\n',
+          text: plannerOutOfTime
+            ? '\nPlanning stopped: the time budget ran out; speccing a single variant as requested.\n'
+            : '\nPlanning failed after 3 attempts; speccing a single variant as requested.\n',
         });
         brief = {
           markdown: '',
@@ -941,6 +967,7 @@ export function createCadAgent(
         variantBaseMessages.push(new HumanMessage(`The previous Assembly Spec was rejected at human review. Revise it accordingly:\n${state.gateFeedback}`));
       }
 
+      variantsStartedAt = Date.now(); // before the calls start, which map() fires immediately
       const promises = deduped.map((v) =>
         generateVariantSpec(
           v,
@@ -954,7 +981,7 @@ export function createCadAgent(
           state.humanSpecNotes,
           null,
           config,
-          reviewDeadline
+          runDeadline
         )
       );
       variants = await Promise.all(promises);
@@ -973,6 +1000,7 @@ export function createCadAgent(
 
       const plannedList = variants.map((v) => ({ id: v.id, name: v.name, idea: v.idea }));
 
+      variantsStartedAt = Date.now();
       const promises = variants.map(async (v) => {
         if (!v.needsRevision) return v;
 
@@ -992,7 +1020,7 @@ export function createCadAgent(
           state.humanSpecNotes,
           drawnSheetSvg(v),
           config,
-          reviewDeadline
+          runDeadline
         );
         if (revised.spec === null && v.spec) {
           // Label, don't drop: the last good spec stays, with the review it had
@@ -1015,6 +1043,7 @@ export function createCadAgent(
       });
       variants = await Promise.all(promises);
     }
+    const variantsMs = Date.now() - variantsStartedAt;
 
     if (process.env.CADAI_SPEC_SHEETS !== 'off' && !isVisionModel(selectedModel)) {
       write(config, 'architectNode', {
@@ -1031,6 +1060,8 @@ export function createCadAgent(
       specBrief: brief,
       specVariants: variants,
       reviewDeadline,
+      runDeadline,
+      variantsMs,
       roundStartedAt: isFresh ? null : enteredAt,
       assemblySpec,
       explanation,
@@ -1112,6 +1143,7 @@ export function createCadAgent(
   ): Promise<Partial<AgentStateType>> {
     const maxRetries = Number(process.env.CADAI_SPEC_REVIEW_RETRIES ?? 5);
     const deadline = state.reviewDeadline;
+    const reviewStartedAt = Date.now();
     const request = latestHumanText(state.messages) || 'the user request above';
     const contract = contractLines(state.designContract);
     const reviewerModel = model
@@ -1174,7 +1206,7 @@ export function createCadAgent(
         try {
           reviewResult = (await reviewerModel.invoke(
             [reviewerSystem, new HumanMessage({ content: content as never })],
-            withBudget(config, deadline)
+            withBudget(config, state.runDeadline)
           )) as z.infer<typeof SheetReviewSchema>;
         } catch (e) {
           console.error(`specReviewer: model review call failed for variant ${v.id}:`, e);
@@ -1210,8 +1242,14 @@ export function createCadAgent(
     // another such round still fits before the deadline.
     const now = Date.now();
     const lastRoundMs = state.roundStartedAt !== null ? now - state.roundStartedAt : state.lastRoundMs;
-    const estimatedRoundMs = lastRoundMs ?? 90000; // 90 s: typical architect revision + sheet + review
-    const budgetLeft = deadline === null || now + estimatedRoundMs < deadline;
+    // Estimate for the next round: the last full round if one was measured, else
+    // this pass's variant time plus its review time, else about 110 s (the code's
+    // own 78 s per structured spec plus a review).
+    const measuredPass = (state.variantsMs ?? 0) > 0 ? (state.variantsMs ?? 0) + (now - reviewStartedAt) : null;
+    const estimatedRoundMs = lastRoundMs ?? measuredPass ?? 110000; // 110 s: nothing measured yet
+    // The round's calls are capped 15 s short of the hard limit, so it must fit
+    // with the same tail the per-call cap keeps.
+    const budgetLeft = deadline === null || now + estimatedRoundMs + CALL_TAIL_MS < deadline;
 
     const updatedVariants = reviewed.map((v) => {
       if (!freshlyReviewed.has(v.id) || !v.review) return v;
@@ -1926,6 +1964,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
           : state.specBrief,
         humanSpecNotes: newNotes,
         reviewDeadline: null,
+        runDeadline: null,
         specRevisionCount: state.specRevisionCount + 1,
       };
     }
