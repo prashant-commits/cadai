@@ -31,6 +31,14 @@ export interface SpecVariant {
   retries: number;
   needsRevision: boolean;
   error?: string;
+  /**
+   * Shape / coherence / ground errors the spec still carried when the architect
+   * accepted it on its LAST attempt. Never dropped: the reviewer folds them into
+   * the review as major findings and the gate shows them.
+   */
+  specErrors?: ReviewFinding[];
+  /** The review the variant had before a gate revise cleared it; restored if the revision fails. */
+  previousReview?: VariantReview | null;
 }
 
 export interface SpecBrief {

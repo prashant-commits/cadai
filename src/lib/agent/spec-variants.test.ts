@@ -205,7 +205,7 @@ describe('architect variants graph execution', () => {
     process.env.CADAI_VISUAL_CRITIC = 'off';
   });
 
-  it('tags structured calls with nostream and avoids raw JSON in transcript deltas', async () => {
+  it('tags structured calls with nostream and renders the brief and variant as markdown deltas (shallow; graph-no-raw-output.test.ts is the real leak check)', async () => {
     const saved = process.env.CADAI_MAX_VARIANTS;
     process.env.CADAI_MAX_VARIANTS = '1';
     try {

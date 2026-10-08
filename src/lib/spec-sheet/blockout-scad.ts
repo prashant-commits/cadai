@@ -53,7 +53,7 @@ export function blockoutScad(spec: AssemblySpec): { code: string; skipped: { nam
   return { code: `${lines.join('\n').trimEnd()}\n`, skipped };
 }
 
-function identifierIssue(name: string): string | null {
+export function identifierIssue(name: string): string | null {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return 'not a valid OpenSCAD identifier';
   if (BUILTINS.has(name)) return `${name} shadows an OpenSCAD builtin`;
   return null;

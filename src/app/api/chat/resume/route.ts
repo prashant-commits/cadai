@@ -105,7 +105,6 @@ export async function POST(req: NextRequest) {
 
         if (!sawGate) await deleteRunCheckpoint(checkpointKey);
       } catch (err: unknown) {
-        console.error('Agent run failed:', err);
         await deleteRunCheckpoint(checkpointKey);
         await sendEvent({ t: 'error', message: describeGraphError(err, 'Agent resume failed') });
       } finally {

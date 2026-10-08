@@ -49,16 +49,52 @@ function reviver(key: string, value: any) {
   return value;
 }
 
+const HOUR_MS = 60 * 60 * 1000;
+const DEFAULT_TTL_MS = 24 * HOUR_MS; // a paused run nobody resumed within a day is abandoned
+
+/** CADAI_CHECKPOINT_TTL_MS, validated: non-numeric or <= 0 -> 24 h. */
+export function checkpointTtlMs(): number {
+  const n = Number(process.env.CADAI_CHECKPOINT_TTL_MS ?? DEFAULT_TTL_MS);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_TTL_MS;
+}
+
 export class FileCheckpointSaver extends MemorySaver {
   readonly dir: string;
   private filePath: string;
   private pendingFlush: NodeJS.Timeout | null = null;
+  private lastPrune = 0;
 
   constructor(dir: string) {
     super();
     this.dir = ensureWritableDir(dir);
     this.filePath = path.join(this.dir, 'checkpoints.json');
     this.load();
+    // Abandoned paused runs are only ever dropped by age; sweep at startup.
+    void this.pruneExpired().catch((e) => console.warn('Checkpoint prune failed:', e));
+  }
+
+  /**
+   * Deletes every thread whose NEWEST checkpoint is older than the TTL. A run
+   * that paused at a gate and was never resumed or cancelled otherwise stays in
+   * checkpoints.json (and is rewritten on every later step) forever.
+   */
+  async pruneExpired(now: number = Date.now()): Promise<string[]> {
+    this.lastPrune = now;
+    const ttl = checkpointTtlMs();
+    const removed: string[] = [];
+    const threads = Object.keys((this as unknown as { storage?: Record<string, unknown> }).storage ?? {});
+    for (const threadId of threads) {
+      let newest = 0;
+      for await (const tuple of this.list({ configurable: { thread_id: threadId } }, { limit: 1 })) {
+        newest = Date.parse(tuple.checkpoint.ts) || 0;
+      }
+      if (now - newest > ttl) {
+        await super.deleteThread(threadId);
+        removed.push(threadId);
+      }
+    }
+    if (removed.length > 0) this.flush();
+    return removed;
   }
 
   private load() {
@@ -100,6 +136,10 @@ export class FileCheckpointSaver extends MemorySaver {
   async put(...args: any[]) {
     const result = await super.put(...(args as [any, any, any]));
     this.flush();
+    // At most once an hour, on the write path.
+    if (Date.now() - this.lastPrune > HOUR_MS) {
+      void this.pruneExpired().catch((e) => console.warn('Checkpoint prune failed:', e));
+    }
     return result;
   }
 

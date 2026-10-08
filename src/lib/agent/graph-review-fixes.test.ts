@@ -400,7 +400,7 @@ describe('M5: placeholders are labelled for the reviewer sheet and the drafter',
       ...boxSpec({ assumptions }),
       components: [
         { name: 'box', description: 'a box', localExtents: [40, 40, 40], position: [0, 0, 0], shape: { kind: 'box' } },
-        { name: 'union', description: 'bad name', localExtents: [5, 5, 5], position: [0, 0, 0], shape: { kind: 'box' } },
+        { name: 'ghost', description: 'no extents given', position: [0, 0, 0] },
       ],
     }) as never;
 
@@ -408,7 +408,7 @@ describe('M5: placeholders are labelled for the reviewer sheet and the drafter',
     const a = (i: number) => ({ field: `field${i}`, value: 'x'.repeat(80), rationale: '' });
     const notes = sheetNotes(spec([a(1), a(2), a(3)]));
     expect(notes).toHaveLength(3);
-    expect(notes[0]).toMatch(/^union: not drawn/);
+    expect(notes[0]).toMatch(/^ghost: not drawn/);
     expect(notes[1].startsWith('field1')).toBe(true);
     expect(notes.every((n) => n.length <= 60)).toBe(true);
   });
@@ -429,7 +429,7 @@ describe('M5: placeholders are labelled for the reviewer sheet and the drafter',
     const drafterCall = invokeMock.mock.calls.map((c) => c[0]).find((m) => kindOf(m) === 'drafter')!;
     const text = (lastContent(drafterCall) as Array<{ text?: string }>)[0].text!;
     expect(text).toContain('Placeholders - build these from the skeleton, not from the starting script');
-    expect(text).toMatch(/- union: not in the starting script/);
+    expect(text).toMatch(/- ghost: not in the starting script/);
     expect(text).not.toContain('exact base shape');
   });
 });
@@ -453,7 +453,7 @@ describe('M6: the no-spec drafter prompt keeps edges sharp', () => {
 });
 
 describe('M7: the review loop never trips the recursion limit', () => {
-  it('8 review retries with a computed recursionLimit runs to the gate; the default limit would not', async () => {
+  it('8 review retries: the computed recursionLimit reaches the gate, the default limit of 25 does not', async () => {
     process.env.CADAI_SPEC_REVIEW_RETRIES = '8';
     invokeMock.mockImplementation(async (messages: unknown) => {
       switch (kindOf(messages)) {
@@ -471,6 +471,14 @@ describe('M7: the review loop never trips the recursion limit', () => {
     );
     expect(isInterrupted(result)).toBe(true);
     expect(gatePayload(result).variants![0].review?.attempts).toBe(9);
+
+    // The same run under LangGraph's default limit (25) is stopped.
+    await expect(
+      createCadAgent('gpt-5.6-luna').invoke(
+        { messages: [new HumanMessage('a 40mm box')] },
+        { configurable: { thread_id: newKey() } }
+      )
+    ).rejects.toThrow(/Recursion limit/);
   });
 });
 
@@ -515,8 +523,9 @@ describe('loop-table rows', () => {
   });
 });
 
-describe('L5: approve fallback merges the brief once and says so', () => {
-  it('chosen variant without a spec -> uses the already-merged spec, assumptions not duplicated, note written', async () => {
+describe('L5/N4: approve fallback merges the brief once, names the variant it used, and sends that sheet', () => {
+  it('chosen variant without a spec -> uses the already-merged spec, assumptions not duplicated, note names B, drafter gets B sheet', async () => {
+    const reviewImages: Record<string, string> = {};
     invokeMock.mockImplementation(async (messages: unknown) => {
       switch (kindOf(messages)) {
         case 'planner':
@@ -524,6 +533,9 @@ describe('L5: approve fallback merges the brief once and says so', () => {
         case 'variant':
           if (variantOf(messages) === 'A') throw new Error('gateway 502');
           return postSpec({ assemblyName: 'only_b' });
+        case 'reviewer':
+          reviewImages[variantOf(messages)] = imageOf(messages)!;
+          return pass;
         case 'drafter': return draft;
         default: return pass;
       }
@@ -543,6 +555,265 @@ describe('L5: approve fallback merges the brief once and says so', () => {
     const text = JSON.stringify(drafterCall);
     expect(text).toContain('only_b');
     expect(text.match(/\\"field\\": \\"tolerance\\"/g)).toHaveLength(1);
-    expect(notes.join('')).toContain('No variant spec to approve');
+    expect(notes.join('')).toContain('No variant spec to approve; using the spec of variant B');
+    expect(reviewImages.B).toBeDefined();
+    expect(imageOf(drafterCall)).toEqual(reviewImages.B);
+  });
+});
+
+
+describe('H3 (rest): per-call timeouts keep a slow round inside the Vercel budget', () => {
+  it('planner 40 s, variant 40 s, reviewer 30 s, revision 200 s: the revision is capped, not retried, and the gate arrives before 300 s', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(0);
+    process.env.VERCEL = '1';
+    process.env.CADAI_SPEC_REVIEW_BUDGET_MS = '240000';
+    const timeouts: Array<number | undefined> = [];
+    const tick = (ms: number) => vi.setSystemTime(Date.now() + ms);
+
+    invokeMock.mockImplementation(async (messages: unknown, config?: { timeout?: number }) => {
+      switch (kindOf(messages)) {
+        case 'planner': tick(40000); return plan(['A']);
+        case 'variant': tick(40000); return boxSpec({ assemblyName: 'good_spec' });
+        case 'reviewer':
+          tick(30000);
+          return { matchesRequest: false, findings: [{ issue: 'flaw', severity: 'major' }] };
+        case 'revision': {
+          timeouts.push(config?.timeout);
+          const need = 200000;
+          // What a real model does: it is aborted when the call's timeout fires.
+          if (config?.timeout !== undefined && config.timeout < need) {
+            tick(config.timeout);
+            throw new Error('aborted: timeout');
+          }
+          tick(need);
+          return boxSpec();
+        }
+        default: return pass;
+      }
+    });
+
+    const notes: string[] = [];
+    const config = {
+      configurable: { thread_id: newKey() },
+      writer: (ev: Record<string, unknown>) => {
+        if (ev?.t === 'delta' && typeof ev.text === 'string') notes.push(ev.text);
+      },
+    } as unknown as Parameters<ReturnType<typeof createCadAgent>['invoke']>[1];
+    const result = await createCadAgent('gpt-5.6-luna').invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
+
+    expect(isInterrupted(result)).toBe(true);
+    expect(Date.now()).toBeLessThan(300000);
+    // t=110 s at the revision; 240 - 110 - 15 = 115 s. One attempt only: no time for another.
+    expect(timeouts).toEqual([115000]);
+    const v = gatePayload(result).variants![0];
+    expect(v.spec?.assemblyName).toBe('good_spec');
+    expect(v.review?.note).toBe('revision failed; showing version 1');
+    expect(notes.join('')).toContain('revision failed (time budget); keeping version 1.');
+  });
+
+  it('off Vercel no timeout is added to any call', async () => {
+    const seen: Array<number | undefined> = [];
+    invokeMock.mockImplementation(async (messages: unknown, config?: { timeout?: number }) => {
+      seen.push(config?.timeout);
+      switch (kindOf(messages)) {
+        case 'planner': return plan(['A']);
+        case 'variant': return boxSpec();
+        case 'drafter': return draft;
+        default: return pass;
+      }
+    });
+    await createCadAgent('gpt-5.6-luna').invoke(
+      { messages: [new HumanMessage('a 40mm box')] },
+      { configurable: { thread_id: newKey() } }
+    );
+    expect(seen.every((t) => t === undefined)).toBe(true);
+  });
+});
+
+describe('N1: the retry decision uses the round that just finished, reviewer included', () => {
+  it('planner 5 s, variant 10 s, revisions 130 s, 240 s budget: no second revision round', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(0);
+    process.env.VERCEL = '1';
+    process.env.CADAI_SPEC_REVIEW_BUDGET_MS = '240000';
+    const tick = (ms: number) => vi.setSystemTime(Date.now() + ms);
+    invokeMock.mockImplementation(async (messages: unknown) => {
+      switch (kindOf(messages)) {
+        case 'planner': tick(5000); return plan(['A']);
+        case 'variant': tick(10000); return boxSpec();
+        case 'revision': tick(130000); return boxSpec();
+        case 'reviewer': return { matchesRequest: false, findings: [{ issue: 'flaw', severity: 'major' }] };
+        default: return pass;
+      }
+    });
+    const result = await createCadAgent('gpt-5.6-luna').invoke(
+      { messages: [new HumanMessage('a 40mm box')] },
+      { configurable: { thread_id: newKey() } }
+    );
+    // Reviewer 2 runs at t=145 s: 145 + 130 (fresh) >= 240, so it stops. With the
+    // stale 90 s default it would have started a second 130 s round (gate at 275 s).
+    expect(invokeMock.mock.calls.map((c) => kindOf(c[0]))).toEqual([
+      'planner', 'variant', 'reviewer', 'revision', 'reviewer',
+    ]);
+    expect(Date.now()).toBeLessThan(240000);
+    expect(gatePayload(result).variants![0].review?.validated).toBe(false);
+  });
+});
+
+describe('M4 (rest): errors on the last accepted attempt are labelled, never dropped', () => {
+  it('a part always placed below z = 0 reaches the gate with a major finding, even for a single validated variant and a "40mm" prompt', async () => {
+    process.env.CADAI_SPEC_REVIEW_RETRIES = '0';
+    const underground = boxSpec({
+      components: [
+        { name: 'block', description: 'a block', localExtents: [40, 40, 40], position: [0, 0, -5], shape: { kind: 'box' } },
+      ],
+    });
+    invokeMock.mockImplementation(async (messages: unknown) => {
+      switch (kindOf(messages)) {
+        case 'planner': return plan(['A']);
+        case 'variant': return underground;
+        default: return pass;
+      }
+    });
+    const result = await createCadAgent('gpt-5.6-luna').invoke(
+      { messages: [new HumanMessage('a 40mm box')] },
+      { configurable: { thread_id: newKey() } }
+    );
+    expect(invokeMock.mock.calls.filter((c) => kindOf(c[0]) === 'variant')).toHaveLength(3); // all attempts used
+    expect(isInterrupted(result)).toBe(true); // the gate was forced
+    const review = gatePayload(result).variants![0].review!;
+    expect(review.validated).toBe(false);
+    expect(review.findings.some((f) => f.severity === 'major' && f.issue.includes("'block' sits 5 mm below the ground plane"))).toBe(true);
+  });
+
+  it('a non-vision model (no reviewer) still forces the gate and shows the errors', async () => {
+    const underground = boxSpec({
+      components: [
+        { name: 'block', description: 'a block', localExtents: [40, 40, 40], position: [0, 0, -5], shape: { kind: 'box' } },
+      ],
+    });
+    invokeMock.mockImplementation(async (messages: unknown) => {
+      switch (kindOf(messages)) {
+        case 'planner': return plan(['A']);
+        case 'variant': return underground;
+        default: return pass;
+      }
+    });
+    const result = await createCadAgent('deepseek-v4-flash').invoke(
+      { messages: [new HumanMessage('a 40mm box')] },
+      { configurable: { thread_id: newKey() } }
+    );
+    expect(isInterrupted(result)).toBe(true);
+    expect(gatePayload(result).variants![0].review?.findings.map((f) => f.issue).join(' ')).toContain('below the ground plane');
+  });
+});
+
+describe('N3: a failed gate revise keeps the earlier review and says so', () => {
+  it('B validated with a minor note, revise fails -> same findings at the next gate, labelled, transcript says keeping version 1', async () => {
+    invokeMock.mockImplementation(async (messages: unknown) => {
+      switch (kindOf(messages)) {
+        case 'planner': return plan(['A', 'B'], 'A');
+        case 'variant': return variantOf(messages) === 'A' ? boxSpec() : postSpec();
+        case 'reviewer':
+          return variantOf(messages) === 'B'
+            ? { matchesRequest: true, findings: [{ issue: 'B-minor-note', severity: 'minor' }] }
+            : pass;
+        case 'revision': throw new Error('gateway 502');
+        default: return pass;
+      }
+    });
+    const notes: string[] = [];
+    const config = {
+      configurable: { thread_id: newKey() },
+      writer: (ev: Record<string, unknown>) => {
+        if (ev?.t === 'delta' && typeof ev.text === 'string') notes.push(ev.text);
+      },
+    } as unknown as Parameters<ReturnType<typeof createCadAgent>['invoke']>[1];
+    const agent = createCadAgent('gpt-5.6-luna');
+    await agent.invoke({ messages: [new HumanMessage('a stand')] }, config);
+    const result = await agent.invoke(
+      new Command({ resume: { action: 'revise', chosenVariantId: 'B', comment: 'taller' } }),
+      config
+    );
+    const b = gatePayload(result).variants!.find((v) => v.id === 'B')!;
+    expect(b.review?.findings.map((f) => f.issue)).toEqual(['B-minor-note']);
+    expect(b.review?.validated).toBe(true);
+    expect(b.review?.note).toBe('revision failed; showing version 1');
+    expect(notes.join('')).toContain('revision failed (provider error); keeping version 1.');
+    expect(notes.join('')).not.toContain('No valid spec after 3 attempts');
+  });
+});
+
+describe('N2: builtin component names are renamed, so the sheet never says a drawn part is missing', () => {
+  it('Hull + Mast: normalised to hull_part / mast and neither is "not drawn"', async () => {
+    const { normalizeSpec } = await import('./spec-normalize');
+    const { AssemblySpecSchema } = await import('./assembly-spec');
+    const spec = normalizeSpec(
+      AssemblySpecSchema.parse(
+        boxSpec({
+          components: [
+            { name: 'Hull', description: 'h', localExtents: [40, 20, 10], position: [0, 0, 0], shape: { kind: 'box' } },
+            { name: 'Mast', description: 'm', localExtents: [5, 5, 30], position: [10, 5, 10], shape: { kind: 'box' } },
+          ],
+        })
+      )
+    );
+    expect(spec.components?.map((c) => c.name)).toEqual(['hull_part', 'mast']);
+    expect(sheetNotes(spec).join(' ')).not.toContain('not drawn');
+  });
+});
+
+describe('nits', () => {
+  it('scratch mode: the placeholder text does not mention a starting script', async () => {
+    process.env.CADAI_DRAFTER_START = 'scratch';
+    invokeMock.mockImplementation(async (messages: unknown) => {
+      switch (kindOf(messages)) {
+        case 'planner': return plan(['A']);
+        case 'variant':
+          return boxSpec({
+            components: [
+              { name: 'box', description: 'a box', localExtents: [40, 40, 40], position: [0, 0, 0], shape: { kind: 'box' } },
+              { name: 'ghost', description: 'no extents', position: [0, 0, 0] },
+            ],
+          });
+        case 'drafter': return draft;
+        default: return pass;
+      }
+    });
+    const config = { configurable: { thread_id: newKey() } };
+    const agent = createCadAgent('gpt-5.6-luna');
+    await agent.invoke({ messages: [new HumanMessage('a box')] }, config);
+    await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
+    const drafterCall = invokeMock.mock.calls.map((c) => c[0]).find((m) => kindOf(m) === 'drafter')!;
+    const text = (lastContent(drafterCall) as Array<{ text?: string }>)[0].text!;
+    expect(text).toContain('Placeholders');
+    expect(text).toContain('- ghost: missing localExtents');
+    expect(text).not.toMatch(/starting script/i);
+  });
+
+  it('singular status line for one variant; the no-spec sentence has its verb', async () => {
+    process.env.CADAI_MAX_VARIANTS = '1';
+    const deltas: string[] = [];
+    invokeMock.mockImplementation(async (messages: unknown) => {
+      const text = JSON.stringify(messages);
+      if (text.includes('Write one complete OpenSCAD script')) {
+        expect(text).toContain('and apply the stress-point mitigations the part needs');
+        return draft;
+      }
+      if (kindOf(messages) === 'planner') return plan(['A']);
+      throw new Error('no spec');
+    });
+    const config = {
+      configurable: { thread_id: newKey() },
+      writer: (ev: Record<string, unknown>) => {
+        if (ev?.t === 'delta' && typeof ev.text === 'string') deltas.push(ev.text);
+      },
+    } as unknown as Parameters<ReturnType<typeof createCadAgent>['invoke']>[1];
+    const agent = createCadAgent('gpt-5.6-luna');
+    const result = await agent.invoke({ messages: [new HumanMessage('a box')] }, config);
+    if (isInterrupted(result)) await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
+    expect(deltas.join('')).toContain('Planning up to 1 variant...');
+    expect(deltas.join('')).not.toContain('1 variants');
   });
 });

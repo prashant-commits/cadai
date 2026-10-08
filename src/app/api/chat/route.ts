@@ -108,7 +108,6 @@ export async function POST(req: NextRequest) {
         // it here is what keeps one-key-per-run from growing without bound.
         if (!sawGate) await deleteRunCheckpoint(checkpointKey);
       } catch (err: unknown) {
-        console.error('Agent run failed:', err);
         // A run that threw is equally unresumable - don't strand its checkpoint.
         // Must not throw: getCheckpointer() used to re-throw here on Vercel
         // (read-only cwd), which skipped sendEvent and closed an empty stream.

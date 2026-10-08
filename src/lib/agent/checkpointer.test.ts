@@ -124,3 +124,51 @@ describe('deleteRunCheckpoint', () => {
     await expect(deleteRunCheckpoint('never-existed')).resolves.not.toThrow();
   });
 });
+
+describe('checkpoint TTL', () => {
+  const put = (saver: FileCheckpointSaver, thread: string, ts: Date) =>
+    saver.put(
+      { configurable: { thread_id: thread } },
+      { ...fakeCheckpoint(`cp-${thread}`), ts: ts.toISOString() },
+      { source: 'update', step: 0, parents: {} } as never,
+      {}
+    );
+
+  it('prunes threads whose newest checkpoint is older than CADAI_CHECKPOINT_TTL_MS, keeps fresh ones, and persists it', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadai-ttl-'));
+    process.env.CADAI_CHECKPOINT_TTL_MS = String(60 * 60 * 1000); // 1 h
+    try {
+      const saver = new FileCheckpointSaver(dir);
+      await put(saver, 'abandoned', new Date(Date.now() - 3 * 60 * 60 * 1000));
+      await put(saver, 'paused-recently', new Date(Date.now() - 5 * 60 * 1000));
+      const removed = await saver.pruneExpired();
+      expect(removed).toEqual(['abandoned']);
+      expect(await saver.getTuple({ configurable: { thread_id: 'abandoned' } })).toBeUndefined();
+      expect(await saver.getTuple({ configurable: { thread_id: 'paused-recently' } })).toBeDefined();
+
+      await new Promise((r) => setTimeout(r, 250));
+      const reloaded = new FileCheckpointSaver(dir);
+      expect(await reloaded.getTuple({ configurable: { thread_id: 'abandoned' } })).toBeUndefined();
+      expect(await reloaded.getTuple({ configurable: { thread_id: 'paused-recently' } })).toBeDefined();
+    } finally {
+      delete process.env.CADAI_CHECKPOINT_TTL_MS;
+      await new Promise((r) => setTimeout(r, 250));
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('sweeps stale threads when a saver is constructed over an existing file', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadai-ttl-'));
+    try {
+      const first = new FileCheckpointSaver(dir);
+      await put(first, 'old-run', new Date(Date.now() - 48 * 60 * 60 * 1000)); // default TTL is 24 h
+      await new Promise((r) => setTimeout(r, 250));
+      const second = new FileCheckpointSaver(dir);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(await second.getTuple({ configurable: { thread_id: 'old-run' } })).toBeUndefined();
+    } finally {
+      await new Promise((r) => setTimeout(r, 250));
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
