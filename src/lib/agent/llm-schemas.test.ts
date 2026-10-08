@@ -29,3 +29,44 @@ describe('structured-output schemas are strict-json_schema safe', () => {
     });
   }
 });
+
+describe('structuredFor', () => {
+  const FORBIDDEN = ['maxItems', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'pattern'];
+
+  const recorder = () => {
+    const seen: Array<{ schema: unknown; opts: unknown }> = [];
+    return { seen, model: { withStructuredOutput(schema: unknown, opts: unknown) { seen.push({ schema, opts }); return 'bound'; } } };
+  };
+
+  it('claude slugs get an Anthropic-safe strict JSON schema; other slugs get the schema unchanged', async () => {
+    const { structuredFor, ArchitectPlanSchema } = await import('./llm-schemas');
+    const { variantSpecRequestSchema } = await import('./assembly-spec');
+
+    const claude = recorder();
+    structuredFor(claude.model as never, 'claude-opus-5.5', ArchitectPlanSchema, { name: 'ArchitectPlan', strict: true });
+    const sent = JSON.stringify(claude.seen[0].schema);
+    for (const k of FORBIDDEN) expect(sent).not.toContain(`"${k}"`);
+    expect(claude.seen[0].opts).toMatchObject({ name: 'ArchitectPlan', strict: true });
+    expect((claude.seen[0].schema as { additionalProperties?: boolean }).additionalProperties).toBe(false);
+
+    // The variant JSON schema (bounded for the decoder) is stripped too.
+    const variantJson = variantSpecRequestSchema();
+    const claudeVariant = recorder();
+    structuredFor(claudeVariant.model as never, 'claude-opus-5.5', variantJson, { name: 'AssemblySpec', strict: true });
+    const variantSent = JSON.stringify(claudeVariant.seen[0].schema);
+    for (const k of FORBIDDEN) expect(variantSent).not.toContain(`"${k}"`);
+
+    const luna = recorder();
+    structuredFor(luna.model as never, 'gpt-5.6-luna', ArchitectPlanSchema, { name: 'ArchitectPlan', strict: true });
+    expect(luna.seen[0].schema).toBe(ArchitectPlanSchema); // exactly as before
+    const lunaVariant = recorder();
+    structuredFor(lunaVariant.model as never, 'gpt-5.6-luna', variantJson, { name: 'AssemblySpec', strict: true });
+    expect(lunaVariant.seen[0].schema).toBe(variantJson);
+  });
+
+  it('replies are still validated by the original zod schema (too many variants fails)', async () => {
+    const { ArchitectPlanSchema } = await import('./llm-schemas');
+    const v = (id: string) => ({ id, name: id, idea: id });
+    expect(ArchitectPlanSchema.safeParse({ variants: [v('A'), v('B'), v('C'), v('A')] }).success).toBe(false);
+  });
+});

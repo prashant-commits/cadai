@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { toStrictJsonSchema, toAnthropicCompatibleSchema } from './strict-schema';
 
 // Schemas handed to withStructuredOutput. The gateway enforces OpenAI strict
 // json_schema, which rejects `.optional()` (use `.default()` or a required field).
@@ -60,3 +61,24 @@ export const ArchitectPlanSchema = z.object({
   recommendedId: z.enum(['A', 'B', 'C']).default('A'),
 });
 
+
+/**
+ * `model.withStructuredOutput(schema, opts)`, except for Claude slugs: those go
+ * through the gateway to Anthropic's structured outputs, which reject several
+ * JSON Schema keywords (maxItems, numeric bounds ...). For them the schema is
+ * converted to JSON Schema, made strict, and stripped of the unsupported
+ * keywords. The reply is still validated by the caller against the zod schema.
+ */
+export function structuredFor<M extends { withStructuredOutput: (...args: never[]) => unknown }>(
+  model: M,
+  slug: string,
+  schema: z.ZodType | Record<string, unknown>,
+  opts: { name?: string; strict?: boolean; includeRaw?: boolean } = {}
+): ReturnType<M['withStructuredOutput']> {
+  const call = model.withStructuredOutput as unknown as (s: unknown, o?: unknown) => ReturnType<M['withStructuredOutput']>;
+  if (!slug.startsWith('claude-')) return call.call(model, schema, opts);
+  const json = schema instanceof z.ZodType ? (z.toJSONSchema(schema) as Record<string, unknown>) : schema;
+  const safe = toAnthropicCompatibleSchema(toStrictJsonSchema(json));
+  delete safe.$schema;
+  return call.call(model, safe, { ...opts, name: opts.name ?? 'Reply', strict: true });
+}

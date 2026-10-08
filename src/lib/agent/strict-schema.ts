@@ -54,3 +54,42 @@ export function nullsToUndefined<T>(value: T): T {
   }
   return value;
 }
+
+/**
+ * JSON Schema keywords Anthropic's structured outputs reject. The first eval on
+ * claude-opus-5.5 (2026-10-08) failed every planner and variant call with:
+ *   400 provider rejected the request: output_config.format.schema:
+ *   For 'array' type, property 'maxItems' is not supported
+ * The gateway forwards our json_schema to Anthropic, which accepts only a subset
+ * (no numeric or string bounds, no pattern, minItems only 0 or 1). No Anthropic
+ * SDK ships in node_modules to read the list from, so it is taken from that error
+ * and Anthropic's documented limitations. Removed here:
+ *   maxItems, minItems (unless 0 or 1), minimum, maximum, exclusiveMinimum,
+ *   exclusiveMaximum, multipleOf, minLength, maxLength, pattern.
+ * Kept: additionalProperties:false, required, anyOf, enum, type, items, properties.
+ * The reply is still validated against the original zod schema, so a dropped
+ * bound is enforced there (and a violation goes through the existing retry).
+ */
+const ANTHROPIC_UNSUPPORTED = [
+  'maxItems', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum',
+  'multipleOf', 'minLength', 'maxLength', 'pattern',
+];
+
+export function toAnthropicCompatibleSchema(json: unknown, inPropertyMap = false): Record<string, unknown> {
+  if (Array.isArray(json)) {
+    return json.map((j) => toAnthropicCompatibleSchema(j)) as unknown as Record<string, unknown>;
+  }
+  if (json && typeof json === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(json)) {
+      // Inside a `properties` map the keys are property names, not keywords.
+      if (!inPropertyMap) {
+        if (ANTHROPIC_UNSUPPORTED.includes(k)) continue;
+        if (k === 'minItems' && v !== 0 && v !== 1) continue;
+      }
+      out[k] = toAnthropicCompatibleSchema(v, !inPropertyMap && k === 'properties');
+    }
+    return out;
+  }
+  return json as Record<string, unknown>;
+}

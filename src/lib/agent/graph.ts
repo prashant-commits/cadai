@@ -42,7 +42,7 @@ import { auditSpecShapes, auditSpecGround } from './spec-shape-audit';
 import { checkInterference } from '../engine/assembly-verifier';
 import { nullsToUndefined } from './strict-schema';
 import { getCheckpointer } from './checkpointer';
-import { VisualCritiqueSchema, SheetReviewSchema, ArchitectPlanSchema } from './llm-schemas';
+import { VisualCritiqueSchema, SheetReviewSchema, ArchitectPlanSchema, structuredFor } from './llm-schemas';
 import {
   SpecVariant,
   SpecBrief,
@@ -735,7 +735,7 @@ export function createCadAgent(
       variantMessages.push(new HumanMessage(promptParts.join('\n\n')));
     }
 
-    const variantModel = (previousSpec ? revisionModel : model).withStructuredOutput(variantSpecRequestSchema(), {
+    const variantModel = structuredFor(previousSpec ? revisionModel : model, selectedModel, variantSpecRequestSchema(), {
       name: 'AssemblySpec',
       strict: true,
       includeRaw: false,
@@ -939,7 +939,7 @@ export function createCadAgent(
 `,
       });
 
-      const plannerModel = model.withStructuredOutput(ArchitectPlanSchema, {
+      const plannerModel = structuredFor(model, selectedModel, ArchitectPlanSchema, {
         name: 'ArchitectPlan',
         strict: true,
         includeRaw: false,
@@ -1226,9 +1226,12 @@ export function createCadAgent(
     const contract = contractLines(state.designContract);
     // CADAI_REVIEWER_MODEL pins the reviewer so a model comparison is not
     // confounded by each model reviewing its own designs.
-    const reviewerModel = (process.env.CADAI_REVIEWER_MODEL ? getChatModel(process.env.CADAI_REVIEWER_MODEL) : model)
-      .withStructuredOutput(SheetReviewSchema)
-      .withConfig({ tags: ['nostream'] });
+    const reviewerSlug = process.env.CADAI_REVIEWER_MODEL || selectedModel;
+    const reviewerModel = structuredFor(
+      process.env.CADAI_REVIEWER_MODEL ? getChatModel(process.env.CADAI_REVIEWER_MODEL) : model,
+      reviewerSlug,
+      SheetReviewSchema
+    ).withConfig({ tags: ['nostream'] });
 
     const reviewerSystem = new SystemMessage(SHEET_REVIEWER_PREAMBLE);
 
@@ -1886,8 +1889,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
 
     let critique: VisualCritique | null = null;
     try {
-      critique = (await criticModel
-        .withStructuredOutput(VisualCritiqueSchema)
+      critique = (await structuredFor(criticModel, process.env.CADAI_CRITIC_MODEL || selectedModel, VisualCritiqueSchema)
         .invoke(
           [
             new SystemMessage(CAD_AI_SYSTEM_PROMPT + '\n\n' + CRITIC_PREAMBLE),

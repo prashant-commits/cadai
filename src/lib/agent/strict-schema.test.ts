@@ -84,3 +84,45 @@ describe('toStrictJsonSchema keeps a property literally named `default`', () => 
     expect(out.required).toEqual(['default', 'other']);
   });
 });
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Loose = any; // schema trees are walked by path in these assertions
+
+describe('toAnthropicCompatibleSchema', () => {
+  it('removes every unsupported keyword at any depth and keeps the strict invariants', async () => {
+    const { toAnthropicCompatibleSchema } = await import('./strict-schema');
+    const input = {
+      type: 'object',
+      additionalProperties: false,
+      required: ['list', 'n', 's', 'e', 'maybe'],
+      properties: {
+        list: { type: 'array', minItems: 3, maxItems: 3, items: { type: 'number', minimum: 0, maximum: 9, exclusiveMinimum: 0, exclusiveMaximum: 10, multipleOf: 0.5 } },
+        n: { type: 'array', minItems: 1, items: { type: 'object', additionalProperties: false, required: ['a'], properties: { a: { type: 'string', minLength: 1, maxLength: 4, pattern: '^a' } } } },
+        s: { type: 'array', minItems: 0, maxItems: 2, items: { type: 'string' } },
+        e: { type: 'string', enum: ['x', 'y'] },
+        maybe: { anyOf: [{ type: 'number', minimum: 1 }, { type: 'null' }] },
+      },
+    };
+    const out = toAnthropicCompatibleSchema(input) as Loose;
+    const text = JSON.stringify(out);
+    for (const k of ['maxItems', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'pattern']) {
+      expect(text).not.toContain(`"${k}"`);
+    }
+    expect(out.properties.list).toEqual({ type: 'array', items: { type: 'number' } }); // minItems 3 dropped
+    expect(out.properties.n.minItems).toBe(1); // 0 and 1 are allowed
+    expect(out.properties.s.minItems).toBe(0);
+    expect(out.additionalProperties).toBe(false);
+    expect(out.properties.n.items.additionalProperties).toBe(false);
+    expect(out.required).toEqual(['list', 'n', 's', 'e', 'maybe']);
+    expect(out.properties.e.enum).toEqual(['x', 'y']);
+    expect(out.properties.maybe.anyOf).toEqual([{ type: 'number' }, { type: 'null' }]);
+    expect(JSON.stringify(input)).toContain('maxItems'); // input not mutated
+  });
+
+  it('keeps a property literally named like a keyword', async () => {
+    const { toAnthropicCompatibleSchema } = await import('./strict-schema');
+    const out = toAnthropicCompatibleSchema({ type: 'object', properties: { pattern: { type: 'string', pattern: 'x' }, maxItems: { type: 'number' } } }) as Loose;
+    expect(Object.keys(out.properties)).toEqual(['pattern', 'maxItems']);
+    expect(out.properties.pattern).toEqual({ type: 'string' });
+  });
+});
