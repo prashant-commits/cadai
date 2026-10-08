@@ -6,9 +6,15 @@ import { MessageBubble } from './message-bubble';
 import { ChatInput } from './chat-input';
 import { ThreadDrawer } from './thread-drawer';
 import { GateDock } from './gate-dock';
-import { readStream } from '@/lib/stream-reader';
+import { readStream, streamMessagePatch } from '@/lib/stream-reader';
 import { serializeTranscript } from '@/lib/agent/transcript';
-import { resumableGate, freezeStreamingMessages, stripUnchosenSheets } from '@/lib/chat/rehydrate';
+import {
+  resumableGate,
+  freezeStreamingMessages,
+  stripUnchosenSheets,
+  ensureGateOpenedAt,
+  closedExpiredGateUpdate,
+} from '@/lib/chat/rehydrate';
 import { compileOpenScad } from '@/lib/engine/openscad-bridge';
 import { parseStlToGeometry } from '@/lib/engine/geometry-utils';
 import { ChatMessage, GatePayload, GateDecision, GateRecord } from '@/types';
@@ -48,6 +54,7 @@ export function ChatPanel() {
   const [pendingRunId, setPendingRunId] = useState<string | null>(null);
   // The message a resumed run must continue appending to.
   const [pendingMessageId, setPendingMessageId] = useState<string | null>(null);
+  const [pendingExpired, setPendingExpired] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Initialize threads from IndexedDB on client mount
@@ -69,10 +76,18 @@ export function ChatPanel() {
       }
     }
 
-    const open = resumableGate(thread.messages);
+    const prepared = thread.messages.map((message) => ensureGateOpenedAt(message));
+    for (let i = 0; i < prepared.length; i++) {
+      if (prepared[i] !== thread.messages[i]) {
+        updateMessage(prepared[i].id, { gates: prepared[i].gates }, activeThreadId);
+      }
+    }
+
+    const open = resumableGate(prepared);
     setPendingGate(open?.gate ?? null);
     setPendingRunId(open?.runId ?? null);
     setPendingMessageId(open?.messageId ?? null);
+    setPendingExpired(open?.expired ?? false);
     // `threads` is intentionally absent: this must react to the thread
     // CHANGING, not to every message mutation during a live stream, which
     // would re-dock a gate the user just answered.
@@ -157,24 +172,17 @@ export function ChatPanel() {
         updateMessage(messageId, { transcript: serializeTranscript(state.nodes) }, targetThreadId);
       },
       onDone: async (state) => {
-        const status = state.error
-          ? 'error'
-          : state.awaitingInput
-            ? 'awaiting_input'
-            : 'complete';
+        updateMessage(messageId, streamMessagePatch(state), targetThreadId);
 
-        updateMessage(
-          messageId,
-          {
-            transcript: serializeTranscript(state.nodes),
-            gates: Object.keys(state.gates).length ? state.gates : undefined,
-            content: state.error ? `**Error:** ${state.error}` : state.summary,
-            code: state.code,
-            runId: state.runId,
-            status,
-          },
-          targetThreadId
-        );
+        if (state.error) {
+          setPendingGate(null);
+          setPendingRunId(null);
+          setPendingMessageId(null);
+          setPendingExpired(false);
+          setIsGenerating(false);
+          setGeneratingThreadId(null);
+          return;
+        }
 
         if (state.designContract) setThreadContract(state.designContract, targetThreadId);
 
@@ -183,6 +191,7 @@ export function ChatPanel() {
           setPendingGate(open);
           setPendingRunId(state.runId ?? null);
           setPendingMessageId(messageId);
+          setPendingExpired(false);
           showGateGeometry(open, targetThreadId);
           setIsGenerating(false);
           setGeneratingThreadId(null);
@@ -292,6 +301,17 @@ export function ChatPanel() {
 
     const thread = threads.find((t) => t.id === targetThreadId);
     const message = thread?.messages.find((m) => m.id === messageId);
+
+    if (pendingExpired) {
+      if (decision.action !== 'cancel' || !message) return;
+      updateMessage(messageId, closedExpiredGateUpdate(message), targetThreadId);
+      setPendingGate(null);
+      setPendingRunId(null);
+      setPendingMessageId(null);
+      setPendingExpired(false);
+      return;
+    }
+
     const gates = { ...(message?.gates ?? {}) };
     const openId = Object.keys(gates).find((k) => gates[k].status === 'open');
     if (openId) {
@@ -311,6 +331,7 @@ export function ChatPanel() {
     setPendingGate(null);
     setPendingRunId(null);
     setPendingMessageId(null);
+    setPendingExpired(false);
     setIsGenerating(true);
     setGeneratingThreadId(targetThreadId);
 
@@ -415,7 +436,7 @@ export function ChatPanel() {
       </div>
 
       {/* Gate dock above composer */}
-      {pendingGate && <GateDock gate={pendingGate} onResume={handleResume} />}
+      {pendingGate && <GateDock gate={pendingGate} expired={pendingExpired} onResume={handleResume} />}
 
       {/* Input bar */}
       <ChatInput

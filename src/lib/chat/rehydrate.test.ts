@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { resumableGate, freezeStreamingMessages, stripUnchosenSheets } from './rehydrate';
+import {
+  GATE_TTL_MS,
+  EXPIRED_GATE_MESSAGE,
+  resumableGate,
+  freezeStreamingMessages,
+  stripUnchosenSheets,
+  readOpenedAt,
+  withOpenedAt,
+  ensureGateOpenedAt,
+  closedExpiredGateUpdate,
+} from './rehydrate';
 import { gateVariants } from '@/lib/agent/spec-variants';
 import type { AssemblySpec } from '@/lib/agent/assembly-spec';
 import type { ChatMessage, GatePayload, GateVariant } from '@/types';
@@ -7,7 +17,7 @@ import type { ChatMessage, GatePayload, GateVariant } from '@/types';
 const gatePayload = { kind: 'spec', spec: null, contract: null, revisionCount: 0 } as const;
 
 function msg(over: Partial<ChatMessage>): ChatMessage {
-  return { id: 'm1', role: 'assistant', content: '', timestamp: 1, ...over };
+  return { id: 'm1', role: 'assistant', content: '', timestamp: Date.now(), ...over };
 }
 
 describe('resumableGate', () => {
@@ -21,7 +31,91 @@ describe('resumableGate', () => {
         gates: { g1: { payload: gatePayload, status: 'open' } },
       }),
     ]);
-    expect(found).toEqual({ messageId: 'b', runId: 'run-7', gate: gatePayload });
+    expect(found).toEqual({ messageId: 'b', runId: 'run-7', gate: gatePayload, expired: false });
+  });
+
+  it('treats an open gate older than 24 h as expired and still returns it', () => {
+    const now = 1_700_000_000_000;
+    const old = resumableGate([
+      msg({
+        id: 'b',
+        timestamp: now - GATE_TTL_MS - 1,
+        status: 'awaiting_input',
+        runId: 'run-old',
+        gates: { g1: { payload: gatePayload, status: 'open' } },
+      }),
+    ], now);
+    expect(old).toMatchObject({ messageId: 'b', runId: 'run-old', expired: true });
+
+    const boundary = resumableGate([
+      msg({
+        id: 'b',
+        timestamp: now - GATE_TTL_MS,
+        status: 'awaiting_input',
+        runId: 'run-edge',
+        gates: { g1: { payload: gatePayload, status: 'open' } },
+      }),
+    ], now);
+    expect(boundary?.expired).toBe(false);
+  });
+
+  it('uses the gate openedAt when present and otherwise the message timestamp', () => {
+    const now = 1_700_000_000_000;
+    const freshRecordOnOldMessage = resumableGate([
+      msg({
+        timestamp: now - GATE_TTL_MS - 1,
+        status: 'awaiting_input',
+        runId: 'run-fresh',
+        gates: { g1: withOpenedAt({ payload: gatePayload, status: 'open' }, now - 1000) },
+      }),
+    ], now);
+    expect(freshRecordOnOldMessage?.expired).toBe(false);
+
+    const oldRecordOnFreshMessage = resumableGate([
+      msg({
+        timestamp: now,
+        status: 'awaiting_input',
+        runId: 'run-old',
+        gates: { g1: withOpenedAt({ payload: gatePayload, status: 'open' }, now - GATE_TTL_MS - 1) },
+      }),
+    ], now);
+    expect(oldRecordOnFreshMessage?.expired).toBe(true);
+  });
+
+  it('stamps a missing openedAt from the message timestamp and leaves an existing one', () => {
+    const message = msg({
+      timestamp: 50,
+      gates: { g1: { payload: gatePayload, status: 'open' } },
+    });
+    const stamped = ensureGateOpenedAt(message);
+    expect(readOpenedAt(stamped.gates!.g1)).toBe(50);
+    expect(ensureGateOpenedAt(stamped)).toBe(stamped);
+
+    const kept = ensureGateOpenedAt(msg({
+      timestamp: 50,
+      gates: { g1: withOpenedAt({ payload: gatePayload, status: 'open' }, 10) },
+    }));
+    expect(readOpenedAt(kept.gates!.g1)).toBe(10);
+  });
+
+  it('closes an expired gate locally and fills a blank message with the expiry note', () => {
+    const now = 80;
+    const blank = msg({
+      content: '',
+      gates: { g1: { payload: gatePayload, status: 'open' } },
+    });
+    const closed = closedExpiredGateUpdate(blank, now);
+    expect(closed.status).toBe('complete');
+    expect(closed.content).toBe(EXPIRED_GATE_MESSAGE);
+    expect(closed.gates?.g1.status).toBe('denied');
+    expect(closed.gates?.g1.decision).toEqual({ action: 'cancel' });
+    expect(closed.gates?.g1.decidedAt).toBe(now);
+
+    const kept = closedExpiredGateUpdate(msg({
+      content: 'Already written.',
+      gates: { g1: { payload: gatePayload, status: 'open' } },
+    }), now);
+    expect(kept.content).toBe('Already written.');
   });
 
   it('ignores a gate that was already decided', () => {

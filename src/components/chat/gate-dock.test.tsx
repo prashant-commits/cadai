@@ -20,6 +20,18 @@ const spec = {
   openQuestions: [{ id: 'spec-q', question: 'FROM SPEC', suggestedAnswer: '10 mm' }],
 } as AssemblySpec;
 
+function button(html: string, label: string): string {
+  for (const match of html.matchAll(/<button\b[^>]*>[\s\S]*?<\/button>/g)) {
+    if (match[0].includes(`${label}</button>`)) return match[0];
+  }
+  return '';
+}
+
+function buttonDisabled(html: string, label: string): boolean {
+  const open = button(html, label).match(/^<button\b[^>]*>/)?.[0] ?? '';
+  return /\sdisabled(?:=|\s|>)/.test(open);
+}
+
 function variant(over: Partial<GateVariant> & Pick<GateVariant, 'id' | 'name'>): GateVariant {
   return { idea: '', spec, sheetSvg: null, review: null, ...over };
 }
@@ -170,6 +182,19 @@ describe('GateDock', () => {
     expect(html).toContain('A - Bracket');
     expect(html).toContain('FROM SPEC');
     expect(html).toContain('no sheet');
+  });
+
+  it('shows an expired gate as closed to Approve and Revise, and still offers Deny', () => {
+    const html = renderToStaticMarkup(<GateDock gate={gate} expired onResume={() => {}} />);
+    expect(html).toContain('This paused run expired - send the request again');
+    expect(buttonDisabled(html, 'Approve')).toBe(true);
+    expect(buttonDisabled(html, 'Revise')).toBe(true);
+    expect(buttonDisabled(html, 'Deny')).toBe(false);
+
+    const fresh = renderToStaticMarkup(<GateDock gate={gate} onResume={() => {}} />);
+    expect(fresh).not.toContain('This paused run expired - send the request again');
+    expect(buttonDisabled(fresh, 'Approve')).toBe(false);
+    expect(buttonDisabled(fresh, 'Revise')).toBe(false);
   });
 
   it('does not render variant cards for the accept gate', () => {
