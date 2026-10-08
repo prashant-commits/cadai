@@ -37,6 +37,10 @@ export interface SpecVariant {
    * the review as major findings and the gate shows them.
    */
   specErrors?: ReviewFinding[];
+  /** Major findings of the previous review round, for the no-progress stop. */
+  previousMajors?: string[];
+  /** Consecutive major rounds that did not improve (not fewer majors than the round before). */
+  stagnantRounds?: number;
   /** The review the variant had before a gate revise cleared it; restored if the revision fails. */
   previousReview?: VariantReview | null;
 }
@@ -65,6 +69,24 @@ export function recommendedVariant(variants: SpecVariant[], brief: SpecBrief | n
     if (rec) return rec;
   }
   return variants.find(v => v.spec !== null) || null;
+}
+
+const words = (text: string): Set<string> =>
+  new Set(text.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 0));
+
+/** Word-set Jaccard similarity of two findings, 0..1. */
+export function findingSimilarity(a: string, b: string): number {
+  const wa = words(a);
+  const wb = words(b);
+  if (wa.size === 0 && wb.size === 0) return 1;
+  let shared = 0;
+  for (const w of wa) if (wb.has(w)) shared++;
+  return shared / (wa.size + wb.size - shared);
+}
+
+/** Findings that mean the same thing as one the previous round already made: Jaccard >= 0.5 for any pair. */
+export function repeatsPrevious(previous: string[], current: string[]): boolean {
+  return current.some((c) => previous.some((p) => findingSimilarity(p, c) >= 0.5)); // 0.5: the half-shared-words rule agreed for "same finding"
 }
 
 /** CADAI_MAX_VARIANTS, validated: non-numeric or < 1 -> 3, clamped to 1..3. */

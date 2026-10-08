@@ -48,6 +48,7 @@ import {
   recommendedVariant,
   processPlannerVariants,
   maxVariantsFromEnv,
+  repeatsPrevious,
   VariantId,
   ReviewFinding,
   VariantReview,
@@ -1010,7 +1011,7 @@ export function createCadAgent(
             },
           };
         }
-        return revised;
+        return { ...revised, previousMajors: v.previousMajors, stagnantRounds: v.stagnantRounds };
       });
       variants = await Promise.all(promises);
     }
@@ -1215,13 +1216,32 @@ export function createCadAgent(
     const updatedVariants = reviewed.map((v) => {
       if (!freshlyReviewed.has(v.id) || !v.review) return v;
       const reviewObj = v.review;
-      const hasMajor = reviewObj.findings.some((f) => f.severity === 'major');
-      const canRetry = hasMajor && v.retries < maxRetries && budgetLeft;
+      const majors = reviewObj.findings.filter((f) => f.severity === 'major').map((f) => f.issue);
+      const hasMajor = majors.length > 0;
+
+      // No-progress stop: the same major finding twice, or two consecutive major
+      // rounds that did not get any better, means another full-spec revision will
+      // only trade one problem for another. Stop, label, and send it forward.
+      const previous = v.previousMajors ?? [];
+      const repeated = hasMajor && previous.length > 0 && repeatsPrevious(previous, majors);
+      const improved = previous.length === 0 || majors.length < previous.length;
+      const stagnantRounds = hasMajor ? (improved ? 0 : (v.stagnantRounds ?? 0) + 1) : 0;
+      const notConverging = hasMajor && (repeated || stagnantRounds >= 2); // 2: consecutive non-improving major rounds
+
+      const canRetry = hasMajor && v.retries < maxRetries && budgetLeft && !notConverging;
       const nextRetries = canRetry ? v.retries + 1 : v.retries;
       const attempts = reviewObj.attempts;
+      if (hasMajor && notConverging && v.retries < maxRetries && budgetLeft) {
+        reviewObj.note = 'review not converging; showing the latest version';
+      }
 
       if (reviewObj.validated) {
         write(config, 'specReviewer', { t: 'delta', text: `Sheet ${v.id}: validated\n` });
+      } else if (reviewObj.note === 'review not converging; showing the latest version') {
+        write(config, 'specReviewer', {
+          t: 'delta',
+          text: `Sheet ${v.id}: review not converging; showing the latest version\n`,
+        });
       } else if (canRetry) {
         const majorCount = reviewObj.findings.filter((f) => f.severity === 'major').length;
         write(config, 'specReviewer', {
@@ -1238,7 +1258,13 @@ export function createCadAgent(
         write(config, 'specReviewer', { t: 'delta', text: `  - [${f.severity}] ${f.issue}\n` });
       }
 
-      return { ...v, retries: nextRetries, needsRevision: canRetry };
+      return {
+        ...v,
+        retries: nextRetries,
+        needsRevision: canRetry,
+        previousMajors: hasMajor ? majors : undefined,
+        stagnantRounds,
+      };
     });
 
     return {
@@ -1861,7 +1887,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
         };
       }
       const updatedVariants: SpecVariant[] = chosenVariant
-        ? [{ ...chosenVariant, needsRevision: true, retries: 0, review: null, previousReview: chosenVariant.review }]
+        ? [{ ...chosenVariant, needsRevision: true, retries: 0, review: null, previousReview: chosenVariant.review, previousMajors: undefined, stagnantRounds: 0 }]
         : [];
 
       const allQuestions = [

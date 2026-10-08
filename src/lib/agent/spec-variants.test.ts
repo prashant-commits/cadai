@@ -487,3 +487,12 @@ describe('architect variants graph execution', () => {
   });
 });
 
+
+describe('finding similarity', () => {
+  it('normalised word-set Jaccard: reworded repeats match, different problems do not', async () => {
+    const { findingSimilarity, repeatsPrevious } = await import('./spec-variants');
+    expect(findingSimilarity('Slot is 6.56 mm wide', 'slot is 6.56 MM wide!')).toBe(1);
+    expect(repeatsPrevious(['tongue spans Y 58-61.6 but slot ends at 60.2'], ['The tongue spans Y 58 to 61.6 while slot ends at 60.2'])).toBe(true);
+    expect(repeatsPrevious(['arm floats above the plate'], ['hook points the wrong way round'])).toBe(false);
+  });
+});

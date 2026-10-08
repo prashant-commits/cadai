@@ -128,6 +128,22 @@ const plan = (ids: string[], recommendedId = 'A', extra: Record<string, unknown>
   ...extra,
 });
 const pass = { matchesRequest: true, findings: [] };
+/**
+ * A reviewer that always finds something, but never the same thing twice and
+ * never a worse state two rounds running (2 majors, 1, 2, 1 ...), so the
+ * no-progress stop does not fire and loop tests can exercise the retry cap.
+ */
+const DRIFT_WORDS = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel', 'india', 'juliet', 'kilo', 'lima'];
+function drifting(round: number) {
+  const count = round % 2 === 0 ? 2 : 1;
+  return {
+    matchesRequest: false,
+    findings: Array.from({ length: count }, (_, i) => ({
+      issue: `defect ${DRIFT_WORDS[(round * 2 + i) % DRIFT_WORDS.length]}`,
+      severity: 'major' as const,
+    })),
+  };
+}
 const draft = { content: '```openscad\ncube([40,40,40]);\n```', tool_calls: [] };
 
 function gatePayload(result: unknown): Extract<GatePayload, { kind: 'spec' }> {
@@ -262,6 +278,7 @@ describe('H2: a gate revise revises the chosen variant and never re-plans', () =
 
 describe('H3: the Vercel budget starts before the planner and leaves room for the round', () => {
   function timedRouter(opts: { plannerMs: number; revisionMs?: number }) {
+    let reviewRound = 0;
     invokeMock.mockImplementation(async (messages: unknown) => {
       switch (kindOf(messages)) {
         case 'planner':
@@ -271,7 +288,7 @@ describe('H3: the Vercel budget starts before the planner and leaves room for th
         case 'revision':
           vi.setSystemTime(Date.now() + (opts.revisionMs ?? 0));
           return boxSpec();
-        case 'reviewer': return { matchesRequest: false, findings: [{ issue: 'flaw', severity: 'major' }] };
+        case 'reviewer': return drifting(reviewRound++);
         default: return pass;
       }
     });
@@ -455,12 +472,13 @@ describe('M6: the no-spec drafter prompt keeps edges sharp', () => {
 describe('M7: the review loop never trips the recursion limit', () => {
   it('8 review retries: the computed recursionLimit reaches the gate, the default limit of 25 does not', async () => {
     process.env.CADAI_SPEC_REVIEW_RETRIES = '8';
+    let reviewRound = 0;
     invokeMock.mockImplementation(async (messages: unknown) => {
       switch (kindOf(messages)) {
         case 'planner': return plan(['A']);
         case 'variant':
         case 'revision': return boxSpec();
-        case 'reviewer': return { matchesRequest: false, findings: [{ issue: 'flaw', severity: 'major' }] };
+        case 'reviewer': return drifting(reviewRound++);
         default: return pass;
       }
     });
@@ -815,5 +833,75 @@ describe('nits', () => {
     if (isInterrupted(result)) await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
     expect(deltas.join('')).toContain('Planning up to 1 variant...');
     expect(deltas.join('')).not.toContain('1 variants');
+  });
+});
+
+describe('C: the review loop stops when it is not converging', () => {
+  const major = (issue: string) => ({ matchesRequest: false, findings: [{ issue, severity: 'major' as const }] });
+  const run = async (reviews: Array<{ matchesRequest: boolean; findings: Array<{ issue: string; severity: 'major' | 'minor' }> }>) => {
+    let n = 0;
+    invokeMock.mockImplementation(async (messages: unknown) => {
+      switch (kindOf(messages)) {
+        case 'planner': return plan(['A']);
+        case 'variant':
+        case 'revision': return boxSpec();
+        case 'reviewer': return reviews[Math.min(n++, reviews.length - 1)];
+        case 'drafter': return draft;
+        default: return pass;
+      }
+    });
+    const result = await createCadAgent('gpt-5.6-luna').invoke(
+      { messages: [new HumanMessage('a 40mm box')] },
+      { configurable: { thread_id: newKey() } }
+    );
+    return { result, kinds: invokeMock.mock.calls.map((c) => kindOf(c[0])) };
+  };
+
+  it('a repeated major finding stops after the second round, labelled, findings kept', async () => {
+    const { result, kinds } = await run([
+      major('tongue spans Y 58-61.6 but the slot ends at 60.2'),
+      major('The tongue spans Y 58 to 61.6 while slot ends at 60.2 mm'),
+    ]);
+    expect(kinds).toEqual(['planner', 'variant', 'reviewer', 'revision', 'reviewer']); // not the 5-retry cap
+    const v = gatePayload(result).variants![0];
+    expect(v.review?.validated).toBe(false);
+    expect(v.review?.note).toBe('review not converging; showing the latest version');
+    expect(v.review?.findings).toHaveLength(1);
+  });
+
+  it('three different majors in a row (no improvement) also stop, on the third', async () => {
+    const { result, kinds } = await run([
+      major('arm floats above the plate'),
+      major('support overlaps the base entirely'),
+      major('hook points the wrong way round'),
+    ]);
+    expect(kinds.filter((k) => k === 'reviewer')).toHaveLength(3);
+    expect(kinds.filter((k) => k === 'revision')).toHaveLength(2);
+    expect(gatePayload(result).variants![0].review?.note).toBe('review not converging; showing the latest version');
+  });
+
+  it('an improving variant (different finding, then a pass) is not stopped', async () => {
+    const { result, kinds } = await run([
+      major('arm floats above the plate'),
+      major('tilt angle is steeper than the guide'),
+      pass,
+    ]);
+    expect(kinds).toEqual([
+      'planner', 'variant', 'reviewer', 'revision', 'reviewer', 'revision', 'reviewer', 'drafter',
+    ]);
+    // A validated single variant with a numeric prompt skips the gate and drafts.
+    expect(isInterrupted(result)).toBe(false);
+  });
+
+  it('a variant whose majors drop in number is improving and keeps being revised', async () => {
+    const two = {
+      matchesRequest: false,
+      findings: [
+        { issue: 'arm floats above the plate', severity: 'major' as const },
+        { issue: 'hook points the wrong way round', severity: 'major' as const },
+      ],
+    };
+    const { kinds } = await run([two, two, pass].map((r, i) => (i === 1 ? major('only the hook remains wrong') : r)));
+    expect(kinds.filter((k) => k === 'revision')).toHaveLength(2);
   });
 });
