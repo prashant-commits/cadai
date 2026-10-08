@@ -7,6 +7,7 @@ import {
   stripUnchosenSheets,
   readOpenedAt,
   withOpenedAt,
+  withExpiresAt,
   ensureGateOpenedAt,
   closedExpiredGateUpdate,
 } from './rehydrate';
@@ -82,6 +83,39 @@ describe('resumableGate', () => {
     expect(oldRecordOnFreshMessage?.expired).toBe(true);
   });
 
+  it('expires from the server expiresAt and falls back to 24 h when it is missing', () => {
+    const now = 1_700_000_000_000;
+    const stillLive = resumableGate([
+      msg({
+        timestamp: now - GATE_TTL_MS - 1,
+        status: 'awaiting_input',
+        runId: 'run-live',
+        gates: { g1: withExpiresAt(withOpenedAt({ payload: gatePayload, status: 'open' }, now - GATE_TTL_MS - 1), now) },
+      }),
+    ], now);
+    expect(stillLive?.expired).toBe(false);
+
+    const pastDeadline = resumableGate([
+      msg({
+        timestamp: now,
+        status: 'awaiting_input',
+        runId: 'run-dead',
+        gates: { g1: withExpiresAt({ payload: gatePayload, status: 'open' }, now - 1) },
+      }),
+    ], now);
+    expect(pastDeadline?.expired).toBe(true);
+
+    const exact = resumableGate([
+      msg({
+        timestamp: now - GATE_TTL_MS - 1,
+        status: 'awaiting_input',
+        runId: 'run-exact',
+        gates: { g1: withExpiresAt({ payload: gatePayload, status: 'open' }, now) },
+      }),
+    ], now);
+    expect(exact?.expired).toBe(false);
+  });
+
   it('stamps a missing openedAt from the message timestamp and leaves an existing one', () => {
     const message = msg({
       timestamp: 50,
@@ -116,6 +150,27 @@ describe('resumableGate', () => {
       gates: { g1: { payload: gatePayload, status: 'open' } },
     }), now);
     expect(kept.content).toBe('Already written.');
+  });
+
+  it('drops unchosen sheets when an expired gate is denied', () => {
+    const sheets: GateVariant[] = [
+      { id: 'A', name: 'Wide', idea: '', spec: null, sheetSvg: '<svg>A</svg>', review: null },
+      { id: 'B', name: 'Tall', idea: '', spec: null, sheetSvg: '<svg>B</svg>', review: null },
+      { id: 'C', name: 'Compact', idea: '', spec: null, sheetSvg: '<svg>C</svg>', review: null },
+    ];
+    const payload: GatePayload = {
+      kind: 'spec',
+      variants: sheets,
+      recommendedId: 'B',
+      contract: null,
+      revisionCount: 0,
+    };
+    const closed = closedExpiredGateUpdate(msg({
+      gates: { g1: { payload, status: 'open' } },
+    }));
+    const stored = closed.gates?.g1.payload;
+    if (!stored || stored.kind !== 'spec') throw new Error('expected a spec payload');
+    expect(stored.variants?.map((variant) => variant.sheetSvg)).toEqual([null, '<svg>B</svg>', null]);
   });
 
   it('ignores a gate that was already decided', () => {

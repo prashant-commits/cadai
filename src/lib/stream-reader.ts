@@ -2,7 +2,7 @@ import type { ChatMessage, DesignContract, GateRecord } from '@/types';
 import type { StreamEvent } from './agent/stream-events';
 import type { TranscriptNode, TranscriptSection } from './agent/transcript';
 import { escapeMarkers, serializeTranscript } from './agent/transcript';
-import { withOpenedAt } from './chat/rehydrate';
+import { readExpiresAt, withExpiresAt, withOpenedAt } from './chat/rehydrate';
 
 export interface StreamState {
   nodes: TranscriptNode[];
@@ -80,15 +80,21 @@ export async function readStream(response: Response, callbacks: StreamCallbacks)
         }
         return;
       case 'delta':
-        ensureOpen().body += event.text;
+        // Model text can contain `<!--`, which is how transcript sections are delimited.
+        ensureOpen().body += escapeMarkers(event.text);
         return;
-      case 'gate':
+      case 'gate': {
         if (open) { open.status = 'ok'; open = null; }
-        state.gates[event.id] = withOpenedAt({ payload: event.payload, status: 'open' }, Date.now());
+        // `expiresAt` is the server checkpoint deadline (epoch ms). Old events omit it.
+        let record = withOpenedAt({ payload: event.payload, status: 'open' }, Date.now());
+        const expiresAt = readExpiresAt(event);
+        if (expiresAt !== undefined) record = withExpiresAt(record, expiresAt);
+        state.gates[event.id] = record;
         state.nodes.push({ kind: 'gate', id: event.id });
         state.runId = event.runId;
         state.awaitingInput = true;
         return;
+      }
       case 'result':
         if (open) { open.status = 'ok'; open = null; }
         state.summary = event.summary;

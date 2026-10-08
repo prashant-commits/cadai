@@ -1,6 +1,9 @@
 import type { ChatMessage, GateDecision, GatePayload, GateRecord } from '@/types';
 
-/** Matches the server checkpoint default. The browser cannot read CADAI_CHECKPOINT_TTL_MS. */
+/**
+ * Fallback when a stored gate has no server `expiresAt`. Matches the default
+ * checkpoint TTL. A live gate uses the expiry on the gate event instead.
+ */
 export const GATE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const EXPIRED_GATE_MESSAGE = 'This paused run expired - send the request again';
@@ -9,7 +12,7 @@ export interface ResumableGate {
   messageId: string;
   runId: string;
   gate: GatePayload;
-  /** True when the open gate is older than 24 h. Deny can still close it. */
+  /** True once the server expiry has passed. A record with no expiry uses 24 h. Deny can still close it. */
   expired: boolean;
 }
 
@@ -22,6 +25,29 @@ export function readOpenedAt(record: GateRecord): number | undefined {
 export function withOpenedAt(record: GateRecord, openedAt: number): GateRecord {
   if (readOpenedAt(record) === openedAt) return record;
   return Object.assign({}, record, { openedAt });
+}
+
+/** Epoch ms copied off the gate event. Absent on records saved before that field existed. */
+export function readExpiresAt(value: unknown): number | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const raw = (value as { expiresAt?: unknown }).expiresAt;
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : undefined;
+}
+
+export function withExpiresAt(record: GateRecord, expiresAt: number): GateRecord {
+  if (readExpiresAt(record) === expiresAt) return record;
+  return Object.assign({}, record, { expiresAt });
+}
+
+/**
+ * A server `expiresAt` wins. Without one, the gate expires 24 h after it opened
+ * (or after the message timestamp, for a record that has neither stamp).
+ */
+export function gateIsExpired(record: GateRecord, messageTimestamp: number, now: number): boolean {
+  const expiresAt = readExpiresAt(record);
+  if (expiresAt !== undefined) return now > expiresAt;
+  const openedAt = readOpenedAt(record) ?? messageTimestamp;
+  return now - openedAt > GATE_TTL_MS;
 }
 
 /** Stamp a missing openedAt from the message timestamp. A present stamp is left alone. */
@@ -47,8 +73,9 @@ export function ensureGateOpenedAt(message: ChatMessage): ChatMessage {
  * reload: the record and runId are persisted with the message, and the server
  * checkpoint is keyed threadId::runId. Without a runId there is no checkpoint
  * to address, so such a gate is not offered rather than posting a request the
- * server will reject. An open gate older than 24 h is still returned, with
- * `expired` set, so the dock can explain that and offer Deny.
+ * server will reject. An open gate whose server expiry has passed is still
+ * returned, with `expired` set, so the dock can explain that and offer Deny.
+ * A record with no expiry falls back to 24 h.
  */
 export function resumableGate(messages: ChatMessage[], now = Date.now()): ResumableGate | null {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -56,12 +83,11 @@ export function resumableGate(messages: ChatMessage[], now = Date.now()): Resuma
     if (!m.gates || !m.runId) continue;
     for (const record of Object.values(m.gates)) {
       if (record.status !== 'open') continue;
-      const openedAt = readOpenedAt(record) ?? m.timestamp;
       return {
         messageId: m.id,
         runId: m.runId,
         gate: record.payload,
-        expired: now - openedAt > GATE_TTL_MS,
+        expired: gateIsExpired(record, m.timestamp, now),
       };
     }
   }
@@ -76,9 +102,11 @@ export function closedExpiredGateUpdate(message: ChatMessage, now = Date.now()):
   const gates = { ...(message.gates ?? {}) };
   const openId = Object.keys(gates).find((id) => gates[id].status === 'open');
   if (openId) {
+    const decision: GateDecision = { action: 'cancel' };
     gates[openId] = {
       ...gates[openId],
-      decision: { action: 'cancel' },
+      payload: stripUnchosenSheets(gates[openId].payload, decision),
+      decision,
       decidedAt: now,
       status: 'denied',
     };

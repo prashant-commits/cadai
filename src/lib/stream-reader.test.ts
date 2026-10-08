@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readStream, streamMessagePatch, type StreamState } from './stream-reader';
-import { readOpenedAt } from './chat/rehydrate';
+import { readExpiresAt, readOpenedAt } from './chat/rehydrate';
+import { parseTranscript, serializeTranscript } from './agent/transcript';
 import type { StreamEvent } from './agent/stream-events';
 
 function sse(events: StreamEvent[]): Response {
@@ -45,7 +46,43 @@ describe('readStream', () => {
     expect(final.runId).toBe('run-1');
     expect(final.gates.g1.status).toBe('open');
     expect(readOpenedAt(final.gates.g1)).toEqual(expect.any(Number));
+    expect(readExpiresAt(final.gates.g1)).toBeUndefined();
     expect(final.nodes.at(-1)).toEqual({ kind: 'gate', id: 'g1' });
+  });
+
+  it('keeps a server expiresAt on the gate record', async () => {
+    const payload = { kind: 'spec', spec: null, contract: null, revisionCount: 0 } as const;
+    const expiresAt = 1_700_000_000_000;
+    const { final } = await run([
+      { t: 'gate', id: 'g1', runId: 'run-1', payload, expiresAt } as StreamEvent,
+    ]);
+    expect(readExpiresAt(final.gates.g1)).toBe(expiresAt);
+  });
+
+  it('keeps later sections intact when a delta contains a comment marker', async () => {
+    const { final } = await run([
+      { t: 'section', id: 'architectNode', label: 'Mechanical Architect', state: 'open' },
+      { t: 'delta', text: 'before <!-- notes --> after <!--/s--> tail' },
+      { t: 'section', id: 'architectNode', state: 'close', status: 'ok' },
+      { t: 'section', id: 'specIllustrator', label: 'Concept Sheets', state: 'open' },
+      { t: 'delta', text: 'drawn' },
+      { t: 'section', id: 'specIllustrator', state: 'close', status: 'ok' },
+    ]);
+    const parsed = parseTranscript(serializeTranscript(final.nodes));
+    expect(parsed.map((node) => node.id)).toEqual([
+      'architectNode',
+      'specIllustrator',
+    ]);
+    const architect = parsed[0];
+    if (architect.kind !== 'section') throw new Error('expected a section');
+    // Stored as an entity. The browser renders it back as a literal `<!-- notes -->`.
+    expect(architect.body).toContain('&lt;!-- notes -->');
+    expect(architect.body).toContain('tail');
+    expect(architect.body).not.toContain('<!--');
+    const sheets = parsed[1];
+    if (sheets.kind !== 'section') throw new Error('expected a section');
+    expect(sheets.label).toBe('Concept Sheets');
+    expect(sheets.body).toBe('drawn');
   });
 
   it('emits an update per delta so the UI can render progressively', async () => {
