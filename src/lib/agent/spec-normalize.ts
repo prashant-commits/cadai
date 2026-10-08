@@ -1,4 +1,5 @@
 import type { AssemblySpec } from './assembly-spec';
+import { identifierIssue } from '../spec-sheet/blockout-scad';
 
 
 /** "Wall Mount Backplate" -> "wall_mount_backplate"; always a valid OpenSCAD identifier. */
@@ -25,7 +26,10 @@ export function normalizeSpec(spec: AssemblySpec): AssemblySpec {
   const used = new Set<string>();
 
   const components = (spec.components ?? []).map((c) => {
-    const base = toSnakeCase(c.name);
+    // A name that shadows an OpenSCAD builtin (hull, cube, offset ...) cannot be a
+    // module name, so it gets a suffix; every reference follows via `rename`.
+    const snake = toSnakeCase(c.name);
+    const base = identifierIssue(snake) ? `${snake}_part` : snake;
     let name = base;
     for (let i = 2; used.has(name); i++) name = `${base}_${i}`;
     used.add(name);

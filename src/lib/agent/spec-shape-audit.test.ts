@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { auditSpecShapes, isSimplePolygon } from './spec-shape-audit';
+import { auditSpecShapes, auditSpecGround, isSimplePolygon } from './spec-shape-audit';
 import { AssemblySpec } from './assembly-spec';
 
 const baseSpec: AssemblySpec = {
@@ -156,8 +156,12 @@ describe('placed minimum z (nothing below the ground plane)', () => {
     ...extra,
   });
 
+  it('is not part of auditSpecShapes (auditPlacement reports the measured floor error after drafting)', () => {
+    expect(auditSpecShapes(spec([part('foot', { position: [0, 0, -5] })]))).toEqual([]);
+  });
+
   it('names the part and the depth for a part placed below z = 0', () => {
-    const v = auditSpecShapes(spec([part('foot', { position: [0, 0, -5] })]));
+    const v = auditSpecGround(spec([part('foot', { position: [0, 0, -5] })]));
     expect(v).toHaveLength(1);
     expect(v[0]).toMatchObject({ kind: 'shape', severity: 'error' });
     expect(v[0].message).toContain("'foot'");
@@ -166,12 +170,12 @@ describe('placed minimum z (nothing below the ground plane)', () => {
 
   it('judges the ROTATED envelope: a rotation about the origin can push a part under the plane', () => {
     // Rotating the 10 mm cube -90 degrees about x sends its y extent to -z.
-    const v = auditSpecShapes(spec([part('flipped', { rotation: [-90, 0, 0] })]));
+    const v = auditSpecGround(spec([part('flipped', { rotation: [-90, 0, 0] })]));
     expect(v.some((x) => x.message.includes("'flipped'") && x.message.includes('10 mm'))).toBe(true);
   });
 
   it('a part resting exactly on z = 0 (or within rounding) is fine', () => {
-    expect(auditSpecShapes(spec([part('base', {}), part('rounded', { position: [0, 0, -0.02] })]))).toEqual([]);
+    expect(auditSpecGround(spec([part('base', {}), part('rounded', { position: [0, 0, -0.02] })]))).toEqual([]);
   });
 });
 

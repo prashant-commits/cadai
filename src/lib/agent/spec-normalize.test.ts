@@ -39,4 +39,19 @@ describe('normalizeSpec', () => {
     });
     expect(normalizeSpec(spec).components?.map((c) => c.name)).toEqual(['leg', 'leg_2', 'leg_3']);
   });
+
+  it('renames a component that shadows an OpenSCAD builtin, and every reference and sheet mention', () => {
+    const spec = AssemblySpecSchema.parse({
+      assemblyName: 'boat', boundingBox: { width: 1, length: 1, height: 1 },
+      sheet: 'The Hull carries the Mast.',
+      components: [{ name: 'Hull', description: '' }, { name: 'Mast', description: '' }],
+      jointContracts: [{ type: 'press_fit', clearance: 0, partA: 'Hull', partB: 'Mast' }],
+      stressPoints: [{ component: 'Hull', location: 'keel', loadCase: '5 N', risk: 'low', mitigation: 'none' }],
+    });
+    const n = normalizeSpec(spec);
+    expect(n.components?.map((c) => c.name)).toEqual(['hull_part', 'mast']);
+    expect(n.jointContracts?.[0]).toMatchObject({ partA: 'hull_part', partB: 'mast' });
+    expect(n.stressPoints[0].component).toBe('hull_part');
+    expect(n.sheet).toBe('The hull_part carries the Mast.'.replace('Mast', 'mast'));
+  });
 });

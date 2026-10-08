@@ -61,12 +61,17 @@ export function pointInPolygon(point: number[], polygon: number[][]): boolean {
   return isInside;
 }
 
-export function auditSpecShapes(spec: AssemblySpec | null): SpecViolation[] {
+/**
+ * z = 0 is the ground plane and nothing may sit below it. Checked on the placed
+ * (rotated about the origin, then translated) envelope, whatever the shape.
+ *
+ * Spec-level only, used by the architect's retry loop. After drafting,
+ * auditPlacement reports a measured part below z = 0 as a `floor` error, so this
+ * is deliberately not part of auditSpecShapes (it would report the same defect twice).
+ */
+export function auditSpecGround(spec: AssemblySpec | null): SpecViolation[] {
   if (!spec) return [];
   const violations: SpecViolation[] = [];
-
-  // z = 0 is the ground plane and nothing may sit below it. Checked on the
-  // placed (rotated about the origin, then translated) envelope, whatever the shape.
   for (let i = 0; i < (spec.components?.length || 0); i++) {
     const comp = spec.components![i];
     const ext = comp.localExtents as Vec3 | undefined;
@@ -89,6 +94,12 @@ export function auditSpecShapes(spec: AssemblySpec | null): SpecViolation[] {
       });
     }
   }
+  return violations;
+}
+
+export function auditSpecShapes(spec: AssemblySpec | null): SpecViolation[] {
+  if (!spec) return [];
+  const violations: SpecViolation[] = [];
 
   for (let i = 0; i < (spec.components?.length || 0); i++) {
     const comp = spec.components![i];
