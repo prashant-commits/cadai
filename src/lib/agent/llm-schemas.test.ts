@@ -167,5 +167,267 @@ describe('structuredFor', () => {
       expect(parsed.data.components?.[0].holes).toBeUndefined();
     }
   });
+
+  it('counts optional properties across claudeVariantSpecSchema(): exactly 7 matching expected paths', async () => {
+    const { claudeVariantSpecSchema, getOptionalProperties, CLAUDE_KEEP_OPTIONAL } = await import('./llm-schemas');
+    const schema = claudeVariantSpecSchema();
+    const optionalPaths = getOptionalProperties(schema);
+    expect(optionalPaths).toHaveLength(7);
+    expect(new Set(optionalPaths)).toEqual(CLAUDE_KEEP_OPTIONAL);
+  });
+
+  it('has no anyOf containing { type: "null" } anywhere in the Claude schema', async () => {
+    const { claudeVariantSpecSchema } = await import('./llm-schemas');
+    const schema = claudeVariantSpecSchema();
+    const str = JSON.stringify(schema);
+    expect(str).not.toMatch(/\{\s*"type"\s*:\s*"null"\s*\}/);
+  });
+
+  it('description is present on shape.innerD, jointContracts[].partA, components[].rotation', async () => {
+    const { claudeVariantSpecSchema } = await import('./llm-schemas');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const schema = claudeVariantSpecSchema() as any;
+    expect(schema.properties.components.items.properties.shape.properties.innerD.description).toBeTruthy();
+    expect(schema.properties.jointContracts.items.properties.partA.description).toBeTruthy();
+    expect(schema.properties.components.items.properties.rotation.description).toBeTruthy();
+  });
+
+  it('normalizeClaudeSentinels removes neutral sentinels, leaves input unmutated, and parses equal to lenient original', async () => {
+    const { normalizeClaudeSentinels } = await import('./llm-schemas');
+    const { AssemblySpecSchema } = await import('./assembly-spec');
+
+    const input = {
+      sheet: '## Plate\nDesign.',
+      assemblyName: 'plate',
+      boundingBox: { width: 100, length: 50, height: 10 },
+      jointContracts: [
+        { type: 'butt', clearance: 0.2, partA: '', partB: '' },
+      ],
+      components: [
+        {
+          name: 'box_part',
+          description: 'A box',
+          position: [0, 0, 0],
+          localExtents: [100, 50, 10],
+          rotation: [0, 0, 0],
+          positionNote: '',
+          holes: [
+            { d: 3, axis: 'z', at: [10, 10, 0], note: '' },
+          ],
+          shape: {
+            kind: 'box',
+            axis: 'z',
+            innerD: 0,
+            wall: 0,
+            openFace: '+Z',
+            plane: 'xy',
+            points: [],
+            holes: [],
+          },
+        },
+        {
+          name: 'tube_part',
+          description: 'A tube',
+          position: [10, 10, 0],
+          localExtents: [10, 10, 20],
+          rotation: [0, 0, 0],
+          positionNote: '',
+          holes: [],
+          shape: {
+            kind: 'tube',
+            axis: 'z',
+            innerD: 4,
+            wall: 0,
+            openFace: '+Z',
+            plane: 'xy',
+            points: [],
+            holes: [],
+          },
+        },
+      ],
+      guides: [
+        {
+          label: 'line_guide',
+          kind: 'line',
+          rotation: [0, 0, 0],
+          points: [[0, 0, 0], [10, 10, 0]],
+        },
+      ],
+      stressPoints: [
+        {
+          component: '',
+          location: 'centre',
+          loadCase: 'tension',
+          risk: 'low',
+          mitigation: 'none',
+        },
+      ],
+      assumptions: [],
+    };
+
+    const cloneInput = JSON.parse(JSON.stringify(input));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const normalized = normalizeClaudeSentinels(input) as any;
+
+    // Input object is not mutated
+    expect(input).toEqual(cloneInput);
+
+    // Box component shape becomes { kind: 'box' }
+    expect(normalized.components[0].shape).toEqual({ kind: 'box' });
+    // positionNote: "" is removed
+    expect(normalized.components[0].positionNote).toBeUndefined();
+    // holes note: "" is removed
+    expect(normalized.components[0].holes[0].note).toBeUndefined();
+
+    // Tube component keeps axis and innerD
+    expect(normalized.components[1].shape).toEqual({ kind: 'tube', axis: 'z', innerD: 4 });
+
+    // Line guide loses rotation
+    expect(normalized.guides[0].rotation).toBeUndefined();
+
+    // Joint contracts partA and partB: "" are removed
+    expect(normalized.jointContracts[0].partA).toBeUndefined();
+    expect(normalized.jointContracts[0].partB).toBeUndefined();
+
+    // Stress point component: "" is removed
+    expect(normalized.stressPoints[0].component).toBeUndefined();
+
+    // Lenient original without the neutral sentinels
+    const lenientOriginal = {
+      sheet: '## Plate\nDesign.',
+      assemblyName: 'plate',
+      boundingBox: { width: 100, length: 50, height: 10 },
+      jointContracts: [{ type: 'butt', clearance: 0.2 }],
+      components: [
+        {
+          name: 'box_part',
+          description: 'A box',
+          position: [0, 0, 0],
+          localExtents: [100, 50, 10],
+          rotation: [0, 0, 0],
+          holes: [{ d: 3, axis: 'z', at: [10, 10, 0] }],
+          shape: { kind: 'box' },
+        },
+        {
+          name: 'tube_part',
+          description: 'A tube',
+          position: [10, 10, 0],
+          localExtents: [10, 10, 20],
+          rotation: [0, 0, 0],
+          holes: [],
+          shape: { kind: 'tube', axis: 'z', innerD: 4 },
+        },
+      ],
+      guides: [
+        {
+          label: 'line_guide',
+          kind: 'line',
+          points: [[0, 0, 0], [10, 10, 0]],
+        },
+      ],
+      stressPoints: [
+        {
+          location: 'centre',
+          loadCase: 'tension',
+          risk: 'low',
+          mitigation: 'none',
+        },
+      ],
+      assumptions: [],
+    };
+
+    const parsedNormalized = AssemblySpecSchema.parse(normalized);
+    const parsedOriginal = AssemblySpecSchema.parse(lenientOriginal);
+    expect(parsedNormalized).toEqual(parsedOriginal);
+  });
+
+  it('structuredFor with claude-* pipes through normalizeClaudeSentinels and with non-Claude returns untouched output with byte-identical schema', async () => {
+    const { structuredFor } = await import('./llm-schemas');
+    const { variantSpecRequestSchema } = await import('./assembly-spec');
+    const { RunnableLambda } = await import('@langchain/core/runnables');
+
+    const fixture = {
+      sheet: '## Rev\nSheet.',
+      assemblyName: 'plate',
+      boundingBox: { width: 10, length: 10, height: 10 },
+      jointContracts: [{ type: 'butt', clearance: 0.1, partA: '', partB: '' }],
+      components: [
+        {
+          name: 'box',
+          description: 'Box',
+          position: [0, 0, 0],
+          localExtents: [10, 10, 10],
+          rotation: [0, 0, 0],
+          positionNote: '',
+          holes: [],
+          shape: { kind: 'box', axis: 'z', innerD: 0, wall: 0, openFace: '+Z', plane: 'xy', points: [], holes: [] },
+        },
+      ],
+      guides: [],
+      stressPoints: [],
+      assumptions: [],
+    };
+
+    type FakeModel = {
+      withStructuredOutput: (schema: unknown, opts?: unknown) => { invoke: (input: unknown) => Promise<unknown> };
+    };
+
+    let seenClaudeSchema: unknown;
+    const claudeFake: FakeModel = {
+      withStructuredOutput(schema: unknown) {
+        seenClaudeSchema = schema;
+        return RunnableLambda.from(() => fixture);
+      },
+    };
+
+    const claudeBound = structuredFor(claudeFake, 'claude-opus-5.5', variantSpecRequestSchema(), {
+      name: 'AssemblySpec',
+      strict: true,
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const claudeResult = (await claudeBound.invoke({})) as any;
+    expect(claudeResult.components[0].shape).toEqual({ kind: 'box' });
+    expect(claudeResult.components[0].positionNote).toBeUndefined();
+    expect(claudeResult.jointContracts[0].partA).toBeUndefined();
+    expect(seenClaudeSchema).toBeDefined();
+
+    // Non-Claude route (gpt-5.6-luna)
+    const variantJson = variantSpecRequestSchema();
+    let seenLunaSchema: unknown;
+    const lunaFake: FakeModel = {
+      withStructuredOutput(schema: unknown) {
+        seenLunaSchema = schema;
+        return RunnableLambda.from(() => fixture);
+      },
+    };
+
+    const lunaBound = structuredFor(lunaFake, 'gpt-5.6-luna', variantJson, {
+      name: 'AssemblySpec',
+      strict: true,
+    });
+    expect(seenLunaSchema).toBe(variantJson);
+    const lunaResult = await lunaBound.invoke({});
+    expect(lunaResult).toBe(fixture); // completely untouched!
+
+    // Also verify includeRaw
+    const rawFixture = { raw: { metadata: true }, parsed: fixture };
+    const claudeRawFake: FakeModel = {
+      withStructuredOutput() {
+        return RunnableLambda.from(() => rawFixture);
+      },
+    };
+    const claudeRawBound = structuredFor(claudeRawFake, 'claude-opus-5.5', variantSpecRequestSchema(), {
+      name: 'AssemblySpec',
+      strict: true,
+      includeRaw: true,
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rawResult = (await claudeRawBound.invoke({})) as any;
+    expect(rawResult.raw).toEqual({ metadata: true });
+    expect(rawResult.parsed.components[0].shape).toEqual({ kind: 'box' });
+    expect(rawResult.parsed.components[0].positionNote).toBeUndefined();
+  });
+
 });
+
 
