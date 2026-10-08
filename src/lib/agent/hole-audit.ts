@@ -64,16 +64,34 @@ function axisRotation(axis: HoleSpec['axis']): string {
 }
 
 /**
+ * Where a probe of length `len` starts. `at` is the centre of the hole's mouth
+ * on the face it enters, and the hole runs INTO the part: a mouth near
+ * coordinate 0 bores toward +axis, one near `extent` bores toward -axis (the
+ * rule blockout-scad.ts and geometry.ts cut and draw by). Without a known
+ * extent the mouth is taken to be on the min face.
+ */
+function probeOrigin(h: HoleSpec, extent: number | undefined, len: number): number[] {
+  const i = h.axis === 'x' ? 0 : h.axis === 'y' ? 1 : 2;
+  const along = h.at[i];
+  const fromMin = extent === undefined || Math.abs(along) <= Math.abs(along - extent);
+  const origin = [...h.at];
+  origin[i] = fromMin ? along : along - len;
+  return origin;
+}
+
+/**
  * A probe solid at the hole, as an instantiation string.
  *
  * `depth` is the span along the axis. It is overshot at both ends so a probe
  * never ends exactly on the part's surface, where coincident faces make CGAL's
- * answer depend on rounding.
+ * answer depend on rounding. `extent` is the component's size along the hole's
+ * axis, which decides which face the mouth is on.
  */
-export function boreProbe(h: HoleSpec, fn = 32): string {
-  const len = (h.depth ?? 1000) + 0.04;
+export function boreProbe(h: HoleSpec, extent?: number, fn = 32): string {
+  const len = (h.depth ?? 1000) + 0.04; // 1000 mm: longer than any part, so a through-hole probe spans it; 0.04 mm = 0.02 mm overshoot at each end
+  const origin = probeOrigin(h, extent, h.depth ?? 1000);
   return (
-    `translate([${h.at.join(', ')}]) ${axisRotation(h.axis)}` +
+    `translate([${origin.map(round2).join(', ')}]) ${axisRotation(h.axis)}` +
     `translate([0, 0, -0.02]) cylinder(d = ${round2(h.d * BORE_PROBE_FRACTION)}, h = ${round2(len)}, $fn = ${fn});`
   );
 }
@@ -82,12 +100,13 @@ export function boreProbe(h: HoleSpec, fn = 32): string {
  * The rim probe stops short of a through-hole's far end, because the annulus
  * would otherwise stick out past the part and find nothing there either way.
  */
-export function rimProbe(h: HoleSpec, fn = 32): string {
-  const len = h.depth ?? 1000;
+export function rimProbe(h: HoleSpec, extent?: number, fn = 32): string {
+  const len = h.depth ?? 1000; // 1000 mm: as in boreProbe
+  const origin = probeOrigin(h, extent, len);
   const inner = round2(h.d + RIM_INNER_MARGIN_MM);
   const outer = round2(h.d + RIM_OUTER_MARGIN_MM);
   return (
-    `translate([${h.at.join(', ')}]) ${axisRotation(h.axis)}` +
+    `translate([${origin.map(round2).join(', ')}]) ${axisRotation(h.axis)}` +
     `difference() { ` +
     `cylinder(d = ${outer}, h = ${round2(len)}, $fn = ${fn}); ` +
     `translate([0, 0, -0.01]) cylinder(d = ${inner}, h = ${round2(len + 0.02)}, $fn = ${fn}); ` +
@@ -113,9 +132,12 @@ export async function auditHoles(
   frames: ModuleFrame[] = []
 ): Promise<SpecViolation[]> {
   const violations: SpecViolation[] = [];
-  const jobs: { component: string; hole: HoleSpec }[] = [];
+  const jobs: { component: string; hole: HoleSpec; extent: number | undefined }[] = [];
   for (const c of spec?.components ?? []) {
-    for (const hole of c.holes ?? []) jobs.push({ component: c.name, hole });
+    for (const hole of c.holes ?? []) {
+      const axisIndex = hole.axis === 'x' ? 0 : hole.axis === 'y' ? 1 : 2;
+      jobs.push({ component: c.name, hole, extent: c.localExtents?.[axisIndex] });
+    }
   }
   if (jobs.length === 0) return violations;
 
@@ -144,19 +166,20 @@ export async function auditHoles(
   // say which hole, and only holes with an open bore pay for a rim probe.
   const suspect = new Set<string>();
   for (const component of new Set(checked.map((j) => j.component))) {
-    const holes = checked.filter((j) => j.component === component).map((j) => j.hole);
-    const probe = `union() { ${holes.map((h) => boreProbe(h)).join(' ')} }`;
+    const inComponent = checked.filter((j) => j.component === component);
+    const holes = inComponent.map((j) => j.hole);
+    const probe = `union() { ${inComponent.map((j) => boreProbe(j.hole, j.extent)).join(' ')} }`;
     const all = await checkInterference(code, callFor(component), probe);
     if (all.error || (all.intersectionVolumeMm3 ?? 0) > BORE_NOISE_MM3 * holes.length) {
       suspect.add(component);
     }
   }
 
-  for (const { component, hole } of checked) {
+  for (const { component, hole, extent } of checked) {
     const call = callFor(component);
 
     const bore = suspect.has(component)
-      ? await checkInterference(code, call, boreProbe(hole))
+      ? await checkInterference(code, call, boreProbe(hole, extent))
       : { error: undefined, intersectionVolumeMm3: 0 };
     if (!bore.error && (bore.intersectionVolumeMm3 ?? 0) > BORE_NOISE_MM3) {
       violations.push({
@@ -175,7 +198,7 @@ export async function auditHoles(
     }
     if (bore.error) continue;
 
-    const rim = await checkInterference(code, call, rimProbe(hole));
+    const rim = await checkInterference(code, call, rimProbe(hole, extent));
     if (rim.error) continue;
     const wall = rim.intersectionVolumeMm3 ?? 0;
     if (wall < RIM_MIN_MATERIAL_MM3) {
