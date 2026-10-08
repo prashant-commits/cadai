@@ -7,32 +7,52 @@ export interface MatingCut {
 }
 
 /**
- * For every jointContract with clearance > 0 that names both partA and partB,
+ * Determines mating cuts for clearance joints.
+ *
+ * For each jointContract with clearance > 0 naming distinct partA and partB,
  * partA is the host (it receives the cut) and partB is the inserted part.
- * Edge case: A part that is both host and inserted in different joints is cut only as a host.
+ *
+ * A part is cut as a host for each part inserted into it, and its own grown
+ * skeleton is subtracted from each host it is inserted into; the two roles
+ * are independent.
+ *
+ * True mutual cycles (where partA hosts partB and partB hosts partA) are
+ * skipped, with an optional callback to record a report note.
  */
-export function matingCuts(spec: AssemblySpec): MatingCut[] {
+export function matingCuts(
+  spec: AssemblySpec,
+  onCycle?: (partA: string, partB: string) => void
+): MatingCut[] {
   if (!spec.jointContracts) return [];
   const cuts: MatingCut[] = [];
-  const insertedSet = new Set<string>();
 
-  for (const jc of spec.jointContracts) {
-    if (jc.clearance > 0 && jc.partA && jc.partB) {
-      insertedSet.add(jc.partB);
-    }
-  }
+  const candidateJoints = spec.jointContracts.filter(
+    (jc) => jc.clearance > 0 && jc.partA && jc.partB && jc.partA !== jc.partB
+  );
 
-  for (const jc of spec.jointContracts) {
-    if (jc.clearance > 0 && jc.partA && jc.partB) {
-      // "A part that is both host and inserted in different joints is cut only as a host."
-      // I interpret this as: if a part is a host in ANY joint, it does not act as an inserted part (does not cut other hosts).
-      // Let's find out if partB is a host in any joint.
-      const partBIsHost = spec.jointContracts.some(other => other.partA === jc.partB && other.clearance > 0 && other.partB);
-      if (partBIsHost) {
-        continue;
+  const cyclePairs = new Set<string>();
+  const reportedPairs = new Set<string>();
+
+  for (const jc of candidateJoints) {
+    const hasReverse = candidateJoints.some(
+      (other) => other.partA === jc.partB && other.partB === jc.partA
+    );
+    if (hasReverse && jc.partA && jc.partB) {
+      cyclePairs.add(`${jc.partA}:${jc.partB}`);
+      const pairKey = [jc.partA, jc.partB].sort().join(':');
+      if (!reportedPairs.has(pairKey)) {
+        reportedPairs.add(pairKey);
+        onCycle?.(jc.partA, jc.partB);
       }
-      cuts.push({ host: jc.partA, inserted: jc.partB, clearance: jc.clearance });
     }
   }
+
+  for (const jc of candidateJoints) {
+    if (cyclePairs.has(`${jc.partA}:${jc.partB}`)) {
+      continue;
+    }
+    cuts.push({ host: jc.partA!, inserted: jc.partB!, clearance: jc.clearance });
+  }
+
   return cuts;
 }

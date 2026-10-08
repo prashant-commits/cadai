@@ -81,12 +81,18 @@ function moduleLines(comp: Component, ex: number, ey: number, ez: number, placeh
 }
 
 
-export function shapeScad(comp: Component, grow = 0): string {
+export function shapeScad(comp: Component, grow = 0, onNote?: (reason: string) => void): string {
   const shape = comp.shape;
   const name = comp.name;
   const ext = comp.localExtents;
   if (!ext || ext.length < 3) return '';
   const ex = ext[0], ey = ext[1], ez = ext[2];
+
+  const decision = classifyComponent(comp);
+  if (decision.kind !== 'shape') {
+    onNote?.(decision.reason);
+    return cubeLineGrown(name, ex, ey, ez, grow);
+  }
 
   if (!shape || shape.kind === 'box') return cubeLineGrown(name, ex, ey, ez, grow);
   if (shape.kind === 'cylinder' && shape.axis) {
@@ -131,8 +137,10 @@ function roundLineGrown(
       : axis === 'y'
         ? ' rotate([-90, 0, 0])'
         : '';
-  const why = `${role} of ${name} grown by ${grow} mm clearance`;
-  return `${alongTranslateGrown(axis, start, ex, ey, ez)}${spin} cylinder(h = ${fmt(height)}, d = ${fmt(diameter + 2 * grow)}); // ${why}`;
+  const n = 96;
+  const circumscribedD = (diameter + 2 * grow) / Math.cos(Math.PI / n);
+  const why = `${role} of ${name} grown by ${grow} mm clearance (circumscribed, $fn = ${n})`;
+  return `${alongTranslateGrown(axis, start, ex, ey, ez)}${spin} cylinder(h = ${fmt(height)}, d = ${fmt(circumscribedD)}, $fn = ${n}); // ${why}`;
 }
 
 function alongTranslateGrown(axis: Axis, start: number, ex: number, ey: number, ez: number): string {
@@ -154,11 +162,8 @@ function profileBodyGrown(
   if (grow === 0) return profileBody(name, plane, points, holes, ex, ey, ez)[0];
 
   const outline = wind(loopOf(points) ?? [], true);
-  const inners = (holes ?? [])
-    .map((hole) => loopOf(hole))
-    .filter((hole): hole is Pt[] => hole !== null)
-    .map((hole) => wind(hole, false));
-  const poly = polygonCall(outline, inners);
+  // Profile inserts with holes cut a solid cavity: grow only the outer outline, not the holes.
+  const poly = polygonCall(outline, []);
   
   if (plane === 'xy') {
     return `translate([0, 0, -${fmt(grow)}]) linear_extrude(height = ${fmt(ez + 2 * grow)}) offset(delta = ${fmt(grow)}) ${poly}; // xy profile of ${name} grown by ${grow} mm clearance`;
