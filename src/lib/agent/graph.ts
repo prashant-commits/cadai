@@ -29,6 +29,7 @@ import {
   analyzeTopLevel,
   instantiationFor,
 } from '../design/compose-assembly';
+import { matingCuts } from '../design/mating-cuts';
 import { measureModuleFrames, type ModuleFrame } from '../engine/module-frames';
 import { PlacementReport } from '../design/placement-report';
 import { auditPlacement } from './placement-audit';
@@ -74,15 +75,21 @@ function isStandIn(reason: string): boolean {
   return reason.includes('drawn as a box');
 }
 
-/** Sheet notes, at most 3: placeholders and omissions first (they change how to read the sheet), then the variant's own assumptions. */
+export const DRAFTER_CLEARANCE_JOINTS_NOTE =
+  'Mating cavities for clearance joints are cut by code after your script (host = partA). Do not model slots, sockets or holes for inserted parts; model the inserted part at its skeleton size.';
+
+/** Sheet notes, at most 3: placeholders and omissions first (they change how to read the sheet), then code-cut mating cavities, then the variant's own assumptions. */
 export function sheetNotes(spec: AssemblySpec): string[] {
   const placeholders = blockoutScad(spec).skipped.map((s) =>
     isStandIn(s.reason)
       ? `${s.name}: drawn as a box (${s.reason.replace(/;?\s*drawn as a box$/, '')})`
       : `${s.name}: not drawn (${s.reason})`
   );
+  const cutNotes = matingCuts(spec).map(
+    (c) => `${c.host}: cavity cut by code for ${c.inserted} (${c.clearance} mm)`
+  );
   const assumptions = (spec.assumptions ?? []).map((a) => `${a.field}: ${a.value}`);
-  return [...placeholders, ...assumptions].map((n) => n.slice(0, 60)).slice(0, 3); // 60 chars per note and 3 notes: the sheet's notes strip
+  return [...placeholders, ...cutNotes, ...assumptions].map((n) => n.slice(0, 60)).slice(0, 3); // 60 chars per note and 3 notes: the sheet's notes strip
 }
 
 /** Renders a variant's concept sheet. Deterministic and fast, so state keeps only the spec and this is redrawn on demand. */
@@ -1358,6 +1365,7 @@ export function createCadAgent(
           : '';
 
       const promptText = `Implement the Architect Spec below as one complete OpenSCAD script. Honour every field: each stressPoint mitigation built exactly as sized, joints at their declared clearance, every edge sharp.
+${DRAFTER_CLEARANCE_JOINTS_NOTE}
 
 Architect Spec Sheet:
 ${sheet}
