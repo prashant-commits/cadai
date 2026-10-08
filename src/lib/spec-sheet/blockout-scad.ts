@@ -80,6 +80,95 @@ function moduleLines(comp: Component, ex: number, ey: number, ez: number, placeh
   return [header, ...indent(marked, 4), '}'];
 }
 
+
+export function shapeScad(comp: Component, grow = 0): string {
+  const shape = comp.shape;
+  const name = comp.name;
+  const ext = comp.localExtents;
+  if (!ext || ext.length < 3) return '';
+  const ex = ext[0], ey = ext[1], ez = ext[2];
+
+  if (!shape || shape.kind === 'box') return cubeLineGrown(name, ex, ey, ez, grow);
+  if (shape.kind === 'cylinder' && shape.axis) {
+    return roundLineGrown(name, ex, ey, ez, shape.axis, crossDiameter(shape.axis, ex, ey), false, 'cylinder', grow);
+  }
+  if (shape.kind === 'tube' && shape.axis && shape.innerD !== undefined) {
+    return roundLineGrown(name, ex, ey, ez, shape.axis, crossDiameter(shape.axis, ex, ey), false, 'outer cylinder', grow);
+  }
+  if (shape.kind === 'shell' && shape.openFace && shape.wall !== undefined) {
+    return cubeLineGrown(name, ex, ey, ez, grow);
+  }
+  if (shape.kind === 'profile' && shape.plane && shape.points) {
+    return profileBodyGrown(name, shape.plane, shape.points, shape.holes, ex, ey, ez, grow);
+  }
+  return cubeLineGrown(name, ex, ey, ez, grow);
+}
+
+function cubeLineGrown(name: string, ex: number, ey: number, ez: number, grow: number): string {
+  if (grow === 0) return cubeLine(name, ex, ey, ez);
+  return `translate([-${fmt(grow)}, -${fmt(grow)}, -${fmt(grow)}]) cube([${fmt(ex + 2 * grow)}, ${fmt(ey + 2 * grow)}, ${fmt(ez + 2 * grow)}]); // localExtents of ${name} grown by ${grow} mm clearance`;
+}
+
+function roundLineGrown(
+  name: string,
+  ex: number,
+  ey: number,
+  ez: number,
+  axis: Axis,
+  diameter: number,
+  overshoot: boolean,
+  role: string,
+  grow: number
+): string {
+  if (grow === 0) return roundLine(name, ex, ey, ez, axis, diameter, overshoot, role);
+  
+  const extent = axis === 'x' ? ex : axis === 'y' ? ey : ez;
+  const start = -grow;
+  const height = extent + 2 * grow;
+  const spin =
+    axis === 'x'
+      ? ' rotate([0, 90, 0])'
+      : axis === 'y'
+        ? ' rotate([-90, 0, 0])'
+        : '';
+  const why = `${role} of ${name} grown by ${grow} mm clearance`;
+  return `${alongTranslateGrown(axis, start, ex, ey, ez)}${spin} cylinder(h = ${fmt(height)}, d = ${fmt(diameter + 2 * grow)}); // ${why}`;
+}
+
+function alongTranslateGrown(axis: Axis, start: number, ex: number, ey: number, ez: number): string {
+  if (axis === 'z') return `translate([${fmt(ex / 2)}, ${fmt(ey / 2)}, ${fmt(start)}])`;
+  if (axis === 'y') return `translate([${fmt(ex / 2)}, ${fmt(start)}, ${fmt(ez / 2)}])`;
+  return `translate([${fmt(start)}, ${fmt(ey / 2)}, ${fmt(ez / 2)}])`;
+}
+
+function profileBodyGrown(
+  name: string,
+  plane: Plane,
+  points: number[][],
+  holes: number[][][] | undefined,
+  ex: number,
+  ey: number,
+  ez: number,
+  grow: number
+): string {
+  if (grow === 0) return profileBody(name, plane, points, holes, ex, ey, ez)[0];
+
+  const outline = wind(loopOf(points) ?? [], true);
+  const inners = (holes ?? [])
+    .map((hole) => loopOf(hole))
+    .filter((hole): hole is Pt[] => hole !== null)
+    .map((hole) => wind(hole, false));
+  const poly = polygonCall(outline, inners);
+  
+  if (plane === 'xy') {
+    return `translate([0, 0, -${fmt(grow)}]) linear_extrude(height = ${fmt(ez + 2 * grow)}) offset(delta = ${fmt(grow)}) ${poly}; // xy profile of ${name} grown by ${grow} mm clearance`;
+  }
+  if (plane === 'xz') {
+    return `translate([0, ${fmt(ey)}, 0]) rotate([90, 0, 0]) translate([0, 0, -${fmt(grow)}]) linear_extrude(height = ${fmt(ey + 2 * grow)}) offset(delta = ${fmt(grow)}) ${poly}; // xz profile of ${name} grown by ${grow} mm clearance`;
+  }
+  return `rotate([90, 0, 90]) translate([0, 0, -${fmt(grow)}]) linear_extrude(height = ${fmt(ex + 2 * grow)}) offset(delta = ${fmt(grow)}) ${poly}; // yz profile of ${name} grown by ${grow} mm clearance`;
+}
+
 function shapeBody(comp: Component, ex: number, ey: number, ez: number, fallback: boolean): string[] {
   const shape = comp.shape;
   const name = comp.name;
