@@ -51,6 +51,7 @@ import {
   processPlannerVariants,
   maxVariantsFromEnv,
   repeatsPrevious,
+  skeletonSignature,
   VariantId,
   ReviewFinding,
   VariantReview,
@@ -68,6 +69,9 @@ const MAX_ACCEPT_REVISIONS = 2;
  * the run; this only stops one failure class from starving the other.
  */
 const MAX_SEMANTIC_REPAIRS = 1;
+
+/** Sampling temperature of revision calls (fresh specs and the planner use 0.2). */
+export const REVISION_TEMPERATURE = 0.6;
 
 type VisualCritique = z.infer<typeof VisualCritiqueSchema>;
 
@@ -618,6 +622,9 @@ export function createCadAgent(
 ) {
   const selectedModel = modelName || process.env.CADAI_MODEL || DEFAULT_MODEL;
   const model = getChatModel(selectedModel);
+  // Revisions sample warmer: at 0.2 the Architect re-emitted the previous
+  // skeleton under every finding. Fresh specs and the planner keep the default.
+  const revisionModel = getChatModel(selectedModel, { temperature: REVISION_TEMPERATURE });
   const criticModel = process.env.CADAI_CRITIC_MODEL ? getChatModel(process.env.CADAI_CRITIC_MODEL) : model;
   
   // Architect operates in two steps: a planner call that streams a brief and
@@ -674,14 +681,27 @@ export function createCadAgent(
       );
     }
 
+    const previousSignature = previousSpec ? skeletonSignature(previousSpec.skeleton as AssemblySpec) : null;
+    const majorIssues = (findings ?? []).filter((f) => f.severity === 'major').map((f) => f.issue);
+
     if (previousSpec && findings) {
+      // Findings first, previous version after and labelled as the thing to change:
+      // opening with the old skeleton made the Architect re-emit it.
+      const required = [
+        ...findings.filter((f) => f.severity === 'major').map((f) => `[MAJOR] ${f.issue}`),
+        ...findings.filter((f) => f.severity !== 'major').map((f) => `[MINOR] ${f.issue}`),
+        ...(notes ?? []).map((n) => `[HUMAN] ${n}`),
+      ];
       const promptParts = [
+        `REQUIRED CHANGES:\n${required.length ? required.join('\n') : '(none listed)'}\n\n` +
+          'Each major finding must be resolved by a concrete geometric change: add, remove, reshape or move components, or change a shape. ' +
+          'For this revision, major findings OUTRANK "variant A follows the request literally" and the SCOPE rule. ' +
+          'If resolving one needs structure the request did not name (for example a lip so the held object cannot slide off), add it and record each addition in assumptions[]. ' +
+          'The sheet must start with a "## Changes in this revision" section that maps each finding to the change (component and field).',
         ...planContextParts,
         `Revise this variant (${variant.id}): ${variant.name} - ${variant.idea}.`,
-        `Previous skeleton:\n${JSON.stringify(previousSpec.skeleton, null, 2)}`,
-        `Previous sheet:\n${previousSpec.sheet}`,
-        findings.length ? `Review findings:\n${findings.map((f) => `[${f.severity.toUpperCase()}] ${f.issue}`).join('\n')}` : '',
-        notes?.length ? `Human notes:\n${notes.join('\n')}` : '',
+        `Previous version (to be changed) - skeleton:\n${JSON.stringify(previousSpec.skeleton, null, 2)}`,
+        `Previous version (to be changed) - sheet:\n${previousSpec.sheet}`,
       ].filter(Boolean);
 
       let prevSheetPngUrl: string | null = null;
@@ -715,7 +735,7 @@ export function createCadAgent(
       variantMessages.push(new HumanMessage(promptParts.join('\n\n')));
     }
 
-    const variantModel = model.withStructuredOutput(variantSpecRequestSchema(), {
+    const variantModel = (previousSpec ? revisionModel : model).withStructuredOutput(variantSpecRequestSchema(), {
       name: 'AssemblySpec',
       strict: true,
       includeRaw: false,
@@ -727,6 +747,8 @@ export function createCadAgent(
     let coherenceFeedback: SpecViolation[] | null = null;
     let specErrors: ReviewFinding[] | undefined;
     let outOfTime = false;
+    let unchangedFeedback = false;
+    let unchangedFinal = false;
 
     // THREE attempts, not two. Decoder degeneration is per-attempt and
     // independent, so retries compound: at the ~0.8 per-attempt success rate
@@ -740,7 +762,9 @@ export function createCadAgent(
         outOfTime = true;
         break;
       }
-      const retryPrompt = coherenceFeedback
+      const retryPrompt = unchangedFeedback
+        ? `Your revision did not change the geometry. You must change it to resolve: ${majorIssues.join('; ') || 'the required changes'}`
+        : coherenceFeedback
         ? 'Your previous Assembly Spec was internally inconsistent:\n' +
           coherenceFeedback.map((v) => `- ${v.message}`).join('\n') +
           '\nRecompute the placement arithmetic and emit a spec whose boundingBox equals the extent of its ' +
@@ -759,6 +783,19 @@ export function createCadAgent(
         const parsed = AssemblySpecSchema.safeParse(nullsToUndefined(raw));
         if (parsed.success) {
           const candidate = normalizeSpec(parsed.data);
+          // A revision that reproduces the previous skeleton changed nothing: that
+          // attempt is spent and the Architect is told so. On the last attempt the
+          // unchanged spec is kept, and labelled by the caller.
+          unchangedFeedback = false;
+          if (previousSignature !== null && skeletonSignature(candidate) === previousSignature) {
+            if (attempt < MAX_ARCHITECT_ATTEMPTS - 1) {
+              unchangedFeedback = true;
+              coherenceFeedback = null;
+              console.warn(`architectNode: revision of variant ${variant.id} did not change the geometry (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS})`);
+              continue;
+            }
+            unchangedFinal = true;
+          }
           // Coherence is pure arithmetic (do the components fit the bounding box?),
           // so there is no point drafting geometry from a spec that already contradicts
           // itself. Handing the contradiction back is strictly cheaper than discovering
@@ -844,6 +881,7 @@ export function createCadAgent(
       needsRevision: false,
       error: spec ? undefined : shortErrorLabel,
       ...(specErrors ? { specErrors } : {}),
+      ...(spec && unchangedFinal ? { revisionUnchanged: true } : {}),
     };
   }
 
@@ -1060,6 +1098,23 @@ export function createCadAgent(
               ...(v.review ?? v.previousReview),
               note: `revision failed; showing version ${v.version}`,
             },
+          };
+        }
+        if (revised.revisionUnchanged) {
+          // Every attempt reproduced the old geometry: label it and send it on
+          // with the findings it still has, instead of looping on a spec that cannot change.
+          return {
+            ...revised,
+            revisionUnchanged: undefined,
+            needsRevision: false,
+            review: {
+              validated: false,
+              findings: v.review?.findings ?? v.previousReview?.findings ?? [],
+              attempts: v.retries + 1,
+              note: 'revision made no geometric change',
+            },
+            previousMajors: v.previousMajors,
+            stagnantRounds: v.stagnantRounds,
           };
         }
         return { ...revised, previousMajors: v.previousMajors, stagnantRounds: v.stagnantRounds };

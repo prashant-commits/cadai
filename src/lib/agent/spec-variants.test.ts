@@ -16,7 +16,12 @@ const configCalls: unknown[] = [];
 
 vi.mock('@langchain/openai', () => {
   class FakeChatModel {
-    invoke = invokeMock;
+    // Revision replies are widened so they differ from the previous spec (see revision-fixture.ts).
+    invoke = async (...args: unknown[]) => {
+      const out = await invokeMock(...args);
+      const h = await import('./revision-fixture');
+      return h.isRevisionCall(args[0]) ? h.distinctRevision(out) : out;
+    };
     async *stream(...args: unknown[]) {
       yield await invokeMock(...args);
     }
@@ -323,7 +328,8 @@ describe('architect variants graph execution', () => {
     };
 
     // Revision mock: only Variant B is generated!
-    invokeMock.mockResolvedValueOnce(baseSpec({ assemblyName: 'spec_b_v2' }));
+    // A revision must change the geometry: the revised B has explicit extents.
+    invokeMock.mockResolvedValueOnce(baseSpec({ assemblyName: 'spec_b_v2', components: [{ name: 'box', description: 'a box', localExtents: [40, 40, 40] }] }));
 
     const agent = createCadAgent('m');
     const config = { configurable: { thread_id: `test-${Date.now()}` } };

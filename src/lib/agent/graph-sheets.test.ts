@@ -9,7 +9,12 @@ let lastConfig: { tags?: string[] } | null = null;
 
 vi.mock('@langchain/openai', () => {
   class FakeChatModel {
-    invoke = (...args: unknown[]) => invokeMock(...args);
+    // Revision replies are widened so they differ from the previous spec (see revision-fixture.ts).
+    invoke = async (...args: unknown[]) => {
+      const out = await invokeMock(...args);
+      const h = await import('./revision-fixture');
+      return h.isRevisionCall(args[0]) ? h.distinctRevision(out) : out;
+    };
     async *stream(...args: unknown[]) {
       yield await invokeMock(...args);
     }

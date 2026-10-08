@@ -16,7 +16,12 @@ const invokeMock = vi.fn();
 // real constructible mock, not vi.fn(() => ...).
 vi.mock('@langchain/openai', () => {
   class FakeChatModel {
-    invoke = invokeMock;
+    // Revision replies are widened so they differ from the previous spec (see revision-fixture.ts).
+    invoke = async (...args: unknown[]) => {
+      const out = await invokeMock(...args);
+      const h = await import('./revision-fixture');
+      return h.isRevisionCall(args[0]) ? h.distinctRevision(out) : out;
+    };
     // architectNode reads its structured output with .stream() so the spec
     // renders as it arrives. Delegating to the same mock keeps ONE queue and
     // one call index, so every ordering assertion in this file still holds.
@@ -180,8 +185,9 @@ describe('HIL gating (interrupt/resume)', () => {
 
     // Second architect pass (post-revise): no assumptions this time. Then
     // the run proceeds straight through drafting to a clean compile.
-    invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
-    invokeMock.mockResolvedValueOnce(baseSpec());
+    // A gate revise revises the chosen variant (no re-plan), and a revision must
+    // change the geometry, so the revised spec gains explicit extents.
+    invokeMock.mockResolvedValueOnce(baseSpec({ components: [{ name: 'box', description: 'a box', localExtents: [40, 40, 40] }] }));
     invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
 
     const afterRevise = await agent.invoke(
@@ -189,9 +195,9 @@ describe('HIL gating (interrupt/resume)', () => {
       config
     );
 
-    // Architect was re-invoked (2nd call), then the run proceeded through
-    // drafting (3rd call) since the revised spec no longer gates.
-    expect(invokeMock).toHaveBeenCalledTimes(5);
+    // The chosen variant was revised (3rd call), then the run proceeded through
+    // drafting (4th call) since the revised spec no longer gates.
+    expect(invokeMock).toHaveBeenCalledTimes(4);
     const secondCallMessages = invokeMock.mock.calls[2][0] as any[];
     const sawFeedback = secondCallMessages.some(
       (m) => typeof m.content === 'string' && m.content.includes('use M4 bolts, not M3')
@@ -381,17 +387,20 @@ describe('HIL gating (interrupt/resume)', () => {
       await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
 
       // Architect pass 2: the revised spec is 55mm wide and no longer gates.
-      invokeMock.mockResolvedValueOnce({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
-    invokeMock.mockResolvedValueOnce(baseSpec({ boundingBox: { width: 55, length: 40, height: 40 } }));
+      invokeMock.mockResolvedValueOnce(baseSpec({
+        boundingBox: { width: 55, length: 40, height: 40 },
+        components: [{ name: 'box', description: 'a box', localExtents: [55, 40, 40] }],
+      }));
       invokeMock.mockResolvedValueOnce(draftResponse('cube([55,40,40]);'));
       await agent.invoke(
         new Command({ resume: { action: 'revise', comment: 'make it 55 wide' } }),
         config
       );
 
-      // Call 2 is the drafter. Exactly one spec reaches it, and it is the
-      // revised one - the superseded 40mm spec must not still be in context.
-      const drafterSaw = contentsOf(4);
+      // Call 3 is the drafter (after planner, variant, revision). Exactly one spec
+      // reaches it, and it is the revised one - the superseded 40mm spec must not
+      // still be in context.
+      const drafterSaw = contentsOf(3);
       expect(drafterSaw.filter((c) => c.includes('Architect Spec Sheet:'))).toHaveLength(1);
       expect(drafterSaw.some((c) => c.includes('"width": 55'))).toBe(true);
       expect(drafterSaw.some((c) => c.includes('"width": 40'))).toBe(false);

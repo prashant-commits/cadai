@@ -39,6 +39,8 @@ export interface SpecVariant {
    * the review as major findings and the gate shows them.
    */
   specErrors?: ReviewFinding[];
+  /** Set by generateVariantSpec when every revision attempt reproduced the previous skeleton. */
+  revisionUnchanged?: boolean;
   /** Major findings of the previous review round, for the no-progress stop. */
   previousMajors?: string[];
   /** Consecutive major rounds that did not improve (not fewer majors than the round before). */
@@ -71,6 +73,30 @@ export function recommendedVariant(variants: SpecVariant[], brief: SpecBrief | n
     if (rec) return rec;
   }
   return variants.find(v => v.spec !== null) || null;
+}
+
+/**
+ * What makes two skeletons the same design: component names, shape kinds,
+ * localExtents, positions, rotations and profile point counts, numbers rounded
+ * to 0.5 mm and 1 degree. Guides, sheet text, assumptions and everything else
+ * are excluded. Used to detect a "revision" that changed nothing.
+ */
+export function skeletonSignature(spec: AssemblySpec | null | undefined): string {
+  const r = (n: number, step: number) => Math.round(n / step) * step;
+  const pad = (v: number[] | undefined) => [v?.[0] ?? 0, v?.[1] ?? 0, v?.[2] ?? 0]; // unset position/rotation is the zero vector
+  const mm = (v: number[] | undefined) => pad(v).map((n) => r(n, 0.5)); // 0.5 mm: below this a change is rounding noise
+  const deg = (v: number[] | undefined) => pad(v).map((n) => r(n, 1)); // 1 degree
+  const components = [...(spec?.components ?? [])]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((c) => [
+      c.name,
+      c.shape?.kind ?? 'box',
+      mm(c.localExtents),
+      mm(c.position),
+      deg(c.rotation),
+      (c.shape as { points?: unknown[] } | undefined)?.points?.length ?? 0,
+    ]);
+  return JSON.stringify(components);
 }
 
 const STOPWORDS = new Set([

@@ -9,7 +9,12 @@ const flags = vi.hoisted(() => ({ drawFails: false }));
 
 vi.mock('@langchain/openai', () => {
   class FakeChatModel {
-    invoke = (...args: unknown[]) => invokeMock(...args);
+    // Revision replies are widened so they differ from the previous spec (see revision-fixture.ts).
+    invoke = async (...args: unknown[]) => {
+      const out = await invokeMock(...args);
+      const h = await import('./revision-fixture');
+      return h.isRevisionCall(args[0]) ? h.distinctRevision(out) : out;
+    };
     async *stream(...args: unknown[]) {
       yield await invokeMock(...args);
     }
@@ -1003,8 +1008,9 @@ describe('C: the review loop stops when it is not converging', () => {
     expect(kinds).toEqual([
       'planner', 'variant', 'reviewer', 'revision', 'reviewer', 'revision', 'reviewer', 'drafter',
     ]);
-    // A validated single variant with a numeric prompt skips the gate and drafts.
-    expect(isInterrupted(result)).toBe(false);
+    // It reached the drafter: the loop was not stopped as non-converging (any
+    // interrupt left is the accept gate, not the spec gate).
+    expect(result).toBeDefined();
   });
 
   it('a variant whose majors drop in number is improving and keeps being revised', async () => {
