@@ -88,4 +88,12 @@ describe('bridgeGraphStream', () => {
     const out = await bridge([['custom', { t: 'delta', text: 'a', node: 'drafterNode' }]]);
     expect(out.at(-1)).toEqual({ t: 'section', id: 'drafterNode', state: 'close', status: 'ok' });
   });
+
+  it('drops raw messages-mode tokens from structured-output nodes', async () => {
+    const out = await bridge([
+      ['messages', [{ content: '{"assemblyName":' }, { langgraph_node: 'architectNode' }]],
+      ['custom', { t: 'delta', text: '**spec**', node: 'architectNode' }],
+    ]);
+    expect(out.filter((e) => e.t === 'delta')).toEqual([{ t: 'delta', text: '**spec**' }]);
+  });
 });
