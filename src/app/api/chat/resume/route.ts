@@ -7,6 +7,7 @@ import { deleteRunCheckpoint, getCheckpointer, runCheckpointKey } from '@/lib/ag
 import { Command } from '@langchain/langgraph';
 import { GateDecision } from '@/types';
 import { DEFAULT_MODEL } from '@/lib/agent/models';
+import { graphRecursionLimit, describeGraphError } from '@/lib/agent/run-limits';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -90,6 +91,7 @@ export async function POST(req: NextRequest) {
         let sawGate = false;
         const stream = await agent.stream(new Command({ resume: decision }), {
           configurable: { thread_id: checkpointKey },
+          recursionLimit: graphRecursionLimit(),
           streamMode: ['updates', 'messages', 'custom'],
           callbacks: langfuseHandler ? [langfuseHandler] : undefined,
         });
@@ -103,9 +105,9 @@ export async function POST(req: NextRequest) {
 
         if (!sawGate) await deleteRunCheckpoint(checkpointKey);
       } catch (err: unknown) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
+        console.error('Agent run failed:', err);
         await deleteRunCheckpoint(checkpointKey);
-        await sendEvent({ t: 'error', message: `Agent resume failed: ${errorMessage}` });
+        await sendEvent({ t: 'error', message: describeGraphError(err, 'Agent resume failed') });
       } finally {
         // See the matching comment in ../route.ts: the detached IIFE outlives
         // the returned Response, so the span queue must be drained explicitly
