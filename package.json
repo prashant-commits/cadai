@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "mcp": "tsx src/mcp-server.ts",
-    "eval:generation": "tsx eval/generation/run.ts"
+    "eval:generation": "tsx eval/generation/run.ts",
+    "eval:compare": "tsx eval/generation/compare.ts"
   },
   "dependencies": {
     "@langchain/core": "^1.2.9",
