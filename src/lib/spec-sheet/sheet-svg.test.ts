@@ -95,6 +95,31 @@ describe('renderVariantSheet', () => {
     expect(svg).not.toContain('bow: profile polygon is not simple; drawn as a box');
   });
 
+  it('skips a geometry note when an input note already names that part', () => {
+    const standIn = 'bow: drawn as a box (profile polygon is not simple)';
+    const standSvg = renderVariantSheet(
+      { id: 'A', name: 'stand-in', spec: standInSpec(), notes: [standIn] },
+      { viewSize: 48 }
+    ).svg;
+    expect(standSvg.split(standIn).length - 1).toBe(1);
+    expect(standSvg).not.toContain('bow: profile polygon is not simple; drawn as a box');
+
+    const omitted = 'foot: not drawn (localExtents must be positive)';
+    const omitSvg = renderVariantSheet(
+      { id: 'A', name: 'omit', spec: omittedSpec(), notes: [omitted] },
+      { viewSize: 48 }
+    ).svg;
+    expect(omitSvg.split(omitted).length - 1).toBe(1);
+    expect(omitSvg).not.toContain('foot: localExtents must be positive');
+
+    const prefixSvg = renderVariantSheet(
+      { id: 'A', name: 'omit', spec: omittedSpec(), notes: ['the footer stays put'] },
+      { viewSize: 48 }
+    ).svg;
+    expect(prefixSvg).toContain('the footer stays put');
+    expect(prefixSvg).toContain('foot: localExtents must be positive');
+  });
+
   it('keeps a stand-in note when the caller did not, and never more than three', () => {
     const spec = standInSpec();
     const alone = renderVariantSheet({ id: 'A', name: 'stand-in', spec }, { viewSize: 48 }).svg;
@@ -160,6 +185,19 @@ describe('renderVariantSheet', () => {
     expect(svg).not.toContain('Dashed = guide (not built)');
   });
 });
+
+function omittedSpec(): AssemblySpec {
+  const spec = boxSpec();
+  spec.components = [
+    {
+      name: 'foot',
+      description: 'no height',
+      localExtents: [10, 10, 0],
+      shape: { kind: 'box' },
+    },
+  ];
+  return spec;
+}
 
 function standInSpec(): AssemblySpec {
   const spec = boxSpec();
