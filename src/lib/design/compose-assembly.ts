@@ -374,7 +374,10 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
 
   const params: string[] = [];
   const wrappers: string[] = [];
-  const calls: string[] = []; const reportNotes: string[] = [];
+  const calls: string[] = [];
+  const reportNotes: string[] = [];
+
+  const posExprs = new Map<string, [string, string, string]>();
   for (const c of components) {
     const note = noteFor.get(c.name);
     let noteUsed = false;
@@ -385,8 +388,18 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
       noteUsed = true;
       return pname;
     }) as [string, string, string];
+    posExprs.set(c.name, posExpr);
+  }
 
-    if (note && !noteUsed) calls.push(`    // ${c.name}: ${note}`);
+  const allCuts = matingCuts(spec, (a, b) => {
+    reportNotes.push(`skipped mutual cut cycle between ${a} and ${b}`);
+  });
+
+  for (const c of components) {
+    const note = noteFor.get(c.name);
+    const posExpr = posExprs.get(c.name)!;
+
+    if (note && !posExpr.some((p) => p !== '0')) calls.push(`    // ${c.name}: ${note}`);
 
     // Gussets the spec prescribes are generated here and unioned onto the
     // module in a wrapper, so the Drafter never has to place one.
@@ -405,19 +418,24 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
       wrapperCall = `${wrapper}();`;
     }
 
-    const cuts = matingCuts(spec).filter(x => x.host === c.name);
+    const cuts = allCuts.filter(x => x.host === c.name);
     const cutLines: string[] = [];
 
     for (const cut of cuts) {
       const compB = components.find(x => x.name === cut.inserted);
       const specB = spec.components?.find(x => x.name === cut.inserted);
-      if (!compB || !specB) continue;
+      if (!compB || !specB) {
+        reportNotes.push(`skipped cut for ${cut.inserted} (missing component)`);
+        continue;
+      }
       if (!specB.localExtents || specB.localExtents.length < 3) {
         reportNotes.push(`skipped cut for ${cut.inserted} (no localExtents)`);
         continue;
       }
-      const posBExpr = AXES.map((_, i) => (compB.position[i] === 0 ? '0' : fmt(compB.position[i]))) as [string, string, string];
-      const body = shapeScad(specB, cut.clearance);
+      const posBExpr = posExprs.get(cut.inserted) ?? AXES.map((_, i) => (compB.position[i] === 0 ? '0' : fmt(compB.position[i]))) as [string, string, string];
+      const body = shapeScad(specB, cut.clearance, (reason) => {
+        reportNotes.push(`cut for ${cut.inserted} fell back to box envelope (${reason})`);
+      });
       cutLines.push(`        // cut for ${cut.inserted} with ${cut.clearance} mm clearance`);
       cutLines.push(`        ${placementCall(compB, posBExpr, body)}`);
     }
