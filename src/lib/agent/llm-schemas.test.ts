@@ -90,6 +90,17 @@ describe('structuredFor', () => {
     const variantSent = JSON.stringify(claudeVariant.seen[0].schema);
     for (const k of FORBIDDEN) expect(variantSent).not.toContain(`"${k}"`);
 
+    // Claude variant branch passes method: 'functionCalling' and has NO strict property
+    expect(claudeVariant.seen[0].opts).toMatchObject({ name: 'AssemblySpec', method: 'functionCalling' });
+    expect('strict' in (claudeVariant.seen[0].opts as object)).toBe(false);
+
+    // Claude non-variant schema (e.g. SheetReviewSchema) still gets strict: true and no method
+    const { SheetReviewSchema } = await import('./llm-schemas');
+    const claudeReview = recorder();
+    structuredFor(claudeReview.model as never, 'claude-opus-5.5', SheetReviewSchema, { name: 'SheetReview', strict: true });
+    expect(claudeReview.seen[0].opts).toMatchObject({ name: 'SheetReview', strict: true });
+    expect('method' in (claudeReview.seen[0].opts as object)).toBe(false);
+
     // Verify union-typed parameters: 0 nullable unions in Claude variant schema,
     // whereas OpenAI strict variant schema has ~30 nullable unions.
     const openaiCounts = countUnions(variantJson);
@@ -115,13 +126,16 @@ describe('structuredFor', () => {
     const luna = recorder();
     structuredFor(luna.model as never, 'gpt-5.6-luna', ArchitectPlanSchema, { name: 'ArchitectPlan', strict: true });
     expect(luna.seen[0].schema).toBe(ArchitectPlanSchema);
+    expect(luna.seen[0].opts).toEqual({ name: 'ArchitectPlan', strict: true });
     const lunaVariant = recorder();
     structuredFor(lunaVariant.model as never, 'gpt-5.6-luna', variantJson, { name: 'AssemblySpec', strict: true });
     expect(lunaVariant.seen[0].schema).toBe(variantJson);
+    expect(lunaVariant.seen[0].opts).toEqual({ name: 'AssemblySpec', strict: true });
 
     const solVariant = recorder();
     structuredFor(solVariant.model as never, 'gpt-6-sol', variantJson, { name: 'AssemblySpec', strict: true });
     expect(solVariant.seen[0].schema).toBe(variantJson);
+    expect(solVariant.seen[0].opts).toEqual({ name: 'AssemblySpec', strict: true });
     expect(JSON.stringify(solVariant.seen[0].schema)).toBe(JSON.stringify(variantJson));
   });
 
@@ -373,9 +387,11 @@ describe('structuredFor', () => {
     };
 
     let seenClaudeSchema: unknown;
+    let seenClaudeOpts: unknown;
     const claudeFake: FakeModel = {
-      withStructuredOutput(schema: unknown) {
+      withStructuredOutput(schema: unknown, opts: unknown) {
         seenClaudeSchema = schema;
+        seenClaudeOpts = opts;
         return RunnableLambda.from(() => fixture);
       },
     };
@@ -390,13 +406,17 @@ describe('structuredFor', () => {
     expect(claudeResult.components[0].positionNote).toBeUndefined();
     expect(claudeResult.jointContracts[0].partA).toBeUndefined();
     expect(seenClaudeSchema).toBeDefined();
+    expect(seenClaudeOpts).toMatchObject({ name: 'AssemblySpec', method: 'functionCalling' });
+    expect('strict' in (seenClaudeOpts as object)).toBe(false);
 
     // Non-Claude route (gpt-5.6-luna)
     const variantJson = variantSpecRequestSchema();
     let seenLunaSchema: unknown;
+    let seenLunaOpts: unknown;
     const lunaFake: FakeModel = {
-      withStructuredOutput(schema: unknown) {
+      withStructuredOutput(schema: unknown, opts: unknown) {
         seenLunaSchema = schema;
+        seenLunaOpts = opts;
         return RunnableLambda.from(() => fixture);
       },
     };
@@ -406,13 +426,17 @@ describe('structuredFor', () => {
       strict: true,
     });
     expect(seenLunaSchema).toBe(variantJson);
+    expect(seenLunaOpts).toEqual({ name: 'AssemblySpec', strict: true });
+    expect('method' in (seenLunaOpts as object)).toBe(false);
     const lunaResult = await lunaBound.invoke({});
     expect(lunaResult).toBe(fixture); // completely untouched!
 
     // Also verify includeRaw
     const rawFixture = { raw: { metadata: true }, parsed: fixture };
+    let seenRawOpts: unknown;
     const claudeRawFake: FakeModel = {
-      withStructuredOutput() {
+      withStructuredOutput(_schema: unknown, opts: unknown) {
+        seenRawOpts = opts;
         return RunnableLambda.from(() => rawFixture);
       },
     };
@@ -426,6 +450,8 @@ describe('structuredFor', () => {
     expect(rawResult.raw).toEqual({ metadata: true });
     expect(rawResult.parsed.components[0].shape).toEqual({ kind: 'box' });
     expect(rawResult.parsed.components[0].positionNote).toBeUndefined();
+    expect(seenRawOpts).toMatchObject({ name: 'AssemblySpec', method: 'functionCalling', includeRaw: true });
+    expect('strict' in (seenRawOpts as object)).toBe(false);
   });
 
 });

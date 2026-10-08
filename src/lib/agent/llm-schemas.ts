@@ -231,11 +231,14 @@ function annotateClaudeDescriptions(json: Record<string, unknown>): void {
 }
 
 /**
- * Variant AssemblySpec JSON Schema tailored for Anthropic/Claude:
- * built from AssemblySpecSchema without OpenAI strict transforms (no nullable unions),
- * every property required except exactly 7 (under Anthropic's cap of 24),
- * sheet first, neutral value descriptions added, unsupported Anthropic keywords stripped,
- * additionalProperties: false.
+ * Variant AssemblySpec JSON Schema tailored for Anthropic/Claude.
+ *
+ * Strict structured outputs fail on live models with:
+ * "400 provider rejected the request: The compiled grammar is too large, which would cause performance issues. Simplify your tool schemas or reduce the number of strict tools."
+ * Consequently, the variant spec uses non-strict tool calling (`method: 'functionCalling'`, no `strict` option).
+ * The 7-optional schema stays because it also keeps the tool schema small and the descriptions tell the model the neutral values.
+ * Every property is required except exactly 7 (under Anthropic's cap of 24), sheet first, neutral value descriptions added,
+ * unsupported Anthropic keywords stripped, additionalProperties: false.
  */
 export function claudeVariantSpecSchema(): Record<string, unknown> {
   const json = z.toJSONSchema(AssemblySpecSchema) as Record<string, unknown>;
@@ -385,12 +388,17 @@ export function normalizeClaudeSentinels(raw: unknown): unknown {
 
 /**
  * `model.withStructuredOutput(schema, opts)`, except for Claude slugs: those go
- * through the gateway to Anthropic's structured outputs, which reject several
- * JSON Schema keywords (maxItems, numeric bounds ...) and cap optional parameters.
- * For Claude routes, the schema is built without OpenAI strict nullable unions:
- * optional parameters are capped to exactly 7 with neutral descriptions, additionalProperties: false
- * is kept, unsupported keywords and default keywords are stripped.
+ * through the gateway to Anthropic's structured outputs.
+ *
+ * For Claude variant spec requests, strict structured output fails because Anthropic
+ * compiles the whole schema into a decoding grammar:
+ * "400 provider rejected the request: The compiled grammar is too large, which would cause performance issues. Simplify your tool schemas or reduce the number of strict tools."
+ * Consequently, the variant spec uses non-strict tool calling (`method: 'functionCalling'`, no `strict` option).
+ * The 7-optional schema stays because it also keeps the tool schema small and the descriptions tell the model the neutral values.
  * Outputs from the variant spec are piped through normalizeClaudeSentinels.
+ *
+ * For other Claude routes (planner, reviewer, critic), schemas are small and use strict: true.
+ * For non-Claude slugs, schema and opts are passed untouched.
  * The reply is still validated by the caller against the zod schema.
  */
 export function structuredFor<M extends { withStructuredOutput: (...args: never[]) => unknown }>(
@@ -411,7 +419,14 @@ export function structuredFor<M extends { withStructuredOutput: (...args: never[
 
   if (isVariantSpec) {
     const safe = claudeVariantSpecSchema();
-    const bound = call.call(model, safe, { ...opts, name: opts.name ?? 'AssemblySpec', strict: true });
+    const variantOpts: { name: string; method: 'functionCalling'; includeRaw?: boolean } = {
+      name: opts.name ?? 'AssemblySpec',
+      method: 'functionCalling',
+    };
+    if (opts.includeRaw !== undefined) {
+      variantOpts.includeRaw = opts.includeRaw;
+    }
+    const bound = call.call(model, safe, variantOpts);
     const normalizer = opts.includeRaw
       ? RunnableLambda.from((res: unknown) => {
           if (res && typeof res === 'object' && 'parsed' in res) {
@@ -426,7 +441,6 @@ export function structuredFor<M extends { withStructuredOutput: (...args: never[
       return (bound as unknown as { pipe: (n: unknown) => ReturnType<M['withStructuredOutput']> }).pipe(normalizer);
     }
     return bound;
-
   }
 
   let json: Record<string, unknown>;
