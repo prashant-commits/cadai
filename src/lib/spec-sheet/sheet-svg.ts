@@ -219,8 +219,8 @@ function groundLine(camera: ViewCamera, segment: [Vec3, Vec3], ox: number, oy: n
 }
 
 /**
- * At most three notes. A skipped stand-in is left out when the caller already
- * named that part and said it is a box, and identical lines are kept once.
+ * At most three notes. A geometry note is left out when an input note already
+ * names that component as a whole word. Identical lines are kept once.
  */
 function mergeSheetNotes(
   inputNotes: string[] | undefined,
@@ -228,7 +228,7 @@ function mergeSheetNotes(
 ): string[] {
   const provided = (inputNotes ?? []).map((note) => note.trim()).filter((note) => note.length > 0);
   const extra = skipped
-    .filter((item) => !provided.some((note) => note.includes(item.name) && note.includes('box')))
+    .filter((item) => !provided.some((note) => noteNamesComponent(note, item.name)))
     .map((item) => `${item.name}: ${item.reason}`);
   const notes: string[] = [];
   const seen = new Set<string>();
@@ -239,6 +239,13 @@ function mergeSheetNotes(
     if (notes.length === 3) break;
   }
   return notes;
+}
+
+/** True when `name` appears as its own word, not as part of a longer identifier. */
+function noteNamesComponent(note: string, name: string): boolean {
+  if (!name) return false;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`).test(note);
 }
 
 function dimension(
