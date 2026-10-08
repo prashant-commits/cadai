@@ -23,6 +23,7 @@ export function toSnakeCase(name: string): string {
  */
 export function normalizeSpec(spec: AssemblySpec): AssemblySpec {
   const rename = new Map<string, string>();
+  const prose = new Set<string>();
   const used = new Set<string>();
 
   const components = (spec.components ?? []).map((c) => {
@@ -30,6 +31,9 @@ export function normalizeSpec(spec: AssemblySpec): AssemblySpec {
     // module name, so it gets a suffix; every reference follows via `rename`.
     const snake = toSnakeCase(c.name);
     const base = identifierIssue(snake) ? `${snake}_part` : snake;
+    // The sheet's prose is rewritten only for format renames ("Wall Mount" ->
+    // wall_mount); a builtin suffix would turn "the cylinder" into "the cylinder_part".
+    if (base === snake) prose.add(c.name);
     let name = base;
     for (let i = 2; used.has(name); i++) name = `${base}_${i}`;
     used.add(name);
@@ -45,7 +49,7 @@ export function normalizeSpec(spec: AssemblySpec): AssemblySpec {
   
   let sheet = spec.sheet;
   if (sheet) {
-    const sortedNames = Array.from(rename.keys()).sort((a, b) => b.length - a.length);
+    const sortedNames = Array.from(rename.keys()).filter((n) => prose.has(n)).sort((a, b) => b.length - a.length);
     for (const oldName of sortedNames) {
       const newName = rename.get(oldName)!;
       if (oldName === newName) continue;

@@ -25,7 +25,10 @@ describe('describeGraphError', () => {
     const err = Object.assign(new Error('Recursion limit of 25 reached without hitting a stop condition. See troubleshooting'), {
       name: 'GraphRecursionError',
     });
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const msg = describeGraphError(err, 'Agent execution failed');
+    expect(spy).toHaveBeenCalled(); // recursion errors are logged server-side too
+    spy.mockRestore();
     expect(msg).toBe('Agent execution failed: the run took more steps than allowed and was stopped.');
     expect(msg).not.toContain('Recursion limit');
   });

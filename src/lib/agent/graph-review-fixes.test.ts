@@ -622,8 +622,9 @@ describe('H3 (rest): per-call timeouts keep a slow round inside the Vercel budge
 
     expect(isInterrupted(result)).toBe(true);
     expect(Date.now()).toBeLessThan(300000);
-    // t=110 s at the revision; 240 - 110 - 15 = 115 s. One attempt only: no time for another.
-    expect(timeouts).toEqual([115000]);
+    // t=110 s at the revision; the cap runs to the HARD limit: 300 - 110 - 15 = 175 s.
+    // It is aborted at t=285 s; no time for another attempt, and the gate is still before 300 s.
+    expect(timeouts).toEqual([175000]);
     const v = gatePayload(result).variants![0];
     expect(v.spec?.assemblyName).toBe('good_spec');
     expect(v.review?.note).toBe('revision failed; showing version 1');
@@ -646,6 +647,56 @@ describe('H3 (rest): per-call timeouts keep a slow round inside the Vercel budge
       { configurable: { thread_id: newKey() } }
     );
     expect(seen.every((t) => t === undefined)).toBe(true);
+  });
+});
+
+describe('N6: a round is started only if it fits, and then it is not aborted', () => {
+  it('planner 60 s, variant 50 s, reviewer 30 s, revision 100 s, 240 s budget: the revision and its review complete', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(0);
+    process.env.VERCEL = '1';
+    process.env.CADAI_SPEC_REVIEW_BUDGET_MS = '240000';
+    const tick = (ms: number) => vi.setSystemTime(Date.now() + ms);
+    const caps: Array<{ kind: string; timeout?: number }> = [];
+    const timed = (kind: string, need: number, timeout?: number) => {
+      caps.push({ kind, timeout });
+      if (timeout !== undefined && timeout < need) {
+        tick(timeout);
+        throw new Error('aborted: timeout');
+      }
+      tick(need);
+    };
+    let reviews = 0;
+    invokeMock.mockImplementation(async (messages: unknown, config?: { timeout?: number }) => {
+      const kind = kindOf(messages);
+      switch (kind) {
+        case 'planner': timed(kind, 60000, config?.timeout); return plan(['A']);
+        case 'variant': timed(kind, 50000, config?.timeout); return boxSpec({ assemblyName: 'v1' });
+        case 'revision': timed(kind, 100000, config?.timeout); return boxSpec({ assemblyName: 'v2' });
+        case 'reviewer':
+          timed(kind, 30000, config?.timeout);
+          return reviews++ === 0 ? { matchesRequest: false, findings: [{ issue: 'arm is missing', severity: 'major' }] } : pass;
+        case 'drafter': return draft;
+        default: return pass;
+      }
+    });
+    const result = await createCadAgent('gpt-5.6-luna').invoke(
+      { messages: [new HumanMessage('a 40mm box')] },
+      { configurable: { thread_id: newKey() } }
+    );
+    const revision = caps.filter((c) => c.kind === 'revision');
+    expect(revision).toHaveLength(1);
+    expect(revision[0].timeout).toBeGreaterThanOrEqual(100000); // not capped below what it needs
+    expect(caps.filter((c) => c.kind === 'reviewer').every((c) => (c.timeout ?? 0) >= 30000)).toBe(true);
+    expect(Date.now()).toBeLessThan(300000);
+    // Revised and reviewed; not an aborted revision.
+    const state = isInterrupted(result) ? gatePayload(result).variants![0] : null;
+    if (state) {
+      expect(state.spec?.assemblyName).toBe('v2');
+      expect(state.review?.note).toBeUndefined();
+    } else {
+      expect(invokeMock.mock.calls.map((c) => kindOf(c[0]))).toContain('drafter');
+    }
   });
 });
 

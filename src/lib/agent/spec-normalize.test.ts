@@ -52,6 +52,7 @@ describe('normalizeSpec', () => {
     expect(n.components?.map((c) => c.name)).toEqual(['hull_part', 'mast']);
     expect(n.jointContracts?.[0]).toMatchObject({ partA: 'hull_part', partB: 'mast' });
     expect(n.stressPoints[0].component).toBe('hull_part');
-    expect(n.sheet).toBe('The hull_part carries the Mast.'.replace('Mast', 'mast'));
+    // Prose is rewritten for format renames (Mast -> mast) but not for the builtin suffix.
+    expect(n.sheet).toBe('The Hull carries the mast.');
   });
 });
