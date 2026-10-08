@@ -181,12 +181,16 @@ const MAX_INTERFERENCE_CHECKS = 4;
  * dowel too fat for its socket, a lid that fouls a boss. Both are invisible to
  * a bounding-box check, since neither changes the overall envelope.
  */
-async function checkAssemblyFit(
+export async function checkAssemblyFit(
   code: string,
   spec: AssemblySpec | null,
   frames: ModuleFrame[] = []
 ): Promise<SpecViolation[]> {
-  const joints = (spec?.jointContracts ?? []).filter((j) => j.partA && j.partB);
+  // Only a joint with a stated clearance > 0 is probed. Clearance <= 0 means the
+  // parts are fused or touching (the drafter is told to sink fused parts 0.01 mm
+  // into each other, which a strict overlap probe would flag); the shells check
+  // already covers parts that must touch.
+  const joints = (spec?.jointContracts ?? []).filter((j) => j.partA && j.partB && j.clearance > 0);
   if (!spec || joints.length === 0) return [];
 
   // Module definitions only. OpenSCAD implicitly unions every top-level object,
