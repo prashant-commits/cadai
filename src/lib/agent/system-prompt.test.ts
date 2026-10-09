@@ -80,7 +80,7 @@ const NODE_BUDGET: Record<string, number> = {
   variant: 1340,
   drafter: 1300,
   drafterPlaced: 1470,
-  repair: 1600,
+  repair: 1610,
   critic: 650,
   reviewer: 250,
 };

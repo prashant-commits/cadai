@@ -1470,7 +1470,7 @@ ${contract}${guidesText}${reviewFindingsText}${placeholdersText}${startingScript
         drafterHumanMessage = new HumanMessage(promptText);
       }
     } else {
-      const promptText = `Write one complete OpenSCAD script for the user's request above. No Architect Spec is available: derive the sizes yourself and declare them as parameters, rest it on z = 0, and instantiate the parts at the top level, since no placement code runs without a spec.
+      const promptText = `Write one complete OpenSCAD script for the user's request above. No Architect Spec is available: derive the sizes yourself and declare them as parameters, rest it on z = 0, and instantiate the parts at the top level, since no placement code runs without a spec. Build any gusset or thickening the request itself names; nothing is generated from a spec here.
 ${contract}`;
       drafterHumanMessage = new HumanMessage(promptText);
     }

@@ -1,6 +1,12 @@
 /**
  * System prompts composed from single-source blocks per node. Each rule lives
- * in one block and is sent only to nodes that act on it.
+ * in one block and is sent only to nodes that act on it:
+ * - planner = CORE + planner preamble
+ * - variant = CORE + SPEC_FIELDS + PLACEMENT_RULES + variant preamble
+ * - drafter = CORE + SPEC_FIELDS + OPENSCAD_RULES + drafter preamble (+ placement contract when the spec has placements)
+ * - repair = CORE + SPEC_FIELDS + PLACEMENT_RULES + OPENSCAD_RULES + repair preamble
+ * - critic = CORE + critic preamble
+ * - reviewer = sheet reviewer preamble alone
  *
  * THIS IS A PARAMETRIC 3D MODELLING TOOL, NOT A 3D-PRINTING TOOL. The prompts
  * deliberately carry no fabrication framing: no process, no nozzle, no
@@ -52,7 +58,7 @@ export const SPEC_FIELDS = `## SPEC VOCABULARY (exact field names)
 - stressPoints[]: { component?, location, loadCase (load + direction), risk: low | medium | high, mitigation } - only where the request states a load. mitigation is sized: "thicken to 2.2 mm" or a gusset; never a fillet, chamfer or round.`.trim();
 
 export const PLACEMENT_RULES = `## LOCAL FRAME
-Every module is authored in ASSEMBLY pose: origin at its min-x/min-y/min-z corner, geometry in +x/+y/+z. Code measures each module, corrects its origin and applies the spec's rotation and position.
+Every module is authored in ASSEMBLY pose: origin at its min-x/min-y/min-z corner, geometry in +x/+y/+z. Code measures each module, corrects its origin and applies the spec's rotation and position. Never rotate or offset a module yourself.
 
 ## PLACEMENT ARITHMETIC
 rotate([rx, ry, rz]) turns a part about its OWN min corner - X, then Y, then Z - and position moves it afterwards. A rotation therefore swings geometry into negative space and position must compensate: a plate rotated 60 deg about x reaches 1.73 mm into -y for every 2 mm of thickness. An angle a user states is the angle BETWEEN two parts; the rotation producing it is 180 - a when the parts meet along a shared edge. Do this arithmetic explicitly - it is the single largest source of wrong output, and code checks it.`.trim();
@@ -113,7 +119,7 @@ TOP LEVEL:
 
 export const DRAFTER_PREAMBLE = `You are the Parametric Drafter. You IMPLEMENT the spec as one complete, watertight OpenSCAD script; you do not re-decide sizes or placements, and you do not add geometry the spec does not name.
 
-TOOL - get_functional_cad_module(moduleKey): tested, watertight modules for fasteners, snap-fits, bosses and lips, dovetails, hinges, lattices, bolt circles, gears, dowel joints, panel tracks and trapped plates; 'fastener_hardware' has the full fastener table. Prefer its templates to freehand geometry. You get exactly ONE tool round: request every module you need in that single turn, then write the script.
+TOOL - get_functional_cad_module(moduleKey): tested, watertight modules for fasteners, snap-fits, bosses and lips, dovetails, hinges, lattices, bolt circles, gears, dowel joints, panel tracks and trapped plates; 'fastener_hardware' has the full fastener table. Prefer its templates to freehand geometry, but never keep a template's chamfers or lead-ins. You get exactly ONE tool round: request every module you need in that single turn, then write the script.
 
 FROM SPEC TO GEOMETRY:
 - localExtents: each module's measured size must equal the spec's localExtents exactly.
@@ -128,6 +134,12 @@ RESPONSE, in this order (an unclosed fence or a missing block burns an attempt):
 
 OUTPUT CHECKLIST: parameters on top, pinned values verbatim; one module <exact spec name>() per component at its localExtents; every declared hole cut; every thickening present; no gussets of your own; cutters overshoot 0.02 mm and fused solids overlap 0.01 mm; all edges sharp.`.trim();
 
+/**
+ * Appended to the drafter prompt only when the Architect actually supplied
+ * placements. It hands every transform to deterministic code, which is the one
+ * job the model reliably gets wrong - so it is only worth imposing when there
+ * are real coordinates to honour.
+ */
 export const DRAFTER_PLACEMENT_CONTRACT = `PLACEMENT CONTRACT - READ CAREFULLY:
 The spec gives each component a position and rotation. Deterministic code appends \`translate(position) rotate(rotation) <name>();\` for every component AFTER your script, so:
 
