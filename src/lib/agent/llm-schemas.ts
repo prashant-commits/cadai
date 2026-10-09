@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { RunnableLambda } from '@langchain/core/runnables';
 import { toAnthropicCompatibleSchema } from './strict-schema';
-import { AssemblySpecSchema } from './assembly-spec';
+import { AssemblySpecSchema, omitRequestComponentFields } from './assembly-spec';
 
 // Schemas handed to withStructuredOutput. The gateway enforces OpenAI strict
 // json_schema, which rejects `.optional()` (use `.default()` or a required field).
@@ -77,9 +77,8 @@ function requireComponentFields(json: Record<string, unknown>, fields: string[])
   return json;
 }
 
-/** The 7 properties kept optional in Claude's variant spec schema because they have no safe neutral value. */
+/** The 6 properties kept optional in Claude's variant spec schema because they have no safe neutral value. */
 const keepSet = new Set([
-  'components[].bedFace',
   'components[].holes[].depth',
   'guides[].shape',
   'guides[].localExtents',
@@ -286,8 +285,8 @@ function annotateClaudeDescriptions(json: Record<string, unknown>): void {
  * Strict structured outputs fail on live models with:
  * "400 provider rejected the request: The compiled grammar is too large, which would cause performance issues. Simplify your tool schemas or reduce the number of strict tools."
  * Consequently, the variant spec uses non-strict tool calling (`method: 'functionCalling'`, no `strict` option).
- * The 7-optional schema stays because it also keeps the tool schema small and the descriptions tell the model the neutral values.
- * Every property is required except exactly 7 (under Anthropic's cap of 24), sheet first, neutral value descriptions added,
+ * The 6-optional schema stays because it also keeps the tool schema small and the descriptions tell the model the neutral values.
+ * Every property is required except exactly 6 (under Anthropic's cap of 24), sheet first, neutral value descriptions added,
  * unsupported Anthropic keywords stripped, additionalProperties: false.
  */
 export function claudeVariantSpecSchema(): Record<string, unknown> {
@@ -305,6 +304,7 @@ export function claudeVariantSpecSchema(): Record<string, unknown> {
     }
   }
 
+  omitRequestComponentFields(json, ['bedFace']);
   annotateClaudeDescriptions(json);
   requireAllExcept(json, CLAUDE_KEEP_OPTIONAL);
 
@@ -444,7 +444,7 @@ export function normalizeClaudeSentinels(raw: unknown): unknown {
  * compiles the whole schema into a decoding grammar:
  * "400 provider rejected the request: The compiled grammar is too large, which would cause performance issues. Simplify your tool schemas or reduce the number of strict tools."
  * Consequently, the variant spec uses non-strict tool calling (`method: 'functionCalling'`, no `strict` option).
- * The 7-optional schema stays because it also keeps the tool schema small and the descriptions tell the model the neutral values.
+ * The 6-optional schema stays because it also keeps the tool schema small and the descriptions tell the model the neutral values.
  * Outputs from the variant spec are piped through normalizeClaudeSentinels.
  *
  * For other Claude routes (planner, reviewer, critic), schemas are small and use strict: true.

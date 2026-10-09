@@ -235,10 +235,26 @@ export function boundNumbers(node: unknown): unknown {
   return node;
 }
 
+/** Removes fields from a component's properties and `required` list in the REQUEST schema only. */
+export function omitRequestComponentFields(json: Record<string, unknown>, fields: string[]): Record<string, unknown> {
+  const props = json.properties as Record<string, unknown> | undefined;
+  const components = props?.components as { items?: { properties?: Record<string, unknown>; required?: string[] } } | undefined;
+  const items = components?.items;
+  if (!items?.properties) return json;
+  for (const field of fields) {
+    delete items.properties[field];
+  }
+  if (Array.isArray(items.required)) {
+    items.required = items.required.filter((r) => !fields.includes(r));
+  }
+  return json;
+}
+
 /** Adds fields to a component's `required` list in the REQUEST schema only. */
 function requireComponentFields(json: Record<string, unknown>, fields: string[]): Record<string, unknown> {
-  const props = json.properties as Record<string, any> | undefined;
-  const items = props?.components?.items;
+  const props = json.properties as Record<string, unknown> | undefined;
+  const components = props?.components as { items?: { properties?: Record<string, unknown>; required?: string[] } } | undefined;
+  const items = components?.items;
   if (!items?.properties) return json;
   items.required = [...new Set<string>([...(items.required ?? []), ...fields])];
   return json;
@@ -253,6 +269,10 @@ export function assemblySpecRequestSchema(): Record<string, unknown> {
     // Ensure top-level `components` is required before strict transform
     json.required = [...new Set<string>([...((json.required as string[]) ?? []), 'components'])];
   }
+
+  // bedFace is print orientation, which belongs to a future slicer node.
+  // We omit it from generation requests while keeping it in the zod schema.
+  omitRequestComponentFields(json, ['bedFace']);
   
   // The decoder must emit a placement and extents for every component; the
   // zod schema stays lenient so a model that still omits them degrades to
@@ -272,6 +292,10 @@ export function variantSpecRequestSchema(): Record<string, unknown> {
     // Ensure top-level components is required before strict transform
     json.required = [...new Set<string>([...((json.required as string[]) ?? []), 'components'])];
   }
+
+  // bedFace is print orientation, which belongs to a future slicer node.
+  // We omit it from generation requests while keeping it in the zod schema.
+  omitRequestComponentFields(json, ['bedFace']);
   
   const withReqFields = requireComponentFields(json, ['position', 'localExtents', 'shape']);
   
