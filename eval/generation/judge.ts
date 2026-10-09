@@ -2,7 +2,7 @@ import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { z } from 'zod';
 import type { AssemblySpec } from '@/lib/agent/assembly-spec';
 import { getChatModel } from '@/lib/agent/model-provider';
-import { CAD_AI_SYSTEM_PROMPT, CRITIC_PREAMBLE } from '@/lib/agent/system-prompt';
+import { JUDGE_SYSTEM_PROMPT } from './judge-prompt';
 import { renderStlViews } from '@/lib/engine/stl-renderer';
 
 /**
@@ -52,8 +52,8 @@ function criticSpecSummary(spec: AssemblySpec | null): string {
 
 /**
  * The user text plus one label and one image per view. Copied from the
- * graph's visualCritic so the eval judge sees the same prompt. `request`
- * is the user's words, quoted, not a paraphrase.
+ * graph's critic, but the system prompt is now frozen. `request` is the
+ * user's words, quoted, not a paraphrase.
  */
 export function criticUserContent(
   request: string,
@@ -112,7 +112,7 @@ export async function judgeCompiledModel(input: {
     const critique = (await getChatModel(process.env.CADAI_CRITIC_MODEL)
       .withStructuredOutput(VisualCritiqueSchema)
       .invoke([
-        new SystemMessage(CAD_AI_SYSTEM_PROMPT + '\n\n' + CRITIC_PREAMBLE),
+        new SystemMessage(JUDGE_SYSTEM_PROMPT),
         new HumanMessage({ content: criticUserContent(input.request, input.spec, views) as never }),
       ])) as VisualCritique;
     return { matchesIntent: !!critique?.matchesIntent, findings: critique?.findings ?? [] };
