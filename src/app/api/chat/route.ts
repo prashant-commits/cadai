@@ -6,7 +6,8 @@ import type { StreamEvent } from '@/lib/agent/stream-events';
 import { deleteRunCheckpoint, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/tracing/langfuse';
 import { DesignContract } from '@/types';
-import { DEFAULT_TEXT_MODEL } from '@/lib/agent/models';
+import { DEFAULT_MODEL } from '@/lib/agent/models';
+import { graphRecursionLimit, describeGraphError } from '@/lib/agent/run-limits';
 import { randomUUID } from 'crypto';
 
 export const runtime = 'nodejs';
@@ -77,9 +78,9 @@ export async function POST(req: NextRequest) {
       // throw outside the try.
       const langfuseHandler = getLangfuseCallbackHandler({
         sessionId: threadId,
-        tags: ['cadai', model || DEFAULT_TEXT_MODEL],
+        tags: ['cadai', model || DEFAULT_MODEL],
         metadata: {
-          model: model || DEFAULT_TEXT_MODEL,
+          model: model || DEFAULT_MODEL,
         },
       });
 
@@ -91,6 +92,7 @@ export async function POST(req: NextRequest) {
           { messages: lcMessages, designContract: designContract ?? null },
           {
             configurable: { thread_id: checkpointKey },
+            recursionLimit: graphRecursionLimit(),
             streamMode: ['updates', 'messages', 'custom'],
             callbacks: langfuseHandler ? [langfuseHandler] : undefined,
           }
@@ -106,12 +108,11 @@ export async function POST(req: NextRequest) {
         // it here is what keeps one-key-per-run from growing without bound.
         if (!sawGate) await deleteRunCheckpoint(checkpointKey);
       } catch (err: unknown) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
         // A run that threw is equally unresumable - don't strand its checkpoint.
         // Must not throw: getCheckpointer() used to re-throw here on Vercel
         // (read-only cwd), which skipped sendEvent and closed an empty stream.
         await deleteRunCheckpoint(checkpointKey);
-        await sendEvent({ t: 'error', message: `Agent execution failed: ${errorMessage}` });
+        await sendEvent({ t: 'error', message: describeGraphError(err, 'Agent execution failed') });
       } finally {
         // Langfuse batches spans and ships them on a timer. This IIFE is
         // detached from a request whose Response already returned, so nothing

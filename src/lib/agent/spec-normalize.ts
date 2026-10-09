@@ -1,5 +1,6 @@
 import type { AssemblySpec } from './assembly-spec';
-import { ENGINEERING_MODULE_REGISTRY } from './engineering-tools';
+import { identifierIssue } from '../spec-sheet/blockout-scad';
+
 
 /** "Wall Mount Backplate" -> "wall_mount_backplate"; always a valid OpenSCAD identifier. */
 export function toSnakeCase(name: string): string {
@@ -17,16 +18,22 @@ export function toSnakeCase(name: string): string {
 /**
  * Makes a parsed spec usable by deterministic code: component names become
  * module identifiers (with every reference renamed to match), every component
- * has a position, and useModules only names registry keys that exist. Applied
- * to what the Architect returns and to what the client sends back from the
- * spec gate, so downstream code never sees "Cup Receptacle".
+ * has a position. Applied to what the Architect returns and to what the client
+ * sends back from the spec gate, so downstream code never sees "Cup Receptacle".
  */
 export function normalizeSpec(spec: AssemblySpec): AssemblySpec {
   const rename = new Map<string, string>();
+  const prose = new Set<string>();
   const used = new Set<string>();
 
   const components = (spec.components ?? []).map((c) => {
-    const base = toSnakeCase(c.name);
+    // A name that shadows an OpenSCAD builtin (hull, cube, offset ...) cannot be a
+    // module name, so it gets a suffix; every reference follows via `rename`.
+    const snake = toSnakeCase(c.name);
+    const base = identifierIssue(snake) ? `${snake}_part` : snake;
+    // The sheet's prose is rewritten only for format renames ("Wall Mount" ->
+    // wall_mount); a builtin suffix would turn "the cylinder" into "the cylinder_part".
+    if (base === snake) prose.add(c.name);
     let name = base;
     for (let i = 2; used.has(name); i++) name = `${base}_${i}`;
     used.add(name);
@@ -34,15 +41,26 @@ export function normalizeSpec(spec: AssemblySpec): AssemblySpec {
     return {
       ...c,
       name,
-      position: c.position ?? [0, 0, 0],
-      useModules: c.useModules?.filter((k) => k in ENGINEERING_MODULE_REGISTRY),
+      position: c.position ?? [0, 0, 0]
     };
   });
 
   const ref = (x?: string) => (x === undefined ? undefined : rename.get(x) ?? x);
+  
+  let sheet = spec.sheet;
+  if (sheet) {
+    const sortedNames = Array.from(rename.keys()).filter((n) => prose.has(n)).sort((a, b) => b.length - a.length);
+    for (const oldName of sortedNames) {
+      const newName = rename.get(oldName)!;
+      if (oldName === newName) continue;
+      const escaped = oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      sheet = sheet.replace(new RegExp(`\\b${escaped}\\b`, 'g'), newName);
+    }
+  }
 
   return {
     ...spec,
+    sheet,
     components,
     jointContracts: spec.jointContracts?.map((j) => ({ ...j, partA: ref(j.partA), partB: ref(j.partB) })),
     stressPoints: spec.stressPoints.map((s) => ({ ...s, component: ref(s.component) })),

@@ -18,7 +18,7 @@ describe('normalizeSpec', () => {
       assemblyName: 'holder',
       boundingBox: { width: 100, length: 120, height: 80 },
       components: [
-        { name: 'Wall Mount Backplate', description: 'b', useModules: ['fastener_hardware', 'nope'] },
+        { name: 'Wall Mount Backplate', description: 'b' },
         { name: 'Cup Receptacle', description: 'c', position: [0, 5, 0] },
       ],
       jointContracts: [{ type: 'cantilever_gusset', clearance: 0, partA: 'Wall Mount Backplate', partB: 'Cup Receptacle' }],
@@ -27,7 +27,6 @@ describe('normalizeSpec', () => {
     const n = normalizeSpec(spec);
     expect(n.components?.map((c) => c.name)).toEqual(['wall_mount_backplate', 'cup_receptacle']);
     expect(n.components?.[0].position).toEqual([0, 0, 0]);
-    expect(n.components?.[0].useModules).toEqual(['fastener_hardware']);
     expect(n.components?.[1].position).toEqual([0, 5, 0]);
     expect(n.jointContracts?.[0]).toMatchObject({ partA: 'wall_mount_backplate', partB: 'cup_receptacle' });
     expect(n.stressPoints[0].component).toBe('wall_mount_backplate');
@@ -39,5 +38,21 @@ describe('normalizeSpec', () => {
       components: [{ name: 'Leg', description: '' }, { name: 'leg', description: '' }, { name: 'LEG', description: '' }],
     });
     expect(normalizeSpec(spec).components?.map((c) => c.name)).toEqual(['leg', 'leg_2', 'leg_3']);
+  });
+
+  it('renames a component that shadows an OpenSCAD builtin, and every reference and sheet mention', () => {
+    const spec = AssemblySpecSchema.parse({
+      assemblyName: 'boat', boundingBox: { width: 1, length: 1, height: 1 },
+      sheet: 'The Hull carries the Mast.',
+      components: [{ name: 'Hull', description: '' }, { name: 'Mast', description: '' }],
+      jointContracts: [{ type: 'press_fit', clearance: 0, partA: 'Hull', partB: 'Mast' }],
+      stressPoints: [{ component: 'Hull', location: 'keel', loadCase: '5 N', risk: 'low', mitigation: 'none' }],
+    });
+    const n = normalizeSpec(spec);
+    expect(n.components?.map((c) => c.name)).toEqual(['hull_part', 'mast']);
+    expect(n.jointContracts?.[0]).toMatchObject({ partA: 'hull_part', partB: 'mast' });
+    expect(n.stressPoints[0].component).toBe('hull_part');
+    // Prose is rewritten for format renames (Mast -> mast) but not for the builtin suffix.
+    expect(n.sheet).toBe('The Hull carries the mast.');
   });
 });

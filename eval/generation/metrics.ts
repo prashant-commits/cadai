@@ -1,5 +1,7 @@
+import type { AssemblySpec } from '@/lib/agent/assembly-spec';
 import type { AgentStateType } from '@/lib/agent/graph';
 import { isZeroVec } from '@/lib/design/placement-geometry';
+import { judgeCompiledModel, type VisualCritique } from './judge';
 
 export interface GenerationMetrics {
   id: string;
@@ -14,18 +16,101 @@ export interface GenerationMetrics {
   shellsOk: boolean | null;
   errorKinds: string[];
   attempts: number;
-  /** Research produced a brief this run (false on any skip reason). */
-  researchRan: boolean;
-  /** Whether the approach the Architect was bound to had a real source; null when research did not run. */
-  citedApproachChosen: boolean | null;
   wallMs: number;
+  /** Variants the architect planned on the last pass that still had them. */
+  variantCount: number;
+  /** How many of those variants have `review.validated`. */
+  variantsValidated: number;
+  /** Highest `review.attempts` across those variants. */
+  reviewRounds: number;
+  /** The recommended variant's `review.validated`, or null when it has no review. */
+  chosenValidated: boolean | null;
+  /**
+   * The standalone judge's verdict. Null when the critic is off, there is
+   * no STL, or the judge call failed. True only when the judge says the
+   * part matches and reported no major finding. A missing graph violation
+   * is not a match: the graph critic never runs after an audit error.
+   */
+  visualMatch: boolean | null;
+  /** Findings the judge returned. Null when the part was not judged. */
+  visualFindings: number | null;
+}
+
+export interface VisualScore {
+  visualMatch: boolean | null;
+  visualFindings: number | null;
+}
+
+const UNJUDGED: VisualScore = { visualMatch: null, visualFindings: null };
+
+/** True when the judge matched the request and raised no major finding. */
+export function scoreCritique(critique: VisualCritique | null): VisualScore {
+  if (!critique) return UNJUDGED;
+  const findings = critique.findings ?? [];
+  return {
+    visualMatch: critique.matchesIntent && !findings.some((finding) => finding.severity === 'major'),
+    visualFindings: findings.length,
+  };
+}
+
+/**
+ * Judge the compiled STL when the critic arm is on. Does nothing otherwise,
+ * and does not read specViolations.
+ */
+export async function measureVisualMatch(input: {
+  criticOn: boolean;
+  stl: string | null | undefined;
+  request: string;
+  spec: AssemblySpec | null;
+}): Promise<VisualScore> {
+  if (!input.criticOn || !input.stl) return UNJUDGED;
+  return scoreCritique(await judgeCompiledModel({
+    stl: input.stl,
+    request: input.request,
+    spec: input.spec,
+  }));
+}
+
+/**
+ * Variant list captured at the spec-gate interrupt. The drafter clears
+ * `specVariants` after the gate, so the final state can no longer answer
+ * "how many did the architect plan".
+ */
+export interface SpecGateCapture {
+  variants: Array<{
+    id: string;
+    review?: { validated: boolean; attempts: number } | null;
+  }>;
+  recommendedId?: string | null;
+}
+
+function variantStats(
+  variants: SpecGateCapture['variants'],
+  recommendedId: string | null,
+): Pick<GenerationMetrics, 'variantCount' | 'variantsValidated' | 'reviewRounds' | 'chosenValidated'> {
+  let reviewRounds = 0;
+  let variantsValidated = 0;
+  for (const variant of variants) {
+    const attempts = variant.review?.attempts ?? 0;
+    if (attempts > reviewRounds) reviewRounds = attempts;
+    if (variant.review?.validated) variantsValidated += 1;
+  }
+  const chosen = recommendedId ? variants.find((variant) => variant.id === recommendedId) : undefined;
+  return {
+    variantCount: variants.length,
+    variantsValidated,
+    reviewRounds,
+    chosenValidated: chosen?.review ? chosen.review.validated : null,
+  };
 }
 
 export function metricsFromState(
   id: string,
   model: string,
   state: Partial<AgentStateType>,
-  wallMs: number
+  wallMs: number,
+  capture?: SpecGateCapture | null,
+  visual?: VisualScore | null,
 ): GenerationMetrics {
   const violations = state.specViolations ?? [];
   const errors = violations.filter((v) => v.severity === 'error');
@@ -35,8 +120,17 @@ export function metricsFromState(
   const hasModel = !!state.modelInfo;
   const specHasExtents = !!state.assemblySpec?.components?.some((c) => (c as { localExtents?: unknown }).localExtents);
 
-  const researchRan = !state.researchSkipReason && !!state.designBrief;
-  const chosen = state.designContract?.researchApproach;
+  // Prefer the variants still on the final state. Once the drafter has cleared
+  // them, fall back to the list runOne copied off the spec-gate interrupt.
+  const live = state.specVariants ?? [];
+  const variants = live.length > 0
+    ? live.map((variant) => ({ id: variant.id, review: variant.review }))
+    : (capture?.variants ?? []);
+  const recommendedId = (live.length > 0 ? state.specBrief?.recommendedId : undefined)
+    ?? capture?.recommendedId
+    ?? state.specBrief?.recommendedId
+    ?? null;
+  const judged = visual ?? UNJUDGED;
 
   return {
     id,
@@ -51,9 +145,10 @@ export function metricsFromState(
     shellsOk: hasModel ? !has('shells') : null,
     errorKinds: [...new Set(errors.map((v) => v.kind))],
     attempts: state.attemptCount ?? 0,
-    researchRan,
-    citedApproachChosen: researchRan && chosen ? chosen.approach.grounding === 'cited' : null,
     wallMs,
+    ...variantStats(variants, recommendedId),
+    visualMatch: judged.visualMatch,
+    visualFindings: judged.visualFindings,
   };
 }
 
@@ -62,8 +157,14 @@ function rate(rows: GenerationMetrics[], pick: (m: GenerationMetrics) => boolean
   return `${vals.filter(Boolean).length}/${vals.length}`;
 }
 
+function meanOf(rows: GenerationMetrics[], pick: (m: GenerationMetrics) => number | null): string {
+  const vals = rows.map(pick).filter((value): value is number => value !== null);
+  if (vals.length === 0) return '0.0';
+  const mean = vals.reduce((sum, value) => sum + value, 0) / vals.length;
+  return (Math.round(mean * 10) / 10).toFixed(1);
+}
+
 export function summarize(rows: GenerationMetrics[]): Record<string, string> {
-  const mean = rows.length ? Math.round(rows.reduce((a, m) => a + m.wallMs, 0) / rows.length) : 0;
   return {
     n: String(rows.length),
     specOk: rate(rows, (m) => m.specOk),
@@ -74,9 +175,13 @@ export function summarize(rows: GenerationMetrics[]): Record<string, string> {
     localFrameOk: rate(rows, (m) => m.localFrameOk),
     extentsOk: rate(rows, (m) => m.extentsOk),
     shellsOk: rate(rows, (m) => m.shellsOk),
-    researchRan: rate(rows, (m) => m.researchRan),
-    citedApproachChosen: rate(rows, (m) => m.citedApproachChosen),
-    meanWallMs: String(mean),
+    meanVariantCount: meanOf(rows, (m) => m.variantCount),
+    meanVariantsValidated: meanOf(rows, (m) => m.variantsValidated),
+    meanReviewRounds: meanOf(rows, (m) => m.reviewRounds),
+    chosenValidated: rate(rows, (m) => m.chosenValidated),
+    visualMatch: rate(rows, (m) => m.visualMatch),
+    meanVisualFindings: meanOf(rows, (m) => m.visualFindings),
+    meanWallMs: meanOf(rows, (m) => m.wallMs),
   };
 }
 
@@ -93,8 +198,12 @@ export function scoresFor(m: GenerationMetrics): Array<{ name: string; value: nu
   bool('local_frame_ok', m.localFrameOk);
   bool('extents_ok', m.extentsOk);
   bool('shells_ok', m.shellsOk);
-  bool('research_ran', m.researchRan);
-  bool('cited_approach_chosen', m.citedApproachChosen);
+  out.push({ name: 'variant_count', value: m.variantCount, dataType: 'NUMERIC' });
+  out.push({ name: 'variants_validated', value: m.variantsValidated, dataType: 'NUMERIC' });
+  out.push({ name: 'review_rounds', value: m.reviewRounds, dataType: 'NUMERIC' });
+  bool('chosen_validated', m.chosenValidated);
+  bool('visual_match', m.visualMatch);
+  if (m.visualFindings !== null) out.push({ name: 'visual_findings', value: m.visualFindings, dataType: 'NUMERIC' });
   out.push({ name: 'wall_ms', value: m.wallMs, dataType: 'NUMERIC' });
   return out;
 }

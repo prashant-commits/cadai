@@ -49,8 +49,17 @@ function renderKey(key: string, value: unknown): string {
   }
 }
 
-function renderComponent(c: { name?: string; description?: string }): string {
-  return `- ${c.name ?? 'unnamed'}: ${c.description ?? ''}\n`;
+function renderComponent(c: Record<string, unknown>): string {
+  const name = (c.name as string) ?? 'unnamed';
+  const shape = c.shape as { kind?: string } | undefined;
+  const kind = shape?.kind;
+  const extents = Array.isArray(c.localExtents) ? c.localExtents : undefined;
+  const pos = Array.isArray(c.position) ? c.position : undefined;
+
+  if (kind && extents && pos) {
+    return `- ${name}: ${kind} ${extents.join('x')} mm @ [${pos.join(', ')}]\n`;
+  }
+  return `- ${name}: ${(c.description as string) ?? ''}\n`;
 }
 
 function renderListItem(key: string, item: Record<string, unknown>): string {

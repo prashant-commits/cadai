@@ -7,6 +7,7 @@ vi.mock('@langchain/openai', () => {
     invoke = invokeMock;
     stream = streamMock;
     withStructuredOutput() { return this; }
+    withConfig() { return this; }
     bindTools() { return this; }
   }
   return { ChatOpenAI: vi.fn().mockImplementation(function () { return new F(); }) };
@@ -26,25 +27,28 @@ afterAll(async () => {
 describe('graph custom-channel writes', () => {
   beforeEach(() => {
     process.env.CADAI_VISUAL_CRITIC = 'off';
-    process.env.CADAI_RESEARCH = 'off';
     invokeMock.mockReset();
     streamMock.mockReset();
   });
 
   it('streams the architect spec as markdown deltas tagged with the node id', async () => {
-    // withStructuredOutput().stream() yields progressively-complete objects.
-    streamMock.mockReturnValueOnce(
-      (async function* () {
-        yield { assemblyName: 'bracket_body' };
-        yield { assemblyName: 'bracket_body', boundingBox: { width: 62, length: 40, height: 18 } };
-        yield {
-          assemblyName: 'bracket_body',
-          boundingBox: { width: 62, length: 40, height: 18 },
-          components: [{ name: 'body', description: 'main body' }],
-          assumptions: [], openQuestions: [],
-        };
-      })()
-    );
+    // The planner reply is buffered by LangChain's parser, so it arrives whole: a
+    // status line is written when planning starts and the brief when it returns.
+    invokeMock.mockResolvedValueOnce({
+      brief: 'Bracket plan',
+      assumptions: [],
+      openQuestions: [],
+      variants: [{ id: 'A', name: 'bracket', idea: 'bracket' }],
+      recommendedId: 'A',
+    });
+
+    invokeMock.mockResolvedValueOnce({
+      assemblyName: 'bracket_body',
+      sheet: '62 x 40 x 18 mm',
+      boundingBox: { width: 62, length: 40, height: 18 },
+      components: [{ name: 'body', description: 'main body' }],
+      assumptions: [], openQuestions: []
+    });
 
     const agent = createCadAgent( 'deepseek-v4-flash');
     const key = runCheckpointKey('writer-test', 'run-1');
@@ -61,6 +65,8 @@ describe('graph custom-channel writes', () => {
     const deltas = custom.filter((c) => c.t === 'delta' && c.node === 'architectNode');
     expect(deltas.length).toBeGreaterThan(0);
     const md = deltas.map((d) => d.text).join('');
+    expect(md).toContain('Planning up to');
+    expect(md).toContain('Bracket plan');
     expect(md).toContain('bracket_body');
     expect(md).toContain('62 x 40 x 18 mm');
     // The whole point: no JSON reaches the channel.

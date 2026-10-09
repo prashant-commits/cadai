@@ -12,7 +12,7 @@ export type StreamEvent =
   | { t: 'section'; id: string; state: 'close'; status: SectionStatus; summary?: string }
   /** Markdown appended to whichever section is currently open. */
   | { t: 'delta'; text: string }
-  | { t: 'gate'; id: string; runId: string; payload: GatePayload }
+  | { t: 'gate'; id: string; runId: string; payload: GatePayload; /** epoch ms after which the server may delete the paused run (now + CADAI_CHECKPOINT_TTL_MS) */ expiresAt?: number }
   /** Terminal for a completed run. `summary` becomes ChatMessage.content. */
   | { t: 'result'; summary: string; code?: string; stl?: string; designContract?: DesignContract }
   | { t: 'error'; message: string };

@@ -16,7 +16,7 @@ import { applyContract } from '@/lib/design/contract';
 import { parseParams } from '@/lib/design/parse-params';
 import { setParamValue } from '@/lib/design/write-params';
 import { compileOpenScad } from '@/lib/engine/openscad-bridge';
-import { DEFAULT_TEXT_MODEL } from '@/lib/agent/models';
+import { DEFAULT_MODEL } from '@/lib/agent/models';
 
 interface AppState {
   selectedModel: string;
@@ -84,7 +84,7 @@ interface AppState {
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
-  selectedModel: DEFAULT_TEXT_MODEL,
+  selectedModel: DEFAULT_MODEL,
   threads: [],
   activeThreadId: '',
 
@@ -127,7 +127,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       params: parseParams(initialCode),
       stlContent: active.stlContent || null,
       modelInfo: active.modelInfo || null,
-      selectedModel: active.selectedModel || DEFAULT_TEXT_MODEL,
+      selectedModel: active.selectedModel || DEFAULT_MODEL,
     });
   },
 
@@ -550,8 +550,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...(targetThread.designContract ?? { standing: {}, pinnedParams: {} }),
       spec: contract.spec,
       specApprovedAt: contract.specApprovedAt,
-      // Server-authoritative like `spec`: stamped at the research gate.
-      researchApproach: contract.researchApproach,
     };
 
     const updatedThreads = threads.map((t) =>

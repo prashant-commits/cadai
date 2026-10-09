@@ -10,7 +10,9 @@ const spec: AssemblySpec = {
   components: [{ name: 'box', description: 'a box' }],
   stressPoints: [],
   assumptions: [],
-  openQuestions: []
+  openQuestions: [],
+  sheet: '',
+  guides: []
 };
 
 function validation(over: Partial<ValidationResult> = {}): ValidationResult {

@@ -45,7 +45,20 @@ describe('bridgeGraphStream', () => {
     const payload = { kind: 'spec', spec: null, contract: null, revisionCount: 0 };
     const out = await bridge([['updates', { __interrupt__: [{ id: 'i1', value: payload }] }]]);
     const gate = out.find((e) => e.t === 'gate');
-    expect(gate).toEqual({ t: 'gate', id: 'i1', runId: 'run-1', payload });
+    expect(gate).toMatchObject({ t: 'gate', id: 'i1', runId: 'run-1', payload });
+  });
+
+  it('puts the gate expiry (now + CADAI_CHECKPOINT_TTL_MS) on the gate event', async () => {
+    process.env.CADAI_CHECKPOINT_TTL_MS = '3600000';
+    try {
+      const before = Date.now();
+      const out = await bridge([['updates', { __interrupt__: [{ id: 'i1', value: { kind: 'spec' } }] }]]);
+      const gate = out.find((e) => e.t === 'gate') as { expiresAt?: number };
+      expect(gate.expiresAt).toBeGreaterThanOrEqual(before + 3600000);
+      expect(gate.expiresAt).toBeLessThanOrEqual(Date.now() + 3600000);
+    } finally {
+      delete process.env.CADAI_CHECKPOINT_TTL_MS;
+    }
   });
 
   it('closes an open section before emitting a gate', async () => {

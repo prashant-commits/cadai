@@ -1,8 +1,6 @@
 import type { AssemblySpec } from './assembly-spec';
 import type { SpecViolation } from './spec-audit';
 import type { ModelInfo } from '@/types';
-import type { ChosenApproach } from '../research/design-brief';
-
 export interface RunSummaryInput {
   spec: AssemblySpec | null;
   modelInfo: ModelInfo | null;
@@ -10,7 +8,6 @@ export interface RunSummaryInput {
   /** Total draft+repair passes. 1 means the first draft compiled. */
   attempts: number;
   isValid: boolean;
-  approach?: ChosenApproach;
 }
 
 /**
@@ -23,12 +20,8 @@ export interface RunSummaryInput {
  * behind the message's own code disclosure.
  */
 export function composeRunSummary(input: RunSummaryInput): string {
-  const { spec, modelInfo, violations, attempts, isValid, approach } = input;
+  const { spec, modelInfo, violations, attempts, isValid } = input;
   const lines: string[] = [];
-
-  // ChosenApproach wraps the Approach ({ partClass, approach, chosenAt }), so
-  // the human-readable name is one level in.
-  if (approach?.approach?.name) lines.push(`Approach: ${approach.approach.name}.`);
 
   if (!isValid) {
     lines.push(

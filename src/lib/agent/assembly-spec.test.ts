@@ -13,10 +13,10 @@ describe('AssemblySpecSchema', () => {
     const spec = AssemblySpecSchema.parse(minimal);
     expect(spec.stressPoints).toEqual([]);
     expect(spec.components?.[0].bedFace).toBeUndefined();
-    expect(spec.components?.[0].matingFaces).toBeUndefined();
   });
 
   it('has no edge-treatment field: generated parts ship with sharp edges', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const json = assemblySpecRequestSchema() as any;
     expect(json.properties.edgeTreatments).toBeUndefined();
     // A stale client spec that still carries the field is accepted and the field dropped.
@@ -27,7 +27,7 @@ describe('AssemblySpecSchema', () => {
     expect((spec as Record<string, unknown>).edgeTreatments).toBeUndefined();
   });
 
-  it('carries bed faces, mating faces and graded stress points', () => {
+  it('carries bed faces and graded stress points', () => {
     const spec = AssemblySpecSchema.parse({
       ...minimal,
       components: [
@@ -35,7 +35,6 @@ describe('AssemblySpecSchema', () => {
           name: 'bracket',
           description: 'an L bracket',
           bedFace: '-Z',
-          matingFaces: ['-X (wall mount)'],
           position: [0, 0, 0],
         },
       ],
@@ -45,30 +44,7 @@ describe('AssemblySpecSchema', () => {
     });
 
     expect(spec.components?.[0].bedFace).toBe('-Z');
-    expect(spec.components?.[0].matingFaces).toEqual(['-X (wall mount)']);
     expect(spec.stressPoints[0].risk).toBe('high');
-  });
-
-  it('rejects more than six mating faces, or the same face twice', () => {
-    const six = ['+Z', '-Z', '+X', '-X', '+Y', '-Y'];
-    expect(
-      AssemblySpecSchema.safeParse({
-        ...minimal,
-        components: [{ name: 'b', description: 'b', matingFaces: six }],
-      }).success,
-    ).toBe(true);
-    expect(
-      AssemblySpecSchema.safeParse({
-        ...minimal,
-        components: [{ name: 'b', description: 'b', matingFaces: [...six, 'again'] }],
-      }).success,
-    ).toBe(false);
-    expect(
-      AssemblySpecSchema.safeParse({
-        ...minimal,
-        components: [{ name: 'b', description: 'b', matingFaces: ['+Z (lid seat)', '+Z (lid seat)'] }],
-      }).success,
-    ).toBe(false);
   });
 
   it('rejects a bed face or risk outside the vocabulary the prompts teach', () => {
@@ -152,14 +128,6 @@ describe('assemblySpecRequestSchema', () => {
     expect(assemblySpecRequestSchema().$schema).toBeUndefined();
   });
 
-  // `.max(6)` on the zod array is what puts maxItems here. A refine does not
-  // strip it (checked against zod 4 toJSONSchema), so the decoder is capped
-  // without a second write in assemblySpecRequestSchema().
-  it('caps matingFaces at 6 items in the schema the decoder sees', () => {
-    const json = assemblySpecRequestSchema() as any;
-    expect(json.properties.components.items.properties.matingFaces.maxItems).toBe(6);
-  });
-
   // The bound belongs to the request only. Binary floating point makes
   // 0.4 % 0.01 come out as 0.0099999..., so validating multipleOf would reject
   // legitimate chamfer sizes the model was right to emit.
@@ -175,15 +143,14 @@ describe('assemblySpecRequestSchema', () => {
 });
 
 describe('placement and extents fields', () => {
-  it('accepts form, localExtents, positionNote and useModules, and tolerates their absence', () => {
+  it('accepts localExtents, positionNote, and tolerates their absence', () => {
     const spec = AssemblySpecSchema.parse({
       ...minimal,
       components: [
-        { name: 'base', description: 'b', form: 'box', localExtents: [40, 30, 6], position: [0, 0, 0] },
-        { name: 'arm', description: 'a', localExtents: [6, 30, 25], position: [0, 0, 6], positionNote: 'z = top of base (localExtents z = 6)', useModules: ['structural_ribs_gussets'] },
+        { name: 'base', description: 'b', localExtents: [40, 30, 6], position: [0, 0, 0] },
+        { name: 'arm', description: 'a', localExtents: [6, 30, 25], position: [0, 0, 6], positionNote: 'z = top of base (localExtents z = 6)' },
       ],
     });
-    expect(spec.components?.[0].form).toBe('box');
     expect(spec.components?.[1].positionNote).toContain('top of base');
     expect(AssemblySpecSchema.safeParse(minimal).success).toBe(true);
   });
@@ -197,8 +164,9 @@ describe('placement and extents fields', () => {
       }],
     });
     expect(spec.stressPoints[0].gusset?.at).toEqual([10, 30, 50]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const json = assemblySpecRequestSchema() as any;
-    const gusset = json.properties.stressPoints.items.properties.gusset;
+    const gusset = json.properties.stressPoints.items.properties.gusset.anyOf[0];
     expect(gusset.properties.along.enum).toEqual(['x', 'y']);
     expect(gusset.properties.legMm.multipleOf).toBe(0.01);
     expect(
@@ -210,6 +178,7 @@ describe('placement and extents fields', () => {
   });
 
   it('marks position and localExtents required in the REQUEST schema only', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const json = assemblySpecRequestSchema() as any;
     const items = json.properties.components.items;
     expect(items.required).toEqual(expect.arrayContaining(['name', 'description', 'position', 'localExtents']));
@@ -218,8 +187,9 @@ describe('placement and extents fields', () => {
   });
 
   it('no longer carries a dimensions object on components', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const json = assemblySpecRequestSchema() as any;
-    expect(json.properties.components.items.properties.dimensions).toBeUndefined();
-    expect(json.properties.jointContracts.items.properties.dimensions).toBeDefined();
+    expect(json.properties.components?.items?.anyOf?.[0]?.properties?.dimensions).toBeUndefined();
+    expect(json.properties.jointContracts?.items?.anyOf?.[0]?.properties?.dimensions).toBeUndefined();
   });
 });

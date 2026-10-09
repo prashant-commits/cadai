@@ -1,14 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { ChatOpenAI } from '@langchain/openai';
-import { getChatModel, getVisionModel } from './model-provider';
-import { EXPLABS_BASE_URL, DEFAULT_TEXT_MODEL, DEFAULT_VISION_MODEL } from './models';
+import { getChatModel } from './model-provider';
+import { EXPLABS_BASE_URL, DEFAULT_MODEL } from './models';
 
 const saved = { ...process.env };
 
 beforeEach(() => {
   process.env.EXPLABS_API_KEY = 'test-explabs-key';
   delete process.env.CADAI_MODEL;
-  delete process.env.CADAI_VISION_MODEL;
 });
 
 afterEach(() => {
@@ -24,9 +23,19 @@ describe('getChatModel', () => {
     expect(model.clientConfig.baseURL).toBe(EXPLABS_BASE_URL);
   });
 
-  it('defaults to the model measured to produce valid Assembly Specs', () => {
-    expect(getChatModel().model).toBe(DEFAULT_TEXT_MODEL);
-    expect(DEFAULT_TEXT_MODEL).toBe('deepseek-v4-flash');
+  it('uses 0.2 by default and the requested temperature otherwise', () => {
+    expect(getChatModel('gpt-5.6-luna').temperature).toBe(0.2);
+    expect(getChatModel('gpt-5.6-luna', { temperature: 0.6 }).temperature).toBe(0.6);
+  });
+
+  it('claude-opus-5.5 is pinned to temperature 1, overriding both the default and the revision temperature', () => {
+    expect(getChatModel('claude-opus-5.5').temperature).toBe(1);
+    expect(getChatModel('claude-opus-5.5', { temperature: 0.6 }).temperature).toBe(1);
+  });
+
+  it('defaults to the multimodal model', () => {
+    expect(getChatModel().model).toBe(DEFAULT_MODEL);
+    expect(DEFAULT_MODEL).toBe('gpt-5.6-luna');
   });
 
   it('lets CADAI_MODEL override the default without touching the picker', () => {
@@ -48,23 +57,14 @@ describe('getChatModel', () => {
   });
 });
 
-describe('getVisionModel', () => {
-  // The critic is the only node that sends images. Routing it to a DeepSeek
-  // text slug makes the gateway reject the call outright ("The selected model
-  // route cannot accept image input"), which is what this fallback prevents.
-  it('falls back to a multimodal slug when the selected model cannot see', () => {
-    const vision = getVisionModel('deepseek-v4-flash');
-    expect(vision).toBeInstanceOf(ChatOpenAI);
-    expect(vision.model).toBe(DEFAULT_VISION_MODEL);
-  });
-
-  it('reuses the selected model when it is already the multimodal one', () => {
-    const vision = getVisionModel(DEFAULT_VISION_MODEL);
-    expect(vision.model).toBe(DEFAULT_VISION_MODEL);
-  });
-
-  it('honours a CADAI_VISION_MODEL override', () => {
-    process.env.CADAI_VISION_MODEL = 'some-other-vision-slug';
-    expect(getVisionModel('deepseek-v4-flash').model).toBe('some-other-vision-slug');
+describe('model catalogue', () => {
+  it('offers gpt-6-sol as a vision model while the default stays gpt-5.6-luna', async () => {
+    const { GATEWAY_MODELS, isVisionModel, DEFAULT_MODEL } = await import('./models');
+    expect(GATEWAY_MODELS.map((m) => m.slug)).toEqual(['gpt-5.6-luna', 'gpt-6-luna', 'gpt-6-sol', 'claude-opus-5.5']);
+    expect(GATEWAY_MODELS[2].label).toBe('GPT-6 Sol - higher quality (paid)');
+    expect(GATEWAY_MODELS[3].label).toBe('Claude Opus 5.5 - highest quality (paid)');
+    expect(isVisionModel('claude-opus-5.5')).toBe(true);
+    expect(isVisionModel('gpt-6-sol')).toBe(true);
+    expect(DEFAULT_MODEL).toBe('gpt-5.6-luna');
   });
 });

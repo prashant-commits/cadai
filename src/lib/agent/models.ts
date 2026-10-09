@@ -12,22 +12,8 @@
 
 export const EXPLABS_BASE_URL = 'https://api.experientiallabs.ai/v1';
 
-/** Text/structured-output default. 5/5 valid Assembly Specs, tool-calling, $0. */
-export const DEFAULT_TEXT_MODEL = 'deepseek-v4-flash';
-
-/**
- * Vision default for the Visual Critic.
- *
- * gpt-5.6-luna is the only multimodal slug tested that also serves
- * `response_format: json_schema`, which the critic needs for its structured
- * critique. deepseek-v4-flash-vision-exp reads images but the gateway refuses
- * response_format on that profile, so the critic cannot use it and it is
- * deliberately absent from GATEWAY_MODELS below.
- *
- * Note that luna enforces OpenAI STRICT json_schema: every property must appear
- * in `required`. That is why VisualCritiqueSchema has no optional fields.
- */
-export const DEFAULT_VISION_MODEL = 'gpt-5.6-luna';
+/** Multimodal model used for all nodes (architect, drafter, critic). */
+export const DEFAULT_MODEL = 'gpt-5.6-luna';
 
 /**
  * What the model picker offers, and the set a persisted thread's slug is
@@ -37,18 +23,23 @@ export const DEFAULT_VISION_MODEL = 'gpt-5.6-luna';
  * gateway serves, so that a new model can be tried without a code change. The
  * list exists so the UI has one source of truth and so a thread saved under a
  * slug we no longer serve loads on the default instead of erroring.
+ *
+ * gpt-6-sol: probed on the gateway on 2026-10-08. It accepts images and returned
+ * a valid strict variant spec with 0 audit errors in 66 s. It costs $2/$10 per M
+ * tokens, about 10x gpt-5.6-luna, hence the "(paid)" label and the unchanged default.
  */
 export const GATEWAY_MODELS = [
-  { slug: DEFAULT_TEXT_MODEL, label: 'DeepSeek v4 Flash — Recommended' },
-  { slug: 'deepseek-v4.1-flash', label: 'DeepSeek v4.1 Flash' },
-  { slug: 'deepseek-v4-pro', label: 'DeepSeek v4 Pro' },
-  { slug: 'deepseek-v3.1', label: 'DeepSeek v3.1 — fastest' },
-  { slug: 'deepseek-v3.2', label: 'DeepSeek v3.2' },
-  { slug: 'glm-5.3-flash', label: 'GLM-5.3 Flash' },
-  { slug: 'qwen3.8-27b', label: 'Qwen3.8 27B' },
-  { slug: DEFAULT_VISION_MODEL, label: 'GPT-5.6 Luna — multimodal' },
+  { slug: 'gpt-5.6-luna', label: 'GPT-5.6 Luna - Recommended' },
+  { slug: 'gpt-6-luna', label: 'GPT-6 Luna' },
+  { slug: 'gpt-6-sol', label: 'GPT-6 Sol - higher quality (paid)' },
+  // Vision verified on 2026-10-08; its route only accepts temperature 1 (see FIXED_TEMPERATURE).
+  { slug: 'claude-opus-5.5', label: 'Claude Opus 5.5 - highest quality (paid)' },
 ] as const;
 
 export function isGatewayModel(slug: string | undefined): boolean {
   return GATEWAY_MODELS.some((m) => m.slug === slug);
+}
+
+export function isVisionModel(slug: string | undefined): boolean {
+  return isGatewayModel(slug);
 }

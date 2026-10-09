@@ -26,6 +26,7 @@ export interface PlacementReport {
   /** Model-written top-level statements the composer removed. */
   removedStatements: number;
   components: PlacementComponent[];
+  notes?: string[];
 }
 
 const ZERO: Vec3 = [0, 0, 0];
@@ -135,6 +136,9 @@ export function placementSummary(report: PlacementReport | null, modelMinZ: numb
     if (report.composed) {
       const floating = findFloating(report.components);
       if (floating.length > 0) parts.push(`floating: ${floating.map((f) => `${f.name} (${f.gapMm} mm gap)`).join(', ')}`);
+    }
+    if (report.notes && report.notes.length > 0) {
+      parts.push(...report.notes);
     }
   }
   if (modelMinZ !== null) parts.push(`lowest point is at z = ${round2(modelMinZ)} mm`);

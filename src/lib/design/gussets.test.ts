@@ -71,7 +71,7 @@ describe('gussetsFor', () => {
   const spec = (components: string[], stressPoints: AssemblySpec['stressPoints']): AssemblySpec => ({
     assemblyName: 't', boundingBox: { width: 1, length: 1, height: 1 },
     components: components.map((name) => ({ name, description: '' })),
-    stressPoints, assumptions: [], openQuestions: [],
+    stressPoints, assumptions: [], openQuestions: [], sheet: '', guides: [],
   });
   const gusset: GussetSpec = { corner: [0, 0, 0], along: 'x', floorDir: '+', legMm: 5, thicknessMm: 1, at: [1] };
 

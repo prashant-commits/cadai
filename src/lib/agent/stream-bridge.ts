@@ -1,11 +1,12 @@
 import type { GatePayload } from '@/types';
 import type { StreamEvent } from './stream-events';
+import { checkpointTtlMs } from './checkpointer';
 
 /** Human labels for graph nodes. An unlisted node falls back to its own id. */
 export const NODE_LABELS: Record<string, string> = {
-  researchNode: 'Design Researcher',
-  researchGate: 'Approach Review',
   architectNode: 'Mechanical Architect',
+  specIllustrator: 'Concept Sheets',
+  specReviewer: 'Sheet Reviewer',
   specGate: 'Spec Review',
   drafterNode: 'Parametric Drafter',
   validateCode: 'Physical Validator',
@@ -20,7 +21,7 @@ export const NODE_LABELS: Record<string, string> = {
  * the decoder's raw JSON tokens (and, when it degenerates, runaway repetition),
  * which must never reach the UI; they render their own markdown over `custom`.
  */
-const STRUCTURED_NODES = new Set(['researchNode', 'architectNode', 'visualCritic']);
+const STRUCTURED_NODES = new Set(['architectNode', 'specReviewer', 'visualCritic']);
 
 type CustomPayload = StreamEvent & { node?: string };
 
@@ -87,7 +88,7 @@ export async function bridgeGraphStream(
       if (!interrupts?.length) continue;
       closeOpen();
       for (const i of interrupts) {
-        emit({ t: 'gate', id: i.id, runId, payload: i.value as GatePayload });
+        emit({ t: 'gate', id: i.id, runId, payload: i.value as GatePayload, expiresAt: Date.now() + checkpointTtlMs() });
       }
     }
   }

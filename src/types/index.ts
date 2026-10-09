@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import { AssemblySpec } from '../lib/agent/assembly-spec';
 import { SpecViolation } from '../lib/agent/spec-audit';
-import type { ChosenApproach, DesignBrief } from '../lib/research/design-brief';
 
 export type ParamKind = 'number' | 'range' | 'enum' | 'boolean';
 export type ParamValue = number | boolean | string;
@@ -49,13 +48,6 @@ export interface DesignContract {
   spec?: AssemblySpec;                // approved intent
   specApprovedAt?: number;
   pinnedParams: Record<string, PinnedParam>;
-  /**
-   * The prior-art approach chosen at the research gate. Graph state is per
-   * run, so this is how the choice reaches every later turn: the gate stamps
-   * it, respondToUser returns the contract on `ready`, the client merges it
-   * and re-POSTs it. Research is skipped while it is present.
-   */
-  researchApproach?: ChosenApproach;
 }
 
 export interface ContractDiff {
@@ -65,13 +57,31 @@ export interface ContractDiff {
   rejected: Array<{ name: string; value: ParamValue; reason: string }>;  // violates standing bounds
 }
 
+import type { VariantId, VariantReview } from '../lib/agent/spec-variants';
+export type { VariantId, VariantReview };
+
+export interface GateVariant {
+  id: VariantId;
+  name: string;
+  idea: string;
+  spec: AssemblySpec | null;
+  sheetSvg: string | null;
+  review: VariantReview | null;
+  error?: string;
+}
+
 // The data a paused graph run sends the client to render a HIL gate.
 export type GatePayload =
   | {
       kind: 'spec';
-      spec: AssemblySpec | null;
+      brief?: string;
+      variants?: GateVariant[];
+      recommendedId?: VariantId;
+      openQuestions?: AssemblySpec['openQuestions'];
       contract: DesignContract | null;
       revisionCount: number;
+      /** legacy records only */
+      spec?: AssemblySpec | null;
     }
   | {
       kind: 'accept';
@@ -80,16 +90,12 @@ export type GatePayload =
       code: string;
       stl?: string;
       revisionCount: number;
-    }
-  | {
-      // No revisionCount: a thread gets exactly one research pass.
-      kind: 'research';
-      brief: DesignBrief;
     };
 
 // What the client sends back to resume a paused graph run.
 export interface GateDecision {
   action: 'approve' | 'revise' | 'cancel';
+  chosenVariantId?: VariantId;
   spec?: AssemblySpec;   // edited spec, spec-gate approve only
   comment?: string;      // revise feedback, or an optional approve note
   /**
@@ -99,11 +105,6 @@ export interface GateDecision {
    * was Revise, which threw the whole spec away and re-rolled the architect.
    */
   answers?: Record<string, string>;
-  /**
-   * The approach picked at the research gate; approve only. Absent or
-   * unknown falls back to the brief's recommendation rather than rejecting.
-   */
-  chosenApproachId?: string;
 }
 
 /** Where one gate got to. `open` is the only state that accepts input. */

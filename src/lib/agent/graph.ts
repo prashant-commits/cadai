@@ -2,48 +2,60 @@ import { StateGraph, Annotation, END, START, interrupt } from '@langchain/langgr
 import type { LangGraphRunnableConfig } from '@langchain/langgraph';
 import { BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
 import type { RunnableConfig } from '@langchain/core/runnables';
-import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { createSpecRenderer } from './spec-markdown';
+import { escapeMarkers } from './transcript';
 import { composeRunSummary } from './run-summary';
 import type { StreamEvent } from './stream-events';
-import { CAD_AI_SYSTEM_PROMPT, ARCHITECT_PREAMBLE, DRAFTER_PREAMBLE, REPAIR_PREAMBLE, CRITIC_PREAMBLE, DRAFTER_PLACEMENT_CONTRACT } from './system-prompt';
+import { systemPromptFor } from './system-prompt';
 import { extractOpenScadCode } from './code-extractor';
 import { validateOpenScadCode } from './code-validator';
 import { getFunctionalCadModuleTool } from './engineering-tools';
-import { AssemblySpec, AssemblySpecSchema, assemblySpecRequestSchema } from './assembly-spec';
+import { AssemblySpec, AssemblySpecSchema, variantSpecRequestSchema } from './assembly-spec';
 import { ValidationResult, ScadDiagnostic } from '../engine/scad-compiler';
-import { ModelInfo, GatePayload, GateDecision, DesignContract } from '@/types';
+import { ModelInfo, GatePayload, GateDecision, GateVariant, DesignContract } from '@/types';
 import { SpecViolation, auditSpec } from './spec-audit';
 import { analyzeStl } from '../engine/geometry-utils';
 import { renderStlViews, RenderedView } from '../engine/stl-renderer';
 import { shouldGateSpec, shouldGateAccept } from './gate-policy';
-import { getChatModel, getVisionModel } from './model-provider';
+import { getChatModel } from './model-provider';
+import { isVisionModel, DEFAULT_MODEL } from './models';
+import { renderVariantSheet } from '../spec-sheet/sheet-svg';
+import { blockoutScad } from '../spec-sheet/blockout-scad';
+import { svgToPngDataUrl } from '../spec-sheet/rasterize';
 import {
   composeAssembly,
   stripGeneratedAssembly,
   stripTopLevelGeometry,
-  hasGeneratedAssembly,
   analyzeTopLevel,
   instantiationFor,
 } from '../design/compose-assembly';
+import { matingCuts } from '../design/mating-cuts';
 import { measureModuleFrames, type ModuleFrame } from '../engine/module-frames';
-import { placementSummary, PlacementReport } from '../design/placement-report';
+import { PlacementReport } from '../design/placement-report';
 import { auditPlacement } from './placement-audit';
 import { auditSpecCoherence } from './spec-coherence';
 import { auditModuleGuards } from '../design/module-guards';
 import { auditHoles } from './hole-audit';
 import { normalizeSpec } from './spec-normalize';
+import { auditSpecShapes, auditSpecGround } from './spec-shape-audit';
 import { checkInterference } from '../engine/assembly-verifier';
+import { nullsToUndefined } from './strict-schema';
 import { getCheckpointer } from './checkpointer';
-import { resolveSearchProvider } from '../research/search-provider';
-import { chooseApproach, approachBlock, type ChosenApproach, type DesignBrief } from '../research/design-brief';
+import { VisualCritiqueSchema, SheetReviewSchema, ArchitectPlanSchema, structuredFor } from './llm-schemas';
 import {
-  runResearch,
-  preResearchSkipReason,
-  RESEARCH_SKIP_MESSAGES,
-  type ResearchSkipReason,
-} from '../research/research-node';
+  SpecVariant,
+  SpecBrief,
+  mergeBriefIntoSpec,
+  recommendedVariant,
+  processPlannerVariants,
+  maxVariantsFromEnv,
+  repeatsPrevious,
+  skeletonSignature,
+  VariantId,
+  ReviewFinding,
+  VariantReview,
+} from './spec-variants';
 
 const MAX_SPEC_REVISIONS = 2;
 const MAX_ACCEPT_REVISIONS = 2;
@@ -58,23 +70,95 @@ const MAX_ACCEPT_REVISIONS = 2;
  */
 const MAX_SEMANTIC_REPAIRS = 1;
 
-/** What the Design Inspector is allowed to say about a set of renders. */
-const VisualCritiqueSchema = z.object({
-  matchesIntent: z.boolean(),
-  findings: z
-    .array(
-      z.object({
-        issue: z.string().describe('What is visibly wrong, in one sentence.'),
-        severity: z.enum(['minor', 'major']),
-        // NOT optional. The vision default (gpt-5.6-luna) enforces OpenAI
-        // strict json_schema, which rejects any property missing from
-        // `required` with a 400 before the model ever runs.
-        view: z.string().describe('front | right | top | iso, or "" if it applies to all views'),
-      })
-    )
-    .default([]),
-});
+/** Sampling temperature of revision calls (fresh specs and the planner use 0.2). */
+export const REVISION_TEMPERATURE = 0.6;
+
 type VisualCritique = z.infer<typeof VisualCritiqueSchema>;
+
+/** A skipped component's reason means "drawn as a box" for stand-ins; anything else was left out entirely. */
+function isStandIn(reason: string): boolean {
+  return reason.includes('drawn as a box');
+}
+
+/** The mating-cavity convention, naming the joints it covers; empty when the spec has no clearance joints. */
+export function clearanceJointsNote(spec: AssemblySpec | null): string {
+  const cuts = spec ? matingCuts(spec) : [];
+  if (cuts.length === 0) return '';
+  const joints = cuts.map((c) => `${c.inserted} into ${c.host} (${c.clearance} mm)`).join(', ');
+  return `Mating cavities for clearance joints are cut by code after your script (host = partA): ${joints}. Do not model slots, sockets or holes for the inserted parts of these joints; model each inserted part at its skeleton size.`;
+}
+
+/** Cuts a note at the last word boundary within `max` characters. */
+function truncateAtWord(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const space = cut.lastIndexOf(' ');
+  return (space > 0 ? cut.slice(0, space) : cut).replace(/[\s,;:(-]+$/, '');
+}
+
+/** Sheet notes, at most 3: placeholders and omissions first (they change how to read the sheet), then code-cut mating cavities, then the variant's own assumptions. */
+export function sheetNotes(spec: AssemblySpec): string[] {
+  const placeholders = blockoutScad(spec).skipped.map((s) =>
+    isStandIn(s.reason)
+      ? `${s.name}: drawn as a box (${s.reason.replace(/;?\s*drawn as a box$/, '')})`
+      : `${s.name}: not drawn (${s.reason})`
+  );
+  const cutNotes = matingCuts(spec).map(
+    (c) => `${c.host}: cavity cut by code for ${c.inserted} (${c.clearance} mm)`
+  );
+  const assumptions = (spec.assumptions ?? []).map((a) => `${a.field}: ${a.value}`);
+  return [...placeholders, ...cutNotes, ...assumptions].map((n) => truncateAtWord(n, 60)).slice(0, 3); // 60 chars per note and 3 notes: the sheet's notes strip
+}
+
+/** Renders a variant's concept sheet. Deterministic and fast, so state keeps only the spec and this is redrawn on demand. */
+function drawSheet(v: SpecVariant): { svg: string; skipped: { name: string; reason: string }[] } {
+  if (!v.spec) throw new Error(`variant ${v.id} has no spec to draw`);
+  return renderVariantSheet({ id: v.id, name: v.name, idea: v.idea, spec: v.spec, notes: sheetNotes(v.spec) });
+}
+
+/** The sheet for a variant that has been drawn, or null when it has none or cannot be redrawn. */
+function drawnSheetSvg(v: SpecVariant): string | null {
+  if (!v.spec || v.drawnVersion === null) return null;
+  try {
+    return drawSheet(v).svg;
+  } catch (e) {
+    console.warn(`drawnSheetSvg: could not redraw sheet ${v.id}:`, e);
+    return null;
+  }
+}
+
+/**
+ * Per-call timeout for the review loop on Vercel: time left to the HARD limit
+ * (request start + maxDuration), less 15 s for the rest of the request, never
+ * below 5 s. Only the gate remains after these calls, so they may use more than
+ * the soft deadline that decides whether a new round starts. LangChain turns `config.timeout`
+ * into an abort signal. Off Vercel (no deadline) the config is untouched.
+ */
+const CALL_TAIL_MS = 15000; // 15 s kept back for the gate / response after the last call
+const MIN_CALL_MS = 5000; // a call is not worth starting with less than 5 s
+function remainingCallMs(deadline: number | null): number | null {
+  if (deadline === null || !process.env.VERCEL) return null;
+  return deadline - Date.now() - CALL_TAIL_MS;
+}
+function withBudget(config: RunnableConfig | undefined, deadline: number | null): RunnableConfig | undefined {
+  const left = remainingCallMs(deadline);
+  if (left === null) return config;
+  return { ...(config ?? {}), timeout: Math.max(MIN_CALL_MS, left) };
+}
+
+/** The variant's review with its unresolved spec errors folded in as major findings. */
+function reviewWithSpecErrors(v: SpecVariant, review: VariantReview | null): VariantReview | null {
+  const errors = v.specErrors ?? [];
+  if (errors.length === 0) return review;
+  const have = new Set((review?.findings ?? []).map((f) => f.issue));
+  return {
+    attempts: v.retries + 1, // the spec has been through this many generation attempts, reviewed or not
+    note: 'spec has unresolved errors',
+    ...(review ?? {}),
+    validated: false,
+    findings: [...errors.filter((e) => !have.has(e.issue)), ...(review?.findings ?? [])],
+  };
+}
 
 /** True when the spec names at least one component: placement is then always code-driven. */
 function specHasComponents(spec: AssemblySpec | null): boolean {
@@ -125,12 +209,16 @@ const MAX_INTERFERENCE_CHECKS = 4;
  * dowel too fat for its socket, a lid that fouls a boss. Both are invisible to
  * a bounding-box check, since neither changes the overall envelope.
  */
-async function checkAssemblyFit(
+export async function checkAssemblyFit(
   code: string,
   spec: AssemblySpec | null,
   frames: ModuleFrame[] = []
 ): Promise<SpecViolation[]> {
-  const joints = (spec?.jointContracts ?? []).filter((j) => j.partA && j.partB);
+  // Only a joint with a stated clearance > 0 is probed. Clearance <= 0 means the
+  // parts are fused or touching (the drafter is told to sink fused parts 0.01 mm
+  // into each other, which a strict overlap probe would flag); the shells check
+  // already covers parts that must touch.
+  const joints = (spec?.jointContracts ?? []).filter((j) => j.partA && j.partB && j.clearance > 0);
   if (!spec || joints.length === 0) return [];
 
   // Module definitions only. OpenSCAD implicitly unions every top-level object,
@@ -155,10 +243,10 @@ async function checkAssemblyFit(
         measured: `${result.intersectionVolumeMm3?.toFixed(2) ?? 'unknown'}mm3 of overlap`,
         severity: 'error',
         message:
-          `'${joint.partA}' and '${joint.partB}' interpenetrate by ` +
-          `${result.intersectionVolumeMm3?.toFixed(2) ?? 'an unknown volume'}mm3, but their ` +
+          `'${joint.partB}' exceeds its skeleton: it interpenetrates '${joint.partA}' by ` +
+          `${result.intersectionVolumeMm3?.toFixed(2) ?? 'an unknown volume'}mm3 beyond the cavity code cuts for it, but their ` +
           `${joint.type} joint declares ${joint.clearance}mm of clearance. ` +
-          'Shrink the male feature or enlarge the female one until the parts clear.',
+          `Resize '${joint.partB}' to its localExtents (the host's cavity is cut by code); do not model a slot in '${joint.partA}'.`,
       });
     } catch (e) {
       // An indeterminate probe must not fail the run - the part may be fine.
@@ -169,18 +257,21 @@ async function checkAssemblyFit(
   return violations;
 }
 
-/** The user's own words for this run, for prompts that need the request verbatim. */
-function firstHumanText(messages: BaseMessage[]): string {
-  for (const msg of messages) {
+/** Marks the machine-written human messages validateCode appends; they are not the user's words. */
+const VALIDATION_REPORT_PREFIX = '[Validation Report]';
+
+/** The user's current request: the text of the LATEST human message they wrote (earlier turns are history). */
+function latestHumanText(messages: BaseMessage[]): string {
+  for (const msg of [...messages].reverse()) {
     if (msg._getType() !== 'human') continue;
     const c = msg.content;
-    if (typeof c === 'string') return c;
-    if (Array.isArray(c)) {
-      const text = c.find((p) => (p as { type?: string }).type === 'text') as
-        | { text?: string }
-        | undefined;
-      if (text?.text) return text.text;
+    let text = '';
+    if (typeof c === 'string') text = c;
+    else if (Array.isArray(c)) {
+      const part = c.find((p) => (p as { type?: string }).type === 'text') as { text?: string } | undefined;
+      text = part?.text ?? '';
     }
+    if (text && !text.startsWith(VALIDATION_REPORT_PREFIX)) return text;
   }
   return '';
 }
@@ -221,10 +312,12 @@ function contractLines(contract: DesignContract | null): string {
 function criticSpecSummary(spec: AssemblySpec | null): string {
   if (!spec) return '';
   const lines: string[] = [];
+  if (spec.sheet) {
+    lines.push(`Design sheet:\n${spec.sheet}`);
+  }
   for (const c of spec.components ?? []) {
     const extras = [];
     if (c.bedFace) extras.push(`expected bed face ${c.bedFace}`);
-    if (c.matingFaces?.length) extras.push(`flat mating faces: ${c.matingFaces.join(', ')}`);
     lines.push(`- ${c.name}: ${c.description}${extras.length ? ` (${extras.join('; ')})` : ''}`);
   }
   for (const s of spec.stressPoints ?? []) {
@@ -232,6 +325,28 @@ function criticSpecSummary(spec: AssemblySpec | null): string {
     lines.push(`- ${s.risk}-risk stress point at ${s.component ? `${s.component} ` : ''}${s.location}; the spec demands: ${s.mitigation}`);
   }
   return lines.length ? `\n\nApproved spec, in outline:\n${lines.join('\n')}` : '';
+}
+
+function skeletonSummary(spec: AssemblySpec | null): string {
+  if (!spec) return '';
+  const lines: string[] = [];
+  if (spec.components?.length) {
+    lines.push('Parts:');
+    for (const c of spec.components) {
+      const kind = c.shape?.kind ?? 'box';
+      const ext = c.localExtents ? `[${c.localExtents.join(', ')}]` : 'unknown';
+      const pos = c.position ? `[${c.position.join(', ')}]` : '[0, 0, 0]';
+      const rot = c.rotation ? `[${c.rotation.join(', ')}]` : '[0, 0, 0]';
+      lines.push(`- ${c.name} (${kind}): extents ${ext}, position ${pos}, rotation ${rot}`);
+    }
+  }
+  if (spec.guides?.length) {
+    lines.push('Guides:');
+    for (const g of spec.guides) {
+      lines.push(`- [${g.kind}] ${g.label}`);
+    }
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -258,7 +373,7 @@ const REPAIR_HINTS: Partial<Record<SpecViolation['kind'], string>> = {
   empty: 'The script produced no solid. Check for zero dimensions and for a difference() that removed everything.',
   manifold: 'The solid is not a valid 2-manifold: coincident faces or a zero-thickness membrane. Extend every cutter at least 0.02mm past each face it exits and sink fused parts 0.01mm into each other.',
   shells: 'The result split into more shells than the spec has components: parts that should be joined are not touching. Overlap them by at least 0.01mm.',
-  interference: 'Two parts that must clear each other interpenetrate. Shrink the male feature or enlarge the female one until they clear by the declared joint clearance.',
+  interference: 'The inserted part exceeds its skeleton and pokes past the cavity that code cuts in its host. Resize the inserted part to its localExtents; do not model a slot in the host or enlarge it.',
   clearance: 'A declared clearance was not achieved. Adjust the mating dimensions, not the placement.',
   bbox: 'The measured extents disagree with the spec. Fix the arithmetic behind the offending axis (stacked heights, wall x 2 + cavity, position + size); do not delete features to shrink the box.',
   standing: 'A Design Contract rule was broken: restore the pinned assignment exactly, or raise the wall parameter to the minimum.',
@@ -296,10 +411,9 @@ function summarizeSpec(spec: AssemblySpec): string {
     );
   }
   for (const c of spec.components ?? []) {
-    if (!c.bedFace && !c.matingFaces?.length) continue;
+    if (!c.bedFace) continue;
     const parts = [];
     if (c.bedFace) parts.push(`bed face ${c.bedFace}`);
-    if (c.matingFaces?.length) parts.push(`mating faces: ${c.matingFaces.join(', ')}`);
     lines.push(`${c.name} - ${parts.join('; ')}`);
   }
   for (const s of spec.stressPoints ?? []) {
@@ -320,41 +434,6 @@ function summarizeSpec(spec: AssemblySpec): string {
   return lines.join('\n');
 }
 
-/**
- * One markdown line naming the chosen prior-art approach and its sources,
- * ahead of the explanation. Server-rendered like everything else the chat
- * shows; the client never sees the brief object outside the gate.
- */
-function withApproachLine(explanation: string, chosen: ChosenApproach | undefined): string {
-  if (!chosen) return explanation;
-  const sources = chosen.approach.sources.map((s) => `[${s.title}](${s.url})`).join(', ');
-  const line = `Design approach: ${chosen.approach.name}${sources ? ` — sources: ${sources}` : ''}`;
-  return explanation ? `${line}\n\n${explanation}` : line;
-}
-
-/**
- * Renders the user's gate answers as "Q -> A" lines for the architect prompt.
- * Matches answers back to their question text by id; an id with no matching
- * question is still passed through, since a stale id is better surfaced to the
- * architect than silently dropped.
- */
-function answeredQuestionLines(
-  spec: AssemblySpec | null,
-  answers?: Record<string, string>
-): string[] {
-  if (!answers) return [];
-  const byId = new Map((spec?.openQuestions ?? []).map((q) => [q.id, q.question]));
-  const lines: string[] = [];
-  for (const [id, answer] of Object.entries(answers)) {
-    const text = answer?.trim();
-    if (!text) continue;
-    lines.push(`- ${byId.get(id) ?? id}: ${text}`);
-  }
-  return lines.length ? ['The user answered your open questions:', ...lines] : [];
-}
-
-
-
 export interface AttemptRecord {
   n: number; phase: 'draft' | 'repair'; code: string;
   exitCode: number;
@@ -370,6 +449,47 @@ export interface AttemptRecord {
 }
 
 export const AgentState = Annotation.Root({
+  specBrief: Annotation<SpecBrief | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  specVariants: Annotation<SpecVariant[]>({
+    reducer: (_, y) => y,
+    default: () => [],
+  }),
+  humanSpecNotes: Annotation<string[]>({
+    reducer: (_, y) => y,
+    default: () => [],
+  }),
+  reviewDeadline: Annotation<number | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  /** Hard limit for model calls before the gate: request start + maxDuration (Vercel only). Per-call caps use this; starting a round uses reviewDeadline. */
+  runDeadline: Annotation<number | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  /** How long the last variant-generation pass took, for the first round estimate. */
+  variantsMs: Annotation<number | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  /** When the current architect revision round began (null outside a revision round). */
+  roundStartedAt: Annotation<number | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  /** Measured duration of the last revision round (architect + illustrator + reviewer), for the budget check. */
+  lastRoundMs: Annotation<number | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  /** The variant the human approved; the drafter finds its sheet and findings by this id ONLY. */
+  chosenVariantId: Annotation<VariantId | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
   messages: Annotation<BaseMessage[]>({
     reducer: (x, y) => x.concat(y),
     default: () => [],
@@ -471,18 +591,7 @@ export const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => 0,
   }),
-  // Research runs once, before the Architect. The brief is per run; the
-  // CHOICE is not state at all - it lives in designContract.researchApproach
-  // so it survives to the next turn (see specGate for the same pattern).
-  designBrief: Annotation<DesignBrief | null>({
-    reducer: (_, y) => y,
-    default: () => null,
-  }),
-  // null means research ran; a reason means the Architect ran as before.
-  researchSkipReason: Annotation<ResearchSkipReason | null>({
-    reducer: (_, y) => y,
-    default: () => null,
-  }),
+
 });
 
 export type AgentStateType = typeof AgentState.State;
@@ -499,7 +608,10 @@ function write(
   node: string,
   event: StreamEvent
 ): void {
-  config?.writer?.({ ...event, node });
+  // Model markdown (planner brief, variant sheets) goes into transcript sections
+  // delimited by HTML-comment markers, so a literal marker in it must be defused.
+  const safe = event.t === 'delta' ? { ...event, text: escapeMarkers(event.text) } : event;
+  config?.writer?.({ ...safe, node });
 }
 
 /**
@@ -508,125 +620,273 @@ function write(
 export function createCadAgent(
   modelName?: string
 ) {
-  const model = getChatModel(modelName);
-  // Resolved separately: no DeepSeek text route accepts image input, so the
-  // critic falls back to a multimodal slug instead of failing the whole run.
-  const visionModel = getVisionModel(modelName);
+  const selectedModel = modelName || process.env.CADAI_MODEL || DEFAULT_MODEL;
+  const model = getChatModel(selectedModel);
+  // Revisions sample warmer: at 0.2 the Architect re-emitted the previous
+  // skeleton under every finding. Fresh specs and the planner keep the default.
+  const revisionModel = getChatModel(selectedModel, { temperature: REVISION_TEMPERATURE });
+  const criticModel = process.env.CADAI_CRITIC_MODEL ? getChatModel(process.env.CADAI_CRITIC_MODEL) : model;
   
-  // Architect uses structured output. It is handed the BOUNDED JSON Schema, not
-  // the zod object: an unbounded {"type":"number"} lets a constrained decoder
-  // emit digits forever and truncate the document. What comes back is still
-  // validated against the zod schema below, so the contract is unchanged.
-  const architectModel = model.withStructuredOutput(assemblySpecRequestSchema(), {
-    name: 'assembly_spec',
-  });
-  
+  // Architect operates in two steps: a planner call that streams a brief and
+  // 1-3 candidate variant outlines, followed by parallel variant specifier calls
+  // producing structured Assembly Specs. Variant calls use structured output
+  // handed the BOUNDED JSON Schema, not the zod object: an unbounded
+  // {"type":"number"} lets a constrained decoder emit digits forever and truncate
+  // the document. What comes back is validated against the zod schema and normalized.
+
   // Drafter uses engineering lookup tools
   const drafterModel = model.bindTools([getFunctionalCadModuleTool]);
 
-  /**
-   * Surfaces why research did not run.
-   *
-   * RESEARCH_SKIP_MESSAGES was written to reach the UI, and did until the
-   * onProgress channel was removed; without this the pipeline silently
-   * degrades to an unresearched draft with nothing said about it. `disabled`
-   * and `already_researched` are normal states, not degradations, so they stay
-   * quiet.
-   */
-  function noteResearchSkip(
-    config: LangGraphRunnableConfig | undefined,
-    reason: ResearchSkipReason
-  ): void {
-    if (reason === 'disabled' || reason === 'already_researched') return;
-    write(config, 'researchNode', {
-      t: 'delta',
-      text: `Design research produced no valid brief: ${RESEARCH_SKIP_MESSAGES[reason]}. Continuing to the Architect.
-`,
-    });
-  }
+  // Node 1: architectNode
 
-  // Node 0: researchNode. Runs once per thread, before the Architect, and
-  // every failure degrades to the Architect running exactly as it did before.
-  async function researchNode(state: AgentStateType, config?: LangGraphRunnableConfig): Promise<Partial<AgentStateType>> {
-    // Cleared on every path, as architectNode does: a decision left over from
-    // an earlier turn's gate must not reach the Architect as fresh feedback.
-    const cleared = { gateAction: null, gateFeedback: null } as const;
+  async function generateVariantSpec(
+    variant: { id: VariantId; name: string; idea: string },
+    allVariants: { id: VariantId; name: string; idea: string }[],
+    brief: SpecBrief,
+    baseMessages: BaseMessage[],
+    version: number,
+    retries: number,
+    previousSpec?: { sheet: string; skeleton: unknown },
+    findings?: ReviewFinding[],
+    notes?: string[],
+    previousSheetSvg?: string | null,
+    config?: RunnableConfig,
+    deadline: number | null = null
+  ): Promise<SpecVariant> {
+    const variantMessages = [...baseMessages];
 
-    const provider = resolveSearchProvider();
-    const pre = preResearchSkipReason({
-      enabled: process.env.CADAI_RESEARCH !== 'off',
-      provider,
-      alreadyChosen: !!state.designContract?.researchApproach,
-    });
-    if (pre) {
-      noteResearchSkip(config, pre);
-      return { ...cleared, researchSkipReason: pre };
+    const planContextParts: string[] = [];
+    if (brief.markdown) {
+      planContextParts.push(`Planner Brief:\n${brief.markdown}`);
+    }
+    if (brief.assumptions && brief.assumptions.length > 0) {
+      const assumptionsText = brief.assumptions
+        .map((a) => `- ${a.field}: ${a.value} (${a.rationale})`)
+        .join('\n');
+      planContextParts.push(`Shared Assumptions:\n${assumptionsText}`);
+    }
+    if (brief.openQuestions && brief.openQuestions.length > 0) {
+      const questionsText = brief.openQuestions
+        .map((q) => `- ${q.question}${q.suggestedAnswer ? ` (suggested: ${q.suggestedAnswer})` : ''}`)
+        .join('\n');
+      planContextParts.push(`The user will be asked:\n${questionsText}`);
+    }
+    const otherVariants = allVariants.filter((v) => v.id !== variant.id);
+    if (otherVariants.length > 0) {
+      const othersText = otherVariants
+        .map((o) => `- Variant ${o.id}: ${o.name} - ${o.idea}`)
+        .join('\n');
+      planContextParts.push(
+        `Other variants planned (this variant must stay structurally distinct):\n${othersText}`
+      );
     }
 
-    const { brief, skipReason } = await runResearch({
-      request: firstHumanText(state.messages),
-      constraints: contractLines(state.designContract),
-      provider: provider!,
-      model,
-      config,
-    });
-    if (!brief) {
-      if (skipReason) noteResearchSkip(config, skipReason);
-      return { ...cleared, researchSkipReason: skipReason };
+    const previousSignature = previousSpec ? skeletonSignature(previousSpec.skeleton as AssemblySpec) : null;
+    const majorIssues = (findings ?? []).filter((f) => f.severity === 'major').map((f) => f.issue);
+
+    if (previousSpec && findings) {
+      // Findings first, previous version after and labelled as the thing to change:
+      // opening with the old skeleton made the Architect re-emit it.
+      const required = [
+        ...findings.filter((f) => f.severity === 'major').map((f) => `[MAJOR] ${f.issue}`),
+        ...findings.filter((f) => f.severity !== 'major').map((f) => `[MINOR] ${f.issue}`),
+        ...(notes ?? []).map((n) => `[HUMAN] ${n}`),
+      ];
+      const promptParts = [
+        `REQUIRED CHANGES:\n${required.length ? required.join('\n') : '(none listed)'}\n\n` +
+          'Each major finding must be resolved by a concrete geometric change: add, remove, reshape or move components, or change a shape. ' +
+          'For this revision, major findings OUTRANK "variant A follows the request literally" and the SCOPE rule. ' +
+          'If resolving one needs structure the request did not name (for example a lip so the held object cannot slide off), add it and record each addition in assumptions[]. ' +
+          'The sheet must start with a "## Changes in this revision" section that maps each finding to the change (component and field).',
+        ...planContextParts,
+        `Revise this variant (${variant.id}): ${variant.name} - ${variant.idea}.`,
+        `Previous version (to be changed) - skeleton:\n${JSON.stringify(previousSpec.skeleton, null, 2)}`,
+        `Previous version (to be changed) - sheet:\n${previousSpec.sheet}`,
+      ].filter(Boolean);
+
+      let prevSheetPngUrl: string | null = null;
+      if (previousSheetSvg) {
+        try {
+          prevSheetPngUrl = await svgToPngDataUrl(previousSheetSvg);
+        } catch (e) {
+          console.warn('generateVariantSpec: failed to rasterize previous sheet for revision', e);
+        }
+      }
+
+      if (prevSheetPngUrl) {
+        variantMessages.push(
+          new HumanMessage({
+            content: [
+              { type: 'text', text: promptParts.join('\n\n') },
+              { type: 'text', text: 'Previous concept sheet render:' },
+              { type: 'image_url', image_url: { url: prevSheetPngUrl } },
+            ],
+          })
+        );
+      } else {
+        variantMessages.push(new HumanMessage(promptParts.join('\n\n')));
+      }
+    } else {
+      const promptParts = [
+        ...planContextParts,
+        `Generate the Assembly Spec for Variant ${variant.id}: ${variant.name} - ${variant.idea}`,
+        notes?.length ? `Human notes:\n${notes.join('\n')}` : '',
+      ].filter(Boolean);
+      variantMessages.push(new HumanMessage(promptParts.join('\n\n')));
     }
 
-    return { ...cleared, designBrief: brief, researchSkipReason: null };
-  }
-
-  // Node: researchGate. Pauses with the brief; the human picks an approach.
-  // Same interrupt()/Command({ resume }) channel as specGate.
-  async function researchGate(state: AgentStateType, config?: LangGraphRunnableConfig): Promise<Partial<AgentStateType>> {
-    const brief = state.designBrief!; // routed here only when set
-    const payload: GatePayload = { kind: 'research', brief };
-    const decision = interrupt(payload) as GateDecision;
-
-    if (decision.action === 'cancel') {
-      return { gateAction: 'cancel' };
-    }
-
-    // No revise here: a thread gets one research pass. Anything else,
-    // including a stray 'revise', approves - the named approach when the id
-    // is known, else the recommendation, rather than rejecting the approval
-    // (the same lenience specGate shows a malformed edited spec).
-    const approach = chooseApproach(brief, decision.action === 'approve' ? decision.chosenApproachId : undefined);
-
-    // Sources belong in the transcript, not in the run summary: the summary
-    // becomes ChatMessage.content, which is replayed to the model on every
-    // later turn, and a citation list is for the human to read once.
-    const sourceLinks = approach.sources.map((src) => `[${src.title}](${src.url})`).join(', ');
-    write(config, 'researchGate', {
-      t: 'delta',
-      text: `Design approach: ${approach.name}${sourceLinks ? `
-
-Sources: ${sourceLinks}` : ''}
-`,
+    const variantModel = structuredFor(previousSpec ? revisionModel : model, selectedModel, variantSpecRequestSchema(), {
+      name: 'AssemblySpec',
+      strict: true,
+      includeRaw: false,
     });
 
-    // The choice goes into the contract, not state: state is per run, and
-    // the contract is what respondToUser returns and the next turn re-POSTs.
-    const baseContract: DesignContract = state.designContract ?? { standing: {}, pinnedParams: {} };
+    let spec: AssemblySpec | null = null;
+    let hadProviderError = false;
+    let rawLastError: string | null = null;
+    let coherenceFeedback: SpecViolation[] | null = null;
+    let specErrors: ReviewFinding[] | undefined;
+    let outOfTime = false;
+    let unchangedFeedback = false;
+    let unchangedFinal = false;
+
+    // THREE attempts, not two. Decoder degeneration is per-attempt and
+    // independent, so retries compound: at the ~0.8 per-attempt success rate
+    // measured on the bounded schema, two attempts leave a 4% chance of
+    // reaching the review gate with no spec at all and three leave under 1%.
+    // Two attempts is what let a real run surface an empty approval card.
+    for (let attempt = 0; attempt < MAX_ARCHITECT_ATTEMPTS && !spec; attempt++) {
+      // On Vercel, stop retrying once the budget cannot hold another attempt.
+      const left = remainingCallMs(deadline);
+      if (left !== null && left < MIN_CALL_MS) {
+        outOfTime = true;
+        break;
+      }
+      const retryPrompt = unchangedFeedback
+        ? `Your revision did not change the geometry. You must change it to resolve: ${majorIssues.join('; ') || 'the required changes'}`
+        : coherenceFeedback
+        ? 'Your previous Assembly Spec was internally inconsistent:\n' +
+          coherenceFeedback.map((v) => `- ${v.message}`).join('\n') +
+          '\nRecompute the placement arithmetic and emit a spec whose boundingBox equals the extent of its ' +
+          'own components once each is rotated about its origin and moved to its position.'
+        : 'Your previous reply did not yield a valid Assembly Spec. Emit the structured spec now, with every dimension in millimetres and at most two decimal places.';
+
+      const attemptMessages =
+        attempt === 0 ? variantMessages : [...variantMessages, new HumanMessage(retryPrompt)];
+
+      try {
+        const raw = await variantModel.withConfig({ tags: ['nostream'] }).invoke(attemptMessages, withBudget(config, deadline));
+
+        // The model was given a JSON Schema, so what comes back is an untyped
+        // object; zod is what turns it into an AssemblySpec, and a reply that
+        // violates the schema fails to parse.
+        const parsed = AssemblySpecSchema.safeParse(nullsToUndefined(raw));
+        if (parsed.success) {
+          const candidate = normalizeSpec(parsed.data);
+          // A revision that reproduces the previous skeleton changed nothing: that
+          // attempt is spent and the Architect is told so. On the last attempt the
+          // unchanged spec is kept, and labelled by the caller.
+          unchangedFeedback = false;
+          if (previousSignature !== null && skeletonSignature(candidate) === previousSignature) {
+            if (attempt < MAX_ARCHITECT_ATTEMPTS - 1) {
+              unchangedFeedback = true;
+              coherenceFeedback = null;
+              console.warn(`architectNode: revision of variant ${variant.id} did not change the geometry (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS})`);
+              continue;
+            }
+            unchangedFinal = true;
+          }
+          // Coherence is pure arithmetic (do the components fit the bounding box?),
+          // so there is no point drafting geometry from a spec that already contradicts
+          // itself. Handing the contradiction back is strictly cheaper than discovering
+          // it after a draft and a compile, and the Architect is the only node that can
+          // say which number was wrong. On the last attempt it is accepted anyway: a spec
+          // that is merely inconsistent still beats no spec, and validateCode repeats
+          // the check so the violation is never lost.
+          const incoherent = [
+            ...auditSpecCoherence(candidate).filter((v) => v.severity === 'error'),
+            ...auditSpecShapes(candidate).filter((v) => v.severity === 'error'),
+            ...auditSpecGround(candidate).filter((v) => v.severity === 'error'),
+          ];
+          if (incoherent.length > 0 && attempt < MAX_ARCHITECT_ATTEMPTS - 1) {
+            rawLastError = incoherent.map((v) => v.message).join(' ');
+            console.warn(
+              `architectNode: spec is self-inconsistent (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}):`,
+              rawLastError
+            );
+            coherenceFeedback = incoherent;
+            continue;
+          }
+          spec = candidate;
+          // Accepted on the last attempt with errors left: label them, never drop them.
+          if (incoherent.length > 0) {
+            specErrors = incoherent.map((v) => ({ severity: 'major' as const, issue: v.message }));
+          }
+        } else {
+          rawLastError = `Spec failed validation: ${parsed.error.issues
+            .slice(0, 3)
+            .map((i) => `${i.path.join('.')} ${i.message}`)
+            .join('; ')}`;
+          console.error(
+            `architectNode: variant ${variant.id} spec rejected (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}):`,
+            rawLastError
+          );
+        }
+      } catch (e: unknown) {
+        hadProviderError = true;
+        rawLastError = e instanceof Error ? e.message : String(e);
+        // The raw provider error goes to the log ONLY. It was being sliced into
+        // the UI, which is how a provider's 400 payload ended up rendered as the
+        // agent's own output.
+        console.error(
+          `architectNode: variant ${variant.id} structured output failed (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}):`,
+          rawLastError
+        );
+      }
+    }
+
+    const shortErrorLabel = outOfTime
+      ? 'No valid spec: the time budget ran out.'
+      : hadProviderError
+        ? 'No valid spec after 3 attempts (provider error).'
+        : 'No valid spec after 3 attempts.';
+    // A revision that failed keeps the previous version on the card, so say that.
+    const failureLine = previousSpec
+      ? `revision failed${outOfTime ? ' (time budget)' : hadProviderError ? ' (provider error)' : ''}; keeping version ${version}.`
+      : shortErrorLabel;
+
+    if (spec) {
+      const renderer = createSpecRenderer();
+      const tail = renderer.push({ ...(spec as object), __done: true });
+      write(config, 'architectNode', {
+        t: 'delta',
+        text: `\n\n### Variant ${variant.id} - ${variant.name}\n*${variant.idea}*\n\n${spec.sheet}\n\n${tail}`,
+      });
+    } else {
+      write(config, 'architectNode', {
+        t: 'delta',
+        text: `\n\n### Variant ${variant.id} - ${variant.name}\n*${variant.idea}*\n\n${failureLine}\n`,
+      });
+    }
+
     return {
-      gateAction: 'approve',
-      designContract: {
-        ...baseContract,
-        researchApproach: { partClass: brief.partClass, approach, chosenAt: Date.now() },
-      },
+      id: variant.id,
+      name: variant.name,
+      idea: variant.idea,
+      spec,
+      version: version + 1,
+      drawnVersion: null,
+      review: null,
+      retries,
+      needsRevision: false,
+      error: spec ? undefined : shortErrorLabel,
+      ...(specErrors ? { specErrors } : {}),
+      ...(spec && unchangedFinal ? { revisionUnchanged: true } : {}),
     };
   }
 
-  // Node 1: architectNode
   async function architectNode(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
-
-
-    const messages: BaseMessage[] = [
-      new SystemMessage(CAD_AI_SYSTEM_PROMPT + "\n\n" + ARCHITECT_PREAMBLE),
-      ...state.messages,
-    ];
+    const conversationMessages: BaseMessage[] = [...state.messages];
 
     if (state.designContract) {
       const contractDetails = [];
@@ -635,135 +895,253 @@ Sources: ${sourceLinks}` : ''}
       }
       if (Object.keys(state.designContract.pinnedParams).length > 0) {
         const pins = Object.fromEntries(
-          Object.entries(state.designContract.pinnedParams).map(([k, v]) => [k, (v as any).value])
+          Object.entries(state.designContract.pinnedParams).map(([k, v]) => [k, (v as { value: unknown }).value])
         );
         contractDetails.push("Pinned Parameters (MUST BE EXACTLY THESE VALUES):\n" + JSON.stringify(pins, null, 2));
       }
-      
+
       if (contractDetails.length > 0) {
-        messages.push(new HumanMessage(
+        conversationMessages.push(new HumanMessage(
           "Design Contract:\nThe user has pinned these values and constraints; treat them as given.\n\n" + contractDetails.join("\n\n")
         ));
       }
     }
 
-    // The approach chosen at the research gate, rebuilt from the contract on
-    // every pass so a spec-gate revise stays bound to it. Never appended to
-    // `messages` - see the return below for why that matters.
-    if (state.designContract?.researchApproach) {
-      messages.push(new HumanMessage(approachBlock(state.designContract.researchApproach)));
-    }
+    // The Vercel budget runs from the FIRST entry for a request, before the
+    // planner: the planner and the first variant calls are most of the time.
+    const enteredAt = Date.now();
+    const reviewDeadline = state.reviewDeadline ?? (process.env.VERCEL
+      ? enteredAt + Number(process.env.CADAI_SPEC_REVIEW_BUDGET_MS ?? 240000) // 240 s: Vercel maxDuration 300 s minus the drafter's head start
+      : null);
 
-    // A prior spec was sent back for revision at the human review gate.
-    if (state.gateAction === 'revise' && state.gateFeedback) {
-      messages.push(new HumanMessage(
-        `The previous Assembly Spec was rejected at human review. Revise it accordingly:\n${state.gateFeedback}`
-      ));
-    }
+    const runDeadline = state.runDeadline ?? (process.env.VERCEL
+      ? enteredAt + Number(process.env.CADAI_MAX_DURATION_MS ?? 300000) // 300 s: the routes' maxDuration
+      : null);
 
-    // Bounded retry. The counter must advance on every pass, not only on throw,
-    // or a falsy-but-resolved invoke spins forever around a network call.
-    //
-    // THREE attempts, not two. Decoder degeneration is per-attempt and
-    // independent, so retries compound: at the ~0.8 per-attempt success rate
-    // measured on the bounded schema, two attempts leave a 4% chance of
-    // reaching the review gate with no spec at all and three leave under 1%.
-    // Two attempts is what let a real run surface an empty approval card.
-    let spec: AssemblySpec | null = null;
-    let lastError: string | null = null;
-    /** Set when a retry is for a spec that parsed but contradicted itself. */
-    let coherenceFeedback: SpecViolation[] | null = null;
-    for (let attempt = 0; attempt < MAX_ARCHITECT_ATTEMPTS && !spec; attempt++) {
-      // A spec that failed on arithmetic needs the arithmetic pointed at, not
-      // the generic "emit valid JSON" nudge - it already emitted valid JSON.
-      const retryPrompt = coherenceFeedback
-        ? 'Your previous Assembly Spec was internally inconsistent:\n' +
-          coherenceFeedback.map((v) => `- ${v.message}`).join('\n') +
-          '\nRecompute the placement arithmetic and emit a spec whose boundingBox equals the extent of its ' +
-          'own components once each is rotated about its origin and moved to its position.'
-        : 'Your previous reply did not yield a valid Assembly Spec. Emit the structured spec now, with every dimension in millimetres and at most two decimal places.';
-      const attemptMessages =
-        attempt === 0 ? messages : [...messages, new HumanMessage(retryPrompt)];
-      try {
-        const renderer = createSpecRenderer();
-        let raw: unknown = null;
-        for await (const partial of await architectModel.stream(attemptMessages, config)) {
-          raw = partial;
-          const md = renderer.push(partial);
-          if (md) write(config, 'architectNode', { t: 'delta', text: md });
-        }
-        // Flush whatever settled last: the final key has no successor to
-        // settle it, so without this the tail of every spec is never shown.
-        const tail = renderer.push({ ...(raw as object), __done: true });
-        if (tail) write(config, 'architectNode', { t: 'delta', text: tail });
-        // The model was given a JSON Schema, so what comes back is an untyped
-        // object; zod is what turns it into an AssemblySpec, and a reply that
-        // satisfied the decoder but not the contract must count as a failure
-        // and retry rather than flow onward half-formed.
-        const parsed = AssemblySpecSchema.safeParse(raw);
-        if (parsed.success) {
-          const candidate = normalizeSpec(parsed.data);
-          // Coherence is pure arithmetic over the spec's own numbers, so it can
-          // be answered here, before the Drafter is paid to implement a spec
-          // that already contradicts itself. Handing the contradiction back is
-          // strictly cheaper than discovering it after a draft and a compile,
-          // and the Architect is the only node that can say which number was
-          // wrong. On the last attempt it is accepted anyway: a spec that is
-          // merely inconsistent still beats no spec, and validateCode repeats
-          // the check so the violation is never lost.
-          const incoherent = auditSpecCoherence(candidate).filter((v) => v.severity === 'error');
-          if (incoherent.length > 0 && attempt < MAX_ARCHITECT_ATTEMPTS - 1) {
-            lastError = incoherent.map((v) => v.message).join(' ');
-            console.warn(
-              `architectNode: spec is self-inconsistent (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}):`,
-              lastError
-            );
-            coherenceFeedback = incoherent;
-            continue;
-          }
-          spec = candidate;
-        } else {
-          lastError = `Spec failed validation: ${parsed.error.issues
-            .slice(0, 3)
-            .map((i) => `${i.path.join('.')} ${i.message}`)
-            .join('; ')}`;
-          console.error(
-            `architectNode: spec rejected (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}):`,
-            lastError
-          );
-        }
-      } catch (err) {
-        // Fall through to the next attempt; a null spec degrades to warn-only.
-        // But NEVER silently: a schema the provider rejects fails identically on
-        // every attempt and every run, and swallowing it made the review gate
-        // render an empty card with no way to tell a refusal from an outage.
-        lastError = err instanceof Error ? err.message : String(err);
-        console.error(
-          `architectNode: structured output failed (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}):`,
-          lastError
-        );
+    let brief = state.specBrief;
+    let variants = [...state.specVariants];
+    let variantsStartedAt = Date.now();
+    // A gate revise arrives WITH the chosen variant in state, so it revises that
+    // variant (previous sheet, skeleton, image, notes) instead of re-planning.
+    const isFresh = variants.length === 0;
+
+    if (isFresh) {
+      const plannerSystemMessage = new SystemMessage(systemPromptFor('planner'));
+      const plannerMessages: BaseMessage[] = [plannerSystemMessage, ...conversationMessages];
+
+      if (state.gateAction === 'revise' && state.gateFeedback) {
+        plannerMessages.push(new HumanMessage(`The previous Assembly Spec was rejected at human review. Revise it accordingly:\n${state.gateFeedback}`));
       }
-    }
 
-    if (!spec) {
-      // The raw provider error goes to the log ONLY. It was being sliced into
-      // the UI, which is how a provider's 400 payload ended up rendered as the
-      // agent's own output.
-      console.error('architectNode: no valid Assembly Spec after 3 attempts:', lastError);
       write(config, 'architectNode', {
         t: 'delta',
-        text: '\nNo valid Assembly Spec after 3 attempts. Drafting without a dimensional contract.\n',
+        text: `Planning up to ${maxVariantsFromEnv(process.env.CADAI_MAX_VARIANTS)} variant${maxVariantsFromEnv(process.env.CADAI_MAX_VARIANTS) === 1 ? '' : 's'}...
+`,
+      });
+
+      const plannerModel = structuredFor(model, selectedModel, ArchitectPlanSchema, {
+        name: 'ArchitectPlan',
+        strict: true,
+        includeRaw: false,
+      });
+
+      let plan: z.infer<typeof ArchitectPlanSchema> | null = null;
+
+      // THREE attempts, not two. Decoder degeneration is per-attempt and
+      // independent, so retries compound: at the ~0.8 per-attempt success rate
+      // measured on the bounded schema, two attempts leave a 4% chance of
+      // reaching the review gate with no spec at all and three leave under 1%.
+      // Two attempts is what let a real run surface an empty approval card.
+      let plannerOutOfTime = false;
+      for (let attempt = 0; attempt < MAX_ARCHITECT_ATTEMPTS && !plan; attempt++) {
+        // No billed call that cannot finish: stop when the hard limit has no room left.
+        const left = remainingCallMs(runDeadline);
+        if (left !== null && left < MIN_CALL_MS) {
+          plannerOutOfTime = true;
+          break;
+        }
+        const attemptMessages = attempt === 0
+          ? plannerMessages
+          : [
+              ...plannerMessages,
+              new HumanMessage('Your previous reply did not yield a valid plan. Plan 1-3 structural variants now.'),
+            ];
+
+        try {
+          // Not streamed: LangChain buffers a zod-parsed structured reply and yields
+          // it once, so the brief is written when the planner returns.
+          const chunkObj = await plannerModel.withConfig({ tags: ['nostream'] }).invoke(attemptMessages, withBudget(config, runDeadline));
+          const parsedPlan = ArchitectPlanSchema.safeParse(nullsToUndefined(chunkObj));
+          if (parsedPlan.success && parsedPlan.data.variants.length > 0) {
+            plan = parsedPlan.data;
+            if (plan.brief) write(config, 'architectNode', { t: 'delta', text: `${plan.brief}
+` });
+          } else {
+            console.warn(
+              `architectNode: planner attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS} unusable:`,
+              parsedPlan.success ? 'response missing variants' : parsedPlan.error.message
+            );
+          }
+        } catch (e: unknown) {
+          // The raw provider error goes to the log ONLY. It was being sliced into
+          // the UI, which is how a provider's 400 payload ended up rendered as the
+          // agent's own output.
+          console.error(`architectNode: planner attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS} failed:`, e instanceof Error ? e.message : String(e));
+        }
+      }
+
+      let deduped: { id: VariantId; name: string; idea: string }[];
+      if (!plan || !plan.variants || plan.variants.length === 0) {
+        write(config, 'architectNode', {
+          t: 'delta',
+          text: plannerOutOfTime
+            ? '\nPlanning stopped: the time budget ran out; speccing a single variant as requested.\n'
+            : '\nPlanning failed after 3 attempts; speccing a single variant as requested.\n',
+        });
+        brief = {
+          markdown: '',
+          assumptions: [],
+          openQuestions: [],
+          recommendedId: 'A' as VariantId,
+        };
+        deduped = [
+          { id: 'A' as VariantId, name: 'As requested', idea: 'the design the request describes' },
+        ];
+      } else {
+        const { variants: processedVariants, recommendedId } = processPlannerVariants(
+          plan.variants,
+          plan.recommendedId,
+          maxVariantsFromEnv(process.env.CADAI_MAX_VARIANTS)
+        );
+        deduped = processedVariants;
+        brief = {
+          markdown: plan.brief || '',
+          assumptions: plan.assumptions || [],
+          openQuestions: plan.openQuestions || [],
+          recommendedId: recommendedId as VariantId,
+        };
+      }
+
+      const variantSystemMessage = new SystemMessage(systemPromptFor('variant'));
+      const variantBaseMessages: BaseMessage[] = [variantSystemMessage, ...conversationMessages];
+      if (state.gateAction === 'revise' && state.gateFeedback) {
+        variantBaseMessages.push(new HumanMessage(`The previous Assembly Spec was rejected at human review. Revise it accordingly:\n${state.gateFeedback}`));
+      }
+
+      variantsStartedAt = Date.now(); // before the calls start, which map() fires immediately
+      const promises = deduped.map((v) =>
+        generateVariantSpec(
+          v,
+          deduped,
+          brief!,
+          variantBaseMessages,
+          0,
+          0,
+          undefined,
+          undefined,
+          state.humanSpecNotes,
+          null,
+          config,
+          runDeadline
+        )
+      );
+      variants = await Promise.all(promises);
+
+    } else {
+      // Revision mode
+      const variantSystemMessage = new SystemMessage(systemPromptFor('variant'));
+      const variantBaseMessages: BaseMessage[] = [variantSystemMessage, ...conversationMessages];
+
+      const currentBrief = brief ?? {
+        markdown: '',
+        assumptions: [],
+        openQuestions: [],
+        recommendedId: 'A' as VariantId,
+      };
+
+      const plannedList = variants.map((v) => ({ id: v.id, name: v.name, idea: v.idea }));
+
+      variantsStartedAt = Date.now();
+      const promises = variants.map(async (v) => {
+        if (!v.needsRevision) return v;
+
+        const findings = [...(v.review?.findings || [])].sort((a, b) =>
+          a.severity === 'major' && b.severity !== 'major' ? -1 : 1
+        );
+        const prevSkeleton = v.spec ? { ...v.spec, sheet: undefined } : undefined;
+        const revised = await generateVariantSpec(
+          v,
+          plannedList,
+          currentBrief,
+          variantBaseMessages,
+          v.version,
+          v.retries,
+          v.spec ? { sheet: v.spec.sheet, skeleton: prevSkeleton } : undefined,
+          findings,
+          state.humanSpecNotes,
+          drawnSheetSvg(v),
+          config,
+          runDeadline
+        );
+        if (revised.spec === null && v.spec) {
+          // Label, don't drop: the last good spec stays, with the review it had
+          // (the one a gate revise set aside, if the review was cleared).
+          return {
+            ...v,
+            needsRevision: false,
+            error: undefined,
+            previousReview: undefined,
+            review: {
+              validated: false,
+              findings: [],
+              attempts: v.retries + 1,
+              ...(v.review ?? v.previousReview),
+              note: `revision failed; showing version ${v.version}`,
+            },
+          };
+        }
+        if (revised.revisionUnchanged) {
+          // Every attempt reproduced the old geometry: label it and send it on
+          // with the findings it still has, instead of looping on a spec that cannot change.
+          return {
+            ...revised,
+            revisionUnchanged: undefined,
+            needsRevision: false,
+            review: {
+              validated: false,
+              findings: v.review?.findings ?? v.previousReview?.findings ?? [],
+              attempts: v.retries + 1,
+              note: 'revision made no geometric change',
+            },
+            previousMajors: v.previousMajors,
+            stagnantRounds: v.stagnantRounds,
+          };
+        }
+        return { ...revised, previousMajors: v.previousMajors, stagnantRounds: v.stagnantRounds };
+      });
+      variants = await Promise.all(promises);
+    }
+    const variantsMs = Date.now() - variantsStartedAt;
+
+    if (process.env.CADAI_SPEC_SHEETS !== 'off' && !isVisionModel(selectedModel)) {
+      write(config, 'architectNode', {
+        t: 'delta',
+        text: '\nConcept sheets skipped: model does not support vision.\n',
       });
     }
 
-    const explanation = spec
-      ? summarizeSpec(spec)
-      : lastError
-        ? `${NO_SPEC_EXPLANATION} The Architect model errored: ${lastError}`
-        : NO_SPEC_EXPLANATION;
+    const recommended = recommendedVariant(variants, brief);
+    const assemblySpec = recommended?.spec ? mergeBriefIntoSpec(recommended.spec, brief) : null;
+    const explanation = assemblySpec ? summarizeSpec(assemblySpec) : NO_SPEC_EXPLANATION;
 
     return {
-      assemblySpec: spec,
+      specBrief: brief,
+      specVariants: variants,
+      reviewDeadline,
+      runDeadline,
+      variantsMs,
+      roundStartedAt: isFresh ? null : enteredAt,
+      assemblySpec,
       explanation,
       // Deliberately contributes NOTHING to `messages`. The spec already
       // reaches both consumers through their own prompts (drafterPrompt and
@@ -779,34 +1157,328 @@ Sources: ${sourceLinks}` : ''}
     };
   }
 
-  // Node 2: drafterNode
+  // Node: specIllustrator
+  async function specIllustrator(
+    state: AgentStateType,
+    config?: RunnableConfig
+  ): Promise<Partial<AgentStateType>> {
+    const variants = [...(state.specVariants || [])];
+    const updatedVariants = await Promise.all(
+      variants.map(async (v) => {
+        if (v.spec === null || v.drawnVersion === v.version) {
+          return v;
+        }
+        try {
+          // Drawn here to prove it can be (and for the transcript); state keeps
+          // only the version, and every consumer redraws the identical sheet.
+          const result = drawSheet(v);
+          const compCount = v.spec.components?.length ?? 0;
+          const guideCount = v.spec.guides?.length ?? 0;
+          let text = `Sheet ${v.id} drawn: ${compCount} part${compCount === 1 ? '' : 's'}, ${guideCount} guide${guideCount === 1 ? '' : 's'}`;
+          if (result.skipped && result.skipped.length > 0) {
+            text += `, ${result.skipped
+              .map((s) =>
+                isStandIn(s.reason)
+                  ? `${s.name} drawn as a box: ${s.reason.replace(/;?\s*drawn as a box$/, '')}`
+                  : `${s.name} not drawn: ${s.reason}`
+              )
+              .join(', ')}`;
+          }
+          write(config, 'specIllustrator', { t: 'delta', text: text + '\n' });
+          return {
+            ...v,
+            drawnVersion: v.version,
+          };
+        } catch (e) {
+          console.error(`specIllustrator: failed to draw sheet for variant ${v.id}:`, e);
+          write(config, 'specIllustrator', {
+            t: 'delta',
+            text: `Sheet ${v.id}: drawing failed\n`,
+          });
+          return {
+            ...v,
+            drawnVersion: null,
+            review: {
+              validated: false,
+              findings: [],
+              attempts: 0,
+              note: 'sheet could not be drawn',
+            },
+          };
+        }
+      })
+    );
+
+    return {
+      specVariants: updatedVariants,
+    };
+  }
+
+  // Node: specReviewer
+  async function specReviewer(
+    state: AgentStateType,
+    config?: RunnableConfig
+  ): Promise<Partial<AgentStateType>> {
+    const maxRetries = Number(process.env.CADAI_SPEC_REVIEW_RETRIES ?? 5);
+    const deadline = state.reviewDeadline;
+    const reviewStartedAt = Date.now();
+    const request = latestHumanText(state.messages) || 'the user request above';
+    const contract = contractLines(state.designContract);
+    // CADAI_REVIEWER_MODEL pins the reviewer so a model comparison is not
+    // confounded by each model reviewing its own designs.
+    const reviewerSlug = process.env.CADAI_REVIEWER_MODEL || selectedModel;
+    const reviewerModel = structuredFor(
+      process.env.CADAI_REVIEWER_MODEL ? getChatModel(process.env.CADAI_REVIEWER_MODEL) : model,
+      reviewerSlug,
+      SheetReviewSchema
+    ).withConfig({ tags: ['nostream'] });
+
+    const reviewerSystem = new SystemMessage(systemPromptFor('reviewer'));
+
+    // Variants that got a fresh model verdict this pass; the retry decision for
+    // them is made AFTER every review has finished, on the fresh round time.
+    const freshlyReviewed = new Set<VariantId>();
+    const reviewed = await Promise.all(
+      (state.specVariants || []).map(async (v) => {
+        if (!v.spec || v.drawnVersion === null || v.drawnVersion !== v.version || v.review !== null) {
+          return v;
+        }
+
+        const attempts = v.retries + 1;
+        let pngDataUrl: string;
+        try {
+          pngDataUrl = await svgToPngDataUrl(drawSheet(v).svg);
+        } catch (e) {
+          console.error(`specReviewer: failed to rasterize sheet for variant ${v.id}:`, e);
+          const reviewObj: VariantReview = {
+            validated: false,
+            findings: [],
+            attempts,
+            note: 'review unavailable',
+          };
+          write(config, 'specReviewer', {
+            t: 'delta',
+            text: `Sheet ${v.id}: not validated after ${reviewObj.attempts} attempt${reviewObj.attempts === 1 ? '' : 's'}\n`,
+          });
+          return {
+            ...v,
+            review: reviewObj,
+          };
+        }
+
+        const skel = skeletonSummary(v.spec);
+        const humanNotes = (state.humanSpecNotes ?? []).length
+          ? `Human notes:\n${(state.humanSpecNotes ?? []).join('\n')}\n\n`
+          : '';
+
+        const promptText =
+          `The user asked for:\n"${request}"\n\n` +
+          humanNotes +
+          (contract ? `${contract}\n\n` : '') +
+          `Variant ${v.id}: ${v.name}\nIdea: ${v.idea}\n\n` +
+          (v.spec?.sheet ? `Design Sheet:\n${v.spec.sheet}\n\n` : '') +
+          (skel ? `Skeleton:\n${skel}\n\n` : '') +
+          `Evaluate whether this concept sheet matches the request.`;
+
+        const content: Array<Record<string, unknown>> = [
+          { type: 'text', text: promptText },
+          { type: 'image_url', image_url: { url: pngDataUrl } },
+        ];
+
+        let reviewResult: z.infer<typeof SheetReviewSchema> | null = null;
+        try {
+          reviewResult = (await reviewerModel.invoke(
+            [reviewerSystem, new HumanMessage({ content: content as never })],
+            withBudget(config, state.runDeadline)
+          )) as z.infer<typeof SheetReviewSchema>;
+        } catch (e) {
+          console.error(`specReviewer: model review call failed for variant ${v.id}:`, e);
+          const reviewObj: VariantReview = {
+            validated: false,
+            findings: [],
+            attempts,
+            note: 'review unavailable',
+          };
+          write(config, 'specReviewer', {
+            t: 'delta',
+            text: `Sheet ${v.id}: not validated after ${reviewObj.attempts} attempt${reviewObj.attempts === 1 ? '' : 's'}\n`,
+          });
+          return {
+            ...v,
+            review: reviewObj,
+          };
+        }
+
+        // Errors the architect accepted on its last attempt count as major findings.
+        const findings = [...(v.specErrors ?? []), ...reviewResult.findings];
+        const hasMajor = findings.some((f) => f.severity === 'major');
+        const validated = Boolean(reviewResult.matchesRequest && !hasMajor);
+        freshlyReviewed.add(v.id);
+        return {
+          ...v,
+          review: { validated, findings, attempts } as VariantReview,
+        };
+      })
+    );
+
+    // The round that just finished, reviewer included. A retry is allowed only if
+    // another such round still fits before the deadline.
+    const now = Date.now();
+    const lastRoundMs = state.roundStartedAt !== null ? now - state.roundStartedAt : state.lastRoundMs;
+    // Estimate for the next round: the last full round if one was measured, else
+    // this pass's variant time plus its review time, else about 110 s (the code's
+    // own 78 s per structured spec plus a review).
+    const measuredPass = (state.variantsMs ?? 0) > 0 ? (state.variantsMs ?? 0) + (now - reviewStartedAt) : null;
+    const estimatedRoundMs = lastRoundMs ?? measuredPass ?? 110000; // 110 s: nothing measured yet
+    // The round's calls are capped 15 s short of the hard limit, so it must fit
+    // with the same tail the per-call cap keeps.
+    const budgetLeft = deadline === null || now + estimatedRoundMs + CALL_TAIL_MS < deadline;
+
+    const updatedVariants = reviewed.map((v) => {
+      if (!freshlyReviewed.has(v.id) || !v.review) return v;
+      const reviewObj = v.review;
+      const majors = reviewObj.findings.filter((f) => f.severity === 'major').map((f) => f.issue);
+      const hasMajor = majors.length > 0;
+
+      // No-progress stop: the same major finding twice, or two consecutive major
+      // rounds that did not get any better, means another full-spec revision will
+      // only trade one problem for another. Stop, label, and send it forward.
+      const previous = v.previousMajors ?? [];
+      const repeated = hasMajor && previous.length > 0 && repeatsPrevious(previous, majors, (v.spec?.components ?? []).map((c) => c.name));
+      const improved = previous.length === 0 || majors.length < previous.length;
+      const stagnantRounds = hasMajor ? (improved ? 0 : (v.stagnantRounds ?? 0) + 1) : 0;
+      const notConverging = hasMajor && (repeated || stagnantRounds >= 2); // 2: consecutive non-improving major rounds
+
+      const canRetry = hasMajor && v.retries < maxRetries && budgetLeft && !notConverging;
+      const nextRetries = canRetry ? v.retries + 1 : v.retries;
+      const attempts = reviewObj.attempts;
+      if (hasMajor && notConverging && v.retries < maxRetries && budgetLeft) {
+        reviewObj.note = 'review not converging; showing the latest version';
+      }
+
+      if (reviewObj.validated) {
+        write(config, 'specReviewer', { t: 'delta', text: `Sheet ${v.id}: validated\n` });
+      } else if (reviewObj.note === 'review not converging; showing the latest version') {
+        write(config, 'specReviewer', {
+          t: 'delta',
+          text: `Sheet ${v.id}: review not converging; showing the latest version\n`,
+        });
+      } else if (canRetry) {
+        const majorCount = reviewObj.findings.filter((f) => f.severity === 'major').length;
+        write(config, 'specReviewer', {
+          t: 'delta',
+          text: `Sheet ${v.id}: ${majorCount} major finding${majorCount === 1 ? '' : 's'} -> revising (retry ${nextRetries}/${maxRetries})\n`,
+        });
+      } else {
+        write(config, 'specReviewer', {
+          t: 'delta',
+          text: `Sheet ${v.id}: not validated after ${attempts} attempt${attempts === 1 ? '' : 's'}\n`,
+        });
+      }
+      for (const f of reviewObj.findings) {
+        write(config, 'specReviewer', { t: 'delta', text: `  - [${f.severity}] ${f.issue}\n` });
+      }
+
+      return {
+        ...v,
+        retries: nextRetries,
+        needsRevision: canRetry,
+        previousMajors: hasMajor ? majors : undefined,
+        stagnantRounds,
+      };
+    });
+
+    return {
+      specVariants: updatedVariants,
+      roundStartedAt: null,
+      lastRoundMs,
+    };
+  }
+
   async function drafterNode(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
-
-
     // A missing spec degrades to unconstrained drafting rather than skipping the
     // draft entirely - an empty script gives the repair loop nothing to work with.
     const contract = contractLines(state.designContract);
-    const drafterPrompt = state.assemblySpec
-      ? `Implement the Architect Spec below as one complete OpenSCAD script. Honour every field: matingFaces flat, each stressPoint mitigation built exactly as sized, joints at their declared clearance, every edge sharp.
 
-Architect Spec:
-${JSON.stringify(state.assemblySpec, null, 2)}
-${contract}`
-      : `Write one complete OpenSCAD script for the user's request above. No Architect Spec is available: derive the dimensions yourself and declare them as parameters, choose a bedFace and lay it on z = 0, and apply the corner-softening categories and stress-point mitigations the part needs, naming them in your rationale.
+    const drafterSystem = systemPromptFor('drafter', { placements: specHasComponents(state.assemblySpec) });
+
+    // The approved variant, found by the id the gate recorded and by nothing
+    // else: matching on name or on the recommendation picked the wrong sheet.
+    // With no gate (one validated variant) there is no human choice to contradict,
+    // so the only variant is the chosen one and its sheet is sent too.
+    const chosenVariant = state.chosenVariantId
+      ? state.specVariants?.find((v) => v.id === state.chosenVariantId)
+      : state.specVariants?.length === 1
+        ? state.specVariants[0]
+        : undefined;
+
+    let drafterHumanMessage: HumanMessage;
+    if (state.assemblySpec) {
+      const { sheet, ...skeleton } = state.assemblySpec;
+      const guidesText = state.assemblySpec.guides?.length
+        ? `\n\nGuides (context only - never model these):\n${state.assemblySpec.guides.map((g) => `- [${g.kind}] ${g.label}`).join('\n')}`
+        : '';
+
+      const reviewFindingsText =
+        chosenVariant?.review && !chosenVariant.review.validated && chosenVariant.review.findings.length > 0
+          ? `\n\nOpen review findings:\n${chosenVariant.review.findings.map((f) => `- [${f.severity}] ${f.issue}`).join('\n')}`
+          : '';
+
+      const blockout = blockoutScad(state.assemblySpec);
+      const scratchStart = process.env.CADAI_DRAFTER_START === 'scratch';
+      const placeholdersText = blockout.skipped.length
+        ? scratchStart
+          ? `\n\nPlaceholders - parts the concept sheet could not draw exactly; build these from the skeleton:\n${blockout.skipped
+              .map((p) => `- ${p.name}: ${p.reason.replace(/;?\s*drawn as a box$/, '')}`)
+              .join('\n')}`
+          : `\n\nPlaceholders - build these from the skeleton, not from the starting script:\n${blockout.skipped
+              .map((p) => `- ${p.name}: ${isStandIn(p.reason) ? `a plain box stands in (${p.reason.replace(/;?\s*drawn as a box$/, '')})` : `not in the starting script (${p.reason})`}`)
+              .join('\n')}`
+        : '';
+      const startingScriptText =
+        !scratchStart
+          ? `\n\nStarting script:\nThis starting script has a module for each component that could be drawn, with its base shape and declared holes (except the placeholders listed above). Keep each module's base dimensions; add the features the sheet names; do not add top-level placement.\n\`\`\`openscad\n${blockout.code}\n\`\`\``
+          : '';
+
+      const promptText = `Implement the Architect Spec below as one complete OpenSCAD script.
+${clearanceJointsNote(state.assemblySpec)}
+
+Architect Spec Sheet:
+${sheet}
+
+Architect Skeleton (JSON):
+${JSON.stringify(skeleton, null, 2)}
+${contract}${guidesText}${reviewFindingsText}${placeholdersText}${startingScriptText}`;
+
+      let pngDataUrl: string | null = null;
+      const chosenSheetSvg = chosenVariant ? drawnSheetSvg(chosenVariant) : null;
+      if (chosenSheetSvg && isVisionModel(selectedModel)) {
+        try {
+          pngDataUrl = await svgToPngDataUrl(chosenSheetSvg);
+        } catch (e) {
+          console.warn('drafterNode: failed to rasterize concept sheet for drafter', e);
+        }
+      }
+
+      if (pngDataUrl) {
+        const content: Array<Record<string, unknown>> = [
+          { type: 'text', text: promptText },
+          { type: 'image_url', image_url: { url: pngDataUrl } },
+        ];
+        drafterHumanMessage = new HumanMessage({ content: content as never });
+      } else {
+        drafterHumanMessage = new HumanMessage(promptText);
+      }
+    } else {
+      const promptText = `Write one complete OpenSCAD script for the user's request above. No Architect Spec is available: derive the sizes yourself and declare them as parameters, rest it on z = 0, and instantiate the parts at the top level, since no placement code runs without a spec. Build any gusset or thickening the request itself names; nothing is generated from a spec here.
 ${contract}`;
-
-    // Only impose the module-at-origin contract when there are real coordinates
-    // to honour; otherwise the drafter should assemble the part itself as before.
-    const drafterSystem =
-      CAD_AI_SYSTEM_PROMPT +
-      '\n\n' +
-      DRAFTER_PREAMBLE +
-      (specHasComponents(state.assemblySpec) ? '\n\n' + DRAFTER_PLACEMENT_CONTRACT : '');
+      drafterHumanMessage = new HumanMessage(promptText);
+    }
 
     const messages: BaseMessage[] = [
       new SystemMessage(drafterSystem),
       ...state.messages,
-      new HumanMessage(drafterPrompt)
+      drafterHumanMessage,
     ];
 
     let response = await drafterModel.invoke(messages, config);
@@ -817,7 +1489,7 @@ ${contract}`;
 
       for (const toolCall of response.tool_calls) {
         if (toolCall.name === 'get_functional_cad_module') {
-          const moduleKey = (toolCall.args as any)?.moduleKey || 'fastener_hardware';
+
 
 
           // Pass `config` so the tool run is parented to this node's span.
@@ -857,6 +1529,9 @@ ${contract}`;
       // mislabelled as a comment about the compiled geometry.
       gateAction: null,
       gateFeedback: null,
+      specVariants: [],
+      specBrief: null,
+      chosenVariantId: null,
     };
   }
 
@@ -909,6 +1584,7 @@ ${contract}`;
     // or a spec that skipped the gate has never been through it, and a repair
     // prompt that never sees the contradiction cannot resolve it.
     specViolations.push(...auditSpecCoherence(state.assemblySpec));
+    specViolations.push(...auditSpecShapes(state.assemblySpec));
 
     // Handedness: static, because a mirrored part measures identically to the
     // one the spec asked for and no geometric check can separate them.
@@ -1084,11 +1760,11 @@ Current Broken Code:
 ${stripGeneratedAssembly(state.currentCode)}
 \`\`\`
 ${humanRevision}
-${state.assemblySpec ? `Assembly Spec (every stressPoint mitigation in it is mandatory; edges stay sharp):\n${JSON.stringify(state.assemblySpec, null, 2)}\n` : ''}${contractLines(state.designContract)}
+${state.assemblySpec ? `Assembly Spec (every stressPoint mitigation in it is mandatory; edges stay sharp):\n${state.assemblySpec.sheet ? `Design Sheet:\n${state.assemblySpec.sheet}\n\n` : ''}${JSON.stringify({ ...state.assemblySpec, sheet: undefined }, null, 2)}\n${clearanceJointsNote(state.assemblySpec) ? `${clearanceJointsNote(state.assemblySpec)}\n` : ''}` : ''}${contractLines(state.designContract)}
 Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`openscad ... \`\`\` block.`;
 
     const fixMessages = [
-      new SystemMessage(CAD_AI_SYSTEM_PROMPT + "\n\n" + REPAIR_PREAMBLE),
+      new SystemMessage(systemPromptFor('repair')),
       ...state.messages,
       new HumanMessage(fixPrompt),
     ];
@@ -1100,7 +1776,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
 
       for (const toolCall of response.tool_calls) {
         if (toolCall.name === 'get_functional_cad_module') {
-          const moduleKey = (toolCall.args as any)?.moduleKey || 'fastener_hardware';
+
 
 
           // Pass `config` so the tool run is parented to this node's span.
@@ -1183,13 +1859,13 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     if (views.length === 0) return {};
 
 
-    const request = firstHumanText(state.messages) || 'the user request above';
+    const request = latestHumanText(state.messages) || 'the user request above';
     const specText = criticSpecSummary(state.assemblySpec);
     const bedFaces = (state.assemblySpec?.components ?? [])
       .filter((c) => c.bedFace)
       .map((c) => `${c.name} on ${c.bedFace}`);
     const postureText = bedFaces.length
-      ? ` The part should rest on its declared bed face (${bedFaces.join(', ')}); check the print posture against that.`
+      ? ` The part should rest on its declared bed face (${bedFaces.join(', ')}); check the posture against that.`
       : '';
 
     const content: Array<Record<string, unknown>> = [
@@ -1209,11 +1885,10 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
 
     let critique: VisualCritique | null = null;
     try {
-      critique = (await visionModel
-        .withStructuredOutput(VisualCritiqueSchema)
+      critique = (await structuredFor(criticModel, process.env.CADAI_CRITIC_MODEL || selectedModel, VisualCritiqueSchema)
         .invoke(
           [
-            new SystemMessage(CAD_AI_SYSTEM_PROMPT + '\n\n' + CRITIC_PREAMBLE),
+            new SystemMessage(systemPromptFor('critic')),
             new HumanMessage({ content: content as never }),
           ],
           config
@@ -1246,7 +1921,6 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       violations: state.specViolations,
       attempts: state.attemptCount,
       isValid: state.isValid,
-      approach: state.designContract?.researchApproach,
     });
 
     write(config, 'respondToUser', {
@@ -1265,12 +1939,37 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
   // caller via isInterrupted()/INTERRUPT on the invoke() result) and, on
   // resume, returns exactly the value passed to Command({ resume }) - there is
   // no other channel between the paused graph and the human's decision.
-  async function specGate(state: AgentStateType): Promise<Partial<AgentStateType>> {
+  async function specGate(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
+    let variants: GateVariant[] = (state.specVariants || []).map((v) => ({
+      id: v.id,
+      name: v.name,
+      idea: v.idea,
+      spec: v.spec,
+      sheetSvg: drawnSheetSvg(v),
+      review: reviewWithSpecErrors(v, v.review),
+      ...(v.error ? { error: v.error } : {}),
+    }));
+    if (variants.length === 0 && state.assemblySpec) {
+      variants = [
+        {
+          id: 'A',
+          name: state.assemblySpec.assemblyName,
+          idea: '',
+          spec: state.assemblySpec,
+          sheetSvg: null,
+          review: null,
+        },
+      ];
+    }
     const payload: GatePayload = {
       kind: 'spec',
-      spec: state.assemblySpec,
+      brief: state.specBrief?.markdown ?? '',
+      variants,
+      recommendedId: state.specBrief?.recommendedId ?? 'A',
+      openQuestions: state.specBrief?.openQuestions ?? state.assemblySpec?.openQuestions ?? [],
       contract: state.designContract,
       revisionCount: state.specRevisionCount,
+      spec: state.assemblySpec,
     };
     const decision = interrupt(payload) as GateDecision;
 
@@ -1278,35 +1977,130 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       return { gateAction: 'cancel' };
     }
 
-    // Answers to openQuestions are the whole point of asking them, so they
-    // count on BOTH branches - a revise that answers two questions must carry
-    // those answers, not just the free-text comment.
-    const answerLines = answeredQuestionLines(state.assemblySpec, decision.answers);
+    // A revise beyond the cap is spent: the chosen variant is built as it stands
+    // (checkReviseRoute would otherwise send the drafter a mismatched spec).
+    const overCap = decision.action === 'revise' && state.specRevisionCount + 1 > MAX_SPEC_REVISIONS;
+    if (overCap) {
+      write(config, 'specGate', {
+        t: 'delta',
+        text: 'Revision limit reached; building the chosen variant as it stands (your last comment was not applied).\n',
+      });
+    }
 
-    if (decision.action === 'revise') {
-      const parts = [decision.comment?.trim(), answerLines.length ? answerLines.join('\n') : ''].filter(Boolean);
+    if (decision.action === 'revise' && !overCap) {
+      const recId = state.specBrief?.recommendedId ?? 'A';
+      const chosenId = decision.chosenVariantId ?? recId;
+      let chosenVariant = (state.specVariants || []).find((v) => v.id === chosenId);
+      if (!chosenVariant && (state.specVariants || []).length > 0) {
+        chosenVariant = (state.specVariants || []).find((v) => v.id === recId) ?? state.specVariants[0];
+      }
+      if (!chosenVariant && state.assemblySpec) {
+        chosenVariant = {
+          id: 'A',
+          name: state.assemblySpec.assemblyName,
+          idea: '',
+          spec: state.assemblySpec,
+          version: 1,
+          drawnVersion: null,
+          review: null,
+          retries: 0,
+          needsRevision: true,
+        };
+      }
+      const updatedVariants: SpecVariant[] = chosenVariant
+        ? [{ ...chosenVariant, needsRevision: true, retries: 0, review: null, previousReview: chosenVariant.review, previousMajors: undefined, stagnantRounds: 0 }]
+        : [];
+
+      const allQuestions = [
+        ...(state.specBrief?.openQuestions ?? []),
+        ...(state.assemblySpec?.openQuestions ?? []),
+        ...(state.specVariants ?? []).flatMap((v) => v.spec?.openQuestions ?? []),
+      ];
+      const byId = new Map(allQuestions.map((q) => [q.id, q.question]));
+      const answerNoteLines: string[] = [];
+      if (decision.answers) {
+        for (const [id, answer] of Object.entries(decision.answers)) {
+          const text = answer?.trim();
+          if (text) {
+            const qText = byId.get(id);
+            answerNoteLines.push(qText ? `${qText}: ${text}` : `${id}: ${text}`);
+          }
+        }
+      }
+
+      const newNotes = [...(state.humanSpecNotes ?? [])];
+      if (decision.comment?.trim()) {
+        newNotes.push(decision.comment.trim());
+      }
+      newNotes.push(...answerNoteLines);
+
+      const feedbackParts = [decision.comment?.trim(), ...answerNoteLines].filter(Boolean);
+      const gateFeedback = feedbackParts.join('\n') || 'The user requested changes.';
+
       return {
         gateAction: 'revise',
-        gateFeedback: parts.length
-          ? parts.join('\n')
-          : 'The user requested changes but did not specify what.',
+        gateFeedback,
+        specVariants: updatedVariants,
+        // Only the chosen variant remains, so it is the recommendation now.
+        specBrief: state.specBrief && updatedVariants[0]
+          ? { ...state.specBrief, recommendedId: updatedVariants[0].id }
+          : state.specBrief,
+        humanSpecNotes: newNotes,
+        reviewDeadline: null,
+        runDeadline: null,
         specRevisionCount: state.specRevisionCount + 1,
       };
     }
 
-    // Approve. A client-edited spec must be re-validated - it crossed a
-    // network boundary as plain JSON and is no longer a trusted AssemblySpec.
-    let approvedSpec = state.assemblySpec;
-    if (decision.spec) {
-      const parsed = AssemblySpecSchema.safeParse(decision.spec);
-      if (parsed.success) approvedSpec = normalizeSpec(parsed.data);
-      // On failure, fall back to the last known-good spec rather than reject
-      // the whole approval over a malformed edit.
+    // Approve.
+    const recId = state.specBrief?.recommendedId ?? 'A';
+    const chosenId = decision.chosenVariantId ?? recId;
+    let chosenVariant = (state.specVariants || []).find((v) => v.id === chosenId);
+    if (!chosenVariant) {
+      chosenVariant = (state.specVariants || []).find((v) => v.id === recId);
+    }
+    const recVariant = (state.specVariants || []).find((v) => v.id === recId);
+
+    let chosenSpec = chosenVariant?.spec ?? null;
+    let approvedVariant = chosenVariant;
+    if (!chosenSpec && recVariant?.spec) {
+      write(config, 'specGate', {
+        t: 'delta',
+        text: `Chosen variant ${chosenId} has no spec; falling back to recommended variant ${recId}.\n`,
+      });
+      chosenSpec = recVariant.spec;
+      approvedVariant = recVariant;
     }
 
-    // An answered question is no longer open: promote it to a recorded
-    // assumption so the drafter and the audit both see a settled fact, and
-    // drop it from openQuestions so a later gate does not re-ask it.
+    // Only RAW variant specs get the brief merged in. state.assemblySpec already
+    // carries it, so merging that one again duplicated assumptions and questions.
+    let baseApproved = chosenSpec;
+    let alreadyMerged = false;
+    if (!baseApproved && state.assemblySpec) {
+      // state.assemblySpec was taken from the first variant that has a spec, so the
+      // sheet and findings the drafter gets must be that variant's.
+      const source = recommendedVariant(state.specVariants || [], state.specBrief);
+      write(config, 'specGate', {
+        t: 'delta',
+        text: `No variant spec to approve; using the spec of variant ${source?.id ?? '?'} (the architect's last).\n`,
+      });
+      baseApproved = state.assemblySpec;
+      alreadyMerged = true;
+      if (source) approvedVariant = source;
+    }
+    if (decision.spec) {
+      const parsed = AssemblySpecSchema.safeParse(decision.spec);
+      if (parsed.success) {
+        baseApproved = normalizeSpec(parsed.data);
+        alreadyMerged = false;
+      }
+    }
+    let approvedSpec = baseApproved
+      ? alreadyMerged
+        ? baseApproved
+        : mergeBriefIntoSpec(baseApproved, state.specBrief)
+      : null;
+
     if (approvedSpec && decision.answers) {
       const answered = new Set(
         (approvedSpec.openQuestions ?? [])
@@ -1341,6 +2135,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
 
     return {
       gateAction: 'approve',
+      chosenVariantId: approvedVariant?.id ?? null,
       assemblySpec: stampedSpec,
       designContract: updatedContract,
     };
@@ -1380,16 +2175,30 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
 
   // Conditional Edge: route from architectNode
   function checkSpecRoute(state: AgentStateType) {
-    let prompt = '';
-    for (const msg of state.messages) {
-      if (msg._getType() === 'human') {
-        prompt = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-        break;
-      }
-    }
+    const prompt = latestHumanText(state.messages);
 
+    // A loop that ended past the soft deadline has no time left to draft in this
+    // request, so a human sees the spec first (and the drafter starts in a new one).
+    if (state.reviewDeadline !== null && Date.now() >= state.reviewDeadline) return 'specGate';
     if (shouldGateSpec(state, prompt)) return 'specGate';
     return 'drafterNode';
+  }
+
+  function routeAfterArchitect(state: AgentStateType) {
+    const sheetsEnabled = process.env.CADAI_SPEC_SHEETS !== 'off';
+    const hasSpec = (state.specVariants || []).some((v) => v.spec !== null);
+    if (sheetsEnabled && isVisionModel(selectedModel) && hasSpec) {
+      return 'specIllustrator';
+    }
+    return checkSpecRoute(state);
+  }
+
+  function routeAfterReviewer(state: AgentStateType) {
+    const needsRevision = (state.specVariants || []).some((v) => v.needsRevision);
+    if (needsRevision) {
+      return 'architectNode';
+    }
+    return checkSpecRoute(state);
   }
 
   // Conditional Edge: route from specGate
@@ -1439,23 +2248,11 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     return 'respondToUser';
   }
 
-  // Conditional Edge: route from researchNode
-  function checkResearchRoute(state: AgentStateType) {
-    if (state.designBrief && !state.researchSkipReason) return 'researchGate';
-    return 'architectNode';
-  }
-
-  // Conditional Edge: route from researchGate
-  function checkResearchGateRoute(state: AgentStateType) {
-    if (state.gateAction === 'cancel') return 'respondToUser';
-    return 'architectNode';
-  }
-
   // Build the graph
   const workflow = new StateGraph(AgentState)
-    .addNode('researchNode', researchNode)
-    .addNode('researchGate', researchGate)
     .addNode('architectNode', architectNode)
+    .addNode('specIllustrator', specIllustrator)
+    .addNode('specReviewer', specReviewer)
     .addNode('specGate', specGate)
     .addNode('drafterNode', drafterNode)
     .addNode('validateCode', validateCode)
@@ -1463,18 +2260,17 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     .addNode('visualCritic', visualCritic)
     .addNode('acceptGate', acceptGate)
     .addNode('respondToUser', respondToUser)
-    .addEdge(START, 'researchNode')
-    .addConditionalEdges('researchNode', checkResearchRoute, {
-      researchGate: 'researchGate',
-      architectNode: 'architectNode'
-    })
-    .addConditionalEdges('researchGate', checkResearchGateRoute, {
-      architectNode: 'architectNode',
-      respondToUser: 'respondToUser'
-    })
-    .addConditionalEdges('architectNode', checkSpecRoute, {
+    .addEdge(START, 'architectNode')
+    .addConditionalEdges('architectNode', routeAfterArchitect, {
+      specIllustrator: 'specIllustrator',
       specGate: 'specGate',
-      drafterNode: 'drafterNode'
+      drafterNode: 'drafterNode',
+    })
+    .addEdge('specIllustrator', 'specReviewer')
+    .addConditionalEdges('specReviewer', routeAfterReviewer, {
+      architectNode: 'architectNode',
+      specGate: 'specGate',
+      drafterNode: 'drafterNode',
     })
     .addConditionalEdges('specGate', checkReviseRoute, {
       architectNode: 'architectNode',
@@ -1499,7 +2295,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     })
     .addEdge('respondToUser', END);
 
-  // interrupt() calls inside researchGate/specGate/acceptGate are what actually pause the
+  // interrupt() calls inside specGate/acceptGate are what actually pause the
   // graph and carry data across the boundary; a checkpointer is required for
   // that pause to survive past this single invoke() call, which is exactly
   // what durably holding a run open across an HTTP request needs.

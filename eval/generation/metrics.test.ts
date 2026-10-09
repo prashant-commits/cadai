@@ -1,5 +1,34 @@
-import { describe, it, expect } from 'vitest';
-import { metricsFromState, summarize, scoresFor } from './metrics';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('./judge', async () => {
+  const actual = await vi.importActual<typeof import('./judge')>('./judge');
+  return { ...actual, judgeCompiledModel: vi.fn() };
+});
+
+import { criticUserContent, judgeCompiledModel } from './judge';
+import { measureVisualMatch, metricsFromState, summarize, scoresFor, GenerationMetrics } from './metrics';
+import type { SpecBrief, SpecVariant } from '@/lib/agent/spec-variants';
+import type { SpecViolation } from '@/lib/agent/spec-audit';
+
+const judgeMock = vi.mocked(judgeCompiledModel);
+
+function variant(id: SpecVariant['id'], review: SpecVariant['review']): SpecVariant {
+  return {
+    id, name: id, idea: '', spec: null, version: 1, drawnVersion: null, review, retries: 0, needsRevision: false,
+  };
+}
+
+function brief(recommendedId: SpecBrief['recommendedId']): SpecBrief {
+  return { markdown: '', assumptions: [], openQuestions: [], recommendedId };
+}
+
+const visual: SpecViolation = {
+  kind: 'visual', severity: 'warning', field: 'geometry', expected: 'match', measured: 'off', message: 'off',
+};
+
+const counted = {
+  variantCount: 0, variantsValidated: 0, reviewRounds: 0, chosenValidated: null, visualMatch: null, visualFindings: null,
+} as const;
 
 const violation = (kind: string, severity: 'error' | 'warning' = 'error') =>
   ({ kind, severity, field: '', expected: '', measured: '', message: '' }) as any;
@@ -21,56 +50,136 @@ describe('metricsFromState', () => {
     }, 1234);
     expect(m).toMatchObject({
       id: 'p1', specOk: true, composed: true, compileOk: true, floorOk: false,
-      floatingCount: 1, localFrameOk: false, shellsOk: true, attempts: 1, wallMs: 1234, researchRan: false, citedApproachChosen: null,
+      floatingCount: 1, localFrameOk: false, shellsOk: true, attempts: 1, wallMs: 1234,
     });
     expect(m.errorKinds).toEqual(['floor', 'floating']);
   });
 
   it('returns nulls for measurements that could not be taken', () => {
-    const m = metricsFromState('p2', 'm', { assemblySpec: null, currentCode: '', isValid: false, attemptCount: 0, validation: null, modelInfo: null, specViolations: [], placementReport: null, researchSkipReason: null, designBrief: null }, 1);
+    const m = metricsFromState('p2', 'm', { assemblySpec: null, currentCode: '', isValid: false, attemptCount: 0, validation: null, modelInfo: null, specViolations: [], placementReport: null }, 1);
     expect(m.specOk).toBe(false);
     expect(m.compileOk).toBe(false);
     expect(m.floorOk).toBeNull();
     expect(m.floatingCount).toBeNull();
     expect(m.localFrameOk).toBeNull();
-    expect(m.researchRan).toBe(false);
-    expect(m.citedApproachChosen).toBeNull();
+    expect(m.variantCount).toBe(0);
+    expect(m.chosenValidated).toBeNull();
   });
 
-  it('records whether research ran and whether the chosen approach was cited', () => {
-    const chosen = (grounding: 'cited' | 'recalled') => ({
-      partClass: 'x',
-      chosenAt: 1,
-      approach: { id: 'a1', name: 'n', construction: 'c', strengths: [], weaknesses: [], sources: [], grounding },
+  it('counts variants still on the final state and ignores a stale capture', () => {
+    const m = metricsFromState('p3', 'm', {
+      specVariants: [
+        variant('A', { validated: true, findings: [], attempts: 1 }),
+        variant('B', { validated: false, findings: [], attempts: 4 }),
+        variant('C', null),
+      ],
+      specBrief: brief('B'),
+      specViolations: [visual],
+    }, 10, {
+      variants: [{ id: 'A', review: { validated: true, attempts: 9 } }],
+      recommendedId: 'A',
     });
-    const ran = metricsFromState('p3', 'm', {
-      researchSkipReason: null,
-      designBrief: { partClass: 'x', approaches: [], recommendedId: 'a1', searchQueries: [] } as any,
-      designContract: { standing: {}, pinnedParams: {}, researchApproach: chosen('cited') },
-      specViolations: [],
-    }, 1);
-    expect(ran.researchRan).toBe(true);
-    expect(ran.citedApproachChosen).toBe(true);
+    expect(m.variantCount).toBe(3);
+    expect(m.variantsValidated).toBe(1);
+    expect(m.reviewRounds).toBe(4);
+    expect(m.chosenValidated).toBe(false);
+    expect(m.visualMatch).toBeNull();
+    expect(m.visualFindings).toBeNull();
+  });
 
-    const skipped = metricsFromState('p4', 'm', { researchSkipReason: 'no_provider', designBrief: null, specViolations: [] }, 1);
-    expect(skipped.researchRan).toBe(false);
-    expect(skipped.citedApproachChosen).toBeNull();
+  it('uses the spec-gate capture once the drafter has cleared the variants', () => {
+    const m = metricsFromState('p4', 'm', { specVariants: [], specBrief: null, specViolations: [] }, 10, {
+      variants: [
+        { id: 'A', review: { validated: true, attempts: 2 } },
+        { id: 'B', review: { validated: false, attempts: 5 } },
+      ],
+      recommendedId: 'A',
+    });
+    expect(m.variantCount).toBe(2);
+    expect(m.variantsValidated).toBe(1);
+    expect(m.reviewRounds).toBe(5);
+    expect(m.chosenValidated).toBe(true);
+    expect(m.visualMatch).toBeNull();
+    expect(m.visualFindings).toBeNull();
+  });
 
-    const recalled = metricsFromState('p5', 'm', {
-      researchSkipReason: null,
-      designBrief: { partClass: 'x', approaches: [], recommendedId: 'a1', searchQueries: [] } as any,
-      designContract: { standing: {}, pinnedParams: {}, researchApproach: chosen('recalled') },
-      specViolations: [],
+  it('does not treat a missing visual violation as a match', () => {
+    const unjudged = metricsFromState('p5', 'm', {
+      specViolations: [violation('interference')],
+      stlContent: 'solid x',
+      isValid: false,
     }, 1);
-    expect(recalled.citedApproachChosen).toBe(false);
+    expect(unjudged.visualMatch).toBeNull();
+    expect(unjudged.visualFindings).toBeNull();
+
+    const judged = metricsFromState('p5', 'm', {
+      specViolations: [violation('interference')],
+    }, 1, null, { visualMatch: false, visualFindings: 2 });
+    expect(judged.visualMatch).toBe(false);
+    expect(judged.visualFindings).toBe(2);
+  });
+});
+
+describe('measureVisualMatch', () => {
+  beforeEach(() => judgeMock.mockReset());
+
+  it('stays null when the critic is off or there is no STL', async () => {
+    const off = await measureVisualMatch({ criticOn: false, stl: 'solid', request: 'a stand', spec: null });
+    const empty = await measureVisualMatch({ criticOn: true, stl: '', request: 'a stand', spec: null });
+    expect(off).toEqual({ visualMatch: null, visualFindings: null });
+    expect(empty).toEqual({ visualMatch: null, visualFindings: null });
+    expect(judgeMock).not.toHaveBeenCalled();
+  });
+
+  it('stays null when the judge call fails', async () => {
+    judgeMock.mockResolvedValue(null);
+    const score = await measureVisualMatch({ criticOn: true, stl: 'solid', request: 'a stand', spec: null });
+    expect(score).toEqual({ visualMatch: null, visualFindings: null });
+  });
+
+  it('is true when the judge matches and reports no major finding', async () => {
+    judgeMock.mockResolvedValue({
+      matchesIntent: true,
+      findings: [{ issue: 'a small mark', severity: 'minor', view: 'front' }],
+    });
+    const score = await measureVisualMatch({ criticOn: true, stl: 'solid', request: 'a 30 degree stand', spec: null });
+    expect(score).toEqual({ visualMatch: true, visualFindings: 1 });
+    expect(judgeMock).toHaveBeenCalledWith({ stl: 'solid', request: 'a 30 degree stand', spec: null });
+  });
+
+  it('is false when intent does not match or a finding is major', async () => {
+    judgeMock.mockResolvedValue({
+      matchesIntent: true,
+      findings: [{ issue: 'the arm points down', severity: 'major', view: 'front' }],
+    });
+    const major = await measureVisualMatch({ criticOn: true, stl: 'solid', request: 'a stand', spec: null });
+    expect(major).toEqual({ visualMatch: false, visualFindings: 1 });
+
+    judgeMock.mockResolvedValue({ matchesIntent: false, findings: [] });
+    const rejected = await measureVisualMatch({ criticOn: true, stl: 'solid', request: 'a stand', spec: null });
+    expect(rejected).toEqual({ visualMatch: false, visualFindings: 0 });
+  });
+});
+
+describe('criticUserContent', () => {
+  it('quotes the user request and labels each view image', () => {
+    const content = criticUserContent('a 30 degree stand', null, [
+      { name: 'front', dataUrl: 'data:image/png;base64,aa' },
+      { name: 'iso', dataUrl: 'data:image/png;base64,bb' },
+    ]);
+    const text = content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
+    expect(text).toContain('"a 30 degree stand"');
+    expect(text).toContain('View: front');
+    expect(text).toContain('View: iso');
+    expect(content.filter((part) => part.type === 'image_url')).toHaveLength(2);
   });
 });
 
 describe('summarize', () => {
   it('reports rates over non-null values', () => {
-    const rows = [
-      { id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: true, floatingCount: 0, localFrameOk: true, extentsOk: null, shellsOk: true, errorKinds: [], attempts: 1, wallMs: 10, researchRan: false, citedApproachChosen: null },
-      { id: 'b', model: 'm', specOk: true, composed: false, compileOk: true, floorOk: false, floatingCount: null, localFrameOk: null, extentsOk: null, shellsOk: false, errorKinds: ['floor'], attempts: 1, wallMs: 20, researchRan: false, citedApproachChosen: null },
+    const rows: GenerationMetrics[] = [
+      { id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: true, floatingCount: 0, localFrameOk: true, extentsOk: null, shellsOk: true, errorKinds: [], attempts: 1, wallMs: 10, variantCount: 2, variantsValidated: 2, reviewRounds: 1, chosenValidated: true, visualMatch: true, visualFindings: 2 },
+      { id: 'b', model: 'm', specOk: true, composed: false, compileOk: true, floorOk: false, floatingCount: null, localFrameOk: null, extentsOk: null, shellsOk: false, errorKinds: ['floor'], attempts: 1, wallMs: 21, variantCount: 0, variantsValidated: 0, reviewRounds: 3, chosenValidated: false, visualMatch: null, visualFindings: null },
     ];
     const s = summarize(rows);
     expect(s.composed).toBe('1/2');
@@ -78,15 +187,37 @@ describe('summarize', () => {
     expect(s.noFloating).toBe('1/1');
     expect(s.localFrameOk).toBe('1/1');
     expect(s.extentsOk).toBe('0/0');
-    expect(s.researchRan).toBe('0/2');
-    expect(s.citedApproachChosen).toBe('0/0');
-    expect(s.meanWallMs).toBe('15');
+    expect(s.meanVariantCount).toBe('1.0');
+    expect(s.meanVariantsValidated).toBe('1.0');
+    expect(s.meanReviewRounds).toBe('2.0');
+    expect(s.chosenValidated).toBe('1/2');
+    expect(s.visualMatch).toBe('1/1');
+    expect(s.meanVisualFindings).toBe('2.0');
+    expect(s.meanWallMs).toBe('15.5');
   });
 });
 
 describe('scoresFor', () => {
   it('emits boolean scores and skips unmeasured ones', () => {
-    const names = scoresFor({ id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: null, floatingCount: null, localFrameOk: true, extentsOk: null, shellsOk: true, errorKinds: [], attempts: 1, wallMs: 10, researchRan: false, citedApproachChosen: null }).map((s) => s.name);
-    expect(names).toEqual(['spec_ok', 'composed', 'compile_ok', 'local_frame_ok', 'shells_ok', 'research_ran', 'wall_ms']);
+    const metrics: GenerationMetrics = { id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: null, floatingCount: null, localFrameOk: true, extentsOk: null, shellsOk: true, errorKinds: [], attempts: 1, wallMs: 10, ...counted };
+    const names = scoresFor(metrics).map((s) => s.name);
+    expect(names).toEqual([
+      'spec_ok', 'composed', 'compile_ok', 'local_frame_ok', 'shells_ok',
+      'variant_count', 'variants_validated', 'review_rounds', 'wall_ms',
+    ]);
+  });
+
+  it('scores the chosen variant and the visual match when they were measured', () => {
+    const metrics: GenerationMetrics = {
+      id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: null,
+      floatingCount: null, localFrameOk: null, extentsOk: null, shellsOk: null, errorKinds: [],
+      attempts: 1, wallMs: 10, variantCount: 2, variantsValidated: 1, reviewRounds: 3,
+      chosenValidated: false, visualMatch: true, visualFindings: 2,
+    };
+    const scores = scoresFor(metrics);
+    expect(scores.find((s) => s.name === 'chosen_validated')).toEqual({ name: 'chosen_validated', value: 0, dataType: 'BOOLEAN' });
+    expect(scores.find((s) => s.name === 'visual_match')).toEqual({ name: 'visual_match', value: 1, dataType: 'BOOLEAN' });
+    expect(scores.find((s) => s.name === 'visual_findings')).toEqual({ name: 'visual_findings', value: 2, dataType: 'NUMERIC' });
+    expect(scores.find((s) => s.name === 'review_rounds')?.value).toBe(3);
   });
 });

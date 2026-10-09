@@ -3,6 +3,8 @@ import type { ModuleFrame } from '../engine/module-frames';
 import { buildPlacementComponents, PlacementComponent, PlacementReport } from './placement-report';
 import { isZeroVec, Vec3 } from './placement-geometry';
 import { gussetScad, gussetsFor } from './gussets';
+import { matingCuts } from './mating-cuts';
+import { shapeScad } from '../spec-sheet/blockout-scad';
 
 /**
  * Deterministic assembly placement.
@@ -373,6 +375,9 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
   const params: string[] = [];
   const wrappers: string[] = [];
   const calls: string[] = [];
+  const reportNotes: string[] = [];
+
+  const posExprs = new Map<string, [string, string, string]>();
   for (const c of components) {
     const note = noteFor.get(c.name);
     let noteUsed = false;
@@ -383,13 +388,24 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
       noteUsed = true;
       return pname;
     }) as [string, string, string];
+    posExprs.set(c.name, posExpr);
+  }
 
-    if (note && !noteUsed) calls.push(`    // ${c.name}: ${note}`);
+  const allCuts = matingCuts(spec, (a, b) => {
+    reportNotes.push(`skipped mutual cut cycle between ${a} and ${b}`);
+  });
+
+  for (const c of components) {
+    const note = noteFor.get(c.name);
+    const posExpr = posExprs.get(c.name)!;
+
+    if (note && !posExpr.some((p) => p !== '0')) calls.push(`    // ${c.name}: ${note}`);
 
     // Gussets the spec prescribes are generated here and unioned onto the
     // module in a wrapper, so the Drafter never has to place one.
     const gussets = gussetsFor(spec, c.name);
     let line: string;
+    let wrapperCall: string | undefined;
     if (gussets.length > 0) {
       const wrapper = `${c.name}__braced`;
       wrappers.push(
@@ -399,10 +415,39 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
         '    }',
         '}'
       );
-      line = `    ${placementCall(c, posExpr, `${wrapper}();`)}`;
-    } else {
-      line = `    ${placementCall(c, posExpr)}`;
+      wrapperCall = `${wrapper}();`;
     }
+
+    const cuts = allCuts.filter(x => x.host === c.name);
+    const cutLines: string[] = [];
+
+    for (const cut of cuts) {
+      const compB = components.find(x => x.name === cut.inserted);
+      const specB = spec.components?.find(x => x.name === cut.inserted);
+      if (!compB || !specB) {
+        reportNotes.push(`skipped cut for ${cut.inserted} (missing component)`);
+        continue;
+      }
+      if (!specB.localExtents || specB.localExtents.length < 3) {
+        reportNotes.push(`skipped cut for ${cut.inserted} (no localExtents)`);
+        continue;
+      }
+      const posBExpr = posExprs.get(cut.inserted) ?? AXES.map((_, i) => (compB.position[i] === 0 ? '0' : fmt(compB.position[i]))) as [string, string, string];
+      const body = shapeScad(specB, cut.clearance, (reason) => {
+        reportNotes.push(`cut for ${cut.inserted} fell back to box envelope (${reason})`);
+      });
+      cutLines.push(`        // cut for ${cut.inserted} with ${cut.clearance} mm clearance`);
+      cutLines.push(`        ${placementCall(compB, posBExpr, body)}`);
+    }
+
+    const baseCall = wrapperCall ? placementCall(c, posExpr, wrapperCall) : placementCall(c, posExpr);
+    
+    if (cutLines.length > 0) {
+      line = `    difference() {\n        ${baseCall.trimStart()}\n${cutLines.join('\n')}\n    }`;
+    } else {
+      line = `    ${baseCall}`;
+    }
+    
     if (!isZeroVec(c.correction)) {
       line += `   // local-frame correction: ${c.name} min corner measured at ${vec(c.localMin)}`;
     }
@@ -425,7 +470,7 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
   return {
     code: `${stripped.code.trimEnd()}\n${block}`,
     composed: true,
-    report: { composed: true, removedStatements: stripped.removed, components },
+    report: { composed: true, removedStatements: stripped.removed, components, notes: reportNotes.length > 0 ? reportNotes : undefined },
   };
 }
 
@@ -455,11 +500,31 @@ export function stripGeneratedAssembly(code: string): string {
  */
 export function instantiationFor(spec: AssemblySpec, componentName: string, frames: ModuleFrame[] = []): string | null {
   if (!spec.components?.some((x) => x.name === componentName)) return null;
-  const c = buildPlacementComponents(spec, frames, true).find((x) => x.name === componentName)!;
+  const components = buildPlacementComponents(spec, frames, true);
+  const c = components.find((x) => x.name === componentName)!;
   const posExpr = AXES.map((_, i) => (c.position[i] === 0 ? '0' : fmt(c.position[i]))) as [string, string, string];
   const gussets = gussetsFor(spec, componentName);
-  if (gussets.length === 0) return placementCall(c, posExpr);
-  // The probe compiles module-only code (no generated wrappers), so the gussets
-  // are inlined here rather than referenced through the wrapper module.
-  return placementCall(c, posExpr, `union() { ${bracedBodyLines(c, gussets, '').join(' ')} }`);
+  
+  let baseCall: string;
+  if (gussets.length === 0) {
+    baseCall = placementCall(c, posExpr);
+  } else {
+    baseCall = placementCall(c, posExpr, `union() { ${bracedBodyLines(c, gussets, '').join(' ')} }`);
+  }
+  
+  const cuts = matingCuts(spec).filter(x => x.host === componentName);
+  if (cuts.length === 0) return baseCall;
+
+  const cutLines: string[] = [];
+  for (const cut of cuts) {
+    const compB = components.find(x => x.name === cut.inserted);
+    const specB = spec.components?.find(x => x.name === cut.inserted);
+    if (!compB || !specB || !specB.localExtents || specB.localExtents.length < 3) continue;
+    const posBExpr = AXES.map((_, i) => (compB.position[i] === 0 ? '0' : fmt(compB.position[i]))) as [string, string, string];
+    const body = shapeScad(specB, cut.clearance);
+    cutLines.push(placementCall(compB, posBExpr, body));
+  }
+
+  if (cutLines.length === 0) return baseCall;
+  return `difference() {\n  ${baseCall}\n  ${cutLines.join('\n  ')}\n}`;
 }

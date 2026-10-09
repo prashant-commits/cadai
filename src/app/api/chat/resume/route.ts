@@ -6,7 +6,8 @@ import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/trac
 import { deleteRunCheckpoint, getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { Command } from '@langchain/langgraph';
 import { GateDecision } from '@/types';
-import { DEFAULT_TEXT_MODEL } from '@/lib/agent/models';
+import { DEFAULT_MODEL } from '@/lib/agent/models';
+import { graphRecursionLimit, describeGraphError } from '@/lib/agent/run-limits';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -71,6 +72,28 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // A paused run is deleted after CADAI_CHECKPOINT_TTL_MS. Streaming a resume
+    // into a missing checkpoint yields no steps and no error, so the client would
+    // show an approved gate and a blank result. Say so instead.
+    const paused = await getCheckpointer().getTuple({ configurable: { thread_id: checkpointKey } });
+    if (!paused) {
+      return new Response(
+        `data: ${JSON.stringify({
+          t: 'error',
+          message: 'This paused run expired or was not found on this server. Send the request again.',
+        } satisfies StreamEvent)}
+
+`,
+        {
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            Connection: 'keep-alive',
+          },
+        }
+      );
+    }
+
     // Run the agent graph asynchronously and stream events
     (async () => {
       // Hoisted above the try so the finally block can flush it. The factory
@@ -78,9 +101,9 @@ export async function POST(req: NextRequest) {
       // throw outside the try.
       const langfuseHandler = getLangfuseCallbackHandler({
         sessionId: threadId,
-        tags: ['cadai', model || DEFAULT_TEXT_MODEL, 'resume'],
+        tags: ['cadai', model || DEFAULT_MODEL, 'resume'],
         metadata: {
-          model: model || DEFAULT_TEXT_MODEL,
+          model: model || DEFAULT_MODEL,
         },
       });
 
@@ -90,6 +113,7 @@ export async function POST(req: NextRequest) {
         let sawGate = false;
         const stream = await agent.stream(new Command({ resume: decision }), {
           configurable: { thread_id: checkpointKey },
+          recursionLimit: graphRecursionLimit(),
           streamMode: ['updates', 'messages', 'custom'],
           callbacks: langfuseHandler ? [langfuseHandler] : undefined,
         });
@@ -103,9 +127,8 @@ export async function POST(req: NextRequest) {
 
         if (!sawGate) await deleteRunCheckpoint(checkpointKey);
       } catch (err: unknown) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
         await deleteRunCheckpoint(checkpointKey);
-        await sendEvent({ t: 'error', message: `Agent resume failed: ${errorMessage}` });
+        await sendEvent({ t: 'error', message: describeGraphError(err, 'Agent resume failed') });
       } finally {
         // See the matching comment in ../route.ts: the detached IIFE outlives
         // the returned Response, so the span queue must be drained explicitly

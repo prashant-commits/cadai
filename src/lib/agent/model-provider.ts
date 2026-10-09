@@ -1,21 +1,11 @@
 import { ChatOpenAI } from '@langchain/openai';
-import { DEFAULT_TEXT_MODEL, DEFAULT_VISION_MODEL, EXPLABS_BASE_URL } from './models';
+import { DEFAULT_MODEL, EXPLABS_BASE_URL } from './models';
 
 /**
  * Model routing for the CAD agent.
  *
  * Every node talks to the Experiential Labs gateway over the OpenAI wire
- * format, so there is one client and one key. Two defaults, not one, because
- * the pipeline needs two different things from a model:
- *
- *   - The Architect, Drafter and Repair nodes need long structured output over
- *     AssemblySpecSchema. deepseek-v4-flash measured 5/5 valid specs against
- *     1/5 on the Gemini route this replaced, and it tool-calls, so it is the
- *     text default.
- *
- *   - The Visual Critic is the only node that sends images, and no DeepSeek
- *     text route accepts image input. It therefore resolves separately, to a
- *     multimodal slug.
+ * format, so there is one client and one key.
  *
  * The gateway key is read from the server environment and is never sent to the
  * browser, so there is no user-supplied key anywhere in the app.
@@ -38,14 +28,25 @@ function explabsKey(): string {
  */
 export type CadChatModel = ChatOpenAI;
 
-/** Builds a chat model for `modelName`. */
-export function getChatModel(modelName?: string): CadChatModel {
-  const selectedModel = modelName || process.env.CADAI_MODEL || DEFAULT_TEXT_MODEL;
+/** Sampling temperature for every call except revisions. */
+export const DEFAULT_TEMPERATURE = 0.2;
+
+/**
+ * Models whose route accepts exactly one temperature. Probed on the gateway on
+ * 2026-10-08: claude-opus-5.5 rejects any value but 1.0 ("Supported values are
+ * between 1.0 and 1.0"). The value here wins over the 0.2 default AND the 0.6
+ * revision temperature.
+ */
+export const FIXED_TEMPERATURE: Record<string, number> = { 'claude-opus-5.5': 1 };
+
+/** Builds a chat model for `modelName`. `temperature` defaults to 0.2; revisions ask for more to avoid anchoring on the previous spec. */
+export function getChatModel(modelName?: string, opts?: { temperature?: number }): CadChatModel {
+  const selectedModel = modelName || process.env.CADAI_MODEL || DEFAULT_MODEL;
 
   return new ChatOpenAI({
     apiKey: explabsKey(),
     model: selectedModel,
-    temperature: 0.2,
+    temperature: FIXED_TEMPERATURE[selectedModel] ?? opts?.temperature ?? DEFAULT_TEMPERATURE,
     // The OpenAI client defaults to a 10-minute timeout with 2 retries, so one
     // stalled gateway request can hold a run for half an hour. A structured
     // spec on deepseek-v4-flash averages 78 s; 4 minutes is generous.
@@ -53,19 +54,4 @@ export function getChatModel(modelName?: string): CadChatModel {
     maxRetries: 1,
     configuration: { baseURL: EXPLABS_BASE_URL },
   });
-}
-
-/**
- * Builds the model the Visual Critic uses.
- *
- * When the selected model can already see, the critic reuses it so a run stays
- * on one model. Otherwise it falls back to the vision default rather than
- * sending images to a text-only route, which the gateway rejects outright with
- * "The selected model route cannot accept image input".
- */
-export function getVisionModel(modelName?: string): CadChatModel {
-  const selectedModel = modelName || process.env.CADAI_MODEL || DEFAULT_TEXT_MODEL;
-  const visionModel = process.env.CADAI_VISION_MODEL || DEFAULT_VISION_MODEL;
-
-  return getChatModel(selectedModel === visionModel ? selectedModel : visionModel);
 }
