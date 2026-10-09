@@ -557,12 +557,11 @@ export const getFunctionalCadModuleTool = new DynamicStructuredTool({
   name: 'get_functional_cad_module',
   description: `Retrieves tested, watertight OpenSCAD parametric modules, clearance tables, and design rules for functional engineering parts.
 Available module keys:
-- 'fastener_hardware': M2-M6 bolt clearance holes, counterbores, hex nut traps, and heat-set inserts.
+- 'fastener_hardware': M2-M6 bolt clearance holes, counterbores, hex nut traps, and threaded inserts.
 - 'cantilever_snap_fit': Engineered snap-fit clips and catch slots with strain limits.
 - 'enclosure_features': PCB standoff bosses, screw posts, and perimeter lip seals.
-- 'structural_ribs_gussets': Load-bearing gussets and stiffening ribs for 90-degree corners.
 - 'sliding_dovetail_joint': Interlocking slide-together pin and socket joint.
-- 'print_in_place_hinge': Zero-assembly revolving hinge with conical pivot pins.
+- 'print_in_place_hinge': Revolving hinge with conical pivot pins, modelled as one part.
 - 'honeycomb_lattice': Mathematical hexagonal isogrid lattice for lightweighting and ventilation.
 - 'polar_bolt_circle': Trigonometric polar hole arrays for motor mounts and flanges.
 - 'involute_spur_gear': Parametric spur gear with standard pressure angle and shaft bore.
@@ -575,7 +574,6 @@ Available module keys:
       'fastener_hardware',
       'cantilever_snap_fit',
       'enclosure_features',
-      'structural_ribs_gussets',
       'sliding_dovetail_joint',
       'print_in_place_hinge',
       'honeycomb_lattice',

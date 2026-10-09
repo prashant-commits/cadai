@@ -532,7 +532,7 @@ describe('M6: the no-spec drafter prompt keeps edges sharp', () => {
     const result = await agent.invoke({ messages: [new HumanMessage('a box')] }, config);
     if (isInterrupted(result)) await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
     const call = invokeMock.mock.calls.map((c) => JSON.stringify(c[0])).find((t) => t.includes('Write one complete OpenSCAD script'))!;
-    expect(call).toContain('every edge stays sharp');
+    expect(call).toMatch(/edges stay sharp/i);
     expect(call).not.toMatch(/corner-softening/i);
   });
 });
@@ -935,7 +935,7 @@ describe('nits', () => {
     invokeMock.mockImplementation(async (messages: unknown) => {
       const text = JSON.stringify(messages);
       if (text.includes('Write one complete OpenSCAD script')) {
-        expect(text).toContain('and apply the stress-point mitigations the part needs');
+        expect(text).toContain('rest it on z = 0');
         return draft;
       }
       if (kindOf(messages) === 'planner') return plan(['A']);

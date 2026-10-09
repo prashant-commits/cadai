@@ -7,7 +7,7 @@ import { createSpecRenderer } from './spec-markdown';
 import { escapeMarkers } from './transcript';
 import { composeRunSummary } from './run-summary';
 import type { StreamEvent } from './stream-events';
-import { CAD_AI_SYSTEM_PROMPT, ARCHITECT_PLANNER_PREAMBLE, ARCHITECT_VARIANT_PREAMBLE, DRAFTER_PREAMBLE, REPAIR_PREAMBLE, CRITIC_PREAMBLE, DRAFTER_PLACEMENT_CONTRACT, SHEET_REVIEWER_PREAMBLE } from './system-prompt';
+import { systemPromptFor } from './system-prompt';
 import { extractOpenScadCode } from './code-extractor';
 import { validateOpenScadCode } from './code-validator';
 import { getFunctionalCadModuleTool } from './engineering-tools';
@@ -926,7 +926,7 @@ export function createCadAgent(
     const isFresh = variants.length === 0;
 
     if (isFresh) {
-      const plannerSystemMessage = new SystemMessage(CAD_AI_SYSTEM_PROMPT + "\n\n" + ARCHITECT_PLANNER_PREAMBLE);
+      const plannerSystemMessage = new SystemMessage(systemPromptFor('planner'));
       const plannerMessages: BaseMessage[] = [plannerSystemMessage, ...conversationMessages];
 
       if (state.gateAction === 'revise' && state.gateFeedback) {
@@ -1022,7 +1022,7 @@ export function createCadAgent(
         };
       }
 
-      const variantSystemMessage = new SystemMessage(CAD_AI_SYSTEM_PROMPT + "\n\n" + ARCHITECT_VARIANT_PREAMBLE);
+      const variantSystemMessage = new SystemMessage(systemPromptFor('variant'));
       const variantBaseMessages: BaseMessage[] = [variantSystemMessage, ...conversationMessages];
       if (state.gateAction === 'revise' && state.gateFeedback) {
         variantBaseMessages.push(new HumanMessage(`The previous Assembly Spec was rejected at human review. Revise it accordingly:\n${state.gateFeedback}`));
@@ -1049,7 +1049,7 @@ export function createCadAgent(
 
     } else {
       // Revision mode
-      const variantSystemMessage = new SystemMessage(CAD_AI_SYSTEM_PROMPT + "\n\n" + ARCHITECT_VARIANT_PREAMBLE);
+      const variantSystemMessage = new SystemMessage(systemPromptFor('variant'));
       const variantBaseMessages: BaseMessage[] = [variantSystemMessage, ...conversationMessages];
 
       const currentBrief = brief ?? {
@@ -1233,7 +1233,7 @@ export function createCadAgent(
       SheetReviewSchema
     ).withConfig({ tags: ['nostream'] });
 
-    const reviewerSystem = new SystemMessage(SHEET_REVIEWER_PREAMBLE);
+    const reviewerSystem = new SystemMessage(systemPromptFor('reviewer'));
 
     // Variants that got a fresh model verdict this pass; the retry decision for
     // them is made AFTER every review has finished, on the fresh round time.
@@ -1400,11 +1400,7 @@ export function createCadAgent(
     // draft entirely - an empty script gives the repair loop nothing to work with.
     const contract = contractLines(state.designContract);
 
-    const drafterSystem =
-      CAD_AI_SYSTEM_PROMPT +
-      '\n\n' +
-      DRAFTER_PREAMBLE +
-      (specHasComponents(state.assemblySpec) ? '\n\n' + DRAFTER_PLACEMENT_CONTRACT : '');
+    const drafterSystem = systemPromptFor('drafter', { placements: specHasComponents(state.assemblySpec) });
 
     // The approved variant, found by the id the gate recorded and by nothing
     // else: matching on name or on the recommendation picked the wrong sheet.
@@ -1444,7 +1440,7 @@ export function createCadAgent(
           ? `\n\nStarting script:\nThis starting script has a module for each component that could be drawn, with its base shape and declared holes (except the placeholders listed above). Keep each module's base dimensions; add the features the sheet names; do not add top-level placement.\n\`\`\`openscad\n${blockout.code}\n\`\`\``
           : '';
 
-      const promptText = `Implement the Architect Spec below as one complete OpenSCAD script. Honour every field: each stressPoint mitigation built exactly as sized, joints at their declared clearance, every edge sharp.
+      const promptText = `Implement the Architect Spec below as one complete OpenSCAD script.
 ${clearanceJointsNote(state.assemblySpec)}
 
 Architect Spec Sheet:
@@ -1474,7 +1470,7 @@ ${contract}${guidesText}${reviewFindingsText}${placeholdersText}${startingScript
         drafterHumanMessage = new HumanMessage(promptText);
       }
     } else {
-      const promptText = `Write one complete OpenSCAD script for the user's request above. No Architect Spec is available: derive the sizes yourself and declare them as parameters, choose a bedFace and lay it on z = 0, and apply the stress-point mitigations the part needs, naming them in your rationale; every edge stays sharp.
+      const promptText = `Write one complete OpenSCAD script for the user's request above. No Architect Spec is available: derive the sizes yourself and declare them as parameters, rest it on z = 0, and instantiate the parts at the top level, since no placement code runs without a spec.
 ${contract}`;
       drafterHumanMessage = new HumanMessage(promptText);
     }
@@ -1768,7 +1764,7 @@ ${state.assemblySpec ? `Assembly Spec (every stressPoint mitigation in it is man
 Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`openscad ... \`\`\` block.`;
 
     const fixMessages = [
-      new SystemMessage(CAD_AI_SYSTEM_PROMPT + "\n\n" + REPAIR_PREAMBLE),
+      new SystemMessage(systemPromptFor('repair')),
       ...state.messages,
       new HumanMessage(fixPrompt),
     ];
@@ -1869,7 +1865,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       .filter((c) => c.bedFace)
       .map((c) => `${c.name} on ${c.bedFace}`);
     const postureText = bedFaces.length
-      ? ` The part should rest on its declared bed face (${bedFaces.join(', ')}); check the print posture against that.`
+      ? ` The part should rest on its declared bed face (${bedFaces.join(', ')}); check the posture against that.`
       : '';
 
     const content: Array<Record<string, unknown>> = [
@@ -1892,7 +1888,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       critique = (await structuredFor(criticModel, process.env.CADAI_CRITIC_MODEL || selectedModel, VisualCritiqueSchema)
         .invoke(
           [
-            new SystemMessage(CAD_AI_SYSTEM_PROMPT + '\n\n' + CRITIC_PREAMBLE),
+            new SystemMessage(systemPromptFor('critic')),
             new HumanMessage({ content: content as never }),
           ],
           config
