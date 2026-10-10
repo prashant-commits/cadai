@@ -17,10 +17,12 @@
  *   --reviewer-model <slug>          CADAI_REVIEWER_MODEL  (default: the run model)
  *
  * runOne resumes up to 12 gates. A spec gate approves a validated variant.
- * With none validated it revises the recommended variant once, then approves
- * it and records specApprovedUnvalidated. An accept gate is approved. A run
- * can pause at the spec gate after several reviewer rounds, so the previous
- * cap of 4 is too small.
+ * With none validated it revises the recommended variant once when that
+ * variant has a spec and a review finding, then approves it and records
+ * specApprovedUnvalidated. With nothing to revise it approves immediately.
+ * An accept gate is approved. A run that never reaches a spec gate leaves
+ * specApprovedUnvalidated null. A run can pause at the spec gate after
+ * several reviewer rounds, so the previous cap of 4 is too small.
  *
  * With --critic on, visualMatch comes from a standalone judge of the final
  * STL. The graph's own critic only runs after every deterministic check
@@ -113,11 +115,11 @@ function applyEvalEnv(args: Args) {
   if (args.reviewerModel) process.env.CADAI_REVIEWER_MODEL = args.reviewerModel;
 }
 
-/** Last spec-gate interrupt. Later accept-gate interrupts leave it in place. */
-function captureSpecGate(result: unknown, previous: SpecGateCapture | null): SpecGateCapture | null {
-  if (!isInterrupted<GatePayload>(result)) return previous;
+/** The spec-gate interrupt on this result, or null when it is not one. */
+function readSpecGate(result: unknown): SpecGateCapture | null {
+  if (!isInterrupted<GatePayload>(result)) return null;
   const payload = result[INTERRUPT][0]?.value;
-  if (!payload || payload.kind !== 'spec') return previous;
+  if (!payload || payload.kind !== 'spec') return null;
   return {
     variants: gateVariants(payload).map((variant) => ({ id: variant.id, review: variant.review })),
     recommendedId: payload.recommendedId ?? null,
@@ -153,12 +155,20 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
   };
 
   const t0 = Date.now();
+  let firstSpecGate: SpecGateCapture | null = null;
   let specGate: SpecGateCapture | null = null;
   let specRevisions = 0;
-  let specApprovedUnvalidated = false;
+  let specApprovedUnvalidated: boolean | null = null;
+  const noteSpecGate = (result: unknown) => {
+    const seen = readSpecGate(result);
+    if (!seen) return;
+    if (!firstSpecGate) firstSpecGate = seen;
+    specGate = seen;
+    if (specApprovedUnvalidated === null) specApprovedUnvalidated = false;
+  };
   let result = await agent.invoke({ messages: [new HumanMessage(item.prompt)] }, config);
   for (let i = 0; i < 12 && isInterrupted(result); i++) {
-    specGate = captureSpecGate(result, specGate);
+    noteSpecGate(result);
     if (!isInterrupted<GatePayload>(result)) break;
     const payload = result[INTERRUPT][0]?.value;
     if (!payload) break;
@@ -167,7 +177,7 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
     if (gate.approvedUnvalidated) specApprovedUnvalidated = true;
     result = await agent.invoke(new Command({ resume: gate.decision }), config);
   }
-  specGate = captureSpecGate(result, specGate);
+  noteSpecGate(result);
   const state = (await agent.getState(config)).values as AgentStateType;
   await getCheckpointer().deleteThread(key);
 
@@ -182,7 +192,7 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
   const m = metricsFromState(item.id, args.model, state, Date.now() - t0, specGate, visual, {
     specRevisions,
     specApprovedUnvalidated,
-  });
+  }, firstSpecGate);
   console.log(`${item.id}: composed=${m.composed} floor=${m.floorOk} floating=${m.floatingCount} localFrame=${m.localFrameOk} errors=[${m.errorKinds.join(',')}] visual=${m.visualMatch} findings=${m.visualFindings} ${m.wallMs} ms`);
   // Written per prompt so a killed run keeps what it finished.
   fs.appendFileSync(jsonl, JSON.stringify(m) + '\n');

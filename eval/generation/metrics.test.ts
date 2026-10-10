@@ -65,6 +65,7 @@ describe('metricsFromState', () => {
     expect(m.localFrameOk).toBeNull();
     expect(m.variantCount).toBe(0);
     expect(m.chosenValidated).toBeNull();
+    expect(m.specApprovedUnvalidated).toBeNull();
   });
 
   it('counts variants still on the final state and ignores a stale capture', () => {
@@ -102,6 +103,51 @@ describe('metricsFromState', () => {
     expect(m.chosenValidated).toBe(true);
     expect(m.visualMatch).toBeNull();
     expect(m.visualFindings).toBeNull();
+  });
+
+  it('keeps planning counts from the first spec gate and chosenValidated from the final state', () => {
+    const m = metricsFromState('p6', 'm', {
+      specVariants: [variant('A', { validated: true, findings: [], attempts: 1 })],
+      specBrief: brief('A'),
+    }, 10, {
+      variants: [{ id: 'A', review: { validated: false, attempts: 1 } }],
+      recommendedId: 'A',
+    }, null, {
+      specRevisions: 1,
+      specApprovedUnvalidated: false,
+    }, {
+      variants: [
+        { id: 'A', review: { validated: false, attempts: 2 } },
+        { id: 'B', review: { validated: false, attempts: 3 } },
+        { id: 'C', review: null },
+      ],
+      recommendedId: 'A',
+    });
+    expect(m.variantCount).toBe(3);
+    expect(m.variantsValidated).toBe(0);
+    expect(m.reviewRounds).toBe(3);
+    expect(m.chosenValidated).toBe(true);
+  });
+
+  it('reads chosenValidated from the last capture once the drafter clears the variants', () => {
+    const m = metricsFromState('p7', 'm', { specVariants: [], specBrief: null }, 10, {
+      variants: [{ id: 'A', review: { validated: true, attempts: 1 } }],
+      recommendedId: 'A',
+    }, null, {
+      specRevisions: 1,
+      specApprovedUnvalidated: false,
+    }, {
+      variants: [
+        { id: 'A', review: { validated: false, attempts: 2 } },
+        { id: 'B', review: { validated: false, attempts: 2 } },
+        { id: 'C', review: { validated: false, attempts: 2 } },
+      ],
+      recommendedId: 'B',
+    });
+    expect(m.variantCount).toBe(3);
+    expect(m.variantsValidated).toBe(0);
+    expect(m.reviewRounds).toBe(2);
+    expect(m.chosenValidated).toBe(true);
   });
 
   it('does not treat a missing visual violation as a match', () => {
@@ -193,6 +239,9 @@ describe('summarize', () => {
     expect(s.meanReviewRounds).toBe('2.0');
     expect(s.chosenValidated).toBe('1/2');
     expect(s.specApprovedUnvalidated).toBe('1/2');
+    const withNoGate = [...rows, { ...rows[0], id: 'c', specApprovedUnvalidated: null, chosenValidated: null }];
+    expect(summarize(withNoGate).specApprovedUnvalidated).toBe('1/2');
+    expect(summarize(withNoGate).chosenValidated).toBe('1/2');
     expect(s.visualMatch).toBe('1/1');
     expect(s.meanVisualFindings).toBe('2.0');
     expect(s.meanWallMs).toBe('15.5');

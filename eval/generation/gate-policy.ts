@@ -5,8 +5,10 @@ import type { GateDecision, GatePayload, GateVariant } from '@/types';
  *
  * A spec gate approves a validated variant (the recommended one when it
  * validated, otherwise the first that did). With none validated it revises
- * the recommended variant once, then approves it and flags the approval.
- * An accept gate is approved.
+ * the recommended variant once, and only when that variant has a spec and a
+ * review with at least one finding. Otherwise it approves the recommended id.
+ * `approvedUnvalidated` is true only when that review exists and says
+ * `validated: false`. An accept gate is approved.
  */
 export function evalGateDecision(
   payload: GatePayload,
@@ -28,7 +30,8 @@ export function evalGateDecision(
 
   const recommended = variants.find((variant) => variant.id === payload.recommendedId);
   const chosenVariantId = recommended?.id ?? payload.recommendedId;
-  if (revisionsUsed < 1) {
+  const findings = recommended?.review?.findings ?? [];
+  if (recommended?.spec && findings.length >= 1 && revisionsUsed < 1) {
     return {
       decision: { action: 'revise', chosenVariantId, comment: reviewerComment(recommended) },
       approvedUnvalidated: false,
@@ -37,7 +40,7 @@ export function evalGateDecision(
 
   return {
     decision: { action: 'approve', chosenVariantId },
-    approvedUnvalidated: true,
+    approvedUnvalidated: recommended?.review?.validated === false,
   };
 }
 
