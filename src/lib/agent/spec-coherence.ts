@@ -54,17 +54,26 @@ export interface ImpliedEnvelope {
  * makes no second statement to check against.
  */
 export function impliedEnvelope(spec: AssemblySpec | null): ImpliedEnvelope | null {
+  return envelopeOfComponents(spec?.components ?? []);
+}
+
+const isVec3 = (v: unknown): v is Vec3 =>
+  Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === 'number' && Number.isFinite(n));
+
+/** The union both `impliedEnvelope` and `withComputedBoundingBox` measure, over components that may still be raw model output. */
+function envelopeOfComponents(components: readonly unknown[]): ImpliedEnvelope | null {
   const min: Vec3 = [Infinity, Infinity, Infinity];
   const max: Vec3 = [-Infinity, -Infinity, -Infinity];
   let counted = 0;
 
-  for (const c of spec?.components ?? []) {
-    const ext = c.localExtents as Vec3 | undefined;
-    if (!ext || ext.some((n) => !Number.isFinite(n))) continue;
+  for (const c of components) {
+    if (!c || typeof c !== 'object') continue;
+    const { localExtents: ext, position, rotation } = c as Record<string, unknown>;
+    if (!isVec3(ext)) continue;
     const placed = placedBounds(
       { min: ZERO, max: ext },
-      (c.position ?? ZERO) as Vec3,
-      (c.rotation ?? ZERO) as Vec3
+      isVec3(position) ? position : ZERO,
+      isVec3(rotation) ? rotation : ZERO
     );
     for (let i = 0; i < 3; i++) {
       if (placed.min[i] < min[i]) min[i] = placed.min[i];
@@ -80,6 +89,28 @@ export function impliedEnvelope(spec: AssemblySpec | null): ImpliedEnvelope | nu
     size: [0, 1, 2].map((i) => round2(max[i] - min[i])) as Vec3,
     counted,
   };
+}
+
+/**
+ * A shallow copy of a raw Assembly Spec whose `boundingBox` is the x, y and z
+ * span of its placed components, whatever the model wrote there.
+ *
+ * The model never writes `boundingBox`: every model guessed it wrong (a car's
+ * cross-car width in `width`, which is the x extent), and the coherence check
+ * then bounced a spec that was right everywhere else. Code owns this number.
+ *
+ * Returns the input untouched when it is not an object or no component
+ * declares localExtents, since then there is nothing to compute it from.
+ */
+type ComputedBoundingBox = { width: number; length: number; height: number };
+
+export function withComputedBoundingBox<T>(raw: T): T & { boundingBox?: ComputedBoundingBox } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw as T & { boundingBox?: ComputedBoundingBox };
+  const components = (raw as { components?: unknown }).components;
+  const implied = Array.isArray(components) ? envelopeOfComponents(components) : null;
+  if (!implied) return raw as T & { boundingBox?: ComputedBoundingBox };
+  const [width, length, height] = implied.size;
+  return { ...raw, boundingBox: { width, length, height } };
 }
 
 /** boundingBox names its axes; placement is indexed. This is the one mapping. */
