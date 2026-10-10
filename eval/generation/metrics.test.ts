@@ -28,6 +28,7 @@ const visual: SpecViolation = {
 
 const counted = {
   variantCount: 0, variantsValidated: 0, reviewRounds: 0, chosenValidated: null, visualMatch: null, visualFindings: null,
+  specRevisions: 0, specApprovedUnvalidated: false,
 } as const;
 
 const violation = (kind: string, severity: 'error' | 'warning' = 'error') =>
@@ -178,8 +179,8 @@ describe('criticUserContent', () => {
 describe('summarize', () => {
   it('reports rates over non-null values', () => {
     const rows: GenerationMetrics[] = [
-      { id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: true, floatingCount: 0, localFrameOk: true, extentsOk: null, shellsOk: true, errorKinds: [], attempts: 1, wallMs: 10, variantCount: 2, variantsValidated: 2, reviewRounds: 1, chosenValidated: true, visualMatch: true, visualFindings: 2 },
-      { id: 'b', model: 'm', specOk: true, composed: false, compileOk: true, floorOk: false, floatingCount: null, localFrameOk: null, extentsOk: null, shellsOk: false, errorKinds: ['floor'], attempts: 1, wallMs: 21, variantCount: 0, variantsValidated: 0, reviewRounds: 3, chosenValidated: false, visualMatch: null, visualFindings: null },
+      { id: 'a', model: 'm', specOk: true, composed: true, compileOk: true, floorOk: true, floatingCount: 0, localFrameOk: true, extentsOk: null, shellsOk: true, errorKinds: [], attempts: 1, wallMs: 10, variantCount: 2, variantsValidated: 2, reviewRounds: 1, chosenValidated: true, visualMatch: true, visualFindings: 2, specRevisions: 0, specApprovedUnvalidated: false },
+      { id: 'b', model: 'm', specOk: true, composed: false, compileOk: true, floorOk: false, floatingCount: null, localFrameOk: null, extentsOk: null, shellsOk: false, errorKinds: ['floor'], attempts: 1, wallMs: 21, variantCount: 0, variantsValidated: 0, reviewRounds: 3, chosenValidated: false, visualMatch: null, visualFindings: null, specRevisions: 1, specApprovedUnvalidated: true },
     ];
     const s = summarize(rows);
     expect(s.composed).toBe('1/2');
@@ -191,6 +192,7 @@ describe('summarize', () => {
     expect(s.meanVariantsValidated).toBe('1.0');
     expect(s.meanReviewRounds).toBe('2.0');
     expect(s.chosenValidated).toBe('1/2');
+    expect(s.specApprovedUnvalidated).toBe('1/2');
     expect(s.visualMatch).toBe('1/1');
     expect(s.meanVisualFindings).toBe('2.0');
     expect(s.meanWallMs).toBe('15.5');
@@ -213,6 +215,7 @@ describe('scoresFor', () => {
       floatingCount: null, localFrameOk: null, extentsOk: null, shellsOk: null, errorKinds: [],
       attempts: 1, wallMs: 10, variantCount: 2, variantsValidated: 1, reviewRounds: 3,
       chosenValidated: false, visualMatch: true, visualFindings: 2,
+      specRevisions: 1, specApprovedUnvalidated: true,
     };
     const scores = scoresFor(metrics);
     expect(scores.find((s) => s.name === 'chosen_validated')).toEqual({ name: 'chosen_validated', value: 0, dataType: 'BOOLEAN' });

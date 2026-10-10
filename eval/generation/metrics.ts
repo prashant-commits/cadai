@@ -34,6 +34,10 @@ export interface GenerationMetrics {
   visualMatch: boolean | null;
   /** Findings the judge returned. Null when the part was not judged. */
   visualFindings: number | null;
+  /** Spec-gate revisions the eval sent before the run left the spec gate. */
+  specRevisions: number;
+  /** The eval approved the recommended variant after the reviewer left it unvalidated. */
+  specApprovedUnvalidated: boolean;
 }
 
 export interface VisualScore {
@@ -111,6 +115,7 @@ export function metricsFromState(
   wallMs: number,
   capture?: SpecGateCapture | null,
   visual?: VisualScore | null,
+  gate?: { specRevisions: number; specApprovedUnvalidated: boolean },
 ): GenerationMetrics {
   const violations = state.specViolations ?? [];
   const errors = violations.filter((v) => v.severity === 'error');
@@ -149,6 +154,8 @@ export function metricsFromState(
     ...variantStats(variants, recommendedId),
     visualMatch: judged.visualMatch,
     visualFindings: judged.visualFindings,
+    specRevisions: gate?.specRevisions ?? 0,
+    specApprovedUnvalidated: gate?.specApprovedUnvalidated ?? false,
   };
 }
 
@@ -179,6 +186,7 @@ export function summarize(rows: GenerationMetrics[]): Record<string, string> {
     meanVariantsValidated: meanOf(rows, (m) => m.variantsValidated),
     meanReviewRounds: meanOf(rows, (m) => m.reviewRounds),
     chosenValidated: rate(rows, (m) => m.chosenValidated),
+    specApprovedUnvalidated: rate(rows, (m) => m.specApprovedUnvalidated),
     visualMatch: rate(rows, (m) => m.visualMatch),
     meanVisualFindings: meanOf(rows, (m) => m.visualFindings),
     meanWallMs: meanOf(rows, (m) => m.wallMs),

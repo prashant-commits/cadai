@@ -16,9 +16,11 @@
  *   --critic-model <slug>            CADAI_CRITIC_MODEL    (default gpt-5.6-luna)
  *   --reviewer-model <slug>          CADAI_REVIEWER_MODEL  (default: the run model)
  *
- * runOne auto-approves up to 12 gates. Each resume is { action: 'approve' },
- * which selects the recommended variant. A run can pause at the spec gate
- * after several reviewer rounds, so the previous cap of 4 is too small.
+ * runOne resumes up to 12 gates. A spec gate approves a validated variant.
+ * With none validated it revises the recommended variant once, then approves
+ * it and records specApprovedUnvalidated. An accept gate is approved. A run
+ * can pause at the spec gate after several reviewer rounds, so the previous
+ * cap of 4 is too small.
  *
  * With --critic on, visualMatch comes from a standalone judge of the final
  * STL. The graph's own critic only runs after every deterministic check
@@ -51,6 +53,7 @@ import { gateVariants } from '@/lib/agent/spec-variants';
 import { getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor, initLangfuseTracing } from '@/lib/tracing/langfuse';
 import { GenerationMetrics, SpecGateCapture, measureVisualMatch, metricsFromState, scoresFor, summarize } from './metrics';
+import { evalGateDecision } from './gate-policy';
 import { EVAL_DEFAULT_MODEL, recursionLimitFromEnv, sheetsModelError } from './run-config';
 
 const DATASET = 'cadai-generation';
@@ -151,10 +154,18 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
 
   const t0 = Date.now();
   let specGate: SpecGateCapture | null = null;
+  let specRevisions = 0;
+  let specApprovedUnvalidated = false;
   let result = await agent.invoke({ messages: [new HumanMessage(item.prompt)] }, config);
   for (let i = 0; i < 12 && isInterrupted(result); i++) {
     specGate = captureSpecGate(result, specGate);
-    result = await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
+    if (!isInterrupted<GatePayload>(result)) break;
+    const payload = result[INTERRUPT][0]?.value;
+    if (!payload) break;
+    const gate = evalGateDecision(payload, specRevisions);
+    if (payload.kind === 'spec' && gate.decision.action === 'revise') specRevisions += 1;
+    if (gate.approvedUnvalidated) specApprovedUnvalidated = true;
+    result = await agent.invoke(new Command({ resume: gate.decision }), config);
   }
   specGate = captureSpecGate(result, specGate);
   const state = (await agent.getState(config)).values as AgentStateType;
@@ -168,7 +179,10 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
     request: item.prompt,
     spec: state.assemblySpec ?? null,
   });
-  const m = metricsFromState(item.id, args.model, state, Date.now() - t0, specGate, visual);
+  const m = metricsFromState(item.id, args.model, state, Date.now() - t0, specGate, visual, {
+    specRevisions,
+    specApprovedUnvalidated,
+  });
   console.log(`${item.id}: composed=${m.composed} floor=${m.floorOk} floating=${m.floatingCount} localFrame=${m.localFrameOk} errors=[${m.errorKinds.join(',')}] visual=${m.visualMatch} findings=${m.visualFindings} ${m.wallMs} ms`);
   // Written per prompt so a killed run keeps what it finished.
   fs.appendFileSync(jsonl, JSON.stringify(m) + '\n');
