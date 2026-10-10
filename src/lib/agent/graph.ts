@@ -76,6 +76,10 @@ export const REVISION_TEMPERATURE = 0.6;
 const INVALID_SPEC_RETRY =
   'Your previous reply did not yield a valid Assembly Spec. Emit the structured spec now, with every dimension in millimetres and at most two decimal places.';
 
+/** Shown instead of a zod `boundingBox` issue: the model cannot write that field. */
+const MISSING_EXTENTS =
+  'no component carries a numeric localExtents [x, y, z], so boundingBox could not be computed; give every component localExtents';
+
 /** Every zod issue as `path message`, then every key the schema strips. One list for the retry and the log. */
 function specRejectionDetail(
   raw: unknown,
@@ -83,6 +87,9 @@ function specRejectionDetail(
 ): string {
   const reported = issues.map((issue) => {
     const path = issue.path.map((part) => String(part)).join('.');
+    // The request schema omits boundingBox. A missing box means localExtents
+    // could not be measured, which is the field the model can still write.
+    if (path === 'boundingBox') return MISSING_EXTENTS;
     return path ? `${path} ${issue.message}` : issue.message;
   });
   return [...reported, ...unknownSpecKeys(raw)].join('; ');
@@ -783,8 +790,10 @@ export function createCadAgent(
         : coherenceFeedback
         ? 'Your previous Assembly Spec was internally inconsistent:\n' +
           coherenceFeedback.map((v) => `- ${v.message}`).join('\n') +
-          '\nRecompute the placement arithmetic. Code sets boundingBox from the extent of its ' +
-          'own components once each is rotated about its origin and moved to its position; do not write boundingBox.'
+          '\nRecompute the placement arithmetic.' +
+          (coherenceFeedback.some((v) => v.kind === 'coherence')
+            ? ' Code sets boundingBox from the extent of its own components once each is rotated about its origin and moved to its position; do not write boundingBox.'
+            : '')
         : validationDetail
         ? `${INVALID_SPEC_RETRY}\n${validationDetail}`
         : INVALID_SPEC_RETRY;
@@ -2111,7 +2120,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       if (source) approvedVariant = source;
     }
     if (decision.spec) {
-      const parsed = AssemblySpecSchema.safeParse(decision.spec);
+      const parsed = AssemblySpecSchema.safeParse(withComputedBoundingBox(decision.spec));
       if (parsed.success) {
         baseApproved = normalizeSpec(parsed.data);
         alreadyMerged = false;

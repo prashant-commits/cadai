@@ -127,7 +127,10 @@ describe('Architect: a spec that fails validation gets every issue back', () => 
     const bad = {
       skeleton: { note: 'wrapped' },
       sheet: 'x',
-      components: [{ name: 'block', description: 'a block', localExtents: [60, 20, 10], position: [0, 0, 0], shape: 'box' }],
+      components: [
+        { name: 'block', description: 'a block', localExtents: [60, 20, 10], position: [0, 0, 0], shape: 'box' },
+        { description: 'unnamed', localExtents: [10, 10, 10], position: [0, 0, 0], shape: { kind: 'box' } },
+      ],
     };
     const { calls } = await run([bad, block()]);
     const variants = calls.filter((c) => c.kind === 'variant');
@@ -136,5 +139,37 @@ describe('Architect: a spec that fails validation gets every issue back', () => 
     expect(retry).toContain('assemblyName');
     expect(retry).toContain('components.0.shape');
     expect(retry).toContain('skeleton');
+    expect(retry).toContain('components.1.name');
+  });
+});
+
+const EXTENTS_LINE =
+  'no component carries a numeric localExtents [x, y, z], so boundingBox could not be computed; give every component localExtents';
+
+function retryText(calls: { kind: Kind; messages: BaseMessage[] }[]): string {
+  const variants = calls.filter((c) => c.kind === 'variant');
+  expect(variants).toHaveLength(2);
+  return JSON.stringify(variants[1].messages.at(-1)!.content);
+}
+
+describe('Architect: a missing boundingBox points at localExtents', () => {
+  it('names localExtents when components is empty', async () => {
+    const { calls } = await run([{ sheet: 'x', assemblyName: 'empty', components: [] }, block()]);
+    const retry = retryText(calls);
+    expect(retry).toContain(EXTENTS_LINE);
+    expect(retry.replace(EXTENTS_LINE, '')).not.toContain('boundingBox');
+  });
+
+  it('names localExtents when localExtents is not a numeric vector', async () => {
+    const bad = {
+      sheet: 'x',
+      assemblyName: 'block_spec',
+      components: [{ name: 'block', description: 'a block', localExtents: '60x20x10', position: [0, 0, 0], shape: { kind: 'box' } }],
+    };
+    const { calls } = await run([bad, block()]);
+    const retry = retryText(calls);
+    expect(retry).toContain('localExtents');
+    expect(retry).toContain(EXTENTS_LINE);
+    expect(retry.replace(EXTENTS_LINE, '')).not.toContain('boundingBox');
   });
 });

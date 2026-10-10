@@ -341,29 +341,39 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
  * the fields that went missing as a result - never the cause.
  *
  * Covers the top level, `components[i]`, `components[i].shape` and `guides[i]`.
+ * It does not scan `holes`, `jointContracts`, `stressPoints`, or `guides[i].shape`.
+ * On Claude routes `normalizeShape` strips unknown keys of shapes with a known
+ * `kind` before this scan, so those invented keys are never reported here.
  */
 export function unknownSpecKeys(raw: unknown): string[] {
   if (!isRecord(raw)) return [];
   const known = specKeys();
   const out: string[] = [];
-  const scan = (obj: Record<string, unknown>, allowed: string[], at: string, kindHint = false) => {
+  const scan = (
+    obj: Record<string, unknown>,
+    allowed: string[],
+    at: string,
+    hintFor: (key: string) => string | undefined,
+  ) => {
     for (const key of Object.keys(obj)) {
       if (allowed.includes(key)) continue;
-      const hint = kindHint && key === 'type' ? 'the key is `kind`' : at === '' ? SPEC_KEY_HINTS[key] : undefined;
+      const hint = hintFor(key);
       out.push(`${at}${key} is not a field of the spec and was ignored${hint ? ` - ${hint}` : ''}`);
     }
   };
-  scan(raw, known.top, '');
+  const kindHint = (key: string) => (key === 'type' ? 'the key is `kind`' : undefined);
+  scan(raw, known.top, '', (key) => SPEC_KEY_HINTS[key]);
   if (Array.isArray(raw.components)) {
     raw.components.forEach((c, i) => {
       if (!isRecord(c)) return;
-      scan(c, known.component, `components.${i}.`);
-      if (isRecord(c.shape)) scan(c.shape, known.shape, `components.${i}.shape.`, true);
+      scan(c, known.component, `components.${i}.`, (key) =>
+        key === 'type' ? 'shape is an object with a `kind`' : undefined);
+      if (isRecord(c.shape)) scan(c.shape, known.shape, `components.${i}.shape.`, kindHint);
     });
   }
   if (Array.isArray(raw.guides)) {
     raw.guides.forEach((g, i) => {
-      if (isRecord(g)) scan(g, known.guide, `guides.${i}.`, true);
+      if (isRecord(g)) scan(g, known.guide, `guides.${i}.`, kindHint);
     });
   }
   return out;

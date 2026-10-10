@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { assemblySpecRequestSchema, variantSpecRequestSchema } from './assembly-spec';
-import { claudeVariantSpecSchema } from './llm-schemas';
+import { claudeVariantSpecSchema, normalizeClaudeSentinels } from './llm-schemas';
 import { withComputedBoundingBox } from './spec-coherence';
 
 type JsonSchema = { properties?: Record<string, unknown>; required?: string[] };
@@ -56,5 +56,38 @@ describe('withComputedBoundingBox', () => {
     const raw = caddy();
     withComputedBoundingBox(raw);
     expect((raw as Record<string, unknown>).boundingBox).toBeUndefined();
+  });
+});
+
+describe('withComputedBoundingBox rounds the span to two decimals', () => {
+  it('rounds a span that includes a component at position [0.004, 0, 0]', () => {
+    const raw = {
+      assemblyName: 'offset',
+      components: [
+        { name: 'a', description: 'a', localExtents: [10, 20, 30], position: [0, 0, 0], shape: { kind: 'box' } },
+        { name: 'b', description: 'b', localExtents: [10, 20, 30], position: [0.004, 0, 0], shape: { kind: 'box' } },
+      ],
+    };
+    // Unrounded x span is 10.004. round2 yields 10.
+    expect(withComputedBoundingBox(raw).boundingBox).toEqual({ width: 10, length: 20, height: 30 });
+  });
+});
+
+describe('Claude replies get the computed box', () => {
+  it('computes the box after normalizeClaudeSentinels', () => {
+    const raw = {
+      assemblyName: 'plate',
+      boundingBox: { width: 1, length: 2, height: 3 },
+      components: [{
+        name: 'box_part',
+        description: 'A box',
+        position: [0, 0, 0],
+        localExtents: [100, 50, 10],
+        positionNote: '',
+        shape: { kind: 'box', axis: 'z', innerD: 0, wall: 0, openFace: '+Z', plane: 'xy', points: [], holes: [] },
+      }],
+    };
+    const out = withComputedBoundingBox(normalizeClaudeSentinels(raw));
+    expect(out.boundingBox).toEqual({ width: 100, length: 50, height: 10 });
   });
 });

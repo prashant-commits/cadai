@@ -91,6 +91,8 @@ function envelopeOfComponents(components: readonly unknown[]): ImpliedEnvelope |
   };
 }
 
+type ComputedBoundingBox = { width: number; length: number; height: number };
+
 /**
  * A shallow copy of a raw Assembly Spec whose `boundingBox` is the x, y and z
  * span of its placed components, whatever the model wrote there.
@@ -102,8 +104,6 @@ function envelopeOfComponents(components: readonly unknown[]): ImpliedEnvelope |
  * Returns the input untouched when it is not an object or no component
  * declares localExtents, since then there is nothing to compute it from.
  */
-type ComputedBoundingBox = { width: number; length: number; height: number };
-
 export function withComputedBoundingBox<T>(raw: T): T & { boundingBox?: ComputedBoundingBox } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw as T & { boundingBox?: ComputedBoundingBox };
   const components = (raw as { components?: unknown }).components;

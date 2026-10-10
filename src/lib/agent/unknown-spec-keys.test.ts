@@ -24,9 +24,10 @@ describe('unknownSpecKeys', () => {
 
   it('names unknown component and shape keys by path, hinting kind for type', () => {
     const out = unknownSpecKeys({
-      components: [{ name: 'n', color: 'red', shape: { type: 'box' } }, { name: 'm', shape: { kind: 'box', radius: 3 } }],
+      components: [{ name: 'n', color: 'red', type: 'box', shape: { type: 'box' } }, { name: 'm', shape: { kind: 'box', radius: 3 } }],
     });
     expect(out.join('\n')).toContain('components.0.color');
+    expect(out.find((m) => m.startsWith('components.0.type '))).toContain('shape is an object with a `kind`');
     expect(out.find((m) => m.includes('components.0.shape.type'))).toContain('the key is `kind`');
     expect(out.join('\n')).toContain('components.1.shape.radius');
   });
