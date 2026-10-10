@@ -32,12 +32,13 @@ export type CadChatModel = ChatOpenAI;
 export const DEFAULT_TEMPERATURE = 0.2;
 
 /**
- * Models whose route accepts exactly one temperature. Probed on the gateway on
+ * Temperature every Claude route accepts. Probed on the gateway on
  * 2026-10-08: claude-opus-5.5 rejects any value but 1.0 ("Supported values are
- * between 1.0 and 1.0"). The value here wins over the 0.2 default AND the 0.6
- * revision temperature.
+ * between 1.0 and 1.0"). The same constraint holds for every `claude-*` slug.
+ * This value wins over the 0.2 default AND any requested temperature, including
+ * the 0.6 revision temperature.
  */
-export const FIXED_TEMPERATURE: Record<string, number> = { 'claude-opus-5.5': 1 };
+export const FIXED_TEMPERATURE = 1;
 
 /** Builds a chat model for `modelName`. `temperature` defaults to 0.2; revisions ask for more to avoid anchoring on the previous spec. */
 export function getChatModel(modelName?: string, opts?: { temperature?: number }): CadChatModel {
@@ -46,7 +47,7 @@ export function getChatModel(modelName?: string, opts?: { temperature?: number }
   return new ChatOpenAI({
     apiKey: explabsKey(),
     model: selectedModel,
-    temperature: FIXED_TEMPERATURE[selectedModel] ?? opts?.temperature ?? DEFAULT_TEMPERATURE,
+    temperature: selectedModel.startsWith('claude-') ? FIXED_TEMPERATURE : (opts?.temperature ?? DEFAULT_TEMPERATURE),
     // The OpenAI client defaults to a 10-minute timeout with 2 retries, so one
     // stalled gateway request can hold a run for half an hour. A structured
     // spec on deepseek-v4-flash averages 78 s; 4 minutes is generous.
