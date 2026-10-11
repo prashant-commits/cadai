@@ -250,6 +250,17 @@ export function omitRequestComponentFields(json: Record<string, unknown>, fields
   return json;
 }
 
+/**
+ * Removes the top-level `boundingBox` from the REQUEST schema only. Code computes
+ * it from the components (withComputedBoundingBox); the model never writes it.
+ */
+export function omitRequestBoundingBox(json: Record<string, unknown>): Record<string, unknown> {
+  const props = json.properties as Record<string, unknown> | undefined;
+  if (props) delete props.boundingBox;
+  if (Array.isArray(json.required)) json.required = json.required.filter((r) => r !== 'boundingBox');
+  return json;
+}
+
 /** Adds fields to a component's `required` list in the REQUEST schema only. */
 function requireComponentFields(json: Record<string, unknown>, fields: string[]): Record<string, unknown> {
   const props = json.properties as Record<string, unknown> | undefined;
@@ -273,7 +284,8 @@ export function assemblySpecRequestSchema(): Record<string, unknown> {
   // bedFace is print orientation, which belongs to a future slicer node.
   // We omit it from generation requests while keeping it in the zod schema.
   omitRequestComponentFields(json, ['bedFace']);
-  
+  omitRequestBoundingBox(json);
+
   // The decoder must emit a placement and extents for every component; the
   // zod schema stays lenient so a model that still omits them degrades to
   // [0,0,0] / unmeasured instead of failing the whole spec.
@@ -296,8 +308,73 @@ export function variantSpecRequestSchema(): Record<string, unknown> {
   // bedFace is print orientation, which belongs to a future slicer node.
   // We omit it from generation requests while keeping it in the zod schema.
   omitRequestComponentFields(json, ['bedFace']);
-  
+  omitRequestBoundingBox(json);
+
   const withReqFields = requireComponentFields(json, ['position', 'localExtents', 'shape']);
   
   return boundNumbers(toStrictJsonSchema(withReqFields)) as Record<string, unknown>;
+}
+
+const SPEC_KEY_HINTS: Record<string, string> = {
+  skeleton: 'put components and the other fields at the top level',
+};
+
+/** Keys the schema defines, read off the zod objects so they cannot drift from it. */
+function specKeys() {
+  const component = AssemblySpecSchema.shape.components.unwrap().element;
+  return {
+    top: Object.keys(AssemblySpecSchema.shape),
+    component: Object.keys(component.shape),
+    shape: Object.keys(ShapeSchema.shape),
+    guide: Object.keys(GuideSchema.shape),
+  };
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * Every key in a raw model reply that the Assembly Spec schema does not have, as
+ * a sentence naming where it is and, where there is one, what to write instead.
+ * zod strips unknown keys without an issue, so a model that wraps its spec in
+ * `skeleton`, or writes `type` for `kind`, would otherwise be told only about
+ * the fields that went missing as a result - never the cause.
+ *
+ * Covers the top level, `components[i]`, `components[i].shape` and `guides[i]`.
+ * It does not scan `holes`, `jointContracts`, `stressPoints`, or `guides[i].shape`.
+ * On Claude routes `normalizeShape` strips unknown keys of shapes with a known
+ * `kind` before this scan, so those invented keys are never reported here.
+ */
+export function unknownSpecKeys(raw: unknown): string[] {
+  if (!isRecord(raw)) return [];
+  const known = specKeys();
+  const out: string[] = [];
+  const scan = (
+    obj: Record<string, unknown>,
+    allowed: string[],
+    at: string,
+    hintFor: (key: string) => string | undefined,
+  ) => {
+    for (const key of Object.keys(obj)) {
+      if (allowed.includes(key)) continue;
+      const hint = hintFor(key);
+      out.push(`${at}${key} is not a field of the spec and was ignored${hint ? ` - ${hint}` : ''}`);
+    }
+  };
+  const kindHint = (key: string) => (key === 'type' ? 'the key is `kind`' : undefined);
+  scan(raw, known.top, '', (key) => SPEC_KEY_HINTS[key]);
+  if (Array.isArray(raw.components)) {
+    raw.components.forEach((c, i) => {
+      if (!isRecord(c)) return;
+      scan(c, known.component, `components.${i}.`, (key) =>
+        key === 'type' ? 'shape is an object with a `kind`' : undefined);
+      if (isRecord(c.shape)) scan(c.shape, known.shape, `components.${i}.shape.`, kindHint);
+    });
+  }
+  if (Array.isArray(raw.guides)) {
+    raw.guides.forEach((g, i) => {
+      if (isRecord(g)) scan(g, known.guide, `guides.${i}.`, kindHint);
+    });
+  }
+  return out;
 }

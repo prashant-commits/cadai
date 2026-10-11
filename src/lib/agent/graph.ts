@@ -11,7 +11,7 @@ import { systemPromptFor } from './system-prompt';
 import { extractOpenScadCode } from './code-extractor';
 import { validateOpenScadCode } from './code-validator';
 import { getFunctionalCadModuleTool } from './engineering-tools';
-import { AssemblySpec, AssemblySpecSchema, variantSpecRequestSchema } from './assembly-spec';
+import { AssemblySpec, AssemblySpecSchema, unknownSpecKeys, variantSpecRequestSchema } from './assembly-spec';
 import { ValidationResult, ScadDiagnostic } from '../engine/scad-compiler';
 import { ModelInfo, GatePayload, GateDecision, GateVariant, DesignContract } from '@/types';
 import { SpecViolation, auditSpec } from './spec-audit';
@@ -34,7 +34,7 @@ import { matingCuts } from '../design/mating-cuts';
 import { measureModuleFrames, type ModuleFrame } from '../engine/module-frames';
 import { PlacementReport } from '../design/placement-report';
 import { auditPlacement } from './placement-audit';
-import { auditSpecCoherence } from './spec-coherence';
+import { auditSpecCoherence, withComputedBoundingBox } from './spec-coherence';
 import { auditModuleGuards } from '../design/module-guards';
 import { auditHoles } from './hole-audit';
 import { normalizeSpec } from './spec-normalize';
@@ -72,6 +72,28 @@ const MAX_SEMANTIC_REPAIRS = 1;
 
 /** Sampling temperature of revision calls (fresh specs and the planner use 0.2). */
 export const REVISION_TEMPERATURE = 0.6;
+
+const INVALID_SPEC_RETRY =
+  'Your previous reply did not yield a valid Assembly Spec. Emit the structured spec now, with every dimension in millimetres and at most two decimal places.';
+
+/** Shown instead of a zod `boundingBox` issue: the model cannot write that field. */
+const MISSING_EXTENTS =
+  'no component carries a numeric localExtents [x, y, z], so boundingBox could not be computed; give every component localExtents';
+
+/** Every zod issue as `path message`, then every key the schema strips. One list for the retry and the log. */
+function specRejectionDetail(
+  raw: unknown,
+  issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey>; message: string }>,
+): string {
+  const reported = issues.map((issue) => {
+    const path = issue.path.map((part) => String(part)).join('.');
+    // The request schema omits boundingBox. A missing box means localExtents
+    // could not be measured, which is the field the model can still write.
+    if (path === 'boundingBox') return MISSING_EXTENTS;
+    return path ? `${path} ${issue.message}` : issue.message;
+  });
+  return [...reported, ...unknownSpecKeys(raw)].join('; ');
+}
 
 type VisualCritique = z.infer<typeof VisualCritiqueSchema>;
 
@@ -744,6 +766,7 @@ export function createCadAgent(
     let spec: AssemblySpec | null = null;
     let hadProviderError = false;
     let rawLastError: string | null = null;
+    let validationDetail: string | null = null;
     let coherenceFeedback: SpecViolation[] | null = null;
     let specErrors: ReviewFinding[] | undefined;
     let outOfTime = false;
@@ -767,9 +790,13 @@ export function createCadAgent(
         : coherenceFeedback
         ? 'Your previous Assembly Spec was internally inconsistent:\n' +
           coherenceFeedback.map((v) => `- ${v.message}`).join('\n') +
-          '\nRecompute the placement arithmetic and emit a spec whose boundingBox equals the extent of its ' +
-          'own components once each is rotated about its origin and moved to its position.'
-        : 'Your previous reply did not yield a valid Assembly Spec. Emit the structured spec now, with every dimension in millimetres and at most two decimal places.';
+          '\nRecompute the placement arithmetic.' +
+          (coherenceFeedback.some((v) => v.kind === 'coherence')
+            ? ' Code sets boundingBox from the extent of its own components once each is rotated about its origin and moved to its position; do not write boundingBox.'
+            : '')
+        : validationDetail
+        ? `${INVALID_SPEC_RETRY}\n${validationDetail}`
+        : INVALID_SPEC_RETRY;
 
       const attemptMessages =
         attempt === 0 ? variantMessages : [...variantMessages, new HumanMessage(retryPrompt)];
@@ -779,9 +806,12 @@ export function createCadAgent(
 
         // The model was given a JSON Schema, so what comes back is an untyped
         // object; zod is what turns it into an AssemblySpec, and a reply that
-        // violates the schema fails to parse.
-        const parsed = AssemblySpecSchema.safeParse(nullsToUndefined(raw));
+        // violates the schema fails to parse. boundingBox is computed here:
+        // the model is not asked for it, and a guess it still writes is replaced
+        // by the span of the placed components.
+        const parsed = AssemblySpecSchema.safeParse(withComputedBoundingBox(nullsToUndefined(raw)));
         if (parsed.success) {
+          validationDetail = null;
           const candidate = normalizeSpec(parsed.data);
           // A revision that reproduces the previous skeleton changed nothing: that
           // attempt is spent and the Architect is told so. On the last attempt the
@@ -823,10 +853,11 @@ export function createCadAgent(
             specErrors = incoherent.map((v) => ({ severity: 'major' as const, issue: v.message }));
           }
         } else {
-          rawLastError = `Spec failed validation: ${parsed.error.issues
-            .slice(0, 3)
-            .map((i) => `${i.path.join('.')} ${i.message}`)
-            .join('; ')}`;
+          const detail = specRejectionDetail(raw, parsed.error.issues);
+          rawLastError = `Spec failed validation: ${detail}`;
+          validationDetail = detail;
+          coherenceFeedback = null;
+          unchangedFeedback = false;
           console.error(
             `architectNode: variant ${variant.id} spec rejected (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}):`,
             rawLastError
@@ -2089,7 +2120,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       if (source) approvedVariant = source;
     }
     if (decision.spec) {
-      const parsed = AssemblySpecSchema.safeParse(decision.spec);
+      const parsed = AssemblySpecSchema.safeParse(withComputedBoundingBox(decision.spec));
       if (parsed.success) {
         baseApproved = normalizeSpec(parsed.data);
         alreadyMerged = false;

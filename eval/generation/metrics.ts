@@ -17,13 +17,13 @@ export interface GenerationMetrics {
   errorKinds: string[];
   attempts: number;
   wallMs: number;
-  /** Variants the architect planned on the last pass that still had them. */
+  /** Variants on the first spec gate. A later revise keeps only the revised one. */
   variantCount: number;
-  /** How many of those variants have `review.validated`. */
+  /** How many of those first-gate variants have `review.validated`. */
   variantsValidated: number;
-  /** Highest `review.attempts` across those variants. */
+  /** Highest `review.attempts` across the first-gate variants. */
   reviewRounds: number;
-  /** The recommended variant's `review.validated`, or null when it has no review. */
+  /** The recommended variant's `review.validated` on the final state or the last spec gate. Null when it has no review. */
   chosenValidated: boolean | null;
   /**
    * The standalone judge's verdict. Null when the critic is off, there is
@@ -34,6 +34,13 @@ export interface GenerationMetrics {
   visualMatch: boolean | null;
   /** Findings the judge returned. Null when the part was not judged. */
   visualFindings: number | null;
+  /** Spec-gate revisions the eval sent before the run left the spec gate. */
+  specRevisions: number;
+  /**
+   * The eval approved a variant the reviewer left unvalidated.
+   * Null when the run never reached a spec gate.
+   */
+  specApprovedUnvalidated: boolean | null;
 }
 
 export interface VisualScore {
@@ -111,6 +118,9 @@ export function metricsFromState(
   wallMs: number,
   capture?: SpecGateCapture | null,
   visual?: VisualScore | null,
+  gate?: { specRevisions: number; specApprovedUnvalidated: boolean | null },
+  /** First spec gate. Planning counts come from here; `capture` is the last gate. */
+  firstGate?: SpecGateCapture | null,
 ): GenerationMetrics {
   const violations = state.specViolations ?? [];
   const errors = violations.filter((v) => v.severity === 'error');
@@ -121,15 +131,18 @@ export function metricsFromState(
   const specHasExtents = !!state.assemblySpec?.components?.some((c) => (c as { localExtents?: unknown }).localExtents);
 
   // Prefer the variants still on the final state. Once the drafter has cleared
-  // them, fall back to the list runOne copied off the spec-gate interrupt.
+  // them, fall back to the list runOne copied off the last spec-gate interrupt.
+  // Planning counts come from the first gate when a revise replaced that list.
   const live = state.specVariants ?? [];
-  const variants = live.length > 0
+  const lastVariants = live.length > 0
     ? live.map((variant) => ({ id: variant.id, review: variant.review }))
     : (capture?.variants ?? []);
-  const recommendedId = (live.length > 0 ? state.specBrief?.recommendedId : undefined)
+  const lastRecommended = (live.length > 0 ? state.specBrief?.recommendedId : undefined)
     ?? capture?.recommendedId
     ?? state.specBrief?.recommendedId
     ?? null;
+  const planning = variantStats(firstGate?.variants ?? lastVariants, firstGate ? (firstGate.recommendedId ?? null) : lastRecommended);
+  const chosen = variantStats(lastVariants, lastRecommended);
   const judged = visual ?? UNJUDGED;
 
   return {
@@ -146,9 +159,14 @@ export function metricsFromState(
     errorKinds: [...new Set(errors.map((v) => v.kind))],
     attempts: state.attemptCount ?? 0,
     wallMs,
-    ...variantStats(variants, recommendedId),
+    variantCount: planning.variantCount,
+    variantsValidated: planning.variantsValidated,
+    reviewRounds: planning.reviewRounds,
+    chosenValidated: chosen.chosenValidated,
     visualMatch: judged.visualMatch,
     visualFindings: judged.visualFindings,
+    specRevisions: gate?.specRevisions ?? 0,
+    specApprovedUnvalidated: gate?.specApprovedUnvalidated ?? null,
   };
 }
 
@@ -179,6 +197,7 @@ export function summarize(rows: GenerationMetrics[]): Record<string, string> {
     meanVariantsValidated: meanOf(rows, (m) => m.variantsValidated),
     meanReviewRounds: meanOf(rows, (m) => m.reviewRounds),
     chosenValidated: rate(rows, (m) => m.chosenValidated),
+    specApprovedUnvalidated: rate(rows, (m) => m.specApprovedUnvalidated),
     visualMatch: rate(rows, (m) => m.visualMatch),
     meanVisualFindings: meanOf(rows, (m) => m.visualFindings),
     meanWallMs: meanOf(rows, (m) => m.wallMs),

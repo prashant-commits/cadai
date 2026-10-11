@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { RunnableLambda } from '@langchain/core/runnables';
 import { toAnthropicCompatibleSchema } from './strict-schema';
-import { AssemblySpecSchema, omitRequestComponentFields } from './assembly-spec';
+import { AssemblySpecSchema, omitRequestBoundingBox, omitRequestComponentFields } from './assembly-spec';
 
 // Schemas handed to withStructuredOutput. The gateway enforces OpenAI strict
 // json_schema, which rejects `.optional()` (use `.default()` or a required field).
@@ -305,6 +305,7 @@ export function claudeVariantSpecSchema(): Record<string, unknown> {
   }
 
   omitRequestComponentFields(json, ['bedFace']);
+  omitRequestBoundingBox(json);
   annotateClaudeDescriptions(json);
   requireAllExcept(json, CLAUDE_KEEP_OPTIONAL);
 
