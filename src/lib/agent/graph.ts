@@ -22,6 +22,7 @@ import { getChatModel } from './model-provider';
 import { isVisionModel, DEFAULT_MODEL } from './models';
 import { renderVariantSheet } from '../spec-sheet/sheet-svg';
 import { blockoutScad } from '../spec-sheet/blockout-scad';
+import { freshVariantPrompt, variantPlanContext } from './architect-prompts';
 import { svgToPngDataUrl } from '../spec-sheet/rasterize';
 import {
   composeAssembly,
@@ -655,31 +656,7 @@ export function createCadAgent(
   ): Promise<SpecVariant> {
     const variantMessages = [...baseMessages];
 
-    const planContextParts: string[] = [];
-    if (brief.markdown) {
-      planContextParts.push(`Planner Brief:\n${brief.markdown}`);
-    }
-    if (brief.assumptions && brief.assumptions.length > 0) {
-      const assumptionsText = brief.assumptions
-        .map((a) => `- ${a.field}: ${a.value} (${a.rationale})`)
-        .join('\n');
-      planContextParts.push(`Shared Assumptions:\n${assumptionsText}`);
-    }
-    if (brief.openQuestions && brief.openQuestions.length > 0) {
-      const questionsText = brief.openQuestions
-        .map((q) => `- ${q.question}${q.suggestedAnswer ? ` (suggested: ${q.suggestedAnswer})` : ''}`)
-        .join('\n');
-      planContextParts.push(`The user will be asked:\n${questionsText}`);
-    }
-    const otherVariants = allVariants.filter((v) => v.id !== variant.id);
-    if (otherVariants.length > 0) {
-      const othersText = otherVariants
-        .map((o) => `- Variant ${o.id}: ${o.name} - ${o.idea}`)
-        .join('\n');
-      planContextParts.push(
-        `Other variants planned (this variant must stay structurally distinct):\n${othersText}`
-      );
-    }
+    const planContextParts = variantPlanContext(variant, allVariants, brief);
 
     const previousSignature = previousSpec ? skeletonSignature(previousSpec.skeleton as AssemblySpec) : null;
     const majorIssues = (findings ?? []).filter((f) => f.severity === 'major').map((f) => f.issue);
@@ -727,12 +704,7 @@ export function createCadAgent(
         variantMessages.push(new HumanMessage(promptParts.join('\n\n')));
       }
     } else {
-      const promptParts = [
-        ...planContextParts,
-        `Generate the Assembly Spec for Variant ${variant.id}: ${variant.name} - ${variant.idea}`,
-        notes?.length ? `Human notes:\n${notes.join('\n')}` : '',
-      ].filter(Boolean);
-      variantMessages.push(new HumanMessage(promptParts.join('\n\n')));
+      variantMessages.push(new HumanMessage(freshVariantPrompt(variant, allVariants, brief, notes)));
     }
 
     const variantModel = structuredFor(previousSpec ? revisionModel : model, selectedModel, variantSpecRequestSchema(), {

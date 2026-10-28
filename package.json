@@ -11,7 +11,8 @@
     "test:watch": "vitest",
     "mcp": "tsx src/mcp-server.ts",
     "eval:generation": "tsx eval/generation/run.ts",
-    "eval:compare": "tsx eval/generation/compare.ts"
+    "eval:compare": "tsx eval/generation/compare.ts",
+    "eval:architect": "tsx eval/architect/run.ts"
   },
   "dependencies": {
     "@langchain/core": "^1.2.9",
@@ -46,6 +47,7 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "^1.3.0",
     "@langfuse/client": "^5.11.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
