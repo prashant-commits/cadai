@@ -7,7 +7,8 @@
  *   npm run eval:architect -- --model claude-opus-5-5 --effort high --samples 3 --tag o55
  *
  * Calls Anthropic directly with ANTHROPIC_API_KEY (or an `ant auth login`
- * profile), not the gateway. By default both rounds go through the Message
+ * profile), not the gateway; a key not scoped to a workspace also needs
+ * ANTHROPIC_WORKSPACE_ID. By default both rounds go through the Message
  * Batches API at half price; --sync sends the same requests one by one at full
  * price, for a quick smoke run.
  *
@@ -154,7 +155,8 @@ async function runRound(client: Anthropic, round: string, reqs: Request[], args:
   if (args.sync) {
     for (const r of reqs) {
       try {
-        out.set(r.custom_id, { message: await client.messages.create(r.params as Anthropic.MessageCreateParamsNonStreaming) });
+        // Streamed: the SDK refuses a non-streaming request whose max_tokens could outlast its 10-minute timeout.
+        out.set(r.custom_id, { message: await client.messages.stream(r.params).finalMessage() });
       } catch (e) {
         out.set(r.custom_id, { error: `provider: ${e instanceof Error ? e.message : String(e)}` });
       }
@@ -268,7 +270,9 @@ async function scoreSpec(spec: AssemblySpec): Promise<Pick<VariantScore, 'firstA
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const client = new Anthropic();
+  // A key not scoped to a workspace must name one on every request; the SDK does not read this variable itself.
+  const workspace = process.env.ANTHROPIC_WORKSPACE_ID;
+  const client = new Anthropic(workspace ? { defaultHeaders: { 'anthropic-workspace-id': workspace } } : {});
   const items = PROMPTS.filter((p) => args.only.length === 0 || args.only.includes(p.id)).slice(0, args.limit);
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
   const stateFile = path.join(RESULTS_DIR, `.architect-${args.tag}-${args.model}.state.json`);

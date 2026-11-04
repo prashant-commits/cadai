@@ -1,0 +1,74 @@
+{
+  "_about": "Ground truth for intent: what a correct design must be, in the assembled in-use pose with +Z up and z = 0 the build plate. Written from the request text alone, before looking at any model output. Conventions for the checker: 'horizontal' means x or y; horizontal sizes are compared sorted, so 80 x 60 matches 60 x 80; a 'vertical face' has a horizontal normal (+-X or +-Y), a 'horizontal face' has a +-Z normal; roles are case-insensitive regexes over component name + description; nothing below z = 0 is already enforced by the ground audit. Each fact has a plain-English 'says' (what the human gate shows) and a 'check' for code; 'check': null means a human judges it. 'reading': 'interpretation' marks a fact the request does not state outright.",
+  "status": "DRAFT v2 - drafted by Claude, cross-reviewed by Gemini 3.8 Flash (agy) and DeepSeek v4.1 Flash, each with a blind pass (request text only) and a review pass. Three splits await the user: hinged_box height, phone_stand lip, hair_dryer ring tilt.",
+  "prompts": {
+    "laptop_stand_30": [
+      { "says": "Two side supports stand upright and parallel, spaced apart", "check": { "type": "count", "role": "side|support|leg", "min": 2, "max": 2, "thin": "horizontal", "spacedApart": true } },
+      { "says": "The laptop rests on a surface sloping 30 degrees from horizontal (the supports' top edge, or a deck on them)", "check": { "type": "topSlope", "role": "side|support|leg|deck|platform", "degFromHorizontal": 30, "tol": 3 } },
+      { "says": "A cross bar runs horizontally between the supports and touches both", "check": { "type": "spans", "role": "cross ?bar|cross_bar|crossbar|beam|brace|bar", "between": "side|support|leg", "axis": "horizontal" } },
+      { "says": "The cross bar is at the rear (stated), which for a laptop stand is the raised end of the slope", "reading": "interpretation", "check": { "type": "atTallEnd", "role": "cross ?bar|cross_bar|crossbar|beam|brace|bar", "of": "side|support|leg" } }
+    ],
+    "hair_dryer_holder": [
+      { "says": "The backplate stands upright, flat against a wall", "check": { "type": "count", "role": "back ?plate|back_plate|wall ?plate|mount", "min": 1, "max": 1, "thin": "horizontal" } },
+      { "says": "At least two screw holes pass through the backplate's thickness, into the wall", "check": { "type": "holes", "role": "back ?plate|back_plate|wall ?plate|mount", "min": 2, "alongThin": true } },
+      { "says": "The cup ring's inner diameter is 90 mm", "check": { "type": "size", "role": "ring|cup", "measure": "innerD", "value": 90, "tol": 1 } },
+      { "says": "The ring's axis is vertical (a forward tilt up to 30 degrees is acceptable), so the dryer drops in from above", "reading": "interpretation", "check": { "type": "axis", "role": "ring|cup", "axis": "vertical", "tiltTolDeg": 30 } },
+      { "says": "The ring sits in front of the backplate, away from the wall, and is attached to it", "check": { "type": "attachedOffset", "a": "ring|cup", "b": "back ?plate|back_plate|wall ?plate|mount", "direction": "plateOutwardNormal" } }
+    ],
+    "cable_clip": [
+      { "says": "The base plate is 40 x 20 mm and lies flat on the desk", "check": { "type": "size", "role": "base", "measure": "footprint", "value": [40, 20], "tol": 1, "thin": "vertical", "onPlate": true } },
+      { "says": "A clip arm rises from the base and is attached to it", "check": { "type": "touches", "a": "clip|arm|hook", "b": "base", "side": "above" } },
+      { "says": "The clip's cable seat is 6-7 mm across, to hold a 6 mm cable", "check": { "type": "size", "role": "clip|arm|hook|seat|channel", "measure": "seatD", "value": 6.5, "tol": 0.5 } },
+      { "says": "The snap opening is narrower than the cable, so the cable clicks in and is retained", "check": null },
+      { "says": "The cable runs horizontally, along the desk", "reading": "interpretation", "check": { "type": "axis", "role": "clip|arm|hook|seat|channel", "feature": "seat", "axis": "horizontal" } }
+    ],
+    "hinged_box": [
+      { "says": "Two parts: a body and a separate lid. No hinge - the text asks for a separate lid, despite the id", "check": { "type": "componentCount", "min": 2, "max": 2 } },
+      { "says": "The box is 80 x 60 mm in plan", "check": { "type": "size", "role": "body|base|box", "measure": "footprint", "value": [80, 60], "tol": 1, "onPlate": true } },
+      { "says": "OPEN: 40 mm is the closed box with the lid (my and DeepSeek's reading) OR the body alone (Gemini: equally valid)", "reading": "interpretation", "check": { "type": "heightEither", "body": "body|base|box", "overallOrBody": 40, "tol": 1 } },
+      { "says": "The body is open at the top", "check": { "type": "openFace", "role": "body|base|box", "face": "+Z" } },
+      { "says": "The lid sits on top of the body and covers its footprint", "check": { "type": "covers", "a": "lid", "b": "body|base|box" } }
+    ],
+    "pen_holder": [
+      { "says": "The square base is 80 x 80 mm and lies flat on the plate", "check": { "type": "size", "role": "base", "measure": "footprint", "value": [80, 80], "tol": 1, "thin": "vertical", "onPlate": true } },
+      { "says": "Exactly four upright tubes, open at the top", "check": { "type": "count", "role": "tube|cylinder|cup", "min": 4, "max": 4, "axis": "vertical", "openTop": true } },
+      { "says": "Each tube has a 20 mm inner diameter", "check": { "type": "size", "role": "tube|cylinder|cup", "measure": "innerD", "value": 20, "tol": 0.5 } },
+      { "says": "The tubes are 100 mm tall (the tube itself, or to the top of the holder)", "check": { "type": "heightEither", "role": "tube|cylinder|cup", "partOrTop": 100, "tol": 1 } },
+      { "says": "The tubes stand on the base, inside its footprint", "check": { "type": "touches", "a": "tube|cylinder|cup", "b": "base", "side": "above", "within": true } }
+    ],
+    "phone_stand": [
+      { "says": "A flat base plate lies on the build plate", "check": { "type": "onPlate", "role": "base", "thin": "vertical" } },
+      { "says": "The backrest leans back at 65 degrees from horizontal (both reviewers' reading; 65 from vertical would be 25)", "reading": "interpretation", "check": { "type": "angle", "role": "back ?rest|back_rest|rest|support", "degFromHorizontal": 65, "tol": 3 } },
+      { "says": "The backrest slots INTO the base: its foot sits in a slot below the base's top surface, not just touching it", "check": { "type": "slotsInto", "a": "back ?rest|back_rest|rest|support", "b": "base" } },
+      { "says": "OPEN: a lip or ledge in front of the backrest stops the phone sliding off (Gemini: essential; not in the request)", "reading": "interpretation", "check": { "type": "exists", "role": "lip|ledge|stop|rail" } }
+    ],
+    "shelf_bracket": [
+      { "says": "The wall plate stands upright, its long side vertical, 150 mm", "check": { "type": "axis", "role": "wall|back|vertical", "axis": "vertical", "length": 150, "tol": 1, "orReach": true } },
+      { "says": "The shelf arm runs horizontally, 150 mm (its own length or the bracket's reach from the wall)", "check": { "type": "axis", "role": "arm|shelf|horizontal", "axis": "horizontal", "length": 150, "tol": 1, "orReach": true } },
+      { "says": "The arm is at right angles to the wall plate", "check": { "type": "perpendicular", "a": "arm|shelf|horizontal", "b": "wall|back|vertical", "tolDeg": 2 } },
+      { "says": "The arm joins the upper part of the wall plate (the plate may extend above it for a top screw)", "reading": "interpretation", "check": { "type": "touches", "a": "arm|shelf|horizontal", "b": "wall|back|vertical", "side": "upperHalf" } },
+      { "says": "A diagonal gusset joins the wall plate and the arm", "check": { "type": "diagonalBetween", "role": "gusset|brace|diagonal|strut", "a": "wall|back|vertical", "b": "arm|shelf|horizontal" } }
+    ],
+    "pi_case": [
+      { "says": "A bottom tray, open at the top, sits on the build plate", "check": { "type": "openFace", "role": "tray|bottom|base", "face": "+Z", "onPlate": true } },
+      { "says": "The tray's inside is at least 85 x 56 mm, the Pi 4 board (domain knowledge, not in the request)", "reading": "interpretation", "check": { "type": "size", "role": "tray|bottom|base", "measure": "innerFootprintMin", "value": [85, 56], "tol": 0 } },
+      { "says": "Four vertical standoffs on the tray floor, inside the tray", "check": { "type": "count", "role": "standoff|post|boss|pillar", "min": 4, "max": 4, "axis": "vertical", "within": "tray|bottom|base" } },
+      { "says": "The standoffs sit on the Pi 4 hole pattern, 58 x 49 mm centres (domain knowledge)", "reading": "interpretation", "check": { "type": "pattern", "role": "standoff|post|boss|pillar", "spacing": [58, 49], "tol": 1 } },
+      { "says": "The lid sits on top of the tray and covers it", "check": { "type": "covers", "a": "lid|top|cover", "b": "tray|bottom|base" } }
+    ],
+    "spool_holder": [
+      { "says": "Two end supports stand upright and parallel, on the build plate", "check": { "type": "count", "role": "a.?frame|support|frame|end|stand", "min": 2, "max": 2, "thin": "horizontal", "onPlate": true } },
+      { "says": "The supports are A-shaped: wider at the foot than at the top", "check": { "type": "taper", "role": "a.?frame|support|frame|end|stand", "widerAt": "bottom" } },
+      { "says": "One axle rod, 20 mm in diameter and 60 mm long", "check": { "type": "size", "role": "axle|rod|shaft", "measure": "cylinder", "diameter": 20, "length": 60, "tol": 1 } },
+      { "says": "The axle runs horizontally between the two supports and touches both", "check": { "type": "spans", "role": "axle|rod|shaft", "between": "a.?frame|support|frame|end|stand", "axis": "horizontal" } },
+      { "says": "The axle is raised, near the top of the A-frames, so a spool can turn", "reading": "interpretation", "check": { "type": "atTop", "role": "axle|rod|shaft", "of": "a.?frame|support|frame|end|stand" } }
+    ],
+    "drawer_unit": [
+      { "says": "The outer shell is 100 x 80 mm in plan and 60 mm tall", "reading": "interpretation", "check": { "type": "size", "role": "shell|housing|outer|case|carcass", "measure": "extents", "footprint": [100, 80], "height": 60, "tol": 1, "onPlate": true } },
+      { "says": "The shell is open at the front: a vertical face, not the top", "check": { "type": "openFace", "role": "shell|housing|outer|case|carcass", "face": "vertical" } },
+      { "says": "The drawer is an open-top box inside the shell", "check": { "type": "inside", "a": "drawer", "b": "shell|housing|outer|case|carcass", "openFace": "+Z" } },
+      { "says": "The drawer slides out horizontally through the shell's open face", "check": null },
+      { "says": "A pull tab sticks out from the drawer's front, at the shell's opening", "check": { "type": "protrudes", "a": "tab|pull|handle|knob", "from": "drawer", "toward": "shellOpenFace" } }
+    ]
+  }
+}
