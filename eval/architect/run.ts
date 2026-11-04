@@ -5,6 +5,8 @@
  *   npm run eval:architect -- --model claude-haiku-5-5 --limit 2 --sync --tag smoke
  *   npm run eval:architect -- --model claude-sonnet-5-5 --samples 3 --tag s55
  *   npm run eval:architect -- --model claude-opus-5-5 --effort high --samples 3 --tag o55
+ *   npm run eval:architect -- --provider gateway --model glm-5.3 --samples 3 --tag glm53
+ *   npm run eval:architect -- --provider google --model gemini-3.8-flash --samples 3 --tag g38
  *
  * Calls Anthropic directly with ANTHROPIC_API_KEY (or an `ant auth login`
  * profile), not the gateway; a key not scoped to a workspace also needs
@@ -35,10 +37,9 @@ for (const f of ['.env', '.env.local']) {
 }
 
 import { systemPromptFor } from '@/lib/agent/system-prompt';
-import { ArchitectPlanSchema, claudeVariantSpecSchema, normalizeClaudeSentinels } from '@/lib/agent/llm-schemas';
-import { toAnthropicCompatibleSchema, nullsToUndefined } from '@/lib/agent/strict-schema';
-import { AssemblySpec, AssemblySpecSchema } from '@/lib/agent/assembly-spec';
-import { normalizeSpec } from '@/lib/agent/spec-normalize';
+import { ArchitectPlanSchema, claudeVariantSpecSchema } from '@/lib/agent/llm-schemas';
+import { toAnthropicCompatibleSchema } from '@/lib/agent/strict-schema';
+import type { AssemblySpec } from '@/lib/agent/assembly-spec';
 import { auditSpecCoherence } from '@/lib/agent/spec-coherence';
 import { auditSpecGround, auditSpecShapes } from '@/lib/agent/spec-shape-audit';
 import { maxVariantsFromEnv, processPlannerVariants, skeletonSignature, type SpecBrief, type VariantId } from '@/lib/agent/spec-variants';
@@ -46,6 +47,8 @@ import { freshVariantPrompt, type PlannedVariant } from '@/lib/agent/architect-p
 import { blockoutScad } from '@/lib/spec-sheet/blockout-scad';
 import { auditFixture } from '../placement/harness';
 import { costUsd, summarize, type PromptScore, type VariantScore } from './score';
+import { parsePlan, parseSpec, SPEC_TOOL, type Outcome } from './parse';
+import { gatewayPricing, runGatewayRound } from './gateway';
 
 const RESULTS_DIR = path.join(__dirname, '..', 'results');
 const PROMPTS: { id: string; prompt: string }[] = JSON.parse(
@@ -55,7 +58,6 @@ const POLL_MS = 30_000;
 // Thinking counts against max_tokens. A variant spec plus its sheet is the
 // longest reply in the graph; batch requests have no HTTP timeout to respect.
 const MAX_TOKENS = 32_000;
-const SPEC_TOOL = 'AssemblySpec';
 
 type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
@@ -67,11 +69,14 @@ interface Args {
   only: string[];
   effort: Effort;
   sync: boolean;
+  /** anthropic: Anthropic API directly (batch by default). gateway: Experiential Labs, any family, sync. google: AI Studio key, sync. */
+  provider: 'anthropic' | 'gateway' | 'google';
+  concurrency: number;
 }
 
 function parseArgs(argv: string[]): Args {
   // Effort is set explicitly: Opus 5.5 and Haiku 5.5 default to medium, Sonnet 5.5 to high.
-  const a: Args = { model: 'claude-haiku-5-5', tag: 'run', samples: 1, limit: Infinity, only: [], effort: 'high', sync: false };
+  const a: Args = { model: 'claude-haiku-5-5', tag: 'run', samples: 1, limit: Infinity, only: [], effort: 'high', sync: false, provider: 'anthropic', concurrency: 6 };
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i];
     if (v === '--model') a.model = argv[++i];
@@ -81,6 +86,8 @@ function parseArgs(argv: string[]): Args {
     else if (v === '--only') a.only = argv[++i].split(',');
     else if (v === '--effort') a.effort = argv[++i] as Effort;
     else if (v === '--sync') a.sync = true;
+    else if (v === '--provider') a.provider = argv[++i] as Args['provider'];
+    else if (v === '--concurrency') a.concurrency = Number(argv[++i]);
     else throw new Error(`unknown flag ${v}`);
   }
   if (!Number.isInteger(a.samples) || a.samples < 1) throw new Error('--samples must be a positive integer');
@@ -88,7 +95,6 @@ function parseArgs(argv: string[]): Args {
 }
 
 type Request = Anthropic.Messages.BatchCreateParams.Request;
-type Outcome = { message: Anthropic.Message } | { error: string };
 
 /**
  * The cached prefix is the system prompt, which is identical across every
@@ -195,45 +201,9 @@ async function runRound(client: Anthropic, round: string, reqs: Request[], args:
 }
 
 function usdOf(args: Args, o: Outcome | undefined): number | null {
-  return o && 'message' in o ? costUsd(args.model, o.message.usage, !args.sync) : 0;
-}
-
-/** Refusal and truncation checked before content is read. */
-function stopFailure(m: Anthropic.Message): string | null {
-  if (m.stop_reason === 'refusal') return `refusal: ${m.stop_details?.category ?? 'uncategorised'}`;
-  if (m.stop_reason === 'max_tokens') return 'max_tokens: reply truncated';
-  return null;
-}
-
-function parsePlan(o: Outcome | undefined): { plan: z.infer<typeof ArchitectPlanSchema> | null; failure: string | null } {
-  if (!o) return { plan: null, failure: 'missing: no result' };
-  if ('error' in o) return { plan: null, failure: o.error };
-  const stop = stopFailure(o.message);
-  if (stop) return { plan: null, failure: stop };
-  const text = o.message.content.find((b) => b.type === 'text');
-  if (!text || text.type !== 'text') return { plan: null, failure: 'no_text: planner returned no text block' };
-  try {
-    const parsed = ArchitectPlanSchema.safeParse(nullsToUndefined(JSON.parse(text.text)));
-    if (parsed.success && parsed.data.variants.length > 0) return { plan: parsed.data, failure: null };
-    return { plan: null, failure: parsed.success ? 'schema: no variants' : `schema: ${parsed.error.issues[0]?.message}` };
-  } catch (e) {
-    return { plan: null, failure: `json: ${e instanceof Error ? e.message : String(e)}` };
-  }
-}
-
-function parseSpec(o: Outcome | undefined): { spec: AssemblySpec | null; failure: string | null } {
-  if (!o) return { spec: null, failure: 'missing: no result' };
-  if ('error' in o) return { spec: null, failure: o.error };
-  const stop = stopFailure(o.message);
-  if (stop) return { spec: null, failure: stop };
-  const call = o.message.content.find((b) => b.type === 'tool_use' && b.name === SPEC_TOOL);
-  if (!call || call.type !== 'tool_use') return { spec: null, failure: 'no_tool_call: the model answered in text' };
-  const parsed = AssemblySpecSchema.safeParse(nullsToUndefined(normalizeClaudeSentinels(call.input)));
-  if (!parsed.success) {
-    const i = parsed.error.issues[0];
-    return { spec: null, failure: `schema: ${i?.path.join('.')} ${i?.message}` };
-  }
-  return { spec: normalizeSpec(parsed.data), failure: null };
+  if (o && 'message' in o) return costUsd(args.model, o.message.usage, !args.sync);
+  if (o && 'value' in o) return o.usd;
+  return 0;
 }
 
 /** Same fallback as architectNode when the planner yields nothing usable. */
@@ -276,28 +246,40 @@ async function main() {
   const items = PROMPTS.filter((p) => args.only.length === 0 || args.only.includes(p.id)).slice(0, args.limit);
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
   const stateFile = path.join(RESULTS_DIR, `.architect-${args.tag}-${args.model}.state.json`);
-  console.log(`architect eval: ${items.length} prompts x ${args.samples} samples on ${args.model} (effort ${args.effort}, ${args.sync ? 'sync' : 'batch'})`);
+  const gateway = args.provider !== 'anthropic';
+  const route = args.provider === 'google' ? 'google' : 'gateway';
+  // The gateway path takes the model's own default effort, as the app does.
+  console.log(`architect eval: ${items.length} prompts x ${args.samples} samples on ${args.model} (${gateway ? `${route}, concurrency ${args.concurrency}` : `effort ${args.effort}, ${args.sync ? 'sync' : 'batch'}`})`);
+  const pricing = gateway ? await gatewayPricing(args.model) : null;
+  if (gateway && !pricing) console.warn(`no gateway pricing listed for ${args.model}: cost will be reported as unknown`);
 
   // custom_id allows [a-zA-Z0-9_-] only.
   const jobs = items.flatMap((item) => Array.from({ length: args.samples }, (_, s) => ({ item, sample: s, key: `${item.id}-s${s}` })));
 
-  const plans = await runRound(client, 'plan', jobs.map((j) => plannerRequest(args, `${j.key}-plan`, j.item.prompt)), args, stateFile);
+  const plans = gateway
+    ? await runGatewayRound(route, args.model, jobs.map((j) => ({ id: `${j.key}-plan`, node: 'planner' as const, prompt: j.item.prompt })), pricing, args.concurrency)
+    : await runRound(client, 'plan', jobs.map((j) => plannerRequest(args, `${j.key}-plan`, j.item.prompt)), args, stateFile);
 
   const promptScores: PromptScore[] = [];
-  const variantJobs: { job: (typeof jobs)[number]; variant: PlannedVariant; req: Request }[] = [];
+  const variantJobs: { job: (typeof jobs)[number]; variant: PlannedVariant; req: Request; text: string }[] = [];
   for (const job of jobs) {
     const o = plans.get(`${job.key}-plan`);
     const { plan, failure } = parsePlan(o);
     const { variants, brief } = planOrFallback(plan);
     promptScores.push({ promptId: job.item.id, sample: job.sample, plannerOk: !!plan, plannerFailure: failure, variantsPlanned: variants.length, usd: usdOf(args, o) });
     for (const v of variants) {
-      variantJobs.push({ job, variant: v, req: variantRequest(args, `${job.key}-${v.id}`, job.item.prompt, freshVariantPrompt(v, variants, brief)) });
+      const text = freshVariantPrompt(v, variants, brief);
+      variantJobs.push({ job, variant: v, text, req: variantRequest(args, `${job.key}-${v.id}`, job.item.prompt, text) });
     }
   }
 
-  const specs = await runRound(client, 'variant', variantJobs.map((v) => v.req), args, stateFile);
+  const specs = gateway
+    ? await runGatewayRound(route, args.model, variantJobs.map((v) => ({ id: v.req.custom_id, node: 'variant' as const, prompt: v.job.item.prompt, variantText: v.text })), pricing, args.concurrency)
+    : await runRound(client, 'variant', variantJobs.map((v) => v.req), args, stateFile);
 
   const variantScores: VariantScore[] = [];
+  // Kept so a run can be rendered and re-scored (intent checks) without paying for it again.
+  const savedSpecs: Record<string, AssemblySpec> = {};
   for (const { job, variant, req } of variantJobs) {
     const o = specs.get(req.custom_id);
     const { spec, failure } = parseSpec(o);
@@ -306,12 +288,13 @@ async function main() {
       variantScores.push({ ...base, failure, firstAttemptClean: false, selfCheckErrors: [], blockoutSkipped: 0, compiled: false, auditErrors: [], bbox: 'none', signature: '' });
       continue;
     }
+    savedSpecs[req.custom_id] = spec;
     variantScores.push({ ...base, failure: null, ...(await scoreSpec(spec)) });
   }
 
   const summary = summarize(promptScores, variantScores);
   const outFile = path.join(RESULTS_DIR, `architect-${args.tag}-${args.model}-${Date.now()}.json`);
-  fs.writeFileSync(outFile, JSON.stringify({ args, summary, prompts: promptScores, variants: variantScores }, null, 2));
+  fs.writeFileSync(outFile, JSON.stringify({ args, summary, prompts: promptScores, variants: variantScores, specs: savedSpecs }, null, 2));
   console.log(JSON.stringify(summary, null, 2));
   console.log(`wrote ${outFile}`);
 }

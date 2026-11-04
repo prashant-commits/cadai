@@ -157,7 +157,6 @@ describe('system prompt composition', () => {
     expect(SPEC_FIELDS).toMatch(/do NOT model mating cavities yourself/i);
     expect(SPEC_FIELDS).toContain('Standard clearance holes');
     expect(SPEC_FIELDS).toContain('holes');
-    expect(SPEC_FIELDS).toContain('stressPoints');
 
     expect(PLACEMENT_RULES).toMatch(/about its OWN min corner/);
     expect(PLACEMENT_RULES).toMatch(/180 - a/);
@@ -189,19 +188,15 @@ describe('node preambles', () => {
     expect(v).toContain('WHAT WILL BE MEASURED');
     expect(v).toMatch(/COHERENCE IS CHECKED/);
     expect(v).toContain('DESIGN CONTRACT');
-    for (const field of [
-      'localExtents',
-      'positionNote',
-      'stressPoints[].gusset',
-      'corner [x, y, z]',
-      "along ('x' | 'y')",
-      "floorDir ('+' | '-')",
-      'legMm',
-      'thicknessMm',
-      'at[]',
-    ]) {
+    for (const field of ['localExtents', 'positionNote']) {
       expect(v, `variant prompt lost ${field}`).toContain(field);
     }
+    // Stress points and gussets are engineering analysis, not modelling: the Architect is not asked for them.
+    expect(ARCHITECT_VARIANT_PREAMBLE).not.toContain('stressPoints');
+    expect(SPEC_FIELDS).not.toContain('stressPoints');
+    // The model is built in the pose it is used in, never laid out for manufacture.
+    expect(ARCHITECT_VARIANT_PREAMBLE).toContain('## In-use pose');
+    expect(ARCHITECT_VARIANT_PREAMBLE).toMatch(/wall-mounted object stands upright/i);
     expect(v).toMatch(/holds or supports an object/i);
     expect(v).toMatch(/guides envelope at its resting pose/i);
   });

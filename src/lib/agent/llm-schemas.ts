@@ -295,6 +295,9 @@ export function claudeVariantSpecSchema(): Record<string, unknown> {
   const props = isPlainObject(json.properties) ? json.properties : undefined;
   if (props) {
     delete props.specApprovedAt;
+    // Stress points and gussets are engineering analysis, not modelling: not requested from the Architect.
+    delete props.stressPoints;
+    if (Array.isArray(json.required)) json.required = (json.required as string[]).filter((k) => k !== 'stressPoints');
     delete props.openQuestions;
 
     // Place sheet first in properties

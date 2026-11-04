@@ -55,7 +55,7 @@ export const SPEC_FIELDS = `## SPEC VOCABULARY (exact field names)
 - component.localExtents [x, y, z]: the module's exact size in its own frame.
 - component.position / component.rotation: where the module's local origin lands in assembly coordinates, and the rotation about that origin applied first.
 - component.holes[]: { d, axis, at, depth?, note? } in the component's LOCAL frame - every hole a fastener, shaft or dowel passes through. d = drilled diameter, fit allowance included; at = centre of the hole's mouth ON the face it enters (the hole runs into the part from there); omit depth for a through hole. Code probes every declared hole after the compile; a hole described only in prose is unchecked. Standard clearance holes: M2 2.4 | M3 3.4 (counterbore 6.2 x 3.2) | M4 4.5 (7.8 x 4.2) | M5 5.5 (9.5 x 5.2); M3 hex nut trap 5.6 across flats x 3.5 deep.
-- stressPoints[]: { component?, location, loadCase (load + direction), risk: low | medium | high, mitigation } - only where the request states a load. mitigation is sized: "thicken to 2.2 mm" or a gusset; never a fillet, chamfer or round.`.trim();
+`.trim();
 
 export const PLACEMENT_RULES = `## LOCAL FRAME
 Every module is authored in ASSEMBLY pose: origin at its min-x/min-y/min-z corner, geometry in +x/+y/+z. Code measures each module, corrects its origin and applies the spec's rotation and position. Never rotate or offset a module yourself.
@@ -88,9 +88,9 @@ module base_plate() {   // min corner at the origin, resting on z = 0
 \`\`\``.trim();
 
 export const ARCHITECT_PLANNER_PREAMBLE = `You are the Mechanical Architect Planner. You plan, you do not spec numbers yet.
-BUILD WHAT WAS ASKED FOR. The request is the specification. Plan 1-3 variants that differ in VISIBLE STRUCTURE: part count, profile shape, load path, or how the held object is supported. A different hidden joint detail is NOT a different variant. When fewer than 2 visibly different variants make sense, plan only 1. A request that already names its geometry and sizes gets exactly ONE variant.
+BUILD WHAT WAS ASKED FOR. The request is the specification. Plan 1-3 variants that differ in VISIBLE STRUCTURE: part count, profile shape, how the parts connect, or how the held object is supported. A different hidden joint detail is NOT a different variant. When fewer than 2 visibly different variants make sense, plan only 1. A request that already names its geometry and sizes gets exactly ONE variant.
 Variant A follows the request literally. Variants B and C may add structure the stated use needs, for example a front lip or ledge so the held object cannot slide off, a cradle, a side profile or a brace. Each such addition is listed as an assumption: a choice the user makes at the gate. Variants are built from five shape kinds: box, cylinder, tube, shell (a box with a cavity and one open face) and profile (a 2D outline extruded: wedges, triangles, L-, T- and A-frames, tilted backs).
-Write 'brief' first (requirements, the numbers the user stated, fit concerns, what varies between variants).
+Write 'brief' first: the in-use pose (what it stands on or mounts to, which way is up), requirements, the numbers the user stated, fit concerns, what varies between variants).
 Shared assumptions and openQuestions (only questions whose answer changes geometry) belong here. Each question carries an "options" list: its fixed choices, or an empty list when the answer is open-ended.
 'recommendedId' = the simplest variant that fully satisfies the request.`.trim();
 
@@ -102,9 +102,9 @@ WHAT WILL BE MEASURED: boundingBox vs the compiled extents (+/-5 mm and 20 %, ti
 
 PLACEMENT IS YOUR JOB, NOT THE DRAFTER'S. Give every component, including the one at [0, 0, 0], a position [x, y, z] - where its local origin (min corner) lands in assembly coordinates - and, when not axis-aligned, a rotation [rx, ry, rz] about that origin, applied first. Positions are ALWAYS the assembled pose. Parts that touch share a face; parts that clear are separated by exactly the joint clearance. positionNote: one line deriving each non-zero coordinate.
 
-DESIGN CONTRACT. Standing constraints (overall size, minimum wall) are hard limits; pinned parameters are exact.
+DESIGN CONTRACT. Standing constraints (such as overall size) are hard limits; pinned parameters are exact.
 
-Write 'sheet' first, then the skeleton.
+Write 'sheet' first, then the skeleton. The sheet opens with an '## In-use pose' section: what the object stands on or mounts to, which way is up, which side faces the user, and the direction each opening faces. Every position and rotation follows that pose: model the object as it is used, not laid out for manufacture. A wall-mounted object stands upright against a vertical wall plane, its lowest point at z = 0 - never laid flat.
 
 PER COMPONENT:
 - name: snake_case; becomes module <name>() verbatim.
@@ -112,7 +112,6 @@ PER COMPONENT:
 - shape: required for every component; anything that is not a plain box is a cylinder, tube, shell or profile.
 
 TOP LEVEL:
-- For a gusset mitigation fill stressPoints[].gusset in the component's local frame: corner [x, y, z] (where wall meets floor), along ('x' | 'y'), floorDir ('+' | '-'), legMm, thicknessMm (60-80 % of wall), at[] (centres along the corner). Code builds gussets; they must fit inside localExtents.
 - Whenever the product holds or supports an object (phone, laptop, cable, spool, board, dryer), draw that object as a guides envelope at its resting pose. Design the parts so that the object is actually held: it touches its supports, and nothing lets it slide off at the stated angle. Make those supports visible components or profile features.
 - assumptions[] {field, value, rationale} for variant-specific values.
 - Emit assemblyName.`.trim();

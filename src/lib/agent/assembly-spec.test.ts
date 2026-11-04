@@ -155,7 +155,7 @@ describe('placement and extents fields', () => {
     expect(AssemblySpecSchema.safeParse(minimal).success).toBe(true);
   });
 
-  it('carries a structured gusset on a stress point, bounded in the request schema', () => {
+  it('still parses a structured gusset on a stress point, which the request schema no longer asks for', () => {
     const spec = AssemblySpecSchema.parse({
       ...minimal,
       stressPoints: [{
@@ -164,11 +164,11 @@ describe('placement and extents fields', () => {
       }],
     });
     expect(spec.stressPoints[0].gusset?.at).toEqual([10, 30, 50]);
+    // Still parsed, but no longer requested from the Architect: stress analysis is not modelling.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const json = assemblySpecRequestSchema() as any;
-    const gusset = json.properties.stressPoints.items.properties.gusset.anyOf[0];
-    expect(gusset.properties.along.enum).toEqual(['x', 'y']);
-    expect(gusset.properties.legMm.multipleOf).toBe(0.01);
+    expect(json.properties.stressPoints).toBeUndefined();
+    expect(json.required ?? []).not.toContain('stressPoints');
     expect(
       AssemblySpecSchema.safeParse({
         ...minimal,

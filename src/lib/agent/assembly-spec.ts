@@ -265,6 +265,9 @@ export function assemblySpecRequestSchema(): Record<string, unknown> {
   delete json.$schema;
   if (json.properties) {
     delete (json.properties as Record<string, unknown>).specApprovedAt;
+    // Stress points and gussets are engineering analysis, not modelling: not requested from the Architect.
+    delete (json.properties as Record<string, unknown>).stressPoints;
+    if (Array.isArray(json.required)) json.required = (json.required as string[]).filter((k) => k !== 'stressPoints');
     
     // Ensure top-level `components` is required before strict transform
     json.required = [...new Set<string>([...((json.required as string[]) ?? []), 'components'])];
@@ -287,6 +290,9 @@ export function variantSpecRequestSchema(): Record<string, unknown> {
   delete json.$schema;
   if (json.properties) {
     delete (json.properties as Record<string, unknown>).specApprovedAt;
+    // Stress points and gussets are engineering analysis, not modelling: not requested from the Architect.
+    delete (json.properties as Record<string, unknown>).stressPoints;
+    if (Array.isArray(json.required)) json.required = (json.required as string[]).filter((k) => k !== 'stressPoints');
     delete (json.properties as Record<string, unknown>).openQuestions;
     
     // Ensure top-level components is required before strict transform

@@ -242,21 +242,20 @@ describe('structuredFor', () => {
     'guides[].localExtents',
     'guides[].position',
     'guides[].points',
-    'stressPoints[].gusset',
   ];
 
-  it('counts optional properties across claudeVariantSpecSchema(): exactly the 6 literal R11 table paths via test-local walker (L1)', async () => {
+  it('counts optional properties across claudeVariantSpecSchema(): exactly the 5 literal R11 table paths (stressPoints no longer requested) via test-local walker (L1)', async () => {
     const { claudeVariantSpecSchema, getOptionalProperties } = await import('./llm-schemas');
     const schema = claudeVariantSpecSchema();
 
     // Test-local walker enters anyOf, oneOf, allOf, $defs, and untyped properties nodes
     const testWalkerPaths = walkOptionalPaths(schema);
-    expect(testWalkerPaths).toHaveLength(6);
+    expect(testWalkerPaths).toHaveLength(5);
     expect([...testWalkerPaths].sort()).toEqual([...LITERAL_R11_OPTIONAL_PATHS].sort());
 
     // Module walker also matches the literal R11 table array
     const moduleWalkerPaths = getOptionalProperties(schema);
-    expect(moduleWalkerPaths).toHaveLength(6);
+    expect(moduleWalkerPaths).toHaveLength(5);
     expect([...moduleWalkerPaths].sort()).toEqual([...LITERAL_R11_OPTIONAL_PATHS].sort());
   });
 
