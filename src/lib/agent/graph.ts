@@ -592,6 +592,11 @@ export const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => 0,
   }),
+  /** Components that fell back to their blockout on the latest architectBuild visit. */
+  buildFallbacks: Annotation<number>({
+    reducer: (_, y) => y,
+    default: () => 0,
+  }),
 
 });
 

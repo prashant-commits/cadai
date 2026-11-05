@@ -13,7 +13,9 @@ import { blockoutBody } from '../spec-sheet/blockout-scad';
  * ```
  *
  * A section with no `@end` is dropped. An empty, comment-only, or still-wrapped
- * module body is dropped too. Code then draws that part from its blockout.
+ * module body is dropped too. A body that calls its own module is dropped too,
+ * because assembling that call would recurse. Code then draws that part from
+ * its blockout.
  */
 
 const END_LINE = /^[ \t]*@end\b(?:[ \t]+(?!\/\/)\S+)?[ \t]*(?:\/\/.*)?[ \t]*$/;
@@ -120,7 +122,7 @@ export function parseBuild(text: string, componentNames: string[], reserved: str
 
     const raw = collected.join('\n');
     const cleaned = sanitizeBody(raw, reserved);
-    if (!acceptsSection(raw, name, reserved) || !isUsableBody(cleaned)) {
+    if (!acceptsSection(raw, name, reserved) || !isUsableBody(cleaned, name)) {
       drop(name);
       continue;
     }
@@ -252,10 +254,34 @@ function acceptsSection(raw: string, partName: string, reserved: string[]): bool
   return hasGeometry(stripped.slice(wrapped.interiorStart, wrapped.interiorEnd));
 }
 
-/** A body that draws nothing, or that still defines a module, cannot be assembled. */
-function isUsableBody(src: string): boolean {
+/** A body that draws nothing, still defines a module, or calls that module cannot be assembled. */
+function isUsableBody(src: string, partName: string): boolean {
   if (containsModuleDef(src)) return false;
+  if (callsOwnModule(src, partName)) return false;
   return hasGeometry(src);
+}
+
+/** True when `src` instantiates `name`. A definition (`module name(...)`) is not a call. */
+function callsOwnModule(src: string, name: string): boolean {
+  let i = 0;
+  while (i < src.length) {
+    const step = stepToken(src, i);
+    if (step.kind === 'skip') {
+      i = step.to;
+      continue;
+    }
+    const word = src.slice(i).match(/^[A-Za-z_][A-Za-z0-9_]*/);
+    if (!word) {
+      i += 1;
+      continue;
+    }
+    const after = i + word[0].length;
+    if (word[0] === name && src[skipTrivia(src, after)] === '(' && !/\bmodule\s+$/.test(src.slice(0, i))) {
+      return true;
+    }
+    i = after;
+  }
+  return false;
 }
 
 function hasGeometry(src: string): boolean {
