@@ -1,4 +1,5 @@
 import type { AssemblySpec, BedFace } from '../agent/assembly-spec';
+import { parameterBlock } from '../agent/parameter-block';
 import { classifyComponent } from './geometry';
 
 /**
@@ -50,7 +51,9 @@ export function blockoutScad(spec: AssemblySpec): { code: string; skipped: { nam
     );
   }
 
-  return { code: `${lines.join('\n').trimEnd()}\n`, skipped };
+  const body = `${lines.join('\n').trimEnd()}\n`;
+  const header = parameterBlock(spec);
+  return { code: header ? `${header}${body}` : body, skipped };
 }
 
 export function identifierIssue(name: string): string | null {
@@ -83,9 +86,10 @@ function moduleLines(comp: Component, ex: number, ey: number, ez: number, placeh
 
 function moduleBodyLines(comp: Component, ex: number, ey: number, ez: number, placeholderReason: string | null): string[] {
   const name = comp.name;
-  let body = shapeBody(comp, ex, ey, ez, placeholderReason !== null);
+  const [tx, ty, tz] = extentTerms(comp, ex, ey, ez);
+  let body = shapeBody(comp, tx, ty, tz, placeholderReason !== null);
   const cutters = (comp.holes ?? [])
-    .map((hole) => holeLine(name, hole, ex, ey, ez))
+    .map((hole, i) => holeLine(name, hole, i, comp, tx, ty, tz))
     .filter((line): line is string => line !== null);
   if (cutters.length > 0) {
     body = [
@@ -107,7 +111,7 @@ export function shapeScad(comp: Component, grow = 0, onNote?: (reason: string) =
   const name = comp.name;
   const ext = comp.localExtents;
   if (!ext || ext.length < 3) return '';
-  const ex = ext[0], ey = ext[1], ez = ext[2];
+  const [ex, ey, ez] = extentTerms(comp, ext[0], ext[1], ext[2]);
 
   const decision = classifyComponent(comp);
   if (decision.kind !== 'shape') {
@@ -131,27 +135,27 @@ export function shapeScad(comp: Component, grow = 0, onNote?: (reason: string) =
   return cubeLineGrown(name, ex, ey, ez, grow);
 }
 
-function cubeLineGrown(name: string, ex: number, ey: number, ez: number, grow: number): string {
+function cubeLineGrown(name: string, ex: Term, ey: Term, ez: Term, grow: number): string {
   if (grow === 0) return cubeLine(name, ex, ey, ez);
-  return `translate([-${fmt(grow)}, -${fmt(grow)}, -${fmt(grow)}]) cube([${fmt(ex + 2 * grow)}, ${fmt(ey + 2 * grow)}, ${fmt(ez + 2 * grow)}]); // localExtents of ${name} grown by ${grow} mm clearance`;
+  return `translate([-${fmt(grow)}, -${fmt(grow)}, -${fmt(grow)}]) cube([${emit(add(ex, 2 * grow))}, ${emit(add(ey, 2 * grow))}, ${emit(add(ez, 2 * grow))}]); // localExtents of ${name} grown by ${grow} mm clearance`;
 }
 
 function roundLineGrown(
   name: string,
-  ex: number,
-  ey: number,
-  ez: number,
+  ex: Term,
+  ey: Term,
+  ez: Term,
   axis: Axis,
-  diameter: number,
+  diameter: Term,
   overshoot: boolean,
   role: string,
   grow: number
 ): string {
   if (grow === 0) return roundLine(name, ex, ey, ez, axis, diameter, overshoot, role);
-  
+
   const extent = axis === 'x' ? ex : axis === 'y' ? ey : ez;
   const start = -grow;
-  const height = extent + 2 * grow;
+  const height = add(extent, 2 * grow);
   const spin =
     axis === 'x'
       ? ' rotate([0, 90, 0])'
@@ -159,15 +163,12 @@ function roundLineGrown(
         ? ' rotate([-90, 0, 0])'
         : '';
   const n = 96;
-  const circumscribedD = (diameter + 2 * grow) / Math.cos(Math.PI / n);
+  const cos = Math.cos(Math.PI / n);
+  const circumscribedD: Term = typeof diameter === 'number'
+    ? (diameter + 2 * grow) / cos
+    : div(add(diameter, 2 * grow), cos);
   const why = `${role} of ${name} grown by ${grow} mm clearance (circumscribed, $fn = ${n})`;
-  return `${alongTranslateGrown(axis, start, ex, ey, ez)}${spin} cylinder(h = ${fmt(height)}, d = ${fmt(circumscribedD)}, $fn = ${n}); // ${why}`;
-}
-
-function alongTranslateGrown(axis: Axis, start: number, ex: number, ey: number, ez: number): string {
-  if (axis === 'z') return `translate([${fmt(ex / 2)}, ${fmt(ey / 2)}, ${fmt(start)}])`;
-  if (axis === 'y') return `translate([${fmt(ex / 2)}, ${fmt(start)}, ${fmt(ez / 2)}])`;
-  return `translate([${fmt(start)}, ${fmt(ey / 2)}, ${fmt(ez / 2)}])`;
+  return `${alongTranslate(axis, start, ex, ey, ez)}${spin} cylinder(h = ${emit(height)}, d = ${emit(circumscribedD)}, $fn = ${n}); // ${why}`;
 }
 
 function profileBodyGrown(
@@ -175,9 +176,9 @@ function profileBodyGrown(
   plane: Plane,
   points: number[][],
   holes: number[][][] | undefined,
-  ex: number,
-  ey: number,
-  ez: number,
+  ex: Term,
+  ey: Term,
+  ez: Term,
   grow: number
 ): string {
   if (grow === 0) return profileBody(name, plane, points, holes, ex, ey, ez)[0];
@@ -185,17 +186,17 @@ function profileBodyGrown(
   const outline = wind(loopOf(points) ?? [], true);
   // Profile inserts with holes cut a solid cavity: grow only the outer outline, not the holes.
   const poly = polygonCall(outline, []);
-  
+
   if (plane === 'xy') {
-    return `translate([0, 0, -${fmt(grow)}]) linear_extrude(height = ${fmt(ez + 2 * grow)}) offset(delta = ${fmt(grow)}) ${poly}; // xy profile of ${name} grown by ${grow} mm clearance`;
+    return `translate([0, 0, -${fmt(grow)}]) linear_extrude(height = ${emit(add(ez, 2 * grow))}) offset(delta = ${fmt(grow)}) ${poly}; // xy profile of ${name} grown by ${grow} mm clearance`;
   }
   if (plane === 'xz') {
-    return `translate([0, ${fmt(ey)}, 0]) rotate([90, 0, 0]) translate([0, 0, -${fmt(grow)}]) linear_extrude(height = ${fmt(ey + 2 * grow)}) offset(delta = ${fmt(grow)}) ${poly}; // xz profile of ${name} grown by ${grow} mm clearance`;
+    return `translate([0, ${emit(ey)}, 0]) rotate([90, 0, 0]) translate([0, 0, -${fmt(grow)}]) linear_extrude(height = ${emit(add(ey, 2 * grow))}) offset(delta = ${fmt(grow)}) ${poly}; // xz profile of ${name} grown by ${grow} mm clearance`;
   }
-  return `rotate([90, 0, 90]) translate([0, 0, -${fmt(grow)}]) linear_extrude(height = ${fmt(ex + 2 * grow)}) offset(delta = ${fmt(grow)}) ${poly}; // yz profile of ${name} grown by ${grow} mm clearance`;
+  return `rotate([90, 0, 90]) translate([0, 0, -${fmt(grow)}]) linear_extrude(height = ${emit(add(ex, 2 * grow))}) offset(delta = ${fmt(grow)}) ${poly}; // yz profile of ${name} grown by ${grow} mm clearance`;
 }
 
-function shapeBody(comp: Component, ex: number, ey: number, ez: number, fallback: boolean): string[] {
+function shapeBody(comp: Component, ex: Term, ey: Term, ez: Term, fallback: boolean): string[] {
   const shape = comp.shape;
   const name = comp.name;
   if (fallback || !shape || shape.kind === 'box') return [cubeLine(name, ex, ey, ez)];
@@ -203,10 +204,10 @@ function shapeBody(comp: Component, ex: number, ey: number, ez: number, fallback
     return [roundLine(name, ex, ey, ez, shape.axis, crossDiameter(shape.axis, ex, ey), false, 'cylinder')];
   }
   if (shape.kind === 'tube' && shape.axis && shape.innerD !== undefined) {
-    return tubeBody(name, ex, ey, ez, shape.axis, shape.innerD);
+    return tubeBody(name, ex, ey, ez, shape.axis, fieldTerm(comp.expr?.innerD, shape.innerD));
   }
   if (shape.kind === 'shell' && shape.openFace && shape.wall !== undefined) {
-    return shellBody(name, ex, ey, ez, shape.wall, shape.openFace);
+    return shellBody(name, ex, ey, ez, fieldTerm(comp.expr?.wall, shape.wall), shape.openFace);
   }
   if (shape.kind === 'profile' && shape.plane && shape.points) {
     return profileBody(name, shape.plane, shape.points, shape.holes, ex, ey, ez);
@@ -214,11 +215,11 @@ function shapeBody(comp: Component, ex: number, ey: number, ez: number, fallback
   return [cubeLine(name, ex, ey, ez)];
 }
 
-function cubeLine(name: string, ex: number, ey: number, ez: number): string {
-  return `cube([${fmt(ex)}, ${fmt(ey)}, ${fmt(ez)}]); // localExtents of ${name}`;
+function cubeLine(name: string, ex: Term, ey: Term, ez: Term): string {
+  return `cube([${emit(ex)}, ${emit(ey)}, ${emit(ez)}]); // localExtents of ${name}`;
 }
 
-function tubeBody(name: string, ex: number, ey: number, ez: number, axis: Axis, innerD: number): string[] {
+function tubeBody(name: string, ex: Term, ey: Term, ez: Term, axis: Axis, innerD: Term): string[] {
   const outerD = crossDiameter(axis, ex, ey);
   return [
     `difference() { // bore of ${name}`,
@@ -228,40 +229,40 @@ function tubeBody(name: string, ex: number, ey: number, ez: number, axis: Axis, 
   ];
 }
 
-function shellBody(name: string, ex: number, ey: number, ez: number, wall: number, openFace: BedFace): string[] {
+function shellBody(name: string, ex: Term, ey: Term, ez: Term, wall: Term, openFace: BedFace): string[] {
   const box = cavity(ex, ey, ez, wall, openFace);
   return [
     `difference() { // shell cavity of ${name}, open ${openFace}`,
     `    ${cubeLine(name, ex, ey, ez)}`,
-    `    translate([${fmt(box.origin[0])}, ${fmt(box.origin[1])}, ${fmt(box.origin[2])}]) cube([${fmt(box.size[0])}, ${fmt(box.size[1])}, ${fmt(box.size[2])}]); // wall of ${name} inset from each closed face, 0.01 mm overshoot through the open face`,
+    `    translate([${emit(box.origin[0])}, ${emit(box.origin[1])}, ${emit(box.origin[2])}]) cube([${emit(box.size[0])}, ${emit(box.size[1])}, ${emit(box.size[2])}]); // wall of ${name} inset from each closed face, 0.01 mm overshoot through the open face`,
     '}',
   ];
 }
 
 function cavity(
-  ex: number,
-  ey: number,
-  ez: number,
-  wall: number,
+  ex: Term,
+  ey: Term,
+  ez: Term,
+  wall: Term,
   face: BedFace
-): { origin: [number, number, number]; size: [number, number, number] } {
-  const origin: [number, number, number] = [wall, wall, wall];
-  const size: [number, number, number] = [ex - 2 * wall, ey - 2 * wall, ez - 2 * wall];
+): { origin: [Term, Term, Term]; size: [Term, Term, Term] } {
+  const origin: [Term, Term, Term] = [wall, wall, wall];
+  const size: [Term, Term, Term] = [sub(ex, mul(2, wall)), sub(ey, mul(2, wall)), sub(ez, mul(2, wall))];
   if (face === '-X') {
     origin[0] = -OVERSHOOT;
-    size[0] = ex - wall + OVERSHOOT;
+    size[0] = add(sub(ex, wall), OVERSHOOT);
   } else if (face === '+X') {
-    size[0] = ex - wall + OVERSHOOT;
+    size[0] = add(sub(ex, wall), OVERSHOOT);
   } else if (face === '-Y') {
     origin[1] = -OVERSHOOT;
-    size[1] = ey - wall + OVERSHOOT;
+    size[1] = add(sub(ey, wall), OVERSHOOT);
   } else if (face === '+Y') {
-    size[1] = ey - wall + OVERSHOOT;
+    size[1] = add(sub(ey, wall), OVERSHOOT);
   } else if (face === '-Z') {
     origin[2] = -OVERSHOOT;
-    size[2] = ez - wall + OVERSHOOT;
+    size[2] = add(sub(ez, wall), OVERSHOOT);
   } else {
-    size[2] = ez - wall + OVERSHOOT;
+    size[2] = add(sub(ez, wall), OVERSHOOT);
   }
   return { origin, size };
 }
@@ -271,9 +272,9 @@ function profileBody(
   plane: Plane,
   points: number[][],
   holes: number[][][] | undefined,
-  ex: number,
-  ey: number,
-  ez: number
+  ex: Term,
+  ey: Term,
+  ez: Term
 ): string[] {
   const outline = wind(loopOf(points) ?? [], true);
   const inners = (holes ?? [])
@@ -283,32 +284,32 @@ function profileBody(
   const poly = polygonCall(outline, inners);
   if (plane === 'xy') {
     return [
-      `linear_extrude(height = ${fmt(ez)}) ${poly}; // xy profile of ${name}; height is localExtents.z; points are the outline and holes`,
+      `linear_extrude(height = ${emit(ez)}) ${poly}; // xy profile of ${name}; height is localExtents.z; points are the outline and holes`,
     ];
   }
   if (plane === 'xz') {
     return [
-      `translate([0, ${fmt(ey)}, 0]) rotate([90, 0, 0]) linear_extrude(height = ${fmt(ey)}) ${poly}; // xz profile of ${name}; +90 deg about x and a shift of localExtents.y map polygon (x, z) into the local box`,
+      `translate([0, ${emit(ey)}, 0]) rotate([90, 0, 0]) linear_extrude(height = ${emit(ey)}) ${poly}; // xz profile of ${name}; +90 deg about x and a shift of localExtents.y map polygon (x, z) into the local box`,
     ];
   }
   return [
-    `rotate([90, 0, 90]) linear_extrude(height = ${fmt(ex)}) ${poly}; // yz profile of ${name}; the rotation maps polygon (y, z) into the local box and height is localExtents.x`,
+    `rotate([90, 0, 90]) linear_extrude(height = ${emit(ex)}) ${poly}; // yz profile of ${name}; the rotation maps polygon (y, z) into the local box and height is localExtents.x`,
   ];
 }
 
 function roundLine(
   name: string,
-  ex: number,
-  ey: number,
-  ez: number,
+  ex: Term,
+  ey: Term,
+  ez: Term,
   axis: Axis,
-  diameter: number,
+  diameter: Term,
   overshoot: boolean,
   role: string
 ): string {
   const extent = axis === 'x' ? ex : axis === 'y' ? ey : ez;
   const start = overshoot ? -OVERSHOOT : 0;
-  const height = overshoot ? extent + OVERSHOOT * 2 : extent;
+  const height = overshoot ? add(extent, OVERSHOOT * 2) : extent;
   const spin =
     axis === 'x'
       ? ' rotate([0, 90, 0])'
@@ -318,44 +319,59 @@ function roundLine(
   const why = overshoot
     ? `${role} of ${name}; d is innerD; h is localExtents.${axis} plus 0.01 mm past each end`
     : `${role} of ${name}; h is localExtents.${axis}; d is the cross-section extent; centred on the other two axes${axis === 'z' ? '' : `; ${axis === 'x' ? '+90 deg about y' : '-90 deg about x'} sends the axis along ${axis}`}`;
-  return `${alongTranslate(axis, start, ex, ey, ez)}${spin} cylinder(h = ${fmt(height)}, d = ${fmt(diameter)}); // ${why}`;
+  return `${alongTranslate(axis, start, ex, ey, ez)}${spin} cylinder(h = ${emit(height)}, d = ${emit(diameter)}); // ${why}`;
 }
 
 function holeLine(
   name: string,
   hole: NonNullable<Component['holes']>[number],
-  ex: number,
-  ey: number,
-  ez: number
+  index: number,
+  comp: Component,
+  ex: Term,
+  ey: Term,
+  ez: Term
 ): string | null {
   if (!(hole.d > 0) || !hole.at || hole.at.length < 3) return null;
+  const he = comp.expr?.holes?.[index];
+  const d = fieldTerm(he?.d, hole.d);
+  const at: [Term, Term, Term] = [
+    fieldTerm(he?.at?.[0], hole.at[0]),
+    fieldTerm(he?.at?.[1], hole.at[1]),
+    fieldTerm(he?.at?.[2], hole.at[2]),
+  ];
   const axis = hole.axis;
+  const ext = comp.localExtents;
+  const exN = ext && ext.length >= 3 ? ext[0] : 0;
+  const eyN = ext && ext.length >= 3 ? ext[1] : 0;
+  const ezN = ext && ext.length >= 3 ? ext[2] : 0;
+  const extentNum = axis === 'x' ? exN : axis === 'y' ? eyN : ezN;
   const extent = axis === 'x' ? ex : axis === 'y' ? ey : ez;
   const along = hole.at[axis === 'x' ? 0 : axis === 'y' ? 1 : 2];
-  const fromMin = Math.abs(along) <= Math.abs(along - extent);
+  const fromMin = Math.abs(along) <= Math.abs(along - extentNum);
   const through = hole.depth === undefined;
-  const start = through || fromMin ? -OVERSHOOT : extent - (hole.depth ?? 0);
-  const height = through ? extent + OVERSHOOT * 2 : (hole.depth ?? 0) + OVERSHOOT;
+  const depth: Term | undefined = hole.depth === undefined ? undefined : fieldTerm(he?.depth, hole.depth);
+  const start: Term = through || fromMin ? -OVERSHOOT : sub(extent, depth ?? 0);
+  const height: Term = through ? add(extent, OVERSHOOT * 2) : add(depth ?? 0, OVERSHOOT);
   const spin = axis === 'x' ? ' rotate([0, 90, 0])' : axis === 'y' ? ' rotate([-90, 0, 0])' : '';
   const where = axis === 'z'
-    ? `translate([${fmt(hole.at[0])}, ${fmt(hole.at[1])}, ${fmt(start)}])`
+    ? `translate([${emit(at[0])}, ${emit(at[1])}, ${emit(start)}])`
     : axis === 'y'
-      ? `translate([${fmt(hole.at[0])}, ${fmt(start)}, ${fmt(hole.at[2])}])`
-      : `translate([${fmt(start)}, ${fmt(hole.at[1])}, ${fmt(hole.at[2])}])`;
+      ? `translate([${emit(at[0])}, ${emit(start)}, ${emit(at[2])}])`
+      : `translate([${emit(start)}, ${emit(at[1])}, ${emit(at[2])}])`;
   const kind = through ? 'through' : 'blind';
   const reach = through
     ? 'spans localExtents plus 0.01 mm overshoot at each end'
     : 'bores inward from the entry face to hole.depth, with 0.01 mm outward overshoot';
-  return `${where}${spin} cylinder(h = ${fmt(height)}, d = ${fmt(hole.d)}); // ${kind} hole of ${name} along ${axis}; d is hole.d; h ${reach}`;
+  return `${where}${spin} cylinder(h = ${emit(height)}, d = ${emit(d)}); // ${kind} hole of ${name} along ${axis}; d is hole.d; h ${reach}`;
 }
 
-function alongTranslate(axis: Axis, start: number, ex: number, ey: number, ez: number): string {
-  if (axis === 'z') return `translate([${fmt(ex / 2)}, ${fmt(ey / 2)}, ${fmt(start)}])`;
-  if (axis === 'y') return `translate([${fmt(ex / 2)}, ${fmt(start)}, ${fmt(ez / 2)}])`;
-  return `translate([${fmt(start)}, ${fmt(ey / 2)}, ${fmt(ez / 2)}])`;
+function alongTranslate(axis: Axis, start: Term, ex: Term, ey: Term, ez: Term): string {
+  if (axis === 'z') return `translate([${emit(div(ex, 2))}, ${emit(div(ey, 2))}, ${emit(start)}])`;
+  if (axis === 'y') return `translate([${emit(div(ex, 2))}, ${emit(start)}, ${emit(div(ez, 2))}])`;
+  return `translate([${emit(start)}, ${emit(div(ey, 2))}, ${emit(div(ez, 2))}])`;
 }
 
-function crossDiameter(axis: Axis, ex: number, ey: number): number {
+function crossDiameter(axis: Axis, ex: Term, ey: Term): Term {
   if (axis === 'x') return ey;
   if (axis === 'y') return ex;
   return ex;
@@ -411,4 +427,45 @@ function fmt(value: number): string {
   if (!Number.isFinite(rounded) || rounded === 0) return '0';
   const text = rounded.toFixed(6).replace(/\.?0+$/, '');
   return text === '-0' ? '0' : text;
+}
+
+/** A length: the resolved number, or the OpenSCAD expression that produced it. */
+type Term = number | string;
+
+function fieldTerm(expr: string | null | undefined, value: number): Term {
+  return expr ? expr : value;
+}
+
+function extentTerms(comp: Component, ex: number, ey: number, ez: number): [Term, Term, Term] {
+  const e = comp.expr?.localExtents;
+  return [fieldTerm(e?.[0], ex), fieldTerm(e?.[1], ey), fieldTerm(e?.[2], ez)];
+}
+
+/** Literals format as before. An expression used inside a larger expression is parenthesised. */
+function atom(t: Term): string {
+  return typeof t === 'string' ? `(${t})` : fmt(t);
+}
+
+function emit(t: Term): string {
+  return typeof t === 'string' ? t : fmt(t);
+}
+
+function add(a: Term, b: Term): Term {
+  if (typeof a === 'number' && typeof b === 'number') return a + b;
+  return `${atom(a)} + ${atom(b)}`;
+}
+
+function sub(a: Term, b: Term): Term {
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  return `${atom(a)} - ${atom(b)}`;
+}
+
+function mul(a: Term, b: Term): Term {
+  if (typeof a === 'number' && typeof b === 'number') return a * b;
+  return `${atom(a)} * ${atom(b)}`;
+}
+
+function div(a: Term, b: Term): Term {
+  if (typeof a === 'number' && typeof b === 'number') return a / b;
+  return `${atom(a)} / ${atom(b)}`;
 }
