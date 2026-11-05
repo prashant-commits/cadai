@@ -182,6 +182,27 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
   const errors: string[] = [];
   const scope: Record<string, number> = {};
 
+  /**
+   * Models often write names with capitals ("W", "peg_L", "R_o"). The grammar is
+   * lowercase-only, so such a name is lowercased (here and in every expression
+   * that uses it) when the lowercase form is valid and taken by no other name.
+   * Otherwise it is left as written and reported below.
+   */
+  const rawNames = [...(raw.parameters ?? []).map((p) => p.name), ...(raw.derived ?? []).map((d) => d.name)];
+  const rename = new Map<string, string>();
+  for (const name of rawNames) {
+    if (NAME_RE.test(name)) continue;
+    const lower = name.toLowerCase();
+    if (!NAME_RE.test(lower) || rawNames.includes(lower) || [...rename.values()].includes(lower)) continue;
+    if (rawNames.filter((n) => n.toLowerCase() === lower).length > 1) continue;
+    rename.set(name, lower);
+  }
+  const canonName = (name: string) => rename.get(name) ?? name;
+  const canon = (src: string) =>
+    rename.size ? src.replace(/(?<![\w.])[A-Za-z_][A-Za-z0-9_]*/g, (tok) => rename.get(tok) ?? tok) : src;
+  /** An empty string in an optional numeric field means the model left it unset. */
+  const blank = (v: unknown) => typeof v === 'string' && v.trim() === '';
+
   const declared = new Set<string>();
   /** A declared name must fit the grammar and be unique across parameters and derived. */
   const declare = (kind: 'parameter' | 'derived', name: string): boolean => {
@@ -201,8 +222,12 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
     return true;
   };
 
-  for (const p of raw.parameters ?? []) if (declare('parameter', p.name)) scope[p.name] = p.value;
-  for (const d of raw.derived ?? []) {
+  const parameters = raw.parameters?.map((p) => ({ ...p, name: canonName(p.name) }));
+  const derived = raw.derived?.map((d) => ({ ...d, name: canonName(d.name), expr: canon(d.expr) }));
+  const relations = raw.relations?.map((r) => ({ ...r, expr: canon(r.expr) }));
+
+  for (const p of parameters ?? []) if (declare('parameter', p.name)) scope[p.name] = p.value;
+  for (const d of derived ?? []) {
     if (!declare('derived', d.name)) continue;
     try {
       const v = evalExpr(d.expr, scope);
@@ -220,8 +245,9 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
    * errors. `where` names the field in errors.
    */
   const num = (v: unknown, where: string, prior?: string | null): { value: number; expr: string | null } => {
-    const src = prior ?? (typeof v === 'string' ? v : null);
-    if (src === null) return { value: v as number, expr: null };
+    const given = prior ?? (typeof v === 'string' ? v : null);
+    if (given === null) return { value: v as number, expr: null };
+    const src = canon(given);
     try {
       const n = evalExpr(src, scope);
       if (Number.isFinite(n)) return { value: n, expr: src };
@@ -253,6 +279,7 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
     if (c.shape) {
       const shape = { ...c.shape };
       for (const f of ['innerD', 'wall'] as const) {
+        if (blank(shape[f]) && !c.expr?.[f]) delete shape[f];
         if (shape[f] === undefined) continue;
         const r = num(shape[f], `${w} shape.${f}`, c.expr?.[f]);
         shape[f] = r.value;
@@ -275,7 +302,8 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
         const at = vec(h.at, `${hw}.at`, prior?.at);
         hole.at = at.value;
         if (at.expr) he.at = at.expr;
-        if (h.depth !== undefined) {
+        if (blank(h.depth) && !prior?.depth) delete hole.depth;
+        else if (h.depth !== undefined) {
           const dp = num(h.depth, `${hw}.depth`, prior?.depth);
           hole.depth = dp.value;
           if (dp.expr !== null) he.depth = dp.expr;
@@ -309,6 +337,7 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
     if (g.shape) {
       const shape = { ...g.shape };
       for (const f of ['innerD', 'wall'] as const) {
+        if (blank(shape[f]) && !g.expr?.[f]) delete shape[f];
         if (shape[f] === undefined) continue;
         const r = num(shape[f], `${w} shape.${f}`, g.expr?.[f]);
         shape[f] = r.value;
@@ -320,6 +349,13 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
     return out;
   });
 
-  const spec: AssemblySpec = { ...raw, ...(components ? { components } : {}), ...(guides ? { guides } : {}) };
+  const spec: AssemblySpec = {
+    ...raw,
+    ...(parameters ? { parameters } : {}),
+    ...(derived ? { derived } : {}),
+    ...(relations ? { relations } : {}),
+    ...(components ? { components } : {}),
+    ...(guides ? { guides } : {}),
+  };
   return { spec, errors };
 }
