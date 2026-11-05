@@ -22,6 +22,9 @@ export interface CompareRow {
   errorKinds: string[];
   wallMs: number;
   reviewRounds: number;
+  paramCount?: number;
+  deadParams?: number;
+  buildFallbacks?: number;
 }
 
 export interface CompareArm {
@@ -68,6 +71,9 @@ function asRow(value: unknown): CompareRow | null {
     errorKinds: kinds,
     wallMs: typeof row.wallMs === 'number' && Number.isFinite(row.wallMs) ? row.wallMs : 0,
     reviewRounds: typeof row.reviewRounds === 'number' && Number.isFinite(row.reviewRounds) ? row.reviewRounds : 0,
+    paramCount: typeof row.paramCount === 'number' && Number.isFinite(row.paramCount) ? row.paramCount : 0,
+    deadParams: typeof row.deadParams === 'number' && Number.isFinite(row.deadParams) ? row.deadParams : 0,
+    buildFallbacks: typeof row.buildFallbacks === 'number' && Number.isFinite(row.buildFallbacks) ? row.buildFallbacks : 0,
   };
 }
 
@@ -188,11 +194,11 @@ function promptCell(row: CompareRow | undefined): string {
 }
 
 export function buildReport(arms: CompareArm[]): string {
-  const header = '| arm | n | error-free | compileOk | extentsOk | shellsOk | floorOk | visualMatch | mean wall s | mean review rounds |';
-  const rule = '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |';
+  const header = '| arm | n | error-free | compileOk | extentsOk | shellsOk | floorOk | visualMatch | mean wall s | mean review rounds | mean params | mean dead params | mean build fallbacks |';
+  const rule = '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |';
   const table = arms.map((arm) => {
     const rows = arm.rows;
-    return `| ${cell(arm.label)} | ${rows.length} | ${rate(rows.map(errorFree))} | ${rate(rows.map((row) => row.compileOk))} | ${rate(rows.map((row) => row.extentsOk))} | ${rate(rows.map((row) => row.shellsOk))} | ${rate(rows.map((row) => row.floorOk))} | ${rate(rows.map((row) => row.visualMatch))} | ${mean(rows.map((row) => row.wallMs / 1000))} | ${mean(rows.map((row) => row.reviewRounds))} |`;
+    return `| ${cell(arm.label)} | ${rows.length} | ${rate(rows.map(errorFree))} | ${rate(rows.map((row) => row.compileOk))} | ${rate(rows.map((row) => row.extentsOk))} | ${rate(rows.map((row) => row.shellsOk))} | ${rate(rows.map((row) => row.floorOk))} | ${rate(rows.map((row) => row.visualMatch))} | ${mean(rows.map((row) => row.wallMs / 1000))} | ${mean(rows.map((row) => row.reviewRounds))} | ${mean(rows.map((row) => row.paramCount ?? 0))} | ${mean(rows.map((row) => row.deadParams ?? 0))} | ${mean(rows.map((row) => row.buildFallbacks ?? 0))} |`;
   });
 
   const kinds = [...new Set(arms.flatMap((arm) => arm.rows.flatMap((row) => row.errorKinds)))].sort();

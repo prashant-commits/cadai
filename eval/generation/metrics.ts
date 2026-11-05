@@ -1,11 +1,13 @@
 import type { AssemblySpec } from '@/lib/agent/assembly-spec';
 import type { AgentStateType } from '@/lib/agent/graph';
 import { isZeroVec } from '@/lib/design/placement-geometry';
+import { parseParams } from '@/lib/design/parse-params';
 import { judgeCompiledModel, type VisualCritique } from './judge';
 
 export interface GenerationMetrics {
   id: string;
   model: string;
+  pipeline?: 'drafter' | 'architect' | null;
   specOk: boolean;
   composed: boolean;
   compileOk: boolean;
@@ -17,6 +19,9 @@ export interface GenerationMetrics {
   errorKinds: string[];
   attempts: number;
   wallMs: number;
+  paramCount?: number;
+  deadParams?: number;
+  buildFallbacks?: number;
   /** Variants the architect planned on the last pass that still had them. */
   variantCount: number;
   /** How many of those variants have `review.validated`. */
@@ -107,7 +112,7 @@ function variantStats(
 export function metricsFromState(
   id: string,
   model: string,
-  state: Partial<AgentStateType>,
+  state: Partial<AgentStateType> & { pipeline?: 'drafter' | 'architect' | null },
   wallMs: number,
   capture?: SpecGateCapture | null,
   visual?: VisualScore | null,
@@ -132,9 +137,14 @@ export function metricsFromState(
     ?? null;
   const judged = visual ?? UNJUDGED;
 
+  const parsed = state.currentCode ? parseParams(state.currentCode) : [];
+  const paramCount = parsed.filter((p) => typeof p.value === 'number').length;
+  const deadParams = violations.filter((v) => v.kind === 'dead_parameter').length;
+
   return {
     id,
     model,
+    pipeline: state.pipeline ?? null,
     specOk: !!state.assemblySpec,
     composed: report?.composed ?? false,
     compileOk: !!state.validation?.valid,
@@ -146,6 +156,9 @@ export function metricsFromState(
     errorKinds: [...new Set(errors.map((v) => v.kind))],
     attempts: state.attemptCount ?? 0,
     wallMs,
+    paramCount,
+    deadParams,
+    buildFallbacks: state.buildFallbacks ?? 0,
     ...variantStats(variants, recommendedId),
     visualMatch: judged.visualMatch,
     visualFindings: judged.visualFindings,
@@ -157,14 +170,18 @@ function rate(rows: GenerationMetrics[], pick: (m: GenerationMetrics) => boolean
   return `${vals.filter(Boolean).length}/${vals.length}`;
 }
 
-function meanOf(rows: GenerationMetrics[], pick: (m: GenerationMetrics) => number | null): string {
-  const vals = rows.map(pick).filter((value): value is number => value !== null);
+function meanOf(rows: GenerationMetrics[], pick: (m: GenerationMetrics) => number | null | undefined): string {
+  const vals = rows.map(pick).filter((value): value is number => value !== null && value !== undefined);
   if (vals.length === 0) return '0.0';
   const mean = vals.reduce((sum, value) => sum + value, 0) / vals.length;
   return (Math.round(mean * 10) / 10).toFixed(1);
 }
 
 export function summarize(rows: GenerationMetrics[]): Record<string, string> {
+  const sumParams = rows.reduce((sum, m) => sum + (m.paramCount ?? 0), 0);
+  const sumDead = rows.reduce((sum, m) => sum + (m.deadParams ?? 0), 0);
+  const liveRate = sumParams === 0 ? 1 : 1 - sumDead / sumParams;
+
   return {
     n: String(rows.length),
     specOk: rate(rows, (m) => m.specOk),
@@ -182,6 +199,10 @@ export function summarize(rows: GenerationMetrics[]): Record<string, string> {
     visualMatch: rate(rows, (m) => m.visualMatch),
     meanVisualFindings: meanOf(rows, (m) => m.visualFindings),
     meanWallMs: meanOf(rows, (m) => m.wallMs),
+    meanParamCount: meanOf(rows, (m) => m.paramCount),
+    meanDeadParams: meanOf(rows, (m) => m.deadParams),
+    meanBuildFallbacks: meanOf(rows, (m) => m.buildFallbacks),
+    liveParamRate: (Math.round(liveRate * 10) / 10).toFixed(1),
   };
 }
 
