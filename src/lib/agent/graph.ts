@@ -24,6 +24,7 @@ import { renderVariantSheet } from '../spec-sheet/sheet-svg';
 import { blockoutScad } from '../spec-sheet/blockout-scad';
 import { freshVariantPrompt, requiredChanges, variantNamedIn, variantPlanContext } from './architect-prompts';
 import { followUpEdit } from './follow-up';
+import { makeArchitectBuild } from './nodes/architect-build';
 import { svgToPngDataUrl } from '../spec-sheet/rasterize';
 import {
   stripGeneratedAssembly,
@@ -574,6 +575,11 @@ export const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => 0,
   }),
+  /** Set once, on the thread's first architectNode entry, from CADAI_PIPELINE. Never changes afterwards. */
+  pipeline: Annotation<'drafter' | 'architect' | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
 
 });
 
@@ -1120,6 +1126,8 @@ export function createCadAgent(
       // reappear at a later node as if the human had just said it.
       gateAction: null,
       gateFeedback: null,
+      // Pinned for the thread. A later entry keeps the value already stored.
+      pipeline: state.pipeline ?? (process.env.CADAI_PIPELINE === 'architect' ? 'architect' : 'drafter'),
     };
   }
 
@@ -2153,6 +2161,10 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       chosenVariantId: approvedVariant?.id ?? null,
       assemblySpec: stampedSpec,
       designContract: updatedContract,
+      // Resume after the interrupt is a new request. Drop the previous budget
+      // so the build (either pipeline) gets its own 300 s on Vercel.
+      reviewDeadline: null,
+      runDeadline: null,
     };
   }
 
@@ -2196,7 +2208,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     // request, so a human sees the spec first (and the drafter starts in a new one).
     if (state.reviewDeadline !== null && Date.now() >= state.reviewDeadline) return 'specGate';
     if (shouldGateSpec(state, prompt)) return 'specGate';
-    return 'drafterNode';
+    return draftTarget(state);
   }
 
   function routeAfterArchitect(state: AgentStateType) {
@@ -2222,7 +2234,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     if (state.gateAction === 'revise' && state.specRevisionCount <= MAX_SPEC_REVISIONS) {
       return 'architectNode';
     }
-    return 'drafterNode';
+    return draftTarget(state);
   }
 
   // Conditional Edge: route from validateCode
@@ -2244,7 +2256,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       if (shouldGateAccept(state)) return 'acceptGate';
       return 'respondToUser';
     }
-    return 'fixCode';
+    return repairTarget(state);
   }
 
   // Conditional Edge: route from visualCritic. Any finding it added is a
@@ -2258,10 +2270,22 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
   // Conditional Edge: route from acceptGate
   function checkAcceptRoute(state: AgentStateType) {
     if (state.gateAction === 'revise' && state.acceptRevisionCount <= MAX_ACCEPT_REVISIONS) {
-      return 'fixCode';
+      return repairTarget(state);
     }
     return 'respondToUser';
   }
+
+  /** Finished spec: the Architect writes bodies, or the Drafter does. */
+  function draftTarget(state: AgentStateType): 'architectBuild' | 'drafterNode' {
+    return state.pipeline === 'architect' ? 'architectBuild' : 'drafterNode';
+  }
+
+  /** Failed build: the Architect rewrites the named parts, or Repair does. Same attempt caps. */
+  function repairTarget(state: AgentStateType): 'architectBuild' | 'fixCode' {
+    return state.pipeline === 'architect' ? 'architectBuild' : 'fixCode';
+  }
+
+  const architectBuild = makeArchitectBuild(model);
 
   // Build the graph
   const workflow = new StateGraph(AgentState)
@@ -2270,6 +2294,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     .addNode('specReviewer', specReviewer)
     .addNode('specGate', specGate)
     .addNode('drafterNode', drafterNode)
+    .addNode('architectBuild', architectBuild)
     .addNode('validateCode', validateCode)
     .addNode('fixCode', fixCode)
     .addNode('visualCritic', visualCritic)
@@ -2280,21 +2305,26 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       specIllustrator: 'specIllustrator',
       specGate: 'specGate',
       drafterNode: 'drafterNode',
+      architectBuild: 'architectBuild',
     })
     .addEdge('specIllustrator', 'specReviewer')
     .addConditionalEdges('specReviewer', routeAfterReviewer, {
       architectNode: 'architectNode',
       specGate: 'specGate',
       drafterNode: 'drafterNode',
+      architectBuild: 'architectBuild',
     })
     .addConditionalEdges('specGate', checkReviseRoute, {
       architectNode: 'architectNode',
       drafterNode: 'drafterNode',
+      architectBuild: 'architectBuild',
       respondToUser: 'respondToUser'
     })
     .addEdge('drafterNode', 'validateCode')
+    .addEdge('architectBuild', 'validateCode')
     .addConditionalEdges('validateCode', checkValidationRoute, {
       fixCode: 'fixCode',
+      architectBuild: 'architectBuild',
       visualCritic: 'visualCritic',
       acceptGate: 'acceptGate',
       respondToUser: 'respondToUser'
@@ -2306,6 +2336,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     .addEdge('fixCode', 'validateCode')
     .addConditionalEdges('acceptGate', checkAcceptRoute, {
       fixCode: 'fixCode',
+      architectBuild: 'architectBuild',
       respondToUser: 'respondToUser'
     })
     .addEdge('respondToUser', END);
