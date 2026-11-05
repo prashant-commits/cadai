@@ -50,11 +50,13 @@ export const ShapeSchema = z.object({
   holes: z.array(z.array(Vec2)).optional(), // profile inner outlines
 });
 export type Shape = z.infer<typeof ShapeSchema>;
+/** Guides are reference geometry nothing resolves expressions for: their shape stays numeric-only. */
+const GuideShapeSchema = ShapeSchema.extend({ innerD: z.number().optional(), wall: z.number().optional() });
 
 export const GuideSchema = z.object({
   label: z.string(),
   kind: z.enum(['envelope', 'line']),
-  shape: ShapeSchema.optional(),       // envelope; absent = box
+  shape: GuideShapeSchema.optional(),  // envelope; absent = box
   localExtents: Vec3.optional(),       // envelope
   position: Vec3.optional(),           // envelope: min corner in assembly coordinates
   rotation: Vec3.optional(),           // envelope: degrees about its own min corner, applied first

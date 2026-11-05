@@ -16,6 +16,7 @@ type Token =
   | { t: 'op'; v: '+' | '-' | '*' | '/' | '(' | ')' | ','; pos: number }
   | { t: 'end'; pos: number };
 
+const NAME_RE = /^[a-z][a-z0-9_]*$/;
 const NAME_START = /[a-z]/;
 const NAME_PART = /[a-z0-9_]/;
 const DIGIT = /[0-9]/;
@@ -167,8 +168,24 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
   const errors: string[] = [];
   const scope: Record<string, number> = {};
 
-  for (const p of raw.parameters ?? []) scope[p.name] = p.value;
+  const declared = new Set<string>();
+  /** A declared name must fit the grammar and be unique across parameters and derived. */
+  const declare = (kind: 'parameter' | 'derived', name: string): boolean => {
+    if (!NAME_RE.test(name)) {
+      errors.push(`${kind} "${name}" is not a valid name (lowercase letters, digits, underscore; must start with a letter)`);
+      return false;
+    }
+    if (declared.has(name)) {
+      errors.push(`${kind} "${name}" is declared more than once (names must be unique across parameters and derived)`);
+      return false;
+    }
+    declared.add(name);
+    return true;
+  };
+
+  for (const p of raw.parameters ?? []) if (declare('parameter', p.name)) scope[p.name] = p.value;
   for (const d of raw.derived ?? []) {
+    if (!declare('derived', d.name)) continue;
     try {
       const v = evalExpr(d.expr, scope);
       if (Number.isFinite(v)) scope[d.name] = v;
@@ -178,22 +195,28 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
     }
   }
 
-  /** Number in, number out; string in, evaluated. `where` names the field in errors. */
-  const num = (v: unknown, where: string): { value: number; expr: string | null } => {
-    if (typeof v !== 'string') return { value: v as number, expr: null };
+  /**
+   * Number in, number out; string in, evaluated. `prior` is the expression kept
+   * from an earlier pass: when present it is the source of truth and the number
+   * is only its cache, so resolving twice gives the same value and the same
+   * errors. `where` names the field in errors.
+   */
+  const num = (v: unknown, where: string, prior?: string | null): { value: number; expr: string | null } => {
+    const src = prior ?? (typeof v === 'string' ? v : null);
+    if (src === null) return { value: v as number, expr: null };
     try {
-      const n = evalExpr(v, scope);
-      if (Number.isFinite(n)) return { value: n, expr: v };
-      errors.push(`${where} = "${v}" is not a finite number`);
+      const n = evalExpr(src, scope);
+      if (Number.isFinite(n)) return { value: n, expr: src };
+      errors.push(`${where} = "${src}" is not a finite number`);
     } catch (e) {
-      errors.push(`${where} = "${v}": ${(e as Error).message}`);
+      errors.push(`${where} = "${src}": ${(e as Error).message}`);
     }
-    return { value: 0, expr: v };
+    return { value: 0, expr: src };
   };
 
-  const vec = (v: unknown, where: string): { value: number[]; expr: (string | null)[] | undefined } => {
+  const vec = (v: unknown, where: string, prior?: (string | null)[]): { value: number[]; expr: (string | null)[] | undefined } => {
     const arr = v as unknown[];
-    const parts = arr.map((x, i) => num(x, `${where}[${i}]`));
+    const parts = arr.map((x, i) => num(x, `${where}[${i}]`, prior?.[i]));
     return { value: parts.map((x) => x.value), expr: parts.some((x) => x.expr !== null) ? parts.map((x) => x.expr) : undefined };
   };
 
@@ -204,7 +227,7 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
 
     for (const f of ['localExtents', 'position', 'rotation'] as const) {
       if (c[f] === undefined) continue;
-      const r = vec(c[f], `${w} ${f}`);
+      const r = vec(c[f], `${w} ${f}`, c.expr?.[f]);
       out[f] = r.value;
       if (r.expr) expr[f] = r.expr;
     }
@@ -213,7 +236,7 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
       const shape = { ...c.shape };
       for (const f of ['innerD', 'wall'] as const) {
         if (shape[f] === undefined) continue;
-        const r = num(shape[f], `${w} shape.${f}`);
+        const r = num(shape[f], `${w} shape.${f}`, c.expr?.[f]);
         shape[f] = r.value;
         if (r.expr !== null) expr[f] = r.expr;
       }
@@ -227,14 +250,15 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
         const hw = `${w} holes[${i}]`;
         const hole: Hole = { ...h };
         const he: NonNullable<ComponentExpr['holes']>[number] = {};
-        const d = num(h.d, `${hw}.d`);
+        const prior = c.expr?.holes?.[i];
+        const d = num(h.d, `${hw}.d`, prior?.d);
         hole.d = d.value;
         if (d.expr !== null) he.d = d.expr;
-        const at = vec(h.at, `${hw}.at`);
+        const at = vec(h.at, `${hw}.at`, prior?.at);
         hole.at = at.value;
         if (at.expr) he.at = at.expr;
         if (h.depth !== undefined) {
-          const dp = num(h.depth, `${hw}.depth`);
+          const dp = num(h.depth, `${hw}.depth`, prior?.depth);
           hole.depth = dp.value;
           if (dp.expr !== null) he.depth = dp.expr;
         }
