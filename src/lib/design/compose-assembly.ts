@@ -321,6 +321,7 @@ function positionTokens(
   spec: AssemblySpec,
   mode: 'assign' | 'inline',
   params: string[],
+  notesAttached?: Set<string>,
 ): [string, string, string] {
   const specComp = spec.components?.find((item) => item.name === c.name);
   const note = specComp?.positionNote?.replace(/\s+/g, ' ').trim();
@@ -336,7 +337,10 @@ function positionTokens(
     const pname = `${c.name}_pos_${axis}`;
     if (isDeclared(pname) || rhs === pname) return rhs;
     const comment = note && !noteUsed && c.position[i] !== 0 ? `   // ${note}` : '';
-    if (c.position[i] !== 0) noteUsed = true;
+    if (c.position[i] !== 0) {
+      if (note && !noteUsed) notesAttached?.add(c.name);
+      noteUsed = true;
+    }
     params.push(`${pname} = ${rhs};${comment}`);
     return pname;
   }) as [string, string, string];
@@ -428,9 +432,10 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
   const calls: string[] = [];
   const reportNotes: string[] = [];
 
+  const notesAttached = new Set<string>();
   const posExprs = new Map<string, [string, string, string]>();
   for (const c of components) {
-    posExprs.set(c.name, positionTokens(c, spec, 'assign', params));
+    posExprs.set(c.name, positionTokens(c, spec, 'assign', params, notesAttached));
   }
 
   const allCuts = matingCuts(spec, (a, b) => {
@@ -441,7 +446,7 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
     const note = noteFor.get(c.name);
     const posExpr = posExprs.get(c.name)!;
 
-    if (note && !posExpr.some((p) => p !== '0')) calls.push(`    // ${c.name}: ${note}`);
+    if (note && !notesAttached.has(c.name)) calls.push(`    // ${c.name}: ${note}`);
 
     // Gussets the spec prescribes are generated here and unioned onto the
     // module in a wrapper, so the Drafter never has to place one.

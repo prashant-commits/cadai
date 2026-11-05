@@ -27,11 +27,11 @@ const OPENSCAD_RESERVED = new Set([
   // 3D and 2D shapes
   'cube', 'sphere', 'cylinder', 'polyhedron', 'square', 'circle', 'polygon', 'text', 'import', 'surface', 'render',
   // Transformations & CSG
-  'translate', 'rotate', 'scale', 'resize', 'mirror', 'multmatrix', 'color', 'offset', 'hull', 'minkowski',
+  'translate', 'rotate', 'scale', 'resize', 'mirror', 'multmatrix', 'color', 'hull', 'minkowski',
   'union', 'difference', 'intersection', 'linear_extrude', 'rotate_extrude', 'projection',
   // Built-in functions & special operations
   'children', 'echo', 'assert', 'len', 'abs', 'sign', 'sin', 'cos', 'tan', 'acos', 'asin', 'atan', 'atan2',
-  'floor', 'round', 'ceil', 'ln', 'log', 'exp', 'sqrt', 'min', 'max', 'pow', 'norm', 'cross', 'concat',
+  'ceil', 'ln', 'log', 'exp', 'sqrt', 'min', 'max', 'pow', 'norm', 'cross', 'concat',
   'lookup', 'str', 'chr', 'search', 'version', 'version_num', 'parent_module',
 ]);
 
