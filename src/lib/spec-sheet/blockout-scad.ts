@@ -59,7 +59,29 @@ export function identifierIssue(name: string): string | null {
   return null;
 }
 
+/**
+ * Indented body of one blockout module: no `module` header and no closing brace.
+ * Null when the part is unknown or `blockoutScad` would not draw it.
+ */
+export function blockoutBody(spec: AssemblySpec, name: string): string | null {
+  const comp = (spec.components ?? []).find((item) => item.name === name);
+  if (!comp) return null;
+  if (identifierIssue(comp.name)) return null;
+  const decision = classifyComponent(comp);
+  if (decision.kind === 'omit') return null;
+  const ext = comp.localExtents;
+  if (!ext || ext.length < 3) return null;
+  const placeholder = decision.kind === 'box' ? decision.reason : null;
+  return moduleBodyLines(comp, ext[0], ext[1], ext[2], placeholder).join('\n');
+}
+
 function moduleLines(comp: Component, ex: number, ey: number, ez: number, placeholderReason: string | null): string[] {
+  const name = comp.name;
+  const header = /\d/.test(name) ? `module ${name}() { // local module ${name}` : `module ${name}() {`;
+  return [header, ...moduleBodyLines(comp, ex, ey, ez, placeholderReason), '}'];
+}
+
+function moduleBodyLines(comp: Component, ex: number, ey: number, ez: number, placeholderReason: string | null): string[] {
   const name = comp.name;
   let body = shapeBody(comp, ex, ey, ez, placeholderReason !== null);
   const cutters = (comp.holes ?? [])
@@ -73,11 +95,10 @@ function moduleLines(comp: Component, ex: number, ey: number, ez: number, placeh
       '}',
     ];
   }
-  const header = /\d/.test(name) ? `module ${name}() { // local module ${name}` : `module ${name}() {`;
   const marked = placeholderReason
     ? [`// PLACEHOLDER: ${placeholderReason} - build from the skeleton`, ...body]
     : body;
-  return [header, ...indent(marked, 4), '}'];
+  return indent(marked, 4);
 }
 
 
