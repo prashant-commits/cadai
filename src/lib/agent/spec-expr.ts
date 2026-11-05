@@ -74,6 +74,11 @@ const FUNCS: Record<string, { min: number; max: number; fn: (a: number[]) => num
   min: { min: 1, max: Infinity, fn: (a) => Math.min(...a) },
   max: { min: 1, max: Infinity, fn: (a) => Math.max(...a) },
   sqrt: { min: 1, max: 1, fn: (a) => Math.sqrt(a[0]) },
+  abs: { min: 1, max: 1, fn: (a) => Math.abs(a[0]) },
+  // Degrees, as in OpenSCAD, so a derived expression means the same in the emitted script.
+  sin: { min: 1, max: 1, fn: (a) => Math.sin((a[0] * Math.PI) / 180) },
+  cos: { min: 1, max: 1, fn: (a) => Math.cos((a[0] * Math.PI) / 180) },
+  tan: { min: 1, max: 1, fn: (a) => Math.tan((a[0] * Math.PI) / 180) },
 };
 
 /**

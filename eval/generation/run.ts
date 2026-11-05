@@ -176,6 +176,8 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
     spec: state.assemblySpec ?? null,
   });
   const m = metricsFromState(item.id, args.model, state, Date.now() - t0, specGate, visual);
+  // The final script beside the results, so a failing audit can be diagnosed without a re-run.
+  if (state.currentCode) fs.writeFileSync(jsonl.replace(/\.jsonl$/, `-${item.id}.scad`), state.currentCode);
   console.log(`${item.id}: composed=${m.composed} floor=${m.floorOk} floating=${m.floatingCount} localFrame=${m.localFrameOk} errors=[${m.errorKinds.join(',')}] visual=${m.visualMatch} findings=${m.visualFindings} ${m.wallMs} ms`);
   // Written per prompt so a killed run keeps what it finished.
   fs.appendFileSync(jsonl, JSON.stringify(m) + '\n');

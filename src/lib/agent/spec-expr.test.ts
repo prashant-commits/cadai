@@ -192,3 +192,12 @@ describe('resolveSpec tolerates capitalised names and blank optional fields (P0b
     expect(errors.join('\n')).toMatch(/"Max" is not a valid name/);
   });
 });
+
+describe('trig in degrees, as in OpenSCAD', () => {
+  it('evaluates sin, cos, tan and abs', () => {
+    expect(evalExpr('100*sin(30)', {})).toBeCloseTo(50, 9);
+    expect(evalExpr('cos(lean)', { lean: 60 })).toBeCloseTo(0.5, 9);
+    expect(evalExpr('tan(45)', {})).toBeCloseTo(1, 9);
+    expect(evalExpr('abs(0 - 4)', {})).toBe(4);
+  });
+});
