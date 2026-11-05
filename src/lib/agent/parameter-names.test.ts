@@ -38,3 +38,24 @@ describe('Task 2 follow-up (review M1, M2, L1)', () => {
     }
   });
 });
+
+describe('Task 2 follow-up, round 2', () => {
+  it('keeps the derivation comment when a placement expression is inlined', () => {
+    const spec = resolveSpec({ ...base,
+      parameters: [{ name: 'lid_pos_z', value: 10, min: 0, max: 20, unit: 'mm', description: 'lid height' }],
+      components: [
+        { name: 'body', description: 'b', localExtents: [40, 30, 10], position: [0, 0, 0], shape: { kind: 'box' } },
+        { name: 'lid', description: 'l', localExtents: [40, 30, 2], position: [0, 0, 'lid_pos_z'], positionNote: 'z = top of body', shape: { kind: 'box' } },
+      ] } as unknown as AssemblySpec).spec;
+    const code = composeAssembly(blockoutScad(spec).code, spec).code;
+    expect(code).toContain('z = top of body');
+  });
+
+  it('accepts floor, offset and round as names (OpenSCAD allows them as variables)', () => {
+    for (const name of ['floor', 'offset', 'round']) {
+      const { errors } = resolveSpec({ ...base, parameters: [{ name, value: 1, min: 0, max: 2, unit: 'mm', description: 'x' }], components: [] } as unknown as AssemblySpec);
+      expect(errors, name).toEqual([]);
+    }
+  });
+});
+
