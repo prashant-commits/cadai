@@ -12,8 +12,15 @@
 
 export const EXPLABS_BASE_URL = 'https://api.experientiallabs.ai/v1';
 
-/** Multimodal model used for all nodes (architect, drafter, critic). */
-export const DEFAULT_MODEL = 'gpt-5.6-luna';
+/**
+ * Multimodal model used for all nodes (architect, drafter, critic).
+ *
+ * claude-haiku-5.5 since 2026-11-05: in the Architect eval (24 prompts x 5
+ * samples) it was 95-98% audit-clean against 81% for gpt-5.6-luna, at a
+ * fraction of Sonnet's and Opus's cost. Verified on the gateway with images
+ * and with the default 0.2 temperature.
+ */
+export const DEFAULT_MODEL = 'claude-haiku-5.5';
 
 /**
  * What the model picker offers, and the set a persisted thread's slug is
@@ -29,7 +36,8 @@ export const DEFAULT_MODEL = 'gpt-5.6-luna';
  * tokens, about 10x gpt-5.6-luna, hence the "(paid)" label and the unchanged default.
  */
 export const GATEWAY_MODELS = [
-  { slug: 'gpt-5.6-luna', label: 'GPT-5.6 Luna - Recommended' },
+  { slug: 'claude-haiku-5.5', label: 'Claude Haiku 5.5 - Recommended' },
+  { slug: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
   { slug: 'gpt-6-luna', label: 'GPT-6 Luna' },
   { slug: 'gpt-6-sol', label: 'GPT-6 Sol - higher quality (paid)' },
   // Vision verified on 2026-10-08; its route only accepts temperature 1 (see FIXED_TEMPERATURE).

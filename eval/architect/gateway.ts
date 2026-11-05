@@ -37,13 +37,14 @@ import { ChatOpenAI } from '@langchain/openai';
 import { DEFAULT_TEMPERATURE, getChatModel } from '@/lib/agent/model-provider';
 import { structuredFor, ArchitectPlanSchema } from '@/lib/agent/llm-schemas';
 import { variantSpecRequestSchema } from '@/lib/agent/assembly-spec';
-import { systemPromptFor } from '@/lib/agent/system-prompt';
 import { EXPLABS_BASE_URL } from '@/lib/agent/models';
 import type { Outcome } from './parse';
 
 export interface GatewayJob {
   id: string;
   node: 'planner' | 'variant';
+  /** The node's system prompt, arm block included. */
+  system: string;
   /** The user request, then (variants only) the fresh variant prompt - the graph's message order. */
   prompt: string;
   variantText?: string;
@@ -83,7 +84,7 @@ function usdFor(pricing: Pricing | null, usage: UsageMetadata | undefined): numb
 }
 
 function messagesFor(job: GatewayJob): BaseMessage[] {
-  const msgs: BaseMessage[] = [new SystemMessage(systemPromptFor(job.node)), new HumanMessage(job.prompt)];
+  const msgs: BaseMessage[] = [new SystemMessage(job.system), new HumanMessage(job.prompt)];
   if (job.variantText) msgs.push(new HumanMessage(job.variantText));
   return msgs;
 }

@@ -49,11 +49,10 @@ import { auditFixture } from '../placement/harness';
 import { costUsd, summarize, type PromptScore, type VariantScore } from './score';
 import { parsePlan, parseSpec, SPEC_TOOL, type Outcome } from './parse';
 import { gatewayPricing, runGatewayRound } from './gateway';
+import { armSystemPrompt } from './arms';
 
 const RESULTS_DIR = path.join(__dirname, '..', 'results');
-const PROMPTS: { id: string; prompt: string }[] = JSON.parse(
-  fs.readFileSync(path.join(__dirname, '..', 'generation', 'prompts.json'), 'utf8')
-);
+const DEFAULT_PROMPTS = path.join(__dirname, '..', 'generation', 'prompts.json');
 const POLL_MS = 30_000;
 // Thinking counts against max_tokens. A variant spec plus its sheet is the
 // longest reply in the graph; batch requests have no HTTP timeout to respect.
@@ -72,11 +71,15 @@ interface Args {
   /** anthropic: Anthropic API directly (batch by default). gateway: Experiential Labs, any family, sync. google: AI Studio key, sync. */
   provider: 'anthropic' | 'gateway' | 'google';
   concurrency: number;
+  /** A prompt arm from arms.ts appended to the planner and variant system prompts; a0 = the product prompt. */
+  arm: string;
+  /** Prompt set file; defaults to eval/generation/prompts.json. */
+  prompts: string;
 }
 
 function parseArgs(argv: string[]): Args {
   // Effort is set explicitly: Opus 5.5 and Haiku 5.5 default to medium, Sonnet 5.5 to high.
-  const a: Args = { model: 'claude-haiku-5-5', tag: 'run', samples: 1, limit: Infinity, only: [], effort: 'high', sync: false, provider: 'anthropic', concurrency: 6 };
+  const a: Args = { model: 'claude-haiku-5-5', tag: 'run', samples: 1, limit: Infinity, only: [], effort: 'high', sync: false, provider: 'anthropic', concurrency: 6, arm: 'a0', prompts: DEFAULT_PROMPTS };
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i];
     if (v === '--model') a.model = argv[++i];
@@ -88,6 +91,8 @@ function parseArgs(argv: string[]): Args {
     else if (v === '--sync') a.sync = true;
     else if (v === '--provider') a.provider = argv[++i] as Args['provider'];
     else if (v === '--concurrency') a.concurrency = Number(argv[++i]);
+    else if (v === '--arm') a.arm = argv[++i];
+    else if (v === '--prompts') a.prompts = path.resolve(argv[++i]);
     else throw new Error(`unknown flag ${v}`);
   }
   if (!Number.isInteger(a.samples) || a.samples < 1) throw new Error('--samples must be a positive integer');
@@ -100,8 +105,8 @@ type Request = Anthropic.Messages.BatchCreateParams.Request;
  * The cached prefix is the system prompt, which is identical across every
  * request in a round. Nothing volatile goes in it.
  */
-function systemBlocks(node: 'planner' | 'variant'): Anthropic.TextBlockParam[] {
-  return [{ type: 'text', text: systemPromptFor(node), cache_control: { type: 'ephemeral' } }];
+function systemBlocks(node: 'planner' | 'variant', arm: string): Anthropic.TextBlockParam[] {
+  return [{ type: 'text', text: armSystemPrompt(systemPromptFor(node), arm, node), cache_control: { type: 'ephemeral' } }];
 }
 
 function plannerSchema(): Record<string, unknown> {
@@ -115,7 +120,7 @@ function plannerRequest(args: Args, id: string, prompt: string): Request {
     params: {
       model: args.model,
       max_tokens: MAX_TOKENS,
-      system: systemBlocks('planner'),
+      system: systemBlocks('planner', args.arm),
       messages: [{ role: 'user', content: prompt }],
       output_config: { effort: args.effort, format: { type: 'json_schema', schema: plannerSchema() } },
     },
@@ -134,7 +139,7 @@ function variantRequest(args: Args, id: string, prompt: string, text: string): R
     params: {
       model: args.model,
       max_tokens: MAX_TOKENS,
-      system: systemBlocks('variant'),
+      system: systemBlocks('variant', args.arm),
       tools: [{
         name: SPEC_TOOL,
         description: 'Emit the Assembly Spec for this variant.',
@@ -243,7 +248,8 @@ async function main() {
   // A key not scoped to a workspace must name one on every request; the SDK does not read this variable itself.
   const workspace = process.env.ANTHROPIC_WORKSPACE_ID;
   const client = new Anthropic(workspace ? { defaultHeaders: { 'anthropic-workspace-id': workspace } } : {});
-  const items = PROMPTS.filter((p) => args.only.length === 0 || args.only.includes(p.id)).slice(0, args.limit);
+  const prompts: { id: string; prompt: string }[] = JSON.parse(fs.readFileSync(args.prompts, 'utf8'));
+  const items = prompts.filter((p) => args.only.length === 0 || args.only.includes(p.id)).slice(0, args.limit);
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
   const stateFile = path.join(RESULTS_DIR, `.architect-${args.tag}-${args.model}.state.json`);
   const gateway = args.provider !== 'anthropic';
@@ -257,7 +263,7 @@ async function main() {
   const jobs = items.flatMap((item) => Array.from({ length: args.samples }, (_, s) => ({ item, sample: s, key: `${item.id}-s${s}` })));
 
   const plans = gateway
-    ? await runGatewayRound(route, args.model, jobs.map((j) => ({ id: `${j.key}-plan`, node: 'planner' as const, prompt: j.item.prompt })), pricing, args.concurrency)
+    ? await runGatewayRound(route, args.model, jobs.map((j) => ({ id: `${j.key}-plan`, node: 'planner' as const, system: armSystemPrompt(systemPromptFor('planner'), args.arm, 'planner'), prompt: j.item.prompt })), pricing, args.concurrency)
     : await runRound(client, 'plan', jobs.map((j) => plannerRequest(args, `${j.key}-plan`, j.item.prompt)), args, stateFile);
 
   const promptScores: PromptScore[] = [];
@@ -274,7 +280,7 @@ async function main() {
   }
 
   const specs = gateway
-    ? await runGatewayRound(route, args.model, variantJobs.map((v) => ({ id: v.req.custom_id, node: 'variant' as const, prompt: v.job.item.prompt, variantText: v.text })), pricing, args.concurrency)
+    ? await runGatewayRound(route, args.model, variantJobs.map((v) => ({ id: v.req.custom_id, node: 'variant' as const, system: armSystemPrompt(systemPromptFor('variant'), args.arm, 'variant'), prompt: v.job.item.prompt, variantText: v.text })), pricing, args.concurrency)
     : await runRound(client, 'variant', variantJobs.map((v) => v.req), args, stateFile);
 
   const variantScores: VariantScore[] = [];

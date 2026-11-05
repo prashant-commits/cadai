@@ -35,7 +35,7 @@ describe('getChatModel', () => {
 
   it('defaults to the multimodal model', () => {
     expect(getChatModel().model).toBe(DEFAULT_MODEL);
-    expect(DEFAULT_MODEL).toBe('gpt-5.6-luna');
+    expect(DEFAULT_MODEL).toBe('claude-haiku-5.5');
   });
 
   it('lets CADAI_MODEL override the default without touching the picker', () => {
@@ -58,13 +58,15 @@ describe('getChatModel', () => {
 });
 
 describe('model catalogue', () => {
-  it('offers gpt-6-sol as a vision model while the default stays gpt-5.6-luna', async () => {
+  it('offers gpt-6-sol as a vision model and defaults to claude-haiku-5.5', async () => {
     const { GATEWAY_MODELS, isVisionModel, DEFAULT_MODEL } = await import('./models');
-    expect(GATEWAY_MODELS.map((m) => m.slug)).toEqual(['gpt-5.6-luna', 'gpt-6-luna', 'gpt-6-sol', 'claude-opus-5.5']);
-    expect(GATEWAY_MODELS[2].label).toBe('GPT-6 Sol - higher quality (paid)');
-    expect(GATEWAY_MODELS[3].label).toBe('Claude Opus 5.5 - highest quality (paid)');
+    expect(GATEWAY_MODELS.map((m) => m.slug)).toEqual(['claude-haiku-5.5', 'gpt-5.6-luna', 'gpt-6-luna', 'gpt-6-sol', 'claude-opus-5.5']);
+    expect(GATEWAY_MODELS[0].label).toBe('Claude Haiku 5.5 - Recommended');
+    expect(GATEWAY_MODELS[3].label).toBe('GPT-6 Sol - higher quality (paid)');
+    expect(GATEWAY_MODELS[4].label).toBe('Claude Opus 5.5 - highest quality (paid)');
     expect(isVisionModel('claude-opus-5.5')).toBe(true);
     expect(isVisionModel('gpt-6-sol')).toBe(true);
-    expect(DEFAULT_MODEL).toBe('gpt-5.6-luna');
+    expect(isVisionModel('claude-haiku-5.5')).toBe(true);
+    expect(DEFAULT_MODEL).toBe('claude-haiku-5.5');
   });
 });

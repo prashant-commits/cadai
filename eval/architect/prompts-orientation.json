@@ -1,0 +1,16 @@
+[
+  { "id": "toothbrush_holder_wall", "prompt": "A wall-mounted toothbrush holder: a backplate 80 x 120 mm with two screw holes, and a shelf sticking out from it with three 18 mm holes that the toothbrushes drop into, handles down." },
+  { "id": "bottle_holder_wall", "prompt": "A wall-mounted water bottle holder: a backplate with two screw holes and a 75 mm inner-diameter ring that the bottle drops into from above, with a small floor under the ring for the bottle to rest on." },
+  { "id": "knife_block", "prompt": "A knife block: a solid block 100 x 80 mm and 150 mm tall standing on the counter, with three slots 2 x 30 mm open at the top that the knives drop into, blade first." },
+  { "id": "umbrella_stand", "prompt": "An umbrella stand: an open-top tube 250 mm in outer diameter and 500 mm tall, standing on a round base 300 mm in diameter." },
+  { "id": "headphone_hook_underdesk", "prompt": "An under-desk headphone hook: a flat mounting plate 60 x 40 mm with two screw holes that screws to the underside of a desk, and an arm that hangs down 50 mm from it and then turns out horizontally 40 mm to hold the headband." },
+  { "id": "mug_tree", "prompt": "A mug tree: a round base 150 mm in diameter, a vertical post 250 mm tall in its centre, and four pegs sticking out from the post at 30 degrees above horizontal for mugs to hang on." },
+  { "id": "bike_hook_wall", "prompt": "A wall-mounted bike hook: a backplate 80 x 150 mm with three screw holes, and a hook arm sticking out 120 mm horizontally from the wall with an upturned tip 30 mm high so the wheel cannot slide off." },
+  { "id": "plant_ring_wall", "prompt": "A wall-mounted plant pot ring: a backplate with two screw holes and a 120 mm inner-diameter ring, held 60 mm off the wall by an arm, that a pot drops into from above." },
+  { "id": "tablet_dock", "prompt": "A desk tablet dock: a base 120 x 90 mm lying on the desk, a back support leaning back at 70 degrees from horizontal, and a front lip 10 mm high so the tablet stands on its edge between them." },
+  { "id": "screwdriver_rack_wall", "prompt": "A wall-mounted screwdriver rack: a backplate 200 x 60 mm with two screw holes, and a shelf 30 mm deep sticking out from it with six 10 mm holes the screwdrivers drop into, tip first." },
+  { "id": "desk_cup_holder", "prompt": "A clamp-on desk cup holder: a C-shaped clamp that grips a desk edge up to 30 mm thick, and an open-top cup of 80 mm inner diameter beside it that a drink drops into." },
+  { "id": "key_rack_wall", "prompt": "A wall key rack: a backplate 150 x 50 mm with two screw holes and four hooks that stick out horizontally 25 mm from it and turn up at the end." },
+  { "id": "hair_dryer_dropin", "prompt": "A wall-mounted hair dryer holster: a backplate with two screw holes and a 90 mm inner-diameter ring that the dryer drops into from above, nozzle down." },
+  { "id": "hair_dryer_nocup", "prompt": "A wall-mounted hair dryer holder: a backplate with two screw holes and a ring of 90 mm inner diameter attached to it." }
+]

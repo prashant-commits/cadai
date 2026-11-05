@@ -1,0 +1,90 @@
+{
+  "_about": "Intent labels for the orientation-sensitive prompt set (prompts-orientation.json), same conventions and checker as intent-labels.json. Every prompt here states its in-use orientation in the request text, so each fact is STATED unless marked interpretation. Drafted by Claude for the 2026-11-05 round; the user has not reviewed these yet.",
+  "status": "DRAFT - not yet reviewed by the user",
+  "prompts": {
+    "toothbrush_holder_wall": [
+      { "says": "The backplate stands upright against the wall", "check": { "type": "count", "role": "back ?plate|wall ?plate|mount", "min": 1, "max": 1, "thin": "horizontal" } },
+      { "says": "Two screw holes through the backplate", "check": { "type": "holes", "role": "back ?plate|wall ?plate|mount", "min": 2, "alongThin": true } },
+      { "says": "The shelf lies flat, sticking out from the plate", "check": { "type": "count", "role": "shelf|ledge|tray", "min": 1, "max": 1, "thin": "vertical" } },
+      { "says": "Three holes run down through the shelf so the brushes drop in", "check": { "type": "holes", "role": "shelf|ledge|tray", "min": 3, "alongThin": true } }
+    ],
+    "bottle_holder_wall": [
+      { "says": "The backplate stands upright against the wall", "check": { "type": "count", "role": "back ?plate|wall ?plate|mount", "min": 1, "max": 1, "thin": "horizontal" } },
+      { "says": "Two screw holes through the backplate", "check": { "type": "holes", "role": "back ?plate|wall ?plate|mount", "min": 2, "alongThin": true } },
+      { "says": "The ring's inner diameter is 75 mm", "check": { "type": "size", "role": "ring|cup|cage", "measure": "innerD", "value": 75, "tol": 1 } },
+      { "says": "The ring opens upward so the bottle drops in from above", "check": { "type": "opensUp", "role": "ring|cup|cage" } },
+      { "says": "A floor under the ring for the bottle to rest on", "check": { "type": "exists", "role": "floor|base|bottom|seat|ledge" } }
+    ],
+    "knife_block": [
+      { "says": "The block is 100 x 80 mm in plan and 150 mm tall, standing on the counter", "check": { "type": "size", "role": "block|body", "measure": "extents", "footprint": [100, 80], "height": 150, "tol": 1, "onPlate": true } },
+      { "says": "Three slots open at the top, running down into the block", "check": null }
+    ],
+    "umbrella_stand": [
+      { "says": "One tube stands on end, open at the top", "check": { "type": "opensUp", "role": "tube|body|shell|cylinder" } },
+      { "says": "The tube is 250 mm across and 500 mm tall", "check": { "type": "axis", "role": "tube|body|shell|cylinder", "axis": "vertical", "length": 500, "tol": 2 } },
+      { "says": "The round base is 300 mm across and lies on the floor", "check": { "type": "size", "role": "base|foot|disc|disk", "measure": "footprint", "value": [300, 300], "tol": 2, "thin": "vertical", "onPlate": true } },
+      { "says": "The tube stands on the base, inside its footprint", "check": { "type": "touches", "a": "tube|body|shell|cylinder", "b": "base|foot|disc|disk", "side": "above", "within": true } }
+    ],
+    "headphone_hook_underdesk": [
+      { "says": "The mounting plate is flat, 60 x 40 mm, with its face up against the desk", "check": { "type": "size", "role": "plate|mount", "measure": "footprint", "value": [60, 40], "tol": 1, "thin": "vertical" } },
+      { "says": "Two screw holes go up through the plate into the desk", "check": { "type": "holes", "role": "plate|mount", "min": 2, "alongThin": true } },
+      { "says": "The plate is at the top: the arm hangs down from it", "check": { "type": "atTop", "role": "plate|mount", "of": "arm|hook|stem|drop" } },
+      { "says": "The arm turns out horizontally at the bottom to hold the headband", "check": null }
+    ],
+    "mug_tree": [
+      { "says": "The round base is 150 mm across and lies flat on the table", "check": { "type": "size", "role": "base|foot", "measure": "footprint", "value": [150, 150], "tol": 1, "thin": "vertical", "onPlate": true } },
+      { "says": "The post is vertical and 250 mm tall", "check": { "type": "axis", "role": "post|pole|column|mast", "axis": "vertical", "length": 250, "tol": 2 } },
+      { "says": "Four pegs", "check": { "type": "count", "role": "peg|arm|branch", "min": 4, "max": 4 } },
+      { "says": "The pegs point 30 degrees above horizontal", "check": { "type": "axisAngle", "role": "peg|arm|branch", "degFromHorizontal": 30, "tol": 5 } }
+    ],
+    "bike_hook_wall": [
+      { "says": "The 80 x 150 mm backplate stands upright against the wall", "check": { "type": "count", "role": "back ?plate|wall ?plate|mount", "min": 1, "max": 1, "thin": "horizontal" } },
+      { "says": "Three screw holes through the backplate", "check": { "type": "holes", "role": "back ?plate|wall ?plate|mount", "min": 3, "alongThin": true } },
+      { "says": "The arm sticks out 120 mm horizontally, in front of the plate", "check": { "type": "attachedOffset", "a": "arm|hook", "b": "back ?plate|wall ?plate|mount", "direction": "plateOutwardNormal" } },
+      { "says": "An upturned tip at the end of the arm", "check": { "type": "exists", "role": "tip|lip|stop|upturn|end" } }
+    ],
+    "plant_ring_wall": [
+      { "says": "The backplate stands upright against the wall", "check": { "type": "count", "role": "back ?plate|wall ?plate|mount", "min": 1, "max": 1, "thin": "horizontal" } },
+      { "says": "Two screw holes through the backplate", "check": { "type": "holes", "role": "back ?plate|wall ?plate|mount", "min": 2, "alongThin": true } },
+      { "says": "The ring's inner diameter is 120 mm", "check": { "type": "size", "role": "ring|cup|holder", "measure": "innerD", "value": 120, "tol": 1 } },
+      { "says": "The ring opens upward so the pot drops in from above", "check": { "type": "opensUp", "role": "ring|cup|holder" } },
+      { "says": "An arm holds the ring off the wall", "check": { "type": "exists", "role": "arm|bracket|strut|stand.?off" } }
+    ],
+    "tablet_dock": [
+      { "says": "The base is 120 x 90 mm and lies flat on the desk", "check": { "type": "size", "role": "base", "measure": "footprint", "value": [120, 90], "tol": 1, "thin": "vertical", "onPlate": true } },
+      { "says": "The back support leans back at 70 degrees from horizontal", "check": { "type": "angle", "role": "back|support|rest", "degFromHorizontal": 70, "tol": 3 } },
+      { "says": "A front lip stops the tablet sliding off", "check": { "type": "exists", "role": "lip|ledge|stop|front" } }
+    ],
+    "screwdriver_rack_wall": [
+      { "says": "The 200 x 60 mm backplate stands upright against the wall", "check": { "type": "count", "role": "back ?plate|wall ?plate|mount", "min": 1, "max": 1, "thin": "horizontal" } },
+      { "says": "Two screw holes through the backplate", "check": { "type": "holes", "role": "back ?plate|wall ?plate|mount", "min": 2, "alongThin": true } },
+      { "says": "The shelf lies flat, sticking out from the plate", "check": { "type": "count", "role": "shelf|ledge|tray", "min": 1, "max": 1, "thin": "vertical" } },
+      { "says": "Six holes run down through the shelf so the screwdrivers drop in", "check": { "type": "holes", "role": "shelf|ledge|tray", "min": 6, "alongThin": true } }
+    ],
+    "desk_cup_holder": [
+      { "says": "The cup's inner diameter is 80 mm", "check": { "type": "size", "role": "cup|holder|ring|basket", "measure": "innerD", "value": 80, "tol": 1 } },
+      { "says": "The cup opens upward so the drink drops in", "check": { "type": "opensUp", "role": "cup|holder|ring|basket" } },
+      { "says": "A C-shaped clamp grips the desk edge", "check": { "type": "exists", "role": "clamp|jaw|c.?shape" } }
+    ],
+    "key_rack_wall": [
+      { "says": "The 150 x 50 mm backplate stands upright against the wall", "check": { "type": "count", "role": "back ?plate|wall ?plate|mount", "min": 1, "max": 1, "thin": "horizontal" } },
+      { "says": "Two screw holes through the backplate", "check": { "type": "holes", "role": "back ?plate|wall ?plate|mount", "min": 2, "alongThin": true } },
+      { "says": "Four hooks", "check": { "type": "count", "role": "hook|peg", "min": 4, "max": 8 } },
+      { "says": "The hooks stick out in front of the plate", "check": { "type": "attachedOffset", "a": "hook|peg", "b": "back ?plate|wall ?plate|mount", "direction": "plateOutwardNormal" } }
+    ],
+    "hair_dryer_dropin": [
+      { "says": "The backplate stands upright, flat against a wall", "check": { "type": "count", "role": "back ?plate|wall ?plate|mount", "min": 1, "max": 1, "thin": "horizontal" } },
+      { "says": "At least two screw holes pass through the backplate's thickness", "check": { "type": "holes", "role": "back ?plate|wall ?plate|mount", "min": 2, "alongThin": true } },
+      { "says": "The ring's inner diameter is 90 mm", "check": { "type": "size", "role": "ring|cup|holster", "measure": "innerD", "value": 90, "tol": 1 } },
+      { "says": "The ring's axis is vertical (stated: the dryer drops in from above)", "check": { "type": "axis", "role": "ring|cup|holster", "axis": "vertical", "tiltTolDeg": 30 } },
+      { "says": "The ring sits in front of the backplate and is attached to it", "check": { "type": "attachedOffset", "a": "ring|cup|holster", "b": "back ?plate|wall ?plate|mount", "direction": "plateOutwardNormal" } }
+    ],
+    "hair_dryer_nocup": [
+      { "says": "The backplate stands upright, flat against a wall", "check": { "type": "count", "role": "back ?plate|wall ?plate|mount", "min": 1, "max": 1, "thin": "horizontal" } },
+      { "says": "At least two screw holes pass through the backplate's thickness", "check": { "type": "holes", "role": "back ?plate|wall ?plate|mount", "min": 2, "alongThin": true } },
+      { "says": "The ring's inner diameter is 90 mm", "check": { "type": "size", "role": "ring|holder", "measure": "innerD", "value": 90, "tol": 1 } },
+      { "says": "The ring's axis is vertical, so the dryer drops in from above (the request does not say)", "reading": "interpretation", "check": { "type": "axis", "role": "ring|holder", "axis": "vertical", "tiltTolDeg": 30 } },
+      { "says": "The ring sits in front of the backplate and is attached to it", "check": { "type": "attachedOffset", "a": "ring|holder", "b": "back ?plate|wall ?plate|mount", "direction": "plateOutwardNormal" } }
+    ]
+  }
+}
