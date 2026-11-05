@@ -59,11 +59,11 @@ function script(builds: string[], variants = 1) {
   });
 }
 
-async function drive(key: string, before?: () => void) {
+async function drive(key: string, before?: (first: unknown) => void) {
   const agent = createCadAgent('gpt-6-sol');
   const config = { configurable: { thread_id: key }, recursionLimit: 200 };
   let result = await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
-  before?.();
+  before?.(result);
   for (let i = 0; i < 10 && isInterrupted(result); i++) result = await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
   const state = (await agent.getState(config)).values as AgentStateType;
   const kinds = callMock.mock.calls.map((c) => kindOf(c[0]));
@@ -104,8 +104,11 @@ describe('CADAI_PIPELINE=architect', () => {
 
 describe('the pipeline is pinned per thread', () => {
   it('a thread started on the Drafter stays on it when the flag flips mid-run', async () => {
+    process.env.CADAI_MAX_VARIANTS = '2';
     script(['@body box\ncube([40, 40, 40]);\n@end'], 2); // two variants -> a spec gate pause
-    const { state, kinds } = await drive(newKey(), () => { process.env.CADAI_PIPELINE = 'architect'; });
+    let paused = false;
+    const { state, kinds } = await drive(newKey(), (first) => { paused = isInterrupted(first); process.env.CADAI_PIPELINE = 'architect'; });
+    expect(paused).toBe(true);
     expect(state.pipeline).toBe('drafter');
     expect(kinds).toContain('drafter');
     expect(kinds).not.toContain('build');
