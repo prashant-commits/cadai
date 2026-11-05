@@ -24,7 +24,7 @@ const FENCE_LINE = /^[ \t]*```/;
 type Piece =
   | { kind: 'gap' | 'empty' | 'special' | 'stmt'; start: number; end: number }
   | { kind: 'assignment'; start: number; end: number; name: string }
-  | { kind: 'module'; start: number; end: number; interiorStart: number; interiorEnd: number; paramsEmpty: boolean }
+  | { kind: 'module'; start: number; end: number; interiorStart: number; interiorEnd: number; paramsEmpty: boolean; name: string }
   | { kind: 'braced-transform'; start: number; end: number; interiorStart: number; interiorEnd: number };
 
 function isModule(piece: Piece): piece is Extract<Piece, { kind: 'module' }> {
@@ -108,8 +108,9 @@ export function parseBuild(text: string, componentNames: string[], reserved: str
 
     const name = directive.name;
     if (!closed) {
-      // A cut-off repeat must not discard a body we already accepted.
-      if (!known.has(name) || !Object.prototype.hasOwnProperty.call(bodies, name)) noteDropped(name);
+      // A cut-off repeat must not discard a body or a blockout request already accepted.
+      const kept = Object.prototype.hasOwnProperty.call(bodies, name) || keepBlockout.includes(name);
+      if (!known.has(name) || !kept) noteDropped(name);
       continue;
     }
     if (!known.has(name)) {
@@ -117,8 +118,9 @@ export function parseBuild(text: string, componentNames: string[], reserved: str
       continue;
     }
 
-    const cleaned = sanitizeBody(collected.join('\n'), reserved);
-    if (!isUsableBody(cleaned)) {
+    const raw = collected.join('\n');
+    const cleaned = sanitizeBody(raw, reserved);
+    if (!acceptsSection(raw, name, reserved) || !isUsableBody(cleaned)) {
       drop(name);
       continue;
     }
@@ -227,10 +229,37 @@ function remove(list: string[], name: string) {
   if (at >= 0) list.splice(at, 1);
 }
 
+/**
+ * After reserved assignments are stripped, a section is usable only as plain
+ * geometry, or as exactly one `module <part>() {}` plus `$fn` and assignment lines.
+ * Assignment-only text draws nothing, so it falls back to the blockout.
+ */
+function acceptsSection(raw: string, partName: string, reserved: string[]): boolean {
+  const stripped = stripReservedAssignments(raw, new Set(reserved)) ?? raw;
+  if (!containsModuleDef(stripped)) return hasGeometry(stripped);
+  const pieces = splitTop(stripped);
+  const modules = pieces.filter(isModule);
+  if (modules.length !== 1) return false;
+  const wrapped = modules[0];
+  if (!wrapped.paramsEmpty || wrapped.name !== partName) return false;
+  if (containsModuleDef(stripped.slice(wrapped.interiorStart, wrapped.interiorEnd))) return false;
+  for (const piece of pieces) {
+    if (piece === wrapped) continue;
+    if (piece.kind !== 'gap' && piece.kind !== 'empty' && piece.kind !== 'assignment' && piece.kind !== 'special') {
+      return false;
+    }
+  }
+  return hasGeometry(stripped.slice(wrapped.interiorStart, wrapped.interiorEnd));
+}
+
 /** A body that draws nothing, or that still defines a module, cannot be assembled. */
 function isUsableBody(src: string): boolean {
   if (containsModuleDef(src)) return false;
-  return splitTop(src).some((piece) => piece.kind === 'stmt' || piece.kind === 'braced-transform' || piece.kind === 'assignment');
+  return hasGeometry(src);
+}
+
+function hasGeometry(src: string): boolean {
+  return splitTop(src).some((piece) => piece.kind === 'stmt' || piece.kind === 'braced-transform');
 }
 
 function stripReservedAssignments(src: string, reserved: Set<string>): string | null {
@@ -250,11 +279,12 @@ function unwrapOneModule(src: string): string | null {
   if (modules.length !== 1 || !modules[0].paramsEmpty) return null;
   const wrapped = modules[0];
   if (containsModuleDef(src.slice(wrapped.interiorStart, wrapped.interiorEnd))) return null;
+  // Only `$fn`, assignments, and empty statements may sit beside the wrapper.
   for (const piece of pieces) {
     if (piece === wrapped || piece.kind === 'gap' || piece.kind === 'empty' || piece.kind === 'assignment' || piece.kind === 'special') {
       continue;
     }
-    if (containsModuleDef(src.slice(piece.start, piece.end))) return null;
+    return null;
   }
   return rebuild(src, pieces, wrapped, src.slice(wrapped.interiorStart, wrapped.interiorEnd));
 }
@@ -300,7 +330,7 @@ function scanStatement(src: string, start: number): Piece | null {
 }
 
 function scanModule(src: string, start: number): Piece | null {
-  const head = src.slice(start).match(/^module\s+[A-Za-z_][A-Za-z0-9_]*\s*\(/);
+  const head = src.slice(start).match(/^module\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
   if (!head) return null;
   const parenOpen = start + head[0].length - 1;
   const parenClose = matchClose(src, parenOpen, '(', ')');
@@ -319,6 +349,7 @@ function scanModule(src: string, start: number): Piece | null {
     interiorStart: braceOpen + 1,
     interiorEnd: braceClose,
     paramsEmpty: isOnlyTrivia(src.slice(parenOpen + 1, parenClose)),
+    name: head[1],
   };
 }
 
