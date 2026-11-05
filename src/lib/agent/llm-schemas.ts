@@ -458,10 +458,15 @@ export function recoverBledFields(input: Record<string, unknown>): Record<string
     const recovered = parseBled(field, value);
     if (!recovered) continue;
     for (const [key, v] of Object.entries(recovered)) {
-      if (key === field || !(key in out) || out[key] === undefined || out[key] === null) out[key] = v;
+      if (key === field || isUnset(out[key])) out[key] = v;
     }
   }
   return out;
+}
+
+/** Missing, null, or an empty placeholder ([] or "") that a recovered value may fill. */
+function isUnset(value: unknown): boolean {
+  return value === undefined || value === null || (Array.isArray(value) && value.length === 0) || (typeof value === 'string' && value.trim() === '');
 }
 
 function parseBled(field: string, text: string): Record<string, unknown> | null {
@@ -469,7 +474,9 @@ function parseBled(field: string, text: string): Record<string, unknown> | null 
   const markup = body
     .replace(/<\/parameters?>\s*<parameter name="([A-Za-z_][A-Za-z0-9_]*)">/g, ', "$1": ')
     .replace(/<\/parameters?>\s*$/, '');
-  const candidates = [body, body.replace(/}\s*$/, ''), markup, markup.replace(/}\s*$/, '')];
+  // The string may close the outer object itself, once or twice (`...]}` or `...]}}`).
+  const trims = (t: string) => [t, t.replace(/}\s*$/, ''), t.replace(/}\s*}\s*$/, '')];
+  const candidates = [...trims(body), ...trims(markup)];
   for (const candidate of candidates) {
     try {
       const parsed = JSON.parse(`{"${field}": ${candidate}}`);

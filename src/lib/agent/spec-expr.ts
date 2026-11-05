@@ -193,13 +193,20 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
   for (const name of rawNames) {
     if (NAME_RE.test(name)) continue;
     const lower = name.toLowerCase();
-    if (!NAME_RE.test(lower) || rawNames.includes(lower) || [...rename.values()].includes(lower)) continue;
+    // The lowercase form must be valid, not a keyword/built-in, and unique among all names.
+    if (!NAME_RE.test(lower) || OPENSCAD_RESERVED.has(lower) || Object.hasOwn(FUNCS, lower)) continue;
     if (rawNames.filter((n) => n.toLowerCase() === lower).length > 1) continue;
     rename.set(name, lower);
   }
   const canonName = (name: string) => rename.get(name) ?? name;
+  /** Renamed names, and capitalised calls of the grammar's functions (MAX(a, b) -> max(a, b)). */
   const canon = (src: string) =>
-    rename.size ? src.replace(/(?<![\w.])[A-Za-z_][A-Za-z0-9_]*/g, (tok) => rename.get(tok) ?? tok) : src;
+    src.replace(/(?<![\w.])[A-Za-z_][A-Za-z0-9_]*/g, (tok) => {
+      const renamed = rename.get(tok);
+      if (renamed) return renamed;
+      const lower = tok.toLowerCase();
+      return lower !== tok && Object.hasOwn(FUNCS, lower) ? lower : tok;
+    });
   /** An empty string in an optional numeric field means the model left it unset. */
   const blank = (v: unknown) => typeof v === 'string' && v.trim() === '';
 

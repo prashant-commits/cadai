@@ -179,4 +179,16 @@ describe('resolveSpec tolerates capitalised names and blank optional fields (P0b
     expect(spec.components![0].holes?.[0].depth).toBeUndefined();
     expect(spec.components![0].shape?.innerD).toBeUndefined();
   });
+
+  it('lowercases capitalised function calls, and never renames a name onto a built-in', () => {
+    const raw = {
+      ...base,
+      parameters: [param('A', 3), param('Max', 9)],
+      components: [{ name: 'p', description: '', localExtents: ['MAX(A, 5)', 'SQRT(16)', 'Min(A, 1)'], position: [0, 0, 0] }],
+    } as unknown as AssemblySpec;
+    const { spec, errors } = resolveSpec(raw);
+    expect(spec.components![0].localExtents).toEqual([5, 4, 1]);
+    expect(spec.parameters?.map((p) => p.name)).toEqual(['a', 'Max']); // "max" is a function: left as written, reported
+    expect(errors.join('\n')).toMatch(/"Max" is not a valid name/);
+  });
 });

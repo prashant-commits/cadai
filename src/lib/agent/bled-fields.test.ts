@@ -32,6 +32,11 @@ describe('recoverBledFields', () => {
     expect(recoverBledFields({ parameters: '[1], "relations": [3]}' })).toMatchObject({ parameters: [1], relations: [3] });
   });
 
+  it('fills an empty placeholder the model left for a swallowed field, and reads a double closing brace', () => {
+    expect(recoverBledFields({ parameters: '[1], "components": [{"name":"c"}]', components: [] })).toMatchObject({ components: [{ name: 'c' }] });
+    expect(recoverBledFields({ parameters: '[1], "box": {"w": 2}}}' })).toMatchObject({ parameters: [1], box: { w: 2 } });
+  });
+
   it('leaves a string that is not a bled array alone', () => {
     expect(recoverBledFields({ parameters: 'none' })).toEqual({ parameters: 'none' });
     expect(recoverBledFields({ parameters: [1] })).toEqual({ parameters: [1] });
