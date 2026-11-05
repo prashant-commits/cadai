@@ -56,3 +56,36 @@ export function freshVariantPrompt(
     notes?.length ? `Human notes:\n${notes.join('\n')}` : '',
   ].filter(Boolean).join('\n\n');
 }
+
+/**
+ * The REQUIRED CHANGES block that opens a revision request: reviewer majors,
+ * then minors, then the user's own lines, then the rules for applying them.
+ *
+ * Human lines are mandatory and outrank everything else. Before this, only
+ * majors were said to outrank "variant A follows the request literally", and a
+ * live revise whose answer said "Front lip (variant B)" was revised on variant
+ * A with the note "NOT applied in variant A".
+ */
+export function requiredChanges(findings: { severity: string; issue: string }[], notes: string[]): string {
+  const required = [
+    ...findings.filter((f) => f.severity === 'major').map((f) => `[MAJOR] ${f.issue}`),
+    ...findings.filter((f) => f.severity !== 'major').map((f) => `[MINOR] ${f.issue}`),
+    ...notes.map((n) => `[HUMAN] ${n}`),
+  ];
+  return `REQUIRED CHANGES:\n${required.length ? required.join('\n') : '(none listed)'}\n\n` +
+    'Every [HUMAN] line is the user\'s instruction for THIS variant: apply it, even when it names another variant or asks for structure the request did not name. ' +
+    'Human lines OUTRANK the reviewer\'s findings, "variant A follows the request literally" and the SCOPE rule. ' +
+    'Each major finding must be resolved by a concrete geometric change: add, remove, reshape or move components, or change a shape. ' +
+    'For this revision, major findings OUTRANK "variant A follows the request literally" and the SCOPE rule. ' +
+    'If resolving one needs structure the request did not name (for example a lip so the held object cannot slide off), add it and record each addition in assumptions[]. ' +
+    'The sheet must start with a "## Changes in this revision" section that maps each finding to the change (component and field).';
+}
+
+/** The single variant the user named in a comment or answer ("variant B"), if it exists; null when none or several are named. */
+export function variantNamedIn<Id extends string>(texts: string[], ids: Id[]): Id | null {
+  const named = new Set<string>();
+  for (const t of texts) for (const m of t.matchAll(/\bvariant\s+([A-C])\b/gi)) named.add(m[1].toUpperCase());
+  if (named.size !== 1) return null;
+  const [id] = [...named];
+  return (ids as string[]).includes(id) ? (id as Id) : null;
+}

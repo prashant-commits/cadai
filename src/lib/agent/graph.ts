@@ -22,7 +22,7 @@ import { getChatModel } from './model-provider';
 import { isVisionModel, DEFAULT_MODEL } from './models';
 import { renderVariantSheet } from '../spec-sheet/sheet-svg';
 import { blockoutScad } from '../spec-sheet/blockout-scad';
-import { freshVariantPrompt, variantPlanContext } from './architect-prompts';
+import { freshVariantPrompt, requiredChanges, variantNamedIn, variantPlanContext } from './architect-prompts';
 import { svgToPngDataUrl } from '../spec-sheet/rasterize';
 import {
   composeAssembly,
@@ -664,17 +664,8 @@ export function createCadAgent(
     if (previousSpec && findings) {
       // Findings first, previous version after and labelled as the thing to change:
       // opening with the old skeleton made the Architect re-emit it.
-      const required = [
-        ...findings.filter((f) => f.severity === 'major').map((f) => `[MAJOR] ${f.issue}`),
-        ...findings.filter((f) => f.severity !== 'major').map((f) => `[MINOR] ${f.issue}`),
-        ...(notes ?? []).map((n) => `[HUMAN] ${n}`),
-      ];
       const promptParts = [
-        `REQUIRED CHANGES:\n${required.length ? required.join('\n') : '(none listed)'}\n\n` +
-          'Each major finding must be resolved by a concrete geometric change: add, remove, reshape or move components, or change a shape. ' +
-          'For this revision, major findings OUTRANK "variant A follows the request literally" and the SCOPE rule. ' +
-          'If resolving one needs structure the request did not name (for example a lip so the held object cannot slide off), add it and record each addition in assumptions[]. ' +
-          'The sheet must start with a "## Changes in this revision" section that maps each finding to the change (component and field).',
+        requiredChanges(findings, notes ?? []),
         ...planContextParts,
         `Revise this variant (${variant.id}): ${variant.name} - ${variant.idea}.`,
         `Previous version (to be changed) - skeleton:\n${JSON.stringify(previousSpec.skeleton, null, 2)}`,
@@ -1961,7 +1952,13 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
 
     if (decision.action === 'revise' && !overCap) {
       const recId = state.specBrief?.recommendedId ?? 'A';
-      const chosenId = decision.chosenVariantId ?? recId;
+      // No card clicked, but an answer or the comment names a variant ("Front lip (variant B)"):
+      // revise the one the user named, not the recommendation.
+      const named = variantNamedIn(
+        [decision.comment ?? '', ...Object.values(decision.answers ?? {})],
+        (state.specVariants ?? []).map((v) => v.id)
+      );
+      const chosenId = decision.chosenVariantId ?? named ?? recId;
       let chosenVariant = (state.specVariants || []).find((v) => v.id === chosenId);
       if (!chosenVariant && (state.specVariants || []).length > 0) {
         chosenVariant = (state.specVariants || []).find((v) => v.id === recId) ?? state.specVariants[0];
