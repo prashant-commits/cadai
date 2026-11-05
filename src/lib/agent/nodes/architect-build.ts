@@ -5,6 +5,7 @@ import { requiredChanges } from '../architect-prompts';
 import { assembleScript, parseBuild } from '../build-format';
 import type { AgentStateType } from '../graph';
 import { parameterBlock } from '../parameter-block';
+import { placeAssembly } from '../place-assembly';
 import type { SpecViolation } from '../spec-audit';
 import { systemPromptFor } from '../system-prompt';
 import { blockoutBody } from '../../spec-sheet/blockout-scad';
@@ -22,7 +23,7 @@ export function makeArchitectBuild(model: {
     const attemptCount = state.attemptCount + 1;
     const spec = state.assemblySpec;
     if (!spec) {
-      return { currentCode: state.currentCode, attemptCount, buildFallbacks: 0 };
+      return { currentCode: state.currentCode, attemptCount, buildFallbacks: 0, gateAction: null, gateFeedback: null };
     }
 
     const componentNames = (spec.components ?? []).map((component) => component.name);
@@ -36,7 +37,9 @@ export function makeArchitectBuild(model: {
 
     const repeat = (state.currentCode ?? '').trim().length > 0;
     const named = componentsNamed(findings, notes, componentNames);
-    const ask = repeat && named.length > 0 ? named : componentNames;
+    // A human note that names no part applies to the whole assembly, so every body is in play.
+    const noteNamesNoPart = notes.some((note) => !componentNames.some((name) => hasWord(note, name)));
+    const ask = repeat && named.length > 0 && !noteNamesNoPart ? named : componentNames;
     const keep = componentNames.filter((name) => !ask.includes(name));
 
     const reply = await model.invoke(
@@ -48,17 +51,26 @@ export function makeArchitectBuild(model: {
     if (keep.length > 0 && state.currentCode) {
       for (const name of keep) {
         if (Object.prototype.hasOwnProperty.call(parsed.bodies, name)) continue;
-        if (parsed.keepBlockout.includes(name) || parsed.dropped.includes(name)) continue;
+        // An explicit `@body name blockout` is a choice. A cut-off re-send is not:
+        // the previous body stays, and this part is not a fallback.
+        if (parsed.keepBlockout.includes(name)) continue;
         const previous = extractModuleBody(state.currentCode, name);
         if (previous === null) continue;
         parsed.bodies[name] = previous;
+        const droppedAt = parsed.dropped.indexOf(name);
+        if (droppedAt >= 0) parsed.dropped.splice(droppedAt, 1);
       }
     }
 
+    const header = `${parameterBlock(spec)}$fn = 48; // segment count\n`;
+    const placed = await placeAssembly(assembleScript(spec, parsed, header), spec);
     return {
-      currentCode: assembleScript(spec, parsed, parameterBlock(spec)),
+      currentCode: placed.code,
+      placementReport: placed.report,
       attemptCount,
       buildFallbacks: countFallbacks(spec, componentNames, parsed),
+      gateAction: null,
+      gateFeedback: null,
     };
   };
 }
@@ -151,23 +163,50 @@ function messageText(message: AIMessage): string {
   }).join('');
 }
 
-/** Interior of `module <name>() { ... }` in a previously assembled script, or null. */
+/**
+ * Interior of the first real `module <name>() { ... }`. A header written inside
+ * a comment or a string is not a module. A same-line `//` after the opening
+ * brace (the digit-name marker) is not part of the body, so it cannot stack
+ * up on the next visit.
+ */
 function extractModuleBody(code: string, name: string): string | null {
-  const header = new RegExp(`\\bmodule\\s+${escapeRegExp(name)}\\s*\\(`, 'g');
-  let match: RegExpExecArray | null;
-  while ((match = header.exec(code)) !== null) {
-    const parenOpen = match.index + match[0].length - 1;
+  const header = new RegExp(`^module\\s+${escapeRegExp(name)}\\s*\\(`);
+  let i = 0;
+  while (i < code.length) {
+    const skipped = stepOver(code, i);
+    if (skipped > i) {
+      i = skipped;
+      continue;
+    }
+    const atBoundary = i === 0 || /[^A-Za-z0-9_]/.test(code[i - 1]);
+    const match = atBoundary ? header.exec(code.slice(i)) : null;
+    if (!match) {
+      i += 1;
+      continue;
+    }
+    const parenOpen = i + match[0].length - 1;
     const parenClose = matchDelim(code, parenOpen, '(', ')');
-    if (parenClose === null) continue;
+    if (parenClose === null) return null;
     let braceOpen = parenClose + 1;
     while (braceOpen < code.length && /[ \t]/.test(code[braceOpen])) braceOpen += 1;
-    if (code[braceOpen] !== '{') continue;
+    if (code[braceOpen] !== '{') {
+      i = parenClose + 1;
+      continue;
+    }
     const braceClose = matchDelim(code, braceOpen, '{', '}');
     if (braceClose === null) return null;
-    const inner = code.slice(braceOpen + 1, braceClose).replace(/^\n/, '').replace(/\s+$/, '');
-    return inner.trim() === '' ? null : inner;
+    return cleanInterior(code.slice(braceOpen + 1, braceClose));
   }
   return null;
+}
+
+function cleanInterior(raw: string): string | null {
+  let inner = raw;
+  const nl = inner.indexOf('\n');
+  const firstLine = nl === -1 ? inner : inner.slice(0, nl);
+  if (/^[ \t]*\/\//.test(firstLine)) inner = nl === -1 ? '' : inner.slice(nl + 1);
+  inner = inner.replace(/^\n/, '').replace(/\s+$/, '');
+  return inner.trim() === '' ? null : inner;
 }
 
 function matchDelim(src: string, openIndex: number, open: string, close: string): number | null {

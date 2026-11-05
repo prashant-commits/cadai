@@ -25,14 +25,13 @@ import { blockoutScad } from '../spec-sheet/blockout-scad';
 import { freshVariantPrompt, requiredChanges, variantNamedIn, variantPlanContext } from './architect-prompts';
 import { svgToPngDataUrl } from '../spec-sheet/rasterize';
 import {
-  composeAssembly,
   stripGeneratedAssembly,
   stripTopLevelGeometry,
-  analyzeTopLevel,
   instantiationFor,
 } from '../design/compose-assembly';
 import { matingCuts } from '../design/mating-cuts';
-import { measureModuleFrames, type ModuleFrame } from '../engine/module-frames';
+import type { ModuleFrame } from '../engine/module-frames';
+import { placeAssembly } from './place-assembly';
 import { PlacementReport } from '../design/placement-report';
 import { auditPlacement } from './placement-audit';
 import { auditSpecCoherence } from './spec-coherence';
@@ -164,29 +163,6 @@ function reviewWithSpecErrors(v: SpecVariant, review: VariantReview | null): Var
 /** True when the spec names at least one component: placement is then always code-driven. */
 function specHasComponents(spec: AssemblySpec | null): boolean {
   return !!spec?.components?.length;
-}
-
-/**
- * Measures each component module, then hands placement to deterministic code.
- * Every outcome except a clean compose leaves the model's script untouched.
- */
-async function placeAssembly(
-  code: string,
-  spec: AssemblySpec | null
-): Promise<{ code: string; report: PlacementReport | null; frames: ModuleFrame[] }> {
-  if (!code || !spec?.components?.length) return { code, report: null, frames: [] };
-
-  const defined = new Set(analyzeTopLevel(code).moduleNames);
-  const names = spec.components.map((c) => c.name).filter((n) => defined.has(n));
-  const frames = await measureModuleFrames(code, names);
-  const result = composeAssembly(code, spec, frames);
-
-  if (result.reason === 'missing_modules') {
-
-    return { code: result.code, report: null, frames };
-  }
-
-  return { code: result.code, report: result.report, frames };
 }
 
 /** Frames as the composer measured them, rebuilt from the report for the interference probe. */

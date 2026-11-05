@@ -13,9 +13,9 @@ import { blockoutBody } from '../spec-sheet/blockout-scad';
  * ```
  *
  * A section with no `@end` is dropped. An empty, comment-only, or still-wrapped
- * module body is dropped too. A body that calls its own module is dropped too,
- * because assembling that call would recurse. Code then draws that part from
- * its blockout.
+ * module body is dropped too. A body that calls any component module, its own
+ * or another part's, is dropped too: assembling that call would recurse or
+ * duplicate the part. Code then draws that part from its blockout.
  */
 
 const END_LINE = /^[ \t]*@end\b(?:[ \t]+(?!\/\/)\S+)?[ \t]*(?:\/\/.*)?[ \t]*$/;
@@ -122,7 +122,7 @@ export function parseBuild(text: string, componentNames: string[], reserved: str
 
     const raw = collected.join('\n');
     const cleaned = sanitizeBody(raw, reserved);
-    if (!acceptsSection(raw, name, reserved) || !isUsableBody(cleaned, name)) {
+    if (!acceptsSection(raw, name, reserved) || !isUsableBody(cleaned, componentNames)) {
       drop(name);
       continue;
     }
@@ -254,15 +254,15 @@ function acceptsSection(raw: string, partName: string, reserved: string[]): bool
   return hasGeometry(stripped.slice(wrapped.interiorStart, wrapped.interiorEnd));
 }
 
-/** A body that draws nothing, still defines a module, or calls that module cannot be assembled. */
-function isUsableBody(src: string, partName: string): boolean {
+/** A body that draws nothing, still defines a module, or calls any component module cannot be assembled. */
+function isUsableBody(src: string, componentNames: string[]): boolean {
   if (containsModuleDef(src)) return false;
-  if (callsOwnModule(src, partName)) return false;
+  if (componentNames.some((name) => callsModule(src, name))) return false;
   return hasGeometry(src);
 }
 
 /** True when `src` instantiates `name`. A definition (`module name(...)`) is not a call. */
-function callsOwnModule(src: string, name: string): boolean {
+function callsModule(src: string, name: string): boolean {
   let i = 0;
   while (i < src.length) {
     const step = stepToken(src, i);
