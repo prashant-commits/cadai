@@ -21,6 +21,14 @@ function explabsKey(): string {
   return key;
 }
 
+const ANTHROPIC_OPENAI_BASE_URL = 'https://api.anthropic.com/v1/';
+
+function anthropicKey(): string {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) throw new Error('CADAI_PROVIDER=anthropic needs ANTHROPIC_API_KEY.');
+  return key;
+}
+
 /**
  * The concrete class, not BaseChatModel: the drafter and repair nodes call
  * bindTools(), which BaseChatModel declares as optional and so cannot be
@@ -43,15 +51,20 @@ export const FIXED_TEMPERATURE: Record<string, number> = { 'claude-opus-5.5': 1 
 export function getChatModel(modelName?: string, opts?: { temperature?: number }): CadChatModel {
   const selectedModel = modelName || process.env.CADAI_MODEL || DEFAULT_MODEL;
 
+  // CADAI_PROVIDER=anthropic sends Claude slugs straight to Anthropic's
+  // OpenAI-compatible endpoint (evals on Anthropic credit). The app keeps its
+  // gateway slug ("claude-haiku-5.5") everywhere else; only the wire id changes.
+  const anthropic = process.env.CADAI_PROVIDER === 'anthropic' && selectedModel.startsWith('claude-');
   return new ChatOpenAI({
-    apiKey: explabsKey(),
-    model: selectedModel,
-    temperature: FIXED_TEMPERATURE[selectedModel] ?? opts?.temperature ?? DEFAULT_TEMPERATURE,
+    apiKey: anthropic ? anthropicKey() : explabsKey(),
+    model: anthropic ? selectedModel.replace(/\./g, '-') : selectedModel,
+    // Anthropic rejects `temperature` for Claude 5.5 models ("deprecated for this model").
+    temperature: anthropic ? undefined : FIXED_TEMPERATURE[selectedModel] ?? opts?.temperature ?? DEFAULT_TEMPERATURE,
     // The OpenAI client defaults to a 10-minute timeout with 2 retries, so one
     // stalled gateway request can hold a run for half an hour. A structured
     // spec on deepseek-v4-flash averages 78 s; 4 minutes is generous.
     timeout: Number(process.env.CADAI_MODEL_TIMEOUT_MS ?? 240_000),
     maxRetries: 1,
-    configuration: { baseURL: EXPLABS_BASE_URL },
+    configuration: { baseURL: anthropic ? ANTHROPIC_OPENAI_BASE_URL : EXPLABS_BASE_URL },
   });
 }
