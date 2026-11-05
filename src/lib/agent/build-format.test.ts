@@ -35,14 +35,44 @@ describe('parseBuild', () => {
 describe('sanitizeBody', () => {
   it('removes a module wrapper, a whole-body translate and parameter assignments', () => {
     const body = 'module cup_ring() {\n  translate([0, 0, 5]) {\n    w = 3;\n    cylinder(d = 100, h = 30);\n  }\n}';
-    const out = sanitizeBody(body);
+    const out = sanitizeBody(body, ['w']);
     expect(out).toContain('cylinder(d = 100, h = 30);');
     expect(out).not.toMatch(/module|translate|w = 3/);
   });
 
+  it('keeps local variables that are not declared parameters', () => {
+    const body = 'r = ring_id / 2;\ndifference() { cylinder(r = r + wall, h = 30); cylinder(r = r, h = 30.02); }';
+    expect(sanitizeBody(body, ['ring_id', 'wall'])).toBe(body);
+  });
+
+  it('keeps a multi-line call intact', () => {
+    const body = 'cylinder(\n  h = 20,\n  d = 10);';
+    expect(sanitizeBody(body, ['h'])).toBe(body);
+  });
+
+  it('keeps a transform that applies to one statement', () => {
+    const body = 'translate([5, 5, 0]) cylinder(d = 3, h = 10);';
+    expect(sanitizeBody(body, [])).toBe(body);
+  });
+
   it('keeps translates that are part of the geometry', () => {
     const body = 'difference() {\n  cube([10, 10, 10]);\n  translate([5, 5, -0.01]) cylinder(d = 3, h = 10.02);\n}';
-    expect(sanitizeBody(body)).toBe(body);
+    expect(sanitizeBody(body, [])).toBe(body);
+  });
+});
+
+describe('fallbacks', () => {
+  it('falls back to the blockout for an empty or comment-only body, listing it in dropped', () => {
+    const r = parseBuild('@body lip\n// nothing here\n@end', names);
+    expect(r.bodies.lip).toBeUndefined();
+    expect(r.dropped).toContain('lip');
+  });
+
+  it('unwraps a module wrapper even with an assignment or helper beside it, or else falls back', () => {
+    const r = parseBuild('@body lip\n$fn = 64;\nmodule lip() { cube([100, 4, 8]); };\n@end', names);
+    const code = assembleScript(spec, r);
+    expect(code).toMatch(/module lip\(\) \{[\s\S]*cube\(\[100, 4, 8\]\)/);
+    expect(code.match(/module lip\(\)/g)).toHaveLength(1);
   });
 });
 
