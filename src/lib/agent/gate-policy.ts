@@ -25,8 +25,15 @@ export function shouldGateSpec(state: AgentStateType, prompt: string): boolean {
   return false;
 }
 
+const LIVENESS_VIOLATION_KINDS = new Set(['dead_parameter', 'sweep_failure', 'literal_param']);
+
 export function shouldGateAccept(state: AgentStateType): boolean {
   if (state.attemptCount > 1) return true;
-  if (state.specViolations && state.specViolations.length > 0) return true;
+  if (
+    state.specViolations &&
+    state.specViolations.some((v) => !LIVENESS_VIOLATION_KINDS.has(v.kind))
+  ) {
+    return true;
+  }
   return false;
 }

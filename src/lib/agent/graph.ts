@@ -1580,7 +1580,8 @@ ${contract}`;
     }
 
     const hasErrorViolations = specViolations.some((v) => v.severity === 'error');
-    const hasTimeRemaining = state.runDeadline == null || state.runDeadline - Date.now() >= 60_000;
+    const minTimeNeeded = 60_000 + 2 * (validation.compileTimeMs ?? 0);
+    const hasTimeRemaining = state.runDeadline == null || state.runDeadline - Date.now() >= minTimeNeeded;
 
     if (!hasErrorViolations && hasTimeRemaining) {
       const { sweepParameters } = await import('./param-sweep');
@@ -1592,7 +1593,7 @@ ${contract}`;
           kind: 'dead_parameter',
           field: name,
           expected: 'parameter drives geometry',
-          measured: 'sweeping ±20% leaves bbox and volume unchanged',
+          measured: 'sweeping ±20% leaves geometry unchanged',
           severity: 'warning',
           message: `Parameter '${name}' has no effect on geometry (dead parameter).`,
         });

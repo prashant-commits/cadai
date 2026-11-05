@@ -1,8 +1,8 @@
 import { parseParams } from '../design/parse-params';
 import { setParamValue } from '../design/write-params';
+import { stripGeneratedAssembly } from '../design/compose-assembly';
 import { validateOpenScadCode } from './code-validator';
 import { analyzeStl } from '../engine/geometry-utils';
-import type { ModelInfo } from '@/types';
 
 export interface ParamSweepOpts {
   factor?: number;
@@ -15,25 +15,9 @@ export interface ParamSweepResult {
   skipped: string[];
 }
 
-function isSameGeometry(a: ModelInfo, b: ModelInfo): boolean {
-  if (Math.abs(a.volumeMm3 - b.volumeMm3) > 0.01) return false;
-  if (
-    Math.abs(a.dimensions.x - b.dimensions.x) > 0.01 ||
-    Math.abs(a.dimensions.y - b.dimensions.y) > 0.01 ||
-    Math.abs(a.dimensions.z - b.dimensions.z) > 0.01
-  ) {
-    return false;
-  }
-  for (let i = 0; i < 3; i++) {
-    if (Math.abs(a.boundingBox.min[i] - b.boundingBox.min[i]) > 0.01) return false;
-    if (Math.abs(a.boundingBox.max[i] - b.boundingBox.max[i]) > 0.01) return false;
-  }
-  return true;
-}
-
 async function evaluateVariant(
   variantCode: string
-): Promise<{ ok: true; info: ModelInfo } | { ok: false; reason: string }> {
+): Promise<{ ok: true; stl: string } | { ok: false; reason: string }> {
   let valRes;
   try {
     valRes = await validateOpenScadCode(variantCode);
@@ -60,7 +44,7 @@ async function evaluateVariant(
     };
   }
 
-  return { ok: true, info };
+  return { ok: true, stl: valRes.stl };
 }
 
 /**
@@ -78,9 +62,12 @@ export async function sweepParameters(
   try {
     const startTime = Date.now();
     const factor = opts.factor ?? 0.2;
-    const params = parseParams(code).filter((p) => typeof p.value === 'number');
+    const designCode = stripGeneratedAssembly(code);
+    const params = parseParams(designCode).filter(
+      (p) => typeof p.value === 'number' && !p.name.startsWith('$')
+    );
 
-    if (opts.budgetMs <= 0) {
+    if (opts.budgetMs <= 0 || Date.now() - startTime >= opts.budgetMs) {
       return {
         dead: [],
         failures: [],
@@ -92,16 +79,17 @@ export async function sweepParameters(
       return { dead: [], failures: [], skipped: [] };
     }
 
+    const tBase0 = Date.now();
     const baseValidation = await validateOpenScadCode(code);
+    let lastCompileMs = Date.now() - tBase0;
+
     if (!baseValidation.valid || !baseValidation.stl) {
       return { dead: [], failures: [], skipped: [] };
     }
 
-    const baseInfo = analyzeStl(baseValidation.stl);
-
     for (let i = 0; i < params.length; i++) {
       const p = params[i];
-      if (Date.now() - startTime >= opts.budgetMs) {
+      if (Date.now() - startTime + lastCompileMs > opts.budgetMs) {
         skipped.push(...params.slice(i).map((rem) => rem.name));
         break;
       }
@@ -123,6 +111,20 @@ export async function sweepParameters(
         v2 = val * (1 + factor);
       }
 
+      if (p.step !== undefined && p.step > 0) {
+        const step = p.step;
+        let s1 = Math.round(v1 / step) * step;
+        let s2 = Math.round(v2 / step) * step;
+        if (s1 === val) {
+          s1 = val - step;
+        }
+        if (s2 === val) {
+          s2 = val + step;
+        }
+        v1 = s1;
+        v2 = s2;
+      }
+
       if (p.min !== undefined) {
         v1 = Math.max(p.min, v1);
         v2 = Math.max(p.min, v2);
@@ -137,28 +139,35 @@ export async function sweepParameters(
 
       // Variant 1
       const codeV1 = setParamValue(code, p.name, v1);
+      const t1 = Date.now();
       const res1 = await evaluateVariant(codeV1);
+      lastCompileMs = Math.max(lastCompileMs, Date.now() - t1);
       if (!res1.ok) {
         failures.push({ name: p.name, reason: res1.reason });
         continue;
       }
 
       // Check budget before Variant 2
-      if (Date.now() - startTime >= opts.budgetMs) {
+      if (Date.now() - startTime + lastCompileMs > opts.budgetMs) {
         skipped.push(...params.slice(i).map((rem) => rem.name));
         break;
       }
 
       // Variant 2
       const codeV2 = setParamValue(code, p.name, v2);
+      const t2 = Date.now();
       const res2 = await evaluateVariant(codeV2);
+      lastCompileMs = Math.max(lastCompileMs, Date.now() - t2);
       if (!res2.ok) {
         failures.push({ name: p.name, reason: res2.reason });
         continue;
       }
 
       // Both variants succeeded - check if geometry is dead
-      if (isSameGeometry(res1.info, baseInfo) && isSameGeometry(res2.info, baseInfo)) {
+      if (
+        res1.stl.trim() === baseValidation.stl.trim() &&
+        res2.stl.trim() === baseValidation.stl.trim()
+      ) {
         dead.push(p.name);
       }
     }
