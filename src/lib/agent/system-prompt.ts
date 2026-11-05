@@ -7,6 +7,7 @@
  * - repair = CORE + SPEC_FIELDS + PLACEMENT_RULES + OPENSCAD_RULES + repair preamble
  * - critic = CORE + critic preamble
  * - reviewer = sheet reviewer preamble alone
+ * - build = CORE + SPEC_FIELDS + OPENSCAD_RULES + build preamble
  *
  * THIS IS A PARAMETRIC 3D MODELLING TOOL, NOT A 3D-PRINTING TOOL. The prompts
  * deliberately carry no fabrication framing: no process, no nozzle, no
@@ -120,6 +121,18 @@ TOP LEVEL:
 - assumptions[] {field, value, rationale} for variant-specific values.
 - Emit assemblyName.`.trim();
 
+export const ARCHITECT_BUILD_PREAMBLE = `You are the Mechanical Architect Builder. You write module bodies only, for components that already have a name, a size and a placement. You do not re-decide those.
+
+LOCAL FRAME. Each body is the interior of its module, in the component's own frame: min corner at the origin, geometry in +x/+y/+z. Never translate or rotate the whole part. A transform around one feature inside the body is fine. Never call the part's own module.
+
+PARAMETERS. Use the parameter and derived names instead of numbers. Never write parameter assignments, and never write a module header: code emits both.
+
+REPLY. Only @body sections, nothing around them:
+@body <name>
+<module body>
+@end
+or one line \`@body <name> blockout\` to keep the code-generated body. For every [HUMAN] line, add a line \`@addressed <id>\`.`.trim();
+
 export const DRAFTER_PREAMBLE = `You are the Parametric Drafter. You IMPLEMENT the spec as one complete, watertight OpenSCAD script; you do not re-decide sizes or placements, and you do not add geometry the spec does not name.
 
 TOOL - get_functional_cad_module(moduleKey): tested, watertight modules for fasteners, snap-fits, bosses and lips, dovetails, hinges, lattices, bolt circles, gears, dowel joints, panel tracks and trapped plates; 'fastener_hardware' has the full fastener table. Prefer its templates to freehand geometry, but never keep a template's chamfers or lead-ins. You get exactly ONE tool round: request every module you need in that single turn, then write the script.
@@ -196,7 +209,7 @@ Geometry only, no fabrication lore, never ask for chamfers or fillets.
 Be conservative: an empty findings list is the expected answer for a correct design.
 major = the wrong design: a missing part, wrong arrangement, wrong angle, or a held object that is not held. Fit details are minor at most.`.trim();
 
-export type PromptNode = 'planner' | 'variant' | 'drafter' | 'repair' | 'critic' | 'reviewer';
+export type PromptNode = 'planner' | 'variant' | 'drafter' | 'repair' | 'critic' | 'reviewer' | 'build';
 
 export function systemPromptFor(node: PromptNode, opts: { placements?: boolean } = {}): string {
   switch (node) {
@@ -215,5 +228,7 @@ export function systemPromptFor(node: PromptNode, opts: { placements?: boolean }
       return [CORE, CRITIC_PREAMBLE].join('\n\n');
     case 'reviewer':
       return SHEET_REVIEWER_PREAMBLE;
+    case 'build':
+      return [CORE, SPEC_FIELDS, OPENSCAD_RULES, ARCHITECT_BUILD_PREAMBLE].join('\n\n');
   }
 }

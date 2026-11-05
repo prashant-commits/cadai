@@ -5,6 +5,7 @@ import { checkpointTtlMs } from './checkpointer';
 /** Human labels for graph nodes. An unlisted node falls back to its own id. */
 export const NODE_LABELS: Record<string, string> = {
   architectNode: 'Mechanical Architect',
+  architectBuild: 'Mechanical Architect · Build',
   specIllustrator: 'Concept Sheets',
   specReviewer: 'Sheet Reviewer',
   specGate: 'Spec Review',
