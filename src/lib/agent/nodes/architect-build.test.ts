@@ -77,3 +77,44 @@ describe('architectBuild', () => {
     expect(p).not.toMatch(/print|slicer|nozzle|overhang|filament/i);
   });
 });
+
+describe('review round 1', () => {
+  it('returns placed, compilable code: the generated placement block is present (H1)', async () => {
+    const { model } = fakeModel('@body cup_ring\ndifference() { cylinder(d = ring_id + 10, h = 30); cylinder(d = ring_id, h = 30.02); }\n@end\n@body backplate\ncube([120, 6, 160]);\n@end');
+    const out = await makeArchitectBuild(model as never)(state());
+    expect(out.currentCode).toContain('Assembly placement (generated from the approved Assembly Spec)');
+    expect(out.currentCode).toMatch(/cup_ring\(\);/);
+    const { validateOpenScadCode } = await import('../code-validator');
+    const r = await validateOpenScadCode(out.currentCode!);
+    expect(r.valid).toBe(true);
+    expect(r.summary!.boundingBox!.size[2]).toBeGreaterThan(100);
+  }, 120_000);
+
+  it('keeps the previous body of a part whose re-sent section is cut off (H2)', async () => {
+    const first = await makeArchitectBuild(fakeModel('@body cup_ring\ncylinder(d = ring_id, h = 30);\n@end\n@body backplate\ncube([120, 6, 160]); // good\n@end').model as never)(state());
+    const out = await makeArchitectBuild(fakeModel('@body cup_ring\ncylinder(d = ring_id + 2, h = 30);\n@end\n@body backplate\ncube([120, 6,').model as never)(state({
+      currentCode: first.currentCode, attemptCount: 1,
+      specViolations: [{ kind: 'extents', severity: 'error', message: 'cup_ring is too small', component: 'cup_ring' } as never],
+    }));
+    expect(out.currentCode).toContain('cube([120, 6, 160]); // good');
+  });
+
+  it('sets a segment count so round parts measure true (M3)', async () => {
+    const out = await makeArchitectBuild(fakeModel('@body cup_ring blockout\n@body backplate blockout').model as never)(state());
+    expect(out.currentCode).toMatch(/\$fn = \d+;/);
+  });
+
+  it('asks for every part when a human note names none (M4)', async () => {
+    const { model, calls } = fakeModel('@body cup_ring\ncylinder(d = ring_id, h = 30);\n@end');
+    await makeArchitectBuild(model as never)(state({ currentCode: 'module backplate() { cube(1); }\nmodule cup_ring() { cube(1); }', attemptCount: 1, gateAction: 'revise', gateFeedback: 'Add ledges' } as never));
+    expect(calls[0].map(text).join('\n')).not.toMatch(/Do not send/i);
+  });
+
+  it('a body that calls another part falls back too (L9) and the revise request is consumed (L10)', async () => {
+    const out = await makeArchitectBuild(fakeModel('@body cup_ring\nbackplate();\n@end').model as never)(state({ gateAction: 'revise', gateFeedback: 'x' } as never));
+    expect(out.buildFallbacks).toBeGreaterThanOrEqual(1);
+    expect(out.gateAction ?? null).toBeNull();
+    expect(out.gateFeedback ?? null).toBeNull();
+  });
+});
+
