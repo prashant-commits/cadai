@@ -11,7 +11,9 @@ export function parameterBlock(spec: AssemblySpec): string {
     const range = p.step === undefined
       ? `[${fmtParam(p.min)}:${fmtParam(p.max)}]`
       : `[${fmtParam(p.min)}:${fmtParam(p.step)}:${fmtParam(p.max)}]`;
-    lines.push(`${p.name} = ${fmtParam(p.value)}; // ${range} ${p.description}`);
+    const desc = p.description ? p.description.replace(/\s+/g, ' ').trim() : '';
+    const comment = desc ? ` ${desc}` : '';
+    lines.push(`${p.name} = ${fmtParam(p.value)}; // ${range}${comment}`);
   }
   for (const d of spec.derived ?? []) {
     lines.push(`${d.name} = ${d.expr};`);

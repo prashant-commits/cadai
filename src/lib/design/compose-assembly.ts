@@ -325,12 +325,16 @@ function positionTokens(
   const specComp = spec.components?.find((item) => item.name === c.name);
   const note = specComp?.positionNote?.replace(/\s+/g, ' ').trim();
   let noteUsed = false;
+  const isDeclared = (name: string) =>
+    Boolean(spec.parameters?.some((p) => p.name === name) || spec.derived?.some((d) => d.name === name));
+
   return AXES.map((axis, i) => {
     const expr = positionExpr(specComp?.expr?.position, i);
     if (c.position[i] === 0 && !expr) return '0';
     const rhs = expr ?? fmt(c.position[i]);
     if (mode === 'inline') return rhs;
     const pname = `${c.name}_pos_${axis}`;
+    if (isDeclared(pname) || rhs === pname) return rhs;
     const comment = note && !noteUsed && c.position[i] !== 0 ? `   // ${note}` : '';
     if (c.position[i] !== 0) noteUsed = true;
     params.push(`${pname} = ${rhs};${comment}`);
