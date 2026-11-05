@@ -8,6 +8,7 @@ import {
   SPEC_FIELDS,
   PLACEMENT_RULES,
   OPENSCAD_RULES,
+  BUILD_GUARDRAILS,
   ARCHITECT_PLANNER_PREAMBLE,
   ARCHITECT_VARIANT_POSE,
   ARCHITECT_VARIANT_PREAMBLE,
@@ -28,6 +29,7 @@ const BLOCKS: Record<string, string> = {
   SPEC_FIELDS,
   PLACEMENT_RULES,
   OPENSCAD_RULES,
+  BUILD_GUARDRAILS,
   ARCHITECT_PLANNER_PREAMBLE,
   ARCHITECT_VARIANT_POSE,
   ARCHITECT_VARIANT_PREAMBLE,
@@ -77,16 +79,17 @@ const BLOCK_BUDGET: Record<string, number> = {
   SPEC_FIELDS: 580, // +60 for the relational fields and expression grammar (Task 3)
   PLACEMENT_RULES: 200,
   OPENSCAD_RULES: 330,
+  BUILD_GUARDRAILS: 140,
 };
 const NODE_BUDGET: Record<string, number> = {
   planner: 450,
-  variant: 1400, // lowered from 1460 by the council rewrite (no bbox arithmetic, no pose essay)
+  variant: 1440, // lowered from 1460 by the council rewrite (no bbox arithmetic, no pose essay)
   drafter: 1360,
   drafterPlaced: 1530,
   repair: 1670,
   critic: 650,
   reviewer: 250,
-  build: 650, // was 1251 before the council slimmed it
+  build: 700, // was 1251 before the council slimmed it
 };
 
 /**
@@ -339,6 +342,47 @@ describe('graph wiring', () => {
     expect(clearanceJointsNote({ ...base } as never)).toBe('');
     expect(clearanceJointsNote({ ...base, jointContracts: [{ type: 'press_fit', clearance: 0, partA: 'a', partB: 'b' }] } as never)).toBe('');
     expect(clearanceJointsNote(null)).toBe('');
+  });
+});
+
+describe('council review round 1', () => {
+  const build = systemPromptFor('build');
+  const example = build.slice(build.indexOf('@body base_plate\n'), build.lastIndexOf('@end') + 4);
+
+  it('the @body example uses only names a spec can be assumed to declare', () => {
+    expect(example.length).toBeGreaterThan(0);
+    expect(build).not.toMatch(/margin/i);
+    const ids = new Set((example.replace(/\/\/.*$/gm, '').match(/[a-z_][a-z0-9_]*/g) ?? []));
+    const allowed = new Set(['body', 'base_plate', 'difference', 'cube', 'translate', 'end',
+      'plate_w', 'plate_d', 'plate_t', 'slot_x', 'slot_y', 'slot_w', 'slot_len']);
+    expect([...ids].filter((id) => !allowed.has(id))).toEqual([]);
+    expect(build).toMatch(/names stand for parameters your spec declares/);
+  });
+
+  it('the planner does not anchor the entry axis on +Z', () => {
+    const planner = systemPromptFor('planner');
+    expect(planner).toMatch(/enters along/i);
+    expect(planner).not.toMatch(/[+-][XYZ]\b/);
+  });
+
+  it('build keeps the hole and jointContract rules and says one piece outranks scope', () => {
+    expect(build).toMatch(/holes\[\]: cut each at its d and axis/);
+    expect(build).toMatch(/no depth means through/);
+    expect(build).toMatch(/jointContracts: code cuts the host's mating cavity, so never model one/);
+    expect(build).toMatch(/ONE PIECE OUTRANKS SCOPE/);
+  });
+
+  it('build carries no spec-only audits and no inter-part overlap contradiction', () => {
+    expect(BUILD_GUARDRAILS).not.toMatch(/self-coherence|bounding box vs spec|shells <=|'wall' in its name/);
+    expect(build).not.toMatch(/write no lands or overlaps of your own/);
+  });
+
+  it('the variant prompt headers the pose line, keeps the spec-side join rule and orders the pipeline skeleton first', () => {
+    expect(ARCHITECT_VARIANT_POSE).toMatch(/^## ENTRY AND POSE/);
+    expect(ARCHITECT_VARIANT_PREAMBLE).toMatch(/never specify a cut that splits a component/i);
+    expect(ARCHITECT_VARIANT_PREAMBLE).toMatch(/Name every wall-thickness parameter with 'wall'/);
+    expect(CORE).toMatch(/skeleton \+ sheet/);
+    expect(CORE).not.toMatch(/sheet \+ skeleton/);
   });
 });
 
