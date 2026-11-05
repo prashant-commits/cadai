@@ -23,6 +23,7 @@ import { isVisionModel, DEFAULT_MODEL } from './models';
 import { renderVariantSheet } from '../spec-sheet/sheet-svg';
 import { blockoutScad } from '../spec-sheet/blockout-scad';
 import { freshVariantPrompt, requiredChanges, variantNamedIn, variantPlanContext } from './architect-prompts';
+import { followUpEdit } from './follow-up';
 import { svgToPngDataUrl } from '../spec-sheet/rasterize';
 import {
   composeAssembly,
@@ -886,6 +887,26 @@ export function createCadAgent(
     let variantsStartedAt = Date.now();
     // A gate revise arrives WITH the chosen variant in state, so it revises that
     // variant (previous sheet, skeleton, image, notes) instead of re-planning.
+    // A follow-up message after a finished design edits that design: the approved
+    // spec becomes the one variant to revise, and the message is a mandatory note.
+    const followUp = followUpEdit(state);
+    let specNotes = state.humanSpecNotes ?? [];
+    if (followUp) {
+      variants = [{
+        id: 'A' as VariantId,
+        name: followUp.spec.assemblyName,
+        idea: 'the current design, changed as the user asked',
+        spec: followUp.spec,
+        version: 1,
+        drawnVersion: null,
+        review: null,
+        retries: 0,
+        needsRevision: true,
+      }];
+      brief = brief ?? { markdown: '', assumptions: [], openQuestions: [], recommendedId: 'A' as VariantId };
+      specNotes = [...specNotes, followUp.request];
+      write(config, 'architectNode', { t: 'delta', text: 'Editing the current design...\n' });
+    }
     const isFresh = variants.length === 0;
 
     if (isFresh) {
@@ -1041,7 +1062,7 @@ export function createCadAgent(
           v.retries,
           v.spec ? { sheet: v.spec.sheet, skeleton: prevSkeleton } : undefined,
           findings,
-          state.humanSpecNotes,
+          specNotes,
           drawnSheetSvg(v),
           config,
           runDeadline
@@ -1100,6 +1121,7 @@ export function createCadAgent(
     return {
       specBrief: brief,
       specVariants: variants,
+      ...(followUp ? { humanSpecNotes: specNotes, chosenVariantId: 'A' as VariantId } : {}),
       reviewDeadline,
       runDeadline,
       variantsMs,
