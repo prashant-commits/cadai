@@ -71,16 +71,16 @@ function openscadBlocks(): Array<{ name: string; index: number; code: string }> 
  */
 const BLOCK_BUDGET: Record<string, number> = {
   CORE: 210,
-  SPEC_FIELDS: 520,
+  SPEC_FIELDS: 580, // +60 for the relational fields and expression grammar (Task 3)
   PLACEMENT_RULES: 200,
   OPENSCAD_RULES: 330,
 };
 const NODE_BUDGET: Record<string, number> = {
   planner: 450,
-  variant: 1340,
-  drafter: 1300,
-  drafterPlaced: 1470,
-  repair: 1610,
+  variant: 1460, // +120: relational spec (Task 3), within the plan's +60 per block
+  drafter: 1360,
+  drafterPlaced: 1530,
+  repair: 1670,
   critic: 650,
   reviewer: 250,
 };
@@ -338,3 +338,24 @@ describe('graph wiring', () => {
     expect(clearanceJointsNote(null)).toBe('');
   });
 });
+
+describe('relational spec prompt (Task 3)', () => {
+  it('asks the Architect for parameters, derived values, relations and expressions', () => {
+    for (const field of ['parameters[]', 'derived[]', 'relations[]']) {
+      expect(SPEC_FIELDS, field).toContain(field);
+    }
+    expect(ARCHITECT_VARIANT_PREAMBLE).toMatch(/parameter/i);
+    expect(ARCHITECT_VARIANT_PREAMBLE).toMatch(/expression/i);
+  });
+
+  it('states the expression grammar once, in SPEC_FIELDS', () => {
+    expect(SPEC_FIELDS).toMatch(/\+ - \* \//);
+    expect(SPEC_FIELDS).toMatch(/min\(.*max\(.*sqrt\(/);
+    expect(ARCHITECT_VARIANT_PREAMBLE).not.toMatch(/sqrt\(/);
+  });
+
+  it('keeps the relational instructions out of the planner', () => {
+    expect(ARCHITECT_PLANNER_PREAMBLE).not.toContain('derived[]');
+  });
+});
+
