@@ -304,16 +304,63 @@ function vec(v: Vec3): string {
 
 const AXES = ['x', 'y', 'z'] as const;
 
+function positionExpr(exprs: (string | null)[] | undefined, i: number): string | null {
+  const expr = exprs?.[i];
+  return typeof expr === 'string' && expr.length > 0 ? expr : null;
+}
+
 /**
- * `translate(P) rotate(R) translate(C) name();` with P given per axis (literal
- * or parameter name). A caller may pass `body` (a wrapper call or an inline
- * union) that already contains the origin correction; the correction is then
- * not applied again here.
+ * Per-axis translate tokens. A numeric zero with no expression stays `0`.
+ * `assign` names every other axis `<name>_pos_<axis>` and records
+ * `name = <expr or literal>;`, keeping the position note on the first
+ * non-zero literal the way the numeric path does. `inline` puts the
+ * expression or formatted number straight into the translate.
  */
-function placementCall(c: PlacementComponent, posExpr: [string, string, string], body?: string): string {
+function positionTokens(
+  c: PlacementComponent,
+  spec: AssemblySpec,
+  mode: 'assign' | 'inline',
+  params: string[],
+): [string, string, string] {
+  const specComp = spec.components?.find((item) => item.name === c.name);
+  const note = specComp?.positionNote?.replace(/\s+/g, ' ').trim();
+  let noteUsed = false;
+  return AXES.map((axis, i) => {
+    const expr = positionExpr(specComp?.expr?.position, i);
+    if (c.position[i] === 0 && !expr) return '0';
+    const rhs = expr ?? fmt(c.position[i]);
+    if (mode === 'inline') return rhs;
+    const pname = `${c.name}_pos_${axis}`;
+    const comment = note && !noteUsed && c.position[i] !== 0 ? `   // ${note}` : '';
+    if (c.position[i] !== 0) noteUsed = true;
+    params.push(`${pname} = ${rhs};${comment}`);
+    return pname;
+  }) as [string, string, string];
+}
+
+/** `rotate([…])` vector. Expression axes replace the literal; a zero rotation with none is omitted. */
+function rotationText(c: PlacementComponent, exprs: (string | null)[] | undefined): string | null {
+  const parts = [0, 1, 2].map((i) => positionExpr(exprs, i));
+  if (!parts.some((expr) => expr !== null) && isZeroVec(c.rotation)) return null;
+  return `[${parts.map((expr, i) => expr ?? fmt(c.rotation[i])).join(', ')}]`;
+}
+
+/**
+ * `translate(P) rotate(R) translate(C) name();` with P given per axis (literal,
+ * parameter name, or expression). A caller may pass `body` (a wrapper call or
+ * an inline union) that already contains the origin correction; the correction
+ * is then not applied again here. Measured corrections stay numeric.
+ */
+function placementCall(
+  c: PlacementComponent,
+  posExpr: [string, string, string],
+  body?: string,
+  rotationExpr?: (string | null)[],
+): string {
   let call = body ?? `${c.name}();`;
   if (!body && !isZeroVec(c.correction)) call = `translate(${vec(c.correction)}) ${call}`;
-  if (!isZeroVec(c.rotation)) call = `rotate(${vec(c.rotation)}) ${call}`;
+  const rot = rotationText(c, rotationExpr);
+  if (rot) call = `rotate(${rot}) ${call}`;
   if (posExpr.some((e) => e !== '0')) call = `translate([${posExpr.join(', ')}]) ${call}`;
   return call;
 }
@@ -379,16 +426,7 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
 
   const posExprs = new Map<string, [string, string, string]>();
   for (const c of components) {
-    const note = noteFor.get(c.name);
-    let noteUsed = false;
-    const posExpr = AXES.map((axis, i) => {
-      if (c.position[i] === 0) return '0';
-      const pname = `${c.name}_pos_${axis}`;
-      params.push(`${pname} = ${fmt(c.position[i])};${note && !noteUsed ? `   // ${note}` : ''}`);
-      noteUsed = true;
-      return pname;
-    }) as [string, string, string];
-    posExprs.set(c.name, posExpr);
+    posExprs.set(c.name, positionTokens(c, spec, 'assign', params));
   }
 
   const allCuts = matingCuts(spec, (a, b) => {
@@ -420,6 +458,7 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
 
     const cuts = allCuts.filter(x => x.host === c.name);
     const cutLines: string[] = [];
+    const rot = spec.components?.find((item) => item.name === c.name)?.expr?.rotation;
 
     for (const cut of cuts) {
       const compB = components.find(x => x.name === cut.inserted);
@@ -432,15 +471,15 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
         reportNotes.push(`skipped cut for ${cut.inserted} (no localExtents)`);
         continue;
       }
-      const posBExpr = posExprs.get(cut.inserted) ?? AXES.map((_, i) => (compB.position[i] === 0 ? '0' : fmt(compB.position[i]))) as [string, string, string];
+      const posBExpr = posExprs.get(cut.inserted) ?? positionTokens(compB, spec, 'inline', []);
       const body = shapeScad(specB, cut.clearance, (reason) => {
         reportNotes.push(`cut for ${cut.inserted} fell back to box envelope (${reason})`);
       });
       cutLines.push(`        // cut for ${cut.inserted} with ${cut.clearance} mm clearance`);
-      cutLines.push(`        ${placementCall(compB, posBExpr, body)}`);
+      cutLines.push(`        ${placementCall(compB, posBExpr, body, specB.expr?.rotation)}`);
     }
 
-    const baseCall = wrapperCall ? placementCall(c, posExpr, wrapperCall) : placementCall(c, posExpr);
+    const baseCall = wrapperCall ? placementCall(c, posExpr, wrapperCall, rot) : placementCall(c, posExpr, undefined, rot);
     
     if (cutLines.length > 0) {
       line = `    difference() {\n        ${baseCall.trimStart()}\n${cutLines.join('\n')}\n    }`;
@@ -502,16 +541,18 @@ export function instantiationFor(spec: AssemblySpec, componentName: string, fram
   if (!spec.components?.some((x) => x.name === componentName)) return null;
   const components = buildPlacementComponents(spec, frames, true);
   const c = components.find((x) => x.name === componentName)!;
-  const posExpr = AXES.map((_, i) => (c.position[i] === 0 ? '0' : fmt(c.position[i]))) as [string, string, string];
+  const specComp = spec.components?.find((x) => x.name === componentName);
+  const posExpr = positionTokens(c, spec, 'inline', []);
   const gussets = gussetsFor(spec, componentName);
-  
+  const rot = specComp?.expr?.rotation;
+
   let baseCall: string;
   if (gussets.length === 0) {
-    baseCall = placementCall(c, posExpr);
+    baseCall = placementCall(c, posExpr, undefined, rot);
   } else {
-    baseCall = placementCall(c, posExpr, `union() { ${bracedBodyLines(c, gussets, '').join(' ')} }`);
+    baseCall = placementCall(c, posExpr, `union() { ${bracedBodyLines(c, gussets, '').join(' ')} }`, rot);
   }
-  
+
   const cuts = matingCuts(spec).filter(x => x.host === componentName);
   if (cuts.length === 0) return baseCall;
 
@@ -520,9 +561,9 @@ export function instantiationFor(spec: AssemblySpec, componentName: string, fram
     const compB = components.find(x => x.name === cut.inserted);
     const specB = spec.components?.find(x => x.name === cut.inserted);
     if (!compB || !specB || !specB.localExtents || specB.localExtents.length < 3) continue;
-    const posBExpr = AXES.map((_, i) => (compB.position[i] === 0 ? '0' : fmt(compB.position[i]))) as [string, string, string];
+    const posBExpr = positionTokens(compB, spec, 'inline', []);
     const body = shapeScad(specB, cut.clearance);
-    cutLines.push(placementCall(compB, posBExpr, body));
+    cutLines.push(placementCall(compB, posBExpr, body, specB.expr?.rotation));
   }
 
   if (cutLines.length === 0) return baseCall;
