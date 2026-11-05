@@ -32,7 +32,13 @@ export interface SpecViolation {
     /** A shape schema constraint was violated (e.g. tube without innerD). */
     | 'shape'
     /** Emitted by the Design Inspector from rendered views. Always a warning. */
-    | 'visual';
+    | 'visual'
+    /** Parameter leaves bbox and volume unchanged when swept. Always a warning. */
+    | 'dead_parameter'
+    /** Parameter variant fails compile, non-manifold, or goes below z = 0. Always a warning. */
+    | 'sweep_failure'
+    /** Numeric literal in module body equals a parameter value. Always a warning. */
+    | 'literal_param';
   field: string;
   expected: number | string | boolean;
   measured: number | string | boolean;

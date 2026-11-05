@@ -1579,6 +1579,48 @@ ${contract}`;
       );
     }
 
+    const hasErrorViolations = specViolations.some((v) => v.severity === 'error');
+    const hasTimeRemaining = state.runDeadline == null || state.runDeadline - Date.now() >= 60_000;
+
+    if (!hasErrorViolations && hasTimeRemaining) {
+      const { sweepParameters } = await import('./param-sweep');
+      const { literalLint } = await import('./literal-lint');
+
+      const sweep = await sweepParameters(state.currentCode, { budgetMs: 30_000 });
+      for (const name of sweep.dead) {
+        specViolations.push({
+          kind: 'dead_parameter',
+          field: name,
+          expected: 'parameter drives geometry',
+          measured: 'sweeping ±20% leaves bbox and volume unchanged',
+          severity: 'warning',
+          message: `Parameter '${name}' has no effect on geometry (dead parameter).`,
+        });
+      }
+      for (const f of sweep.failures) {
+        specViolations.push({
+          kind: 'sweep_failure',
+          field: f.name,
+          expected: 'valid solid within [min, max]',
+          measured: f.reason,
+          severity: 'warning',
+          message: `Sweeping parameter '${f.name}' failed: ${f.reason}`,
+        });
+      }
+
+      const lintHits = literalLint(state.currentCode);
+      for (const hit of lintHits) {
+        specViolations.push({
+          kind: 'literal_param',
+          field: `${hit.component}.${hit.param}`,
+          expected: `parameter '${hit.param}'`,
+          measured: `literal ${hit.literal}`,
+          severity: 'warning',
+          message: `Module '${hit.component}' uses literal ${hit.literal} matching parameter '${hit.param}'.`,
+        });
+      }
+    }
+
     const isSemanticValid = specViolations.filter(v => v.severity === 'error').length === 0;
     const isValid = validation.valid && isSemanticValid;
 
