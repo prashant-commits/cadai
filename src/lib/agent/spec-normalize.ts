@@ -17,13 +17,19 @@ export function toSnakeCase(name: string): string {
   return /^[a-z]/.test(s) ? s : `part_${s}`;
 }
 
+export type NormalizedAssemblySpec = AssemblySpec & {
+  boundingBox: { width: number; length: number; height: number };
+};
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
 /**
  * Makes a parsed spec usable by deterministic code: component names become
  * module identifiers (with every reference renamed to match), every component
  * has a position. Applied to what the Architect returns and to what the client
  * sends back from the spec gate, so downstream code never sees "Cup Receptacle".
  */
-export function normalizeSpec(rawSpec: AssemblySpec): AssemblySpec {
+export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
   // Expression strings become numbers first, so every step below (and every consumer) sees numbers.
   // Unresolvable fields are left at 0 here; auditSpecCoherence reports them to the Architect's retry.
   const resolved = resolveSpec(rawSpec);
@@ -51,6 +57,51 @@ export function normalizeSpec(rawSpec: AssemblySpec): AssemblySpec {
     };
   });
 
+  const normalizedComponents = components.map((c) => {
+    if (resolved.errors.length > 0) return c;
+    if (c.shape?.kind !== 'profile' || !c.shape.plane || !c.shape.points || c.shape.points.length === 0) {
+      return c;
+    }
+
+    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    for (const [u, v] of c.shape.points) {
+      if (u < minU) minU = u;
+      if (u > maxU) maxU = u;
+      if (v < minV) minV = v;
+      if (v > maxV) maxV = v;
+    }
+
+    if (!Number.isFinite(minU) || !Number.isFinite(minV)) return c;
+
+    const sizeU = round2(maxU - minU);
+    const sizeV = round2(maxV - minV);
+
+    const shiftedPoints = c.shape.points.map(([u, v]) => [round2(u - minU), round2(v - minV)]);
+    const shiftedHoles = c.shape.holes?.map((hole) =>
+      hole.map(([u, v]) => [round2(u - minU), round2(v - minV)])
+    );
+
+    const [ex = 0, ey = 0, ez = 0] = (c.localExtents ?? []) as number[];
+    let localExtents: [number, number, number];
+    if (c.shape.plane === 'xy') {
+      localExtents = [sizeU, sizeV, ez];
+    } else if (c.shape.plane === 'xz') {
+      localExtents = [sizeU, ey, sizeV];
+    } else {
+      localExtents = [ex, sizeU, sizeV];
+    }
+
+    return {
+      ...c,
+      localExtents,
+      shape: {
+        ...c.shape,
+        points: shiftedPoints,
+        ...(c.shape.holes ? { holes: shiftedHoles } : {}),
+      },
+    };
+  });
+
   const ref = (x?: string) => (x === undefined ? undefined : rename.get(x) ?? x);
   
   let sheet = spec.sheet;
@@ -64,21 +115,22 @@ export function normalizeSpec(rawSpec: AssemblySpec): AssemblySpec {
     }
   }
 
-  // A relational spec's envelope is derived: the model's separately declared box is
-  // a second place to get the arithmetic wrong. Literal-only specs keep theirs.
-  // Only when every expression resolved: a field left at 0 by a failure would corrupt the box, and the
-  // declared one may well be right. The errors recur on every pass (the source strings are kept in `expr`).
-  const envelope = spec.parameters?.length && resolved.errors.length === 0 ? impliedEnvelope({ ...spec, components }) : null;
+  // The assembly envelope is derived from the components: the model's separately declared box is
+  // a second place to get arithmetic wrong. Code derives it from impliedEnvelope when it can be computed
+  // (literal specs included), falling back to the declared box, else zeros.
+  // When resolution has errors, keep declared box (a field left at 0 by failure would corrupt the box).
+  const envelope = resolved.errors.length === 0 ? impliedEnvelope({ ...spec, components: normalizedComponents }) : null;
   const boundingBox = envelope
     ? { width: envelope.size[0], length: envelope.size[1], height: envelope.size[2] }
-    : spec.boundingBox;
+    : (spec.boundingBox ?? { width: 0, length: 0, height: 0 });
 
   return {
     ...spec,
     sheet,
     boundingBox,
-    components,
+    components: normalizedComponents,
+    guides: spec.guides ?? [],
     jointContracts: spec.jointContracts?.map((j) => ({ ...j, partA: ref(j.partA), partB: ref(j.partB) })),
-    stressPoints: spec.stressPoints.map((s) => ({ ...s, component: ref(s.component) })),
+    stressPoints: (spec.stressPoints ?? []).map((s) => ({ ...s, component: ref(s.component) })),
   };
 }

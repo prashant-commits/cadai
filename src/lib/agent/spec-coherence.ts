@@ -1,6 +1,7 @@
 import type { AssemblySpec } from './assembly-spec';
 import type { SpecViolation } from './spec-audit';
 import { resolveSpec } from './spec-expr';
+import { lintDeadParameters } from './spec-param-lint';
 import { FRAME_EPS, placedBounds, Vec3 } from '../design/placement-geometry';
 
 /**
@@ -117,6 +118,7 @@ export function auditSpecCoherence(rawSpec: AssemblySpec | null): SpecViolation[
         message: `A spec expression does not resolve: ${error}. Declare the name in parameters/derived, or use a number.`,
       });
     }
+    violations.push(...lintDeadParameters(rawSpec, spec));
   }
   const implied = impliedEnvelope(spec);
   if (!spec || !implied) return violations;

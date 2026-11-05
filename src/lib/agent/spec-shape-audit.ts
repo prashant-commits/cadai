@@ -196,7 +196,7 @@ export function auditSpecShapes(spec: AssemblySpec | null): SpecViolation[] {
     }
   }
 
-  for (let i = 0; i < spec.guides.length; i++) {
+  for (let i = 0; i < (spec.guides?.length || 0); i++) {
     const guide = spec.guides[i];
     const field = `guides[${i}]`;
     if (guide.kind === 'envelope') {

@@ -117,7 +117,7 @@ export function requireAllExcept(
     });
 
     if (parentPath === '' && requiredProps.includes('sheet')) {
-      obj.required = ['sheet', ...requiredProps.filter((k) => k !== 'sheet')];
+      obj.required = [...requiredProps.filter((k) => k !== 'sheet'), 'sheet'];
     } else {
       obj.required = requiredProps;
     }
@@ -299,11 +299,13 @@ export function claudeVariantSpecSchema(): Record<string, unknown> {
     delete props.stressPoints;
     if (Array.isArray(json.required)) json.required = (json.required as string[]).filter((k) => k !== 'stressPoints');
     delete props.openQuestions;
+    delete props.boundingBox;
+    if (Array.isArray(json.required)) json.required = (json.required as string[]).filter((k) => k !== 'stressPoints' && k !== 'boundingBox');
 
-    // Place sheet first in properties
+    // Place sheet last in properties
     if ('sheet' in props) {
       const { sheet, ...rest } = props;
-      json.properties = { sheet, ...rest };
+      json.properties = { ...rest, sheet };
     }
   }
 

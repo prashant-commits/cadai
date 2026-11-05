@@ -31,9 +31,9 @@ describe('model-output tolerance for relational specs (P0b)', () => {
     expect(auditSpecCoherence(spec).filter((v) => v.severity === 'error')).toEqual([]);
   });
 
-  it('leaves a literal-only spec and its declared bounding box unchanged', () => {
+  it('derives bounding box from the components for a literal spec too', () => {
     const literal = AssemblySpecSchema.parse({ ...base, guides: [], components: [{ ...comps[0], localExtents: [80, 40, 6] }] });
-    expect(normalizeSpec(literal).boundingBox).toEqual({ width: 10, length: 10, height: 10 });
+    expect(normalizeSpec(literal).boundingBox).toEqual({ width: 80, length: 40, height: 6 });
   });
 });
 

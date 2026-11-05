@@ -184,10 +184,12 @@ function jsonArray<T extends z.ZodType>(schema: T) {
   }, schema.optional());
 }
 
+export const BoundingBoxSchema = z.object({ width: z.number(), length: z.number(), height: z.number() });
+export type BoundingBox = z.infer<typeof BoundingBoxSchema>;
+
 export const AssemblySpecSchema = z.object({
-  sheet: z.string().default(''),
   assemblyName: z.string(),
-  boundingBox: z.object({ width: z.number(), length: z.number(), height: z.number() }),
+  boundingBox: BoundingBoxSchema.optional() as unknown as z.ZodType<BoundingBox>,
   jointContracts: z.array(z.object({
     type: z.string(),
     clearance: z.number(),
@@ -281,8 +283,12 @@ export const AssemblySpecSchema = z.object({
     options: z.array(z.string()).optional(),
     suggestedAnswer: z.string()
   })).default([]),
-  specApprovedAt: z.number().optional()
-});
+  specApprovedAt: z.number().optional(),
+  sheet: z.string().describe('Write last. At most 200 words: in-use pose, what varies, assumptions. Numbers live in the skeleton.').default(''),
+}).refine(
+  (s) => s.components !== undefined || s.boundingBox !== undefined || (s.guides && s.guides.length > 0),
+  { message: 'A spec must declare components, guides, or a boundingBox' }
+);
 
 export type AssemblySpec = z.infer<typeof AssemblySpecSchema>;
 
@@ -356,13 +362,23 @@ export function assemblySpecRequestSchema(): Record<string, unknown> {
   const json = z.toJSONSchema(AssemblySpecSchema) as Record<string, unknown>;
   delete json.$schema;
   if (json.properties) {
-    delete (json.properties as Record<string, unknown>).specApprovedAt;
+    const props = json.properties as Record<string, unknown>;
+    delete props.specApprovedAt;
     // Stress points and gussets are engineering analysis, not modelling: not requested from the Architect.
-    delete (json.properties as Record<string, unknown>).stressPoints;
-    if (Array.isArray(json.required)) json.required = (json.required as string[]).filter((k) => k !== 'stressPoints');
+    delete props.stressPoints;
+    delete props.boundingBox;
+    if (Array.isArray(json.required)) {
+      json.required = (json.required as string[]).filter((k) => k !== 'stressPoints' && k !== 'boundingBox');
+    }
     
     // Ensure top-level `components` is required before strict transform
     json.required = [...new Set<string>([...((json.required as string[]) ?? []), 'components'])];
+
+    // Sheet last
+    if ('sheet' in props) {
+      const { sheet, ...rest } = props;
+      json.properties = { ...rest, sheet };
+    }
   }
 
   // bedFace is print orientation, which belongs to a future slicer node.
@@ -381,14 +397,24 @@ export function variantSpecRequestSchema(): Record<string, unknown> {
   const json = z.toJSONSchema(AssemblySpecSchema) as Record<string, unknown>;
   delete json.$schema;
   if (json.properties) {
-    delete (json.properties as Record<string, unknown>).specApprovedAt;
+    const props = json.properties as Record<string, unknown>;
+    delete props.specApprovedAt;
     // Stress points and gussets are engineering analysis, not modelling: not requested from the Architect.
-    delete (json.properties as Record<string, unknown>).stressPoints;
-    if (Array.isArray(json.required)) json.required = (json.required as string[]).filter((k) => k !== 'stressPoints');
-    delete (json.properties as Record<string, unknown>).openQuestions;
+    delete props.stressPoints;
+    delete props.openQuestions;
+    delete props.boundingBox;
+    if (Array.isArray(json.required)) {
+      json.required = (json.required as string[]).filter((k) => k !== 'stressPoints' && k !== 'boundingBox');
+    }
     
     // Ensure top-level components is required before strict transform
     json.required = [...new Set<string>([...((json.required as string[]) ?? []), 'components'])];
+
+    // Sheet last
+    if ('sheet' in props) {
+      const { sheet, ...rest } = props;
+      json.properties = { ...rest, sheet };
+    }
   }
 
   // bedFace is print orientation, which belongs to a future slicer node.
