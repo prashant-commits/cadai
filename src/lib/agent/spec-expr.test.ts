@@ -87,3 +87,47 @@ describe('resolveSpec', () => {
     expect(spec).toEqual(parsed);
   });
 });
+
+describe('review round 1', () => {
+  const rel = {
+    ...base,
+    parameters: [{ name: 'w', value: 80, min: 40, max: 160, unit: 'mm', description: 'width' }],
+    components: [{ name: 'plate', description: 'p', localExtents: ['w', 'missing', 6], position: ['nope', 0, 0], shape: { kind: 'box' } }],
+  };
+
+  it('still reports a bad expression after normalizeSpec already ran (expr is the source of truth)', () => {
+    const once = resolveSpec(rel as unknown as AssemblySpec).spec;
+    const again = resolveSpec(once);
+    expect(again.errors.join(' ')).toMatch(/missing/);
+    expect(again.errors.join(' ')).toMatch(/nope/);
+    expect(auditSpecCoherence(once).some((v) => v.severity === 'error' && /missing/.test(v.message))).toBe(true);
+  });
+
+  it('is idempotent for a valid relational spec', () => {
+    const good = { ...rel, components: [{ ...rel.components[0], localExtents: ['w', 40, 6], position: [0, 0, 0] }] };
+    const once = resolveSpec(good as unknown as AssemblySpec);
+    const twice = resolveSpec(once.spec);
+    expect(twice.errors).toEqual([]);
+    expect(twice.spec).toEqual(once.spec);
+  });
+
+  it('keeps guide shapes numeric-only', () => {
+    const withGuide = { ...base, guides: [{ label: 'dryer', kind: 'envelope', localExtents: [60, 60, 200], position: [0, 0, 0], shape: { kind: 'tube', axis: 'z', innerD: 'w/2' } }] };
+    expect(AssemblySpecSchema.safeParse(withGuide).success).toBe(false);
+  });
+
+  it('reports duplicate and shadowing names', () => {
+    const dup = { ...base, parameters: [
+      { name: 'w', value: 10, min: 1, max: 20, unit: 'mm', description: 'a' },
+      { name: 'w', value: 12, min: 1, max: 20, unit: 'mm', description: 'b' },
+    ], derived: [{ name: 'w', expr: 'w*2' }], components: [] };
+    expect(resolveSpec(dup as unknown as AssemblySpec).errors.join(' ')).toMatch(/w/);
+    expect(resolveSpec(dup as unknown as AssemblySpec).errors.length).toBeGreaterThan(0);
+  });
+
+  it('reports a declared name outside the grammar, naming the declaration', () => {
+    const bad = { ...base, parameters: [{ name: 'Width', value: 10, min: 1, max: 20, unit: 'mm', description: 'a' }], components: [] };
+    expect(resolveSpec(bad as unknown as AssemblySpec).errors.join(' ')).toMatch(/Width/);
+  });
+});
+
