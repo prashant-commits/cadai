@@ -96,4 +96,12 @@ describe('bridgeGraphStream', () => {
     ]);
     expect(out.filter((e) => e.t === 'delta')).toEqual([{ t: 'delta', text: '**spec**' }]);
   });
+
+  it('drops raw @body tokens from architectBuild', async () => {
+    const out = await bridge([
+      ['messages', [{ content: '@body box\ncube([40, 40, 40]);\n@end' }, { langgraph_node: 'architectBuild' }]],
+    ]);
+    expect(out.filter((e) => e.t === 'delta')).toEqual([]);
+    expect(out.filter((e) => e.t === 'section')).toEqual([]);
+  });
 });

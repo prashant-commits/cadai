@@ -77,7 +77,10 @@ beforeEach(() => {
   process.env.CADAI_MAX_ATTEMPTS = '3';
   delete process.env.VERCEL;
 });
-afterEach(() => { delete process.env.CADAI_PIPELINE; });
+afterEach(() => {
+  delete process.env.CADAI_PIPELINE;
+  delete process.env.CADAI_MAX_DURATION_MS;
+});
 
 describe('CADAI_PIPELINE=architect', () => {
   it('builds through architectBuild and never calls the Drafter', async () => {
@@ -119,5 +122,52 @@ describe('the pipeline is pinned per thread', () => {
     const { kinds } = await drive(newKey());
     expect(kinds).toContain('drafter');
     expect(kinds).not.toContain('build');
+  }, 120_000);
+});
+
+describe('Task 7 review follow-ups', () => {
+  it('arms a fresh runDeadline on spec-gate approve when VERCEL is set, and clears the review budget', async () => {
+    process.env.VERCEL = '1';
+    process.env.CADAI_PIPELINE = 'architect';
+    process.env.CADAI_MAX_VARIANTS = '2';
+    process.env.CADAI_MAX_DURATION_MS = '300000';
+    script(['@body box\ncube([40, 40, 40]);\n@end'], 2);
+    const agent = createCadAgent('gpt-6-sol');
+    const config = { configurable: { thread_id: newKey() }, recursionLimit: 200 };
+    const first = await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
+    expect(isInterrupted(first)).toBe(true);
+    const paused = (await agent.getState(config)).values as AgentStateType;
+    expect(paused.runDeadline).not.toBeNull();
+
+    process.env.CADAI_MAX_DURATION_MS = '180000';
+    const before = Date.now();
+    let result = await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
+    for (let i = 0; i < 10 && isInterrupted(result); i++) {
+      result = await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
+    }
+    const state = (await agent.getState(config)).values as AgentStateType;
+    expect(state.reviewDeadline).toBeNull();
+    expect(state.runDeadline).toBeGreaterThanOrEqual(before + 180000);
+    expect(state.runDeadline).toBeLessThanOrEqual(Date.now() + 180000);
+    expect(state.runDeadline).not.toBe(paused.runDeadline);
+  }, 120_000);
+
+  it('a null spec on the architect path ends at the user instead of architectBuild', async () => {
+    process.env.CADAI_PIPELINE = 'architect';
+    callMock.mockImplementation(async (messages: unknown) => {
+      const kind = kindOf(messages);
+      if (kind === 'planner') return plan(1);
+      if (kind === 'build') return { content: '@body box\ncube([40, 40, 40]);\n@end' };
+      return { not: 'a spec' };
+    });
+    let paused = false;
+    const { state, kinds } = await drive(newKey(), (first) => { paused = isInterrupted(first); });
+    expect(paused).toBe(true);
+    expect(kinds).not.toContain('build');
+    expect(kinds).not.toContain('drafter');
+    expect(state.attemptCount).toBe(0);
+    expect(state.assemblySpec).toBeNull();
+    expect(state.currentCode).toBe('');
+    expect(state.explanation).toContain('No Assembly Spec could be generated');
   }, 120_000);
 });

@@ -18,11 +18,11 @@ export const NODE_LABELS: Record<string, string> = {
 };
 
 /**
- * Nodes that call a structured-output model. Their `messages`-mode chunks are
- * the decoder's raw JSON tokens (and, when it degenerates, runaway repetition),
- * which must never reach the UI; they render their own markdown over `custom`.
+ * Nodes whose `messages`-mode chunks must never reach the UI: structured-output
+ * JSON, and the Architect's raw `@body` build reply. The structured nodes render
+ * their own markdown over `custom`.
  */
-const STRUCTURED_NODES = new Set(['architectNode', 'specReviewer', 'visualCritic']);
+const STRUCTURED_NODES = new Set(['architectNode', 'specReviewer', 'visualCritic', 'architectBuild']);
 
 type CustomPayload = StreamEvent & { node?: string };
 

@@ -138,6 +138,14 @@ function drawnSheetSvg(v: SpecVariant): string | null {
  */
 const CALL_TAIL_MS = 15000; // 15 s kept back for the gate / response after the last call
 const MIN_CALL_MS = 5000; // a call is not worth starting with less than 5 s
+const DEFAULT_MAX_DURATION_MS = 300_000; // the chat routes' maxDuration
+
+/** One Vercel request's hard limit, measured from `now`. Off Vercel there is no deadline. */
+function freshRunDeadline(now: number): number | null {
+  if (!process.env.VERCEL) return null;
+  return now + Number(process.env.CADAI_MAX_DURATION_MS ?? DEFAULT_MAX_DURATION_MS);
+}
+
 function remainingCallMs(deadline: number | null): number | null {
   if (deadline === null || !process.env.VERCEL) return null;
   return deadline - Date.now() - CALL_TAIL_MS;
@@ -865,9 +873,7 @@ export function createCadAgent(
       ? enteredAt + Number(process.env.CADAI_SPEC_REVIEW_BUDGET_MS ?? 240000) // 240 s: Vercel maxDuration 300 s minus the drafter's head start
       : null);
 
-    const runDeadline = state.runDeadline ?? (process.env.VERCEL
-      ? enteredAt + Number(process.env.CADAI_MAX_DURATION_MS ?? 300000) // 300 s: the routes' maxDuration
-      : null);
+    const runDeadline = state.runDeadline ?? freshRunDeadline(enteredAt);
 
     let brief = state.specBrief;
     let variants = [...state.specVariants];
@@ -2161,10 +2167,10 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       chosenVariantId: approvedVariant?.id ?? null,
       assemblySpec: stampedSpec,
       designContract: updatedContract,
-      // Resume after the interrupt is a new request. Drop the previous budget
-      // so the build (either pipeline) gets its own 300 s on Vercel.
+      // Resume after the interrupt is a new request. The soft review budget
+      // ends here; on Vercel the build gets its own maxDuration starting now.
       reviewDeadline: null,
-      runDeadline: null,
+      runDeadline: freshRunDeadline(Date.now()),
     };
   }
 
@@ -2275,9 +2281,10 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     return 'respondToUser';
   }
 
-  /** Finished spec: the Architect writes bodies, or the Drafter does. */
-  function draftTarget(state: AgentStateType): 'architectBuild' | 'drafterNode' {
-    return state.pipeline === 'architect' ? 'architectBuild' : 'drafterNode';
+  /** Finished spec: the Architect writes bodies, or the Drafter does. A null spec has nothing for the Architect to build. */
+  function draftTarget(state: AgentStateType): 'architectBuild' | 'drafterNode' | 'respondToUser' {
+    if (state.pipeline === 'architect') return state.assemblySpec ? 'architectBuild' : 'respondToUser';
+    return 'drafterNode';
   }
 
   /** Failed build: the Architect rewrites the named parts, or Repair does. Same attempt caps. */
@@ -2306,6 +2313,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       specGate: 'specGate',
       drafterNode: 'drafterNode',
       architectBuild: 'architectBuild',
+      respondToUser: 'respondToUser',
     })
     .addEdge('specIllustrator', 'specReviewer')
     .addConditionalEdges('specReviewer', routeAfterReviewer, {
@@ -2313,6 +2321,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       specGate: 'specGate',
       drafterNode: 'drafterNode',
       architectBuild: 'architectBuild',
+      respondToUser: 'respondToUser',
     })
     .addConditionalEdges('specGate', checkReviseRoute, {
       architectNode: 'architectNode',
