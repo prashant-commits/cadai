@@ -21,6 +21,20 @@ const NAME_START = /[a-z]/;
 const NAME_PART = /[a-z0-9_]/;
 const DIGIT = /[0-9]/;
 
+const OPENSCAD_RESERVED = new Set([
+  // Keywords, constants, control flow
+  'for', 'let', 'each', 'if', 'else', 'module', 'function', 'include', 'use', 'true', 'false', 'undef',
+  // 3D and 2D shapes
+  'cube', 'sphere', 'cylinder', 'polyhedron', 'square', 'circle', 'polygon', 'text', 'import', 'surface', 'render',
+  // Transformations & CSG
+  'translate', 'rotate', 'scale', 'resize', 'mirror', 'multmatrix', 'color', 'hull', 'minkowski',
+  'union', 'difference', 'intersection', 'linear_extrude', 'rotate_extrude', 'projection',
+  // Built-in functions & special operations
+  'children', 'echo', 'assert', 'len', 'abs', 'sign', 'sin', 'cos', 'tan', 'acos', 'asin', 'atan', 'atan2',
+  'ceil', 'ln', 'log', 'exp', 'sqrt', 'min', 'max', 'pow', 'norm', 'cross', 'concat',
+  'lookup', 'str', 'chr', 'search', 'version', 'version_num', 'parent_module',
+]);
+
 function tokenize(src: string): Token[] {
   const out: Token[] = [];
   let i = 0;
@@ -173,6 +187,10 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
   const declare = (kind: 'parameter' | 'derived', name: string): boolean => {
     if (!NAME_RE.test(name)) {
       errors.push(`${kind} "${name}" is not a valid name (lowercase letters, digits, underscore; must start with a letter)`);
+      return false;
+    }
+    if (OPENSCAD_RESERVED.has(name)) {
+      errors.push(`${kind} "${name}" is an OpenSCAD keyword or built-in and cannot be used as a ${kind} name`);
       return false;
     }
     if (declared.has(name)) {
