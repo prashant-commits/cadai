@@ -36,3 +36,29 @@ describe('model-output tolerance for relational specs (P0b)', () => {
     expect(normalizeSpec(literal).boundingBox).toEqual({ width: 10, length: 10, height: 10 });
   });
 });
+
+describe('P0b review round 1', () => {
+  it('does not advertise strings for guide fields in the Claude request schema (H1)', async () => {
+    const { claudeVariantSpecSchema } = await import('./llm-schemas');
+    const json = JSON.stringify((claudeVariantSpecSchema() as { properties: { guides: unknown } }).properties.guides);
+    expect(json).not.toContain('"string"');
+  });
+
+  it('reports a guide expression that does not resolve (H2)', () => {
+    const raw = { ...base, parameters: params, components: comps,
+      guides: [{ label: 'x', kind: 'envelope', localExtents: ['nope', 10, 10], position: [0, 0, 0], shape: { kind: 'box' } }] };
+    const spec = normalizeSpec(AssemblySpecSchema.parse(raw));
+    expect(auditSpecCoherence(spec).some((v) => v.severity === 'error' && /nope/.test(v.message))).toBe(true);
+  });
+
+  it('keeps the declared box when a component field failed to resolve', () => {
+    const raw = { ...base, guides: [], parameters: params, components: [{ ...comps[0], localExtents: ['w', 'missing', 6] }] };
+    expect(normalizeSpec(AssemblySpecSchema.parse(raw)).boundingBox).toEqual({ width: 10, length: 10, height: 10 });
+  });
+
+  it('unwraps a JSON string holding an object around the array', () => {
+    const parsed = AssemblySpecSchema.safeParse({ ...base, guides: [], components: comps, parameters: JSON.stringify({ parameters: params }) });
+    expect(parsed.success && parsed.data.parameters?.[0].name).toBe('w');
+  });
+});
+
