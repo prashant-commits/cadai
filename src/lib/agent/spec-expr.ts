@@ -1,4 +1,4 @@
-import type { AssemblySpec } from './assembly-spec';
+import type { AssemblySpec, Guide } from './assembly-spec';
 
 /** An arithmetic expression over spec parameters, e.g. "2*wall + max(a, 3)". */
 export type Expr = string;
@@ -291,6 +291,23 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
     return out;
   });
 
-  const spec: AssemblySpec = components ? { ...raw, components } : { ...raw };
+  const guides = raw.guides?.map((g) => {
+    const w = `guide "${g.label}"`;
+    const out: Guide = { ...g };
+    for (const f of ['localExtents', 'position', 'rotation'] as const) {
+      if (g[f] !== undefined) out[f] = vec(g[f], `${w} ${f}`).value;
+    }
+    if (g.points) out.points = g.points.map((pt, i) => vec(pt, `${w} points[${i}]`).value);
+    if (g.shape) {
+      const shape = { ...g.shape };
+      for (const f of ['innerD', 'wall'] as const) {
+        if (shape[f] !== undefined) shape[f] = num(shape[f], `${w} shape.${f}`).value;
+      }
+      out.shape = shape;
+    }
+    return out;
+  });
+
+  const spec: AssemblySpec = { ...raw, ...(components ? { components } : {}), ...(guides ? { guides } : {}) };
   return { spec, errors };
 }

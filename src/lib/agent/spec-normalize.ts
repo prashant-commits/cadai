@@ -1,5 +1,6 @@
 import type { AssemblySpec } from './assembly-spec';
 import { resolveSpec } from './spec-expr';
+import { impliedEnvelope } from './spec-coherence';
 import { identifierIssue } from '../spec-sheet/blockout-scad';
 
 
@@ -62,9 +63,17 @@ export function normalizeSpec(rawSpec: AssemblySpec): AssemblySpec {
     }
   }
 
+  // A relational spec's envelope is derived: the model's separately declared box is
+  // a second place to get the arithmetic wrong. Literal-only specs keep theirs.
+  const envelope = spec.parameters?.length ? impliedEnvelope({ ...spec, components }) : null;
+  const boundingBox = envelope
+    ? { width: envelope.size[0], length: envelope.size[1], height: envelope.size[2] }
+    : spec.boundingBox;
+
   return {
     ...spec,
     sheet,
+    boundingBox,
     components,
     jointContracts: spec.jointContracts?.map((j) => ({ ...j, partA: ref(j.partA), partB: ref(j.partB) })),
     stressPoints: spec.stressPoints.map((s) => ({ ...s, component: ref(s.component) })),
