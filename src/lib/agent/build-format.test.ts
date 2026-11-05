@@ -76,6 +76,30 @@ describe('fallbacks', () => {
   });
 });
 
+describe('fallbacks, round 2', () => {
+  it('treats a body that only assigns variables as empty', () => {
+    const r = parseBuild('@body lip\nlip_h = 8;\n@end', names);
+    expect(r.bodies.lip).toBeUndefined();
+    expect(r.dropped).toContain('lip');
+  });
+
+  it('falls back to the blockout when other statements sit beside a module wrapper', () => {
+    for (const text of [
+      '@body lip\nmodule lip() { cube([100, 4, 8]); }\nlip();\n@end',
+      '@body lip\nmodule rib() { cube([2, 4, 8]); }\nfor (i = [0:9]) translate([i * 10, 0, 0]) rib();\n@end',
+    ]) {
+      const r = parseBuild(text, names);
+      expect(r.bodies.lip, text).toBeUndefined();
+      expect(r.dropped, text).toContain('lip');
+    }
+  });
+
+  it('never lists one part as both kept-blockout and dropped', () => {
+    const r = parseBuild('@body lip blockout\n@body lip\ncube([1,', names);
+    expect(r.keepBlockout.filter((n) => r.dropped.includes(n))).toEqual([]);
+  });
+});
+
 describe('assembleScript', () => {
   it('emits the header and exactly one module per component, falling back to the blockout', () => {
     const parsed = parseBuild('@body cup_ring\ncylinder(d = 100, h = 30);\n@end', names);
