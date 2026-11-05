@@ -307,13 +307,39 @@ export function claudeVariantSpecSchema(): Record<string, unknown> {
     }
   }
 
-  omitRequestComponentFields(json, ['bedFace']);
+  omitRequestComponentFields(json, ['bedFace', 'expr']);
+  collapseNumberOrString(json);
   annotateClaudeDescriptions(json);
   requireAllExcept(json, CLAUDE_KEEP_OPTIONAL);
 
   const safe = toAnthropicCompatibleSchema(json);
   delete safe.$schema;
   return safe;
+}
+
+/**
+ * Number-or-expression fields come out of zod as anyOf [number, string]. Each is
+ * a union, and dozens of them would eat Anthropic's union budget, so they are
+ * written as the equivalent `type: ['number', 'string']` (one keyword, no union).
+ */
+function collapseNumberOrString(node: unknown): void {
+  if (Array.isArray(node)) {
+    node.forEach(collapseNumberOrString);
+    return;
+  }
+  if (!isPlainObject(node)) return;
+  const union = node.anyOf;
+  if (
+    Array.isArray(union) &&
+    union.length === 2 &&
+    union.every((b) => isPlainObject(b) && Object.keys(b).length === 1 && (b.type === 'number' || b.type === 'string')) &&
+    new Set(union.map((b) => (b as { type: string }).type)).size === 2
+  ) {
+    delete node.anyOf;
+    node.type = ['number', 'string'];
+    return;
+  }
+  for (const v of Object.values(node)) collapseNumberOrString(v);
 }
 
 function normalizeShape(shape: unknown): unknown {

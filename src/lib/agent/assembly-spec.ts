@@ -13,6 +13,18 @@ import { toStrictJsonSchema } from './strict-schema';
  */
 const Vec3 = z.array(z.number()).length(3);
 
+/**
+ * A number, or an expression string over the spec's parameters ("w/2"). Raw
+ * model output may carry strings; `resolveSpec` (spec-expr.ts) turns them into
+ * numbers inside `normalizeSpec`, so everything downstream sees numbers. The
+ * static type stays `number` on purpose (the parsed-but-unresolved window is
+ * short and confined to normalizeSpec), so no consumer has to handle strings.
+ */
+const NumOrExpr = z.union([z.number(), z.string()]) as unknown as z.ZodNumber;
+const Vec3OrExpr = z.array(NumOrExpr).length(3);
+/** Per-field expression strings kept beside the resolved numbers; null where the field was a literal. */
+const ExprVec3 = z.array(z.string().nullable()).length(3);
+
 export const Vec2 = z.array(z.number()).length(2);           // NOT z.tuple (prefixItems breaks decoders)
 export const AxisSchema = z.enum(['x', 'y', 'z']);
 export const PlaneSchema = z.enum(['xy', 'xz', 'yz']);
@@ -30,8 +42,8 @@ export const ShapeKindSchema = z.enum(['box', 'cylinder', 'tube', 'shell', 'prof
 export const ShapeSchema = z.object({
   kind: ShapeKindSchema,
   axis: AxisSchema.optional(),        // cylinder, tube
-  innerD: z.number().optional(),      // tube
-  wall: z.number().optional(),        // shell
+  innerD: NumOrExpr.optional(),       // tube
+  wall: NumOrExpr.optional(),         // shell
   openFace: BedFaceSchema.optional(), // shell: the open face, same six-value enum as bedFace
   plane: PlaneSchema.optional(),      // profile
   points: z.array(Vec2).optional(),   // profile outline
@@ -97,16 +109,16 @@ export type GussetSpec = z.infer<typeof GussetSpecSchema>;
  */
 export const HoleSpecSchema = z.object({
   /** Nominal diameter in mm - the drilled size, already including fit allowance. */
-  d: z.number(),
+  d: NumOrExpr,
   /** Axis the hole runs along in the component's local frame. */
   axis: z.enum(['x', 'y', 'z']),
   /**
    * Centre of the hole's mouth on the face it enters, local mm: the point on
    * the surface, not the centre of the bore.
    */
-  at: Vec3,
+  at: Vec3OrExpr,
   /** Depth along `axis` from `at`. Omit for a hole that goes all the way through. */
-  depth: z.number().optional(),
+  depth: NumOrExpr.optional(),
   /** What the hole is for, e.g. "M3 pass-through for the lid screw". */
   note: z.string().optional(),
 });
@@ -144,6 +156,20 @@ export const AssemblySpecSchema = z.object({
     partA: z.string().optional(),
     partB: z.string().optional(),
   })).optional(),
+  /** Named dimensions the design is built from; component fields may refer to them by name. */
+  parameters: z.array(z.object({
+    name: z.string(),
+    value: z.number(),
+    min: z.number(),
+    max: z.number(),
+    step: z.number().optional(),
+    unit: z.enum(['mm', 'deg', 'count']),
+    description: z.string(),
+  })).optional(),
+  /** Values computed from parameters (and earlier derived values), evaluated in order. */
+  derived: z.array(z.object({ name: z.string(), expr: z.string() })).optional(),
+  /** Constraints that must hold between parameters, each with the reason it must. */
+  relations: z.array(z.object({ expr: z.string(), why: z.string() })).optional(),
   components: z.array(z.object({
     /** snake_case; becomes `module <name>()` verbatim. Normalised after parsing by spec-normalize.ts. */
     name: z.string(),
@@ -154,7 +180,7 @@ export const AssemblySpecSchema = z.object({
      * Replaces the old optional length/width/height/depth object, which never
      * said which axis was which.
      */
-    localExtents: Vec3.optional(),
+    localExtents: Vec3OrExpr.optional(),
     /**
      * Where this component's local origin (its min corner) lands in assembly
      * coordinates, in mm, ALWAYS in the assembled pose. Required in the request
@@ -162,9 +188,9 @@ export const AssemblySpecSchema = z.object({
      * deterministic code rather than written by the model, because misplaced
      * parts are the failure mode a bounding-box check cannot see.
      */
-    position: Vec3.optional(),
+    position: Vec3OrExpr.optional(),
     /** Rotation about the component's own origin, in degrees [X, Y, Z]. */
-    rotation: Vec3.optional(),
+    rotation: Vec3OrExpr.optional(),
     /**
      * One line deriving the non-zero coordinates from other components, e.g.
      * "z = top of base_plate (localExtents z = 6.4)". Emitted as the comment on
@@ -180,6 +206,23 @@ export const AssemblySpecSchema = z.object({
     holes: z.array(HoleSpecSchema).optional(),
     bedFace: BedFaceSchema.optional(),
     shape: ShapeSchema.optional(),
+    /**
+     * The expression strings `resolveSpec` evaluated into the numeric fields
+     * above, kept so a rewrite or the parametric blockout can reuse them.
+     * Written by code, never requested from the model.
+     */
+    expr: z.object({
+      localExtents: ExprVec3.optional(),
+      position: ExprVec3.optional(),
+      rotation: ExprVec3.optional(),
+      innerD: z.string().optional(),
+      wall: z.string().optional(),
+      holes: z.array(z.object({
+        d: z.string().optional(),
+        at: ExprVec3.optional(),
+        depth: z.string().optional(),
+      })).optional(),
+    }).optional(),
   })).optional(),
   guides: z.array(GuideSchema).default([]),
   /** Stress concentrations the Architect identified, graded and prescribed for. */
@@ -275,7 +318,7 @@ export function assemblySpecRequestSchema(): Record<string, unknown> {
 
   // bedFace is print orientation, which belongs to a future slicer node.
   // We omit it from generation requests while keeping it in the zod schema.
-  omitRequestComponentFields(json, ['bedFace']);
+  omitRequestComponentFields(json, ['bedFace', 'expr']);
   
   // The decoder must emit a placement and extents for every component; the
   // zod schema stays lenient so a model that still omits them degrades to
@@ -301,7 +344,7 @@ export function variantSpecRequestSchema(): Record<string, unknown> {
 
   // bedFace is print orientation, which belongs to a future slicer node.
   // We omit it from generation requests while keeping it in the zod schema.
-  omitRequestComponentFields(json, ['bedFace']);
+  omitRequestComponentFields(json, ['bedFace', 'expr']);
   
   const withReqFields = requireComponentFields(json, ['position', 'localExtents', 'shape']);
   

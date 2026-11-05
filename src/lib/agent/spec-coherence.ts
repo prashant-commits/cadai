@@ -1,5 +1,6 @@
 import type { AssemblySpec } from './assembly-spec';
 import type { SpecViolation } from './spec-audit';
+import { resolveSpec } from './spec-expr';
 import { FRAME_EPS, placedBounds, Vec3 } from '../design/placement-geometry';
 
 /**
@@ -100,8 +101,23 @@ const AXES: { key: 'width' | 'length' | 'height'; index: 0 | 1 | 2; label: strin
  * that is 10 mm along x prints exactly the same. It is still worth saying,
  * because an unexplained offset usually means a position was derived wrongly.
  */
-export function auditSpecCoherence(spec: AssemblySpec | null): SpecViolation[] {
+export function auditSpecCoherence(rawSpec: AssemblySpec | null): SpecViolation[] {
   const violations: SpecViolation[] = [];
+  let spec = rawSpec;
+  if (rawSpec) {
+    const resolved = resolveSpec(rawSpec);
+    spec = resolved.spec;
+    for (const error of resolved.errors) {
+      violations.push({
+        kind: 'coherence',
+        field: 'expression',
+        expected: 'resolvable expression',
+        measured: error,
+        severity: 'error',
+        message: `A spec expression does not resolve: ${error}. Declare the name in parameters/derived, or use a number.`,
+      });
+    }
+  }
   const implied = impliedEnvelope(spec);
   if (!spec || !implied) return violations;
 
