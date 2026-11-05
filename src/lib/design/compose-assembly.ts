@@ -5,6 +5,7 @@ import { isZeroVec, Vec3 } from './placement-geometry';
 import { gussetScad, gussetsFor } from './gussets';
 import { matingCuts } from './mating-cuts';
 import { shapeScad } from '../spec-sheet/blockout-scad';
+import { contactSinks } from './contact-sink';
 
 /**
  * Deterministic assembly placement.
@@ -346,6 +347,23 @@ function positionTokens(
   }) as [string, string, string];
 }
 
+/** Translate tokens shifted by a contact sink. The `*_pos_*` assignment stays the spec value. */
+function sunkTokens(
+  tokens: [string, string, string],
+  sink: [number, number, number] | undefined,
+): [string, string, string] {
+  if (!sink) return tokens;
+  return [0, 1, 2].map((i) => offsetAxis(tokens[i], sink[i])) as [string, string, string];
+}
+
+/** `0` with a negative sink becomes `-0.02`; a named axis becomes `name - 0.02`. */
+function offsetAxis(token: string, delta: number): string {
+  if (!delta) return token;
+  const mag = fmt(Math.abs(delta));
+  if (token === '0') return delta < 0 ? `-${mag}` : mag;
+  return `${token} ${delta < 0 ? '-' : '+'} ${mag}`;
+}
+
 /** `rotate([…])` vector. Expression axes replace the literal; a zero rotation with none is omitted. */
 function rotationText(c: PlacementComponent, exprs: (string | null)[] | undefined): string | null {
   const parts = [0, 1, 2].map((i) => positionExpr(exprs, i));
@@ -421,10 +439,15 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
   }
 
   const stripped = stripTopLevelGeometry(code);
-  const components = buildPlacementComponents(spec, frames, true).map((c) => ({
-    ...c,
-    gussets: gussetsFor(spec, c.name).reduce((n, g) => n + g.gusset.at.length, 0),
-  }));
+  const shellOf = new Map(frames.map((frame) => [frame.name, frame.shellCount]));
+  const components = buildPlacementComponents(spec, frames, true).map((c) => {
+    const shellCount = shellOf.get(c.name);
+    return {
+      ...c,
+      gussets: gussetsFor(spec, c.name).reduce((n, g) => n + g.gusset.at.length, 0),
+      ...(typeof shellCount === 'number' ? { shellCount } : {}),
+    };
+  });
   const noteFor = new Map((spec.components ?? []).map((c) => [c.name, c.positionNote?.replace(/\s+/g, ' ').trim()]));
 
   const params: string[] = [];
@@ -433,9 +456,11 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
   const reportNotes: string[] = [];
 
   const notesAttached = new Set<string>();
+  const sinks = contactSinks(spec);
   const posExprs = new Map<string, [string, string, string]>();
   for (const c of components) {
-    posExprs.set(c.name, positionTokens(c, spec, 'assign', params, notesAttached));
+    // The parameter keeps the spec value. The sink is applied only on the translate.
+    posExprs.set(c.name, sunkTokens(positionTokens(c, spec, 'assign', params, notesAttached), sinks.get(c.name)));
   }
 
   const allCuts = matingCuts(spec, (a, b) => {
@@ -551,7 +576,8 @@ export function instantiationFor(spec: AssemblySpec, componentName: string, fram
   const components = buildPlacementComponents(spec, frames, true);
   const c = components.find((x) => x.name === componentName)!;
   const specComp = spec.components?.find((x) => x.name === componentName);
-  const posExpr = positionTokens(c, spec, 'inline', []);
+  const sinks = contactSinks(spec);
+  const posExpr = sunkTokens(positionTokens(c, spec, 'inline', []), sinks.get(componentName));
   const gussets = gussetsFor(spec, componentName);
   const rot = specComp?.expr?.rotation;
 
@@ -570,7 +596,7 @@ export function instantiationFor(spec: AssemblySpec, componentName: string, fram
     const compB = components.find(x => x.name === cut.inserted);
     const specB = spec.components?.find(x => x.name === cut.inserted);
     if (!compB || !specB || !specB.localExtents || specB.localExtents.length < 3) continue;
-    const posBExpr = positionTokens(compB, spec, 'inline', []);
+    const posBExpr = sunkTokens(positionTokens(compB, spec, 'inline', []), sinks.get(cut.inserted));
     const body = shapeScad(specB, cut.clearance);
     cutLines.push(placementCall(compB, posBExpr, body, specB.expr?.rotation));
   }

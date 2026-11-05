@@ -343,7 +343,7 @@ function skeletonSummary(spec: AssemblySpec | null): string {
  * most of them.
  */
 const REPAIR_KIND_PRIORITY: SpecViolation['kind'][] = [
-  'unknown_symbol', 'dimensionality', 'empty', 'manifold', 'shells', 'interference',
+  'unknown_symbol', 'dimensionality', 'empty', 'manifold', 'severed', 'shells', 'interference',
   'clearance', 'floating', 'floor', 'extents', 'bbox', 'standing', 'buildplate', 'compile', 'visual',
 ];
 function dominantViolationKind(violations: SpecViolation[]): SpecViolation['kind'] | null {
@@ -1476,7 +1476,10 @@ ${contract}`;
           // Without it the retrieval is invisible to tracing (or shows up as a
           // detached root trace), which is exactly the step you need to see
           // when a draft comes back with the wrong hardware module.
-          const toolResult = await getFunctionalCadModuleTool.invoke(toolCall.args as any, config);
+          const toolResult = await getFunctionalCadModuleTool.invoke(
+            toolCall.args as unknown as Parameters<typeof getFunctionalCadModuleTool.invoke>[0],
+            config,
+          );
           toolCallMessages.push(
             new ToolMessage({
               tool_call_id: toolCall.id || `tool-${Date.now()}`,
@@ -1575,6 +1578,18 @@ ${contract}`;
     const placementReport = state.placementReport ?? null;
     const modelMin = validation.summary?.boundingBox?.min ?? modelInfo?.boundingBox.min ?? null;
     specViolations.push(...auditPlacement(placementReport, modelMin, state.assemblySpec));
+    for (const component of placementReport?.components ?? []) {
+      const shellCount = (component as { shellCount?: number }).shellCount;
+      if (shellCount === undefined || shellCount <= 1) continue;
+      specViolations.push({
+        kind: 'severed',
+        field: component.name,
+        expected: 1,
+        measured: shellCount,
+        severity: 'error',
+        message: `${component.name} is cut into ${shellCount} separate pieces on its own - a cut runs through it. Stop the cut short of the edge or bridge the pieces.`,
+      });
+    }
     if (modelMin) {
 
     }
@@ -1806,7 +1821,10 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
           // Without it the retrieval is invisible to tracing (or shows up as a
           // detached root trace), which is exactly the step you need to see
           // when a draft comes back with the wrong hardware module.
-          const toolResult = await getFunctionalCadModuleTool.invoke(toolCall.args as any, config);
+          const toolResult = await getFunctionalCadModuleTool.invoke(
+            toolCall.args as unknown as Parameters<typeof getFunctionalCadModuleTool.invoke>[0],
+            config,
+          );
           toolCallMessages.push(
             new ToolMessage({
               tool_call_id: toolCall.id || `tool-${Date.now()}`,

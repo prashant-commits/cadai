@@ -10,6 +10,8 @@ export interface ModuleFrame {
   max: Vec3;
   size: Vec3;
   error?: string;
+  /** Shells in this module alone, when the backend reported a count. */
+  shellCount?: number;
 }
 
 const ZERO: Vec3 = [0, 0, 0];
@@ -41,6 +43,7 @@ export async function measureModuleFrames(code: string, moduleNames: string[]): 
         max: ZERO,
         size: ZERO,
         error: result.error ?? 'module produced no measurable 3D geometry',
+        ...shellField(result.shellCount),
       });
       continue;
     }
@@ -51,7 +54,12 @@ export async function measureModuleFrames(code: string, moduleNames: string[]): 
       min: bb.min.map(round) as Vec3,
       max: bb.max.map(round) as Vec3,
       size: bb.size.map(round) as Vec3,
+      ...shellField(result.shellCount),
     });
   }
   return frames;
+}
+
+function shellField(shellCount: number | undefined): { shellCount: number } | Record<string, never> {
+  return shellCount === undefined ? {} : { shellCount };
 }

@@ -39,4 +39,15 @@ describe('measureModuleFrames', () => {
   it('returns an empty list for no names without compiling', async () => {
     expect(await measureModuleFrames(CODE, [])).toEqual([]);
   });
+
+  it('records the shell count when a module is cut into separate pieces', async () => {
+    const split = 'module plate() { cube([10, 10, 10]); translate([30, 0, 0]) cube([10, 10, 10]); }\n';
+    const [frame] = await measureModuleFrames(split, ['plate']);
+    expect(frame.valid).toBe(true);
+    expect(frame.shellCount).toBe(2);
+
+    const solid = 'module plate() { cube([10, 10, 10]); }\n';
+    const [one] = await measureModuleFrames(solid, ['plate']);
+    expect(one.shellCount === undefined || one.shellCount <= 1).toBe(true);
+  });
 });

@@ -58,6 +58,28 @@ describe('architectBuild', () => {
     expect(out.attemptCount).toBe(2);
   });
 
+  it('repeat visit: a severed component is named and the other part is kept', async () => {
+    const first = await makeArchitectBuild(fakeModel('@body cup_ring\ncylinder(d = ring_id, h = 30);\n@end\n@body backplate\ncube([120, 6, 160]);\n@end').model as never)(state());
+    const { model, calls } = fakeModel('@body cup_ring\ndifference() { cylinder(d = ring_id + 10, h = 30); cylinder(d = ring_id, h = 28); }\n@end');
+    const out = await makeArchitectBuild(model as never)(state({
+      currentCode: first.currentCode,
+      attemptCount: 1,
+      specViolations: [{
+        kind: 'severed',
+        severity: 'error',
+        field: 'cup_ring',
+        expected: 1,
+        measured: 2,
+        message: 'cup_ring is cut into 2 separate pieces on its own - a cut runs through it. Stop the cut short of the edge or bridge the pieces.',
+      } as never],
+    }));
+    const sent = calls[0].map(text).join('\n');
+    expect(sent).toContain('REQUIRED CHANGES');
+    expect(sent).toContain('cup_ring is cut into 2 separate pieces');
+    expect(sent).toContain('Write a module body only for: cup_ring');
+    expect(out.currentCode).toContain('cube([120, 6, 160]);');
+  });
+
   it('a human comment from the accept gate is a mandatory [HUMAN] line', async () => {
     const { model, calls } = fakeModel('@body cup_ring\ncylinder(d = ring_id, h = 40);\n@end\n@addressed H1');
     await makeArchitectBuild(model as never)(state({ currentCode: '', attemptCount: 1, gateAction: 'revise', gateFeedback: 'Make the ring 40 mm tall' } as never));
