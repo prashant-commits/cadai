@@ -221,3 +221,22 @@ describe('scoresFor', () => {
     expect(scores.find((s) => s.name === 'review_rounds')?.value).toBe(3);
   });
 });
+
+describe('pipeline A/B metrics (Task 8)', () => {
+  it('counts dead parameters, sliders, blockout fallbacks and the pipeline', async () => {
+    const { metricsFromState } = await import('./metrics');
+    const m = metricsFromState('p', 'claude-haiku-5.5', {
+      currentCode: 'w = 40; // [20:80] width\nh = 10; // [5:20] height\nd = 3; // [1:5] hole\nmodule a() { cube([w, 10, h]); }\n',
+      specViolations: [
+        { kind: 'dead_parameter', severity: 'warning', message: 'd' },
+        { kind: 'dead_parameter', severity: 'warning', message: 'x' },
+      ],
+      buildFallbacks: 1,
+      pipeline: 'architect',
+    } as never, 1000);
+    expect(m.paramCount).toBe(3);
+    expect(m.deadParams).toBe(2);
+    expect(m.buildFallbacks).toBe(1);
+    expect(m.pipeline).toBe('architect');
+  });
+});

@@ -10,6 +10,7 @@
  *
  * Flags are written onto the process before createCadAgent. The graph reads
  * them when the run actually executes:
+ *   --pipeline drafter|architect     CADAI_PIPELINE        (default drafter)
  *   --sheets on|off                  CADAI_SPEC_SHEETS     (default on)
  *   --drafter-start blockout|scratch CADAI_DRAFTER_START   (default blockout)
  *   --critic on|off                  CADAI_VISUAL_CRITIC   (default off)
@@ -62,6 +63,7 @@ interface Args {
   only: string[];
   langfuse: boolean;
   seed: boolean;
+  pipeline?: 'drafter' | 'architect';
   sheets?: 'on' | 'off';
   drafterStart?: 'blockout' | 'scratch';
   critic?: 'on' | 'off';
@@ -83,6 +85,10 @@ function parseArgs(argv: string[]): Args {
     else if (v === '--only') a.only = argv[++i].split(',').map((s) => s.trim()).filter(Boolean);
     else if (v === '--no-langfuse') a.langfuse = false;
     else if (v === '--seed-dataset') a.seed = true;
+    else if (v === '--pipeline') {
+      const p = argv[++i];
+      if (p === 'drafter' || p === 'architect') a.pipeline = p;
+    }
     else if (v === '--sheets') a.sheets = onOff(argv[++i]);
     else if (v === '--drafter-start') {
       const start = argv[++i];
@@ -103,6 +109,7 @@ function parseArgs(argv: string[]): Args {
 
 /** Flags override the defaults. Unset flags leave an explicit shell env alone. */
 function applyEvalEnv(args: Args) {
+  if (args.pipeline) process.env.CADAI_PIPELINE = args.pipeline;
   if (args.sheets) process.env.CADAI_SPEC_SHEETS = args.sheets;
   if (args.drafterStart) process.env.CADAI_DRAFTER_START = args.drafterStart;
   if (args.critic) process.env.CADAI_VISUAL_CRITIC = args.critic;
@@ -134,7 +141,7 @@ function gitSha(): string {
 async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<GenerationMetrics> {
   const handler = getLangfuseCallbackHandler({
     tags: ['cadai', 'eval', args.model],
-    metadata: { model: args.model, tag: args.tag, promptId: item.id },
+    metadata: { model: args.model, tag: args.tag, promptId: item.id, pipeline: process.env.CADAI_PIPELINE ?? args.pipeline ?? null },
   });
   console.log(`\n=== ${item.id} ===`);
   // Node-by-node progress in the log has been removed as part of the stream refactoring.
@@ -207,6 +214,7 @@ async function main() {
   if (sheetError) throw new Error(sheetError);
   const items = (args.only.length ? prompts.filter((p) => args.only.includes(p.id)) : prompts).slice(0, args.limit);
   console.log(`Eval: ${items.length} prompt(s) on ${args.model}, tag "${args.tag}", ` +
+    `pipeline ${process.env.CADAI_PIPELINE ?? 'default'}, ` +
     `sheets ${process.env.CADAI_SPEC_SHEETS}, drafter-start ${process.env.CADAI_DRAFTER_START}, ` +
     `critic ${process.env.CADAI_VISUAL_CRITIC} (${process.env.CADAI_CRITIC_MODEL}), ` +
     `reviewer ${process.env.CADAI_REVIEWER_MODEL ?? `${args.model} (the run model)`}. ` +
@@ -233,7 +241,7 @@ async function main() {
     const result = await dataset.runExperiment({
       name: 'cadai-generation',
       runName: `${args.tag}-${args.model}-${new Date().toISOString().slice(0, 16)}`,
-      metadata: { model: args.model, tag: args.tag, gitSha: gitSha() },
+      metadata: { model: args.model, tag: args.tag, gitSha: gitSha(), pipeline: process.env.CADAI_PIPELINE ?? args.pipeline ?? null },
       data,
       // One at a time: each run drives a wasm compiler and spends model quota.
       maxConcurrency: 1,
@@ -250,7 +258,7 @@ async function main() {
   const summary = summarize(rows);
   console.table(summary);
   const file = `${base}.json`;
-  fs.writeFileSync(file, JSON.stringify({ args, gitSha: gitSha(), summary, rows }, null, 2));
+  fs.writeFileSync(file, JSON.stringify({ args, gitSha: gitSha(), pipeline: process.env.CADAI_PIPELINE ?? args.pipeline ?? null, summary, rows }, null, 2));
   console.log(`wrote ${file}`);
 
   await getLangfuseSpanProcessor()?.forceFlush();
