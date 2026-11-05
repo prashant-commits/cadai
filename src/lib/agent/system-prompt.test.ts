@@ -9,6 +9,7 @@ import {
   PLACEMENT_RULES,
   OPENSCAD_RULES,
   ARCHITECT_PLANNER_PREAMBLE,
+  ARCHITECT_VARIANT_POSE,
   ARCHITECT_VARIANT_PREAMBLE,
   DRAFTER_PREAMBLE,
   DRAFTER_PLACEMENT_CONTRACT,
@@ -28,6 +29,7 @@ const BLOCKS: Record<string, string> = {
   PLACEMENT_RULES,
   OPENSCAD_RULES,
   ARCHITECT_PLANNER_PREAMBLE,
+  ARCHITECT_VARIANT_POSE,
   ARCHITECT_VARIANT_PREAMBLE,
   DRAFTER_PREAMBLE,
   DRAFTER_PLACEMENT_CONTRACT,
@@ -40,6 +42,7 @@ const BLOCKS: Record<string, string> = {
 const COMPOSED: Record<string, string> = {
   planner: systemPromptFor('planner'),
   variant: systemPromptFor('variant'),
+  build: systemPromptFor('build'),
   drafter: systemPromptFor('drafter'),
   drafterPlaced: systemPromptFor('drafter', { placements: true }),
   repair: systemPromptFor('repair'),
@@ -77,12 +80,13 @@ const BLOCK_BUDGET: Record<string, number> = {
 };
 const NODE_BUDGET: Record<string, number> = {
   planner: 450,
-  variant: 1460, // +120: relational spec (Task 3), within the plan's +60 per block
+  variant: 1400, // lowered from 1460 by the council rewrite (no bbox arithmetic, no pose essay)
   drafter: 1360,
   drafterPlaced: 1530,
   repair: 1670,
   critic: 650,
   reviewer: 250,
+  build: 650, // was 1251 before the council slimmed it
 };
 
 /**
@@ -99,7 +103,7 @@ describe('system prompt composition', () => {
   it('composes each node from the shared blocks, each block once', () => {
     const join = (...parts: string[]) => parts.join('\n\n');
     expect(COMPOSED.planner).toBe(join(CORE, ARCHITECT_PLANNER_PREAMBLE));
-    expect(COMPOSED.variant).toBe(join(CORE, SPEC_FIELDS, PLACEMENT_RULES, ARCHITECT_VARIANT_PREAMBLE));
+    expect(COMPOSED.variant).toBe(join(CORE, ARCHITECT_VARIANT_POSE, SPEC_FIELDS, PLACEMENT_RULES, ARCHITECT_VARIANT_PREAMBLE));
     expect(COMPOSED.drafter).toBe(join(CORE, SPEC_FIELDS, OPENSCAD_RULES, DRAFTER_PREAMBLE));
     expect(COMPOSED.drafterPlaced).toBe(join(CORE, SPEC_FIELDS, OPENSCAD_RULES, DRAFTER_PREAMBLE, DRAFTER_PLACEMENT_CONTRACT));
     expect(COMPOSED.repair).toBe(join(CORE, SPEC_FIELDS, PLACEMENT_RULES, OPENSCAD_RULES, REPAIR_PREAMBLE));
@@ -185,8 +189,7 @@ describe('node preambles', () => {
   it('keeps the variant preamble to what the specifier decides', () => {
     const v = COMPOSED.variant;
     expect(ARCHITECT_VARIANT_PREAMBLE).toContain('Mechanical Architect Specifier');
-    expect(v).toContain('WHAT WILL BE MEASURED');
-    expect(v).toMatch(/COHERENCE IS CHECKED/);
+    expect(v).not.toMatch(/WHAT WILL BE MEASURED|COHERENCE IS CHECKED/);
     expect(v).toContain('DESIGN CONTRACT');
     for (const field of ['localExtents', 'positionNote']) {
       expect(v, `variant prompt lost ${field}`).toContain(field);
@@ -195,8 +198,8 @@ describe('node preambles', () => {
     expect(ARCHITECT_VARIANT_PREAMBLE).not.toContain('stressPoints');
     expect(SPEC_FIELDS).not.toContain('stressPoints');
     // The model is built in the pose it is used in, never laid out for manufacture.
-    expect(ARCHITECT_VARIANT_PREAMBLE).toContain('## In-use pose');
-    expect(ARCHITECT_VARIANT_PREAMBLE).toMatch(/wall-mounted object stands upright/i);
+    expect(ARCHITECT_VARIANT_POSE).toMatch(/Wall-mounted means upright against a vertical wall/);
+    expect(countCI(v, 'never laid flat')).toBe(1);
     expect(v).toMatch(/holds or supports an object/i);
     expect(v).toMatch(/guides envelope at its resting pose/i);
   });
@@ -346,6 +349,7 @@ describe('relational spec prompt (Task 3)', () => {
     }
     expect(ARCHITECT_VARIANT_PREAMBLE).toMatch(/parameter/i);
     expect(ARCHITECT_VARIANT_PREAMBLE).toMatch(/expression/i);
+    expect(ARCHITECT_VARIANT_PREAMBLE).toMatch(/Every parameter must drive at least one component dimension or position/);
   });
 
   it('states the expression grammar once, in SPEC_FIELDS', () => {
