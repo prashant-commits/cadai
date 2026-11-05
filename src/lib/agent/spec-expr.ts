@@ -1,4 +1,4 @@
-import type { AssemblySpec } from './assembly-spec';
+import type { AssemblySpec, Guide } from './assembly-spec';
 
 /** An arithmetic expression over spec parameters, e.g. "2*wall + max(a, 3)". */
 export type Expr = string;
@@ -291,6 +291,35 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
     return out;
   });
 
-  const spec: AssemblySpec = components ? { ...raw, components } : { ...raw };
+  const guides = raw.guides?.map((g) => {
+    const w = `guide "${g.label}"`;
+    const out: Guide = { ...g };
+    const expr: NonNullable<Guide['expr']> = { ...(g.expr ?? {}) };
+    for (const f of ['localExtents', 'position', 'rotation'] as const) {
+      if (g[f] === undefined) continue;
+      const r = vec(g[f], `${w} ${f}`, g.expr?.[f]);
+      out[f] = r.value;
+      if (r.expr) expr[f] = r.expr;
+    }
+    if (g.points) {
+      const pts = g.points.map((pt, i) => vec(pt, `${w} points[${i}]`, g.expr?.points?.[i] ?? undefined));
+      out.points = pts.map((r) => r.value);
+      if (pts.some((r) => r.expr)) expr.points = pts.map((r) => r.expr ?? null);
+    }
+    if (g.shape) {
+      const shape = { ...g.shape };
+      for (const f of ['innerD', 'wall'] as const) {
+        if (shape[f] === undefined) continue;
+        const r = num(shape[f], `${w} shape.${f}`, g.expr?.[f]);
+        shape[f] = r.value;
+        if (r.expr !== null) expr[f] = r.expr;
+      }
+      out.shape = shape;
+    }
+    if (Object.keys(expr).length) out.expr = expr;
+    return out;
+  });
+
+  const spec: AssemblySpec = { ...raw, ...(components ? { components } : {}), ...(guides ? { guides } : {}) };
   return { spec, errors };
 }

@@ -50,17 +50,40 @@ export const ShapeSchema = z.object({
   holes: z.array(z.array(Vec2)).optional(), // profile inner outlines
 });
 export type Shape = z.infer<typeof ShapeSchema>;
-/** Guides are reference geometry nothing resolves expressions for: their shape stays numeric-only. */
-const GuideShapeSchema = ShapeSchema.extend({ innerD: z.number().optional(), wall: z.number().optional() });
+/**
+ * Guides are reference geometry. The model is asked for plain numbers, but real
+ * output sometimes puts a parameter expression ("w") in a guide field, and
+ * rejecting the whole spec for that cost 4 of 72 parses. So the validating
+ * schema accepts number|string while the emitted JSON Schema stays
+ * `{"type":"number"}` (zod honours `_zod.toJSONSchema`), which keeps every
+ * request schema byte-identical to before. `resolveSpec` turns the strings into
+ * numbers. The static type stays `number`, as for NumOrExpr.
+ */
+const GuideNum = z.union([z.number(), z.string()]) as unknown as z.ZodNumber;
+(GuideNum as unknown as { _zod: { toJSONSchema?: () => object } })._zod.toJSONSchema = () => ({ type: 'number' });
+const GuideVec3 = z.array(GuideNum).length(3);
 
 export const GuideSchema = z.object({
   label: z.string(),
   kind: z.enum(['envelope', 'line']),
-  shape: GuideShapeSchema.optional(),  // envelope; absent = box
-  localExtents: Vec3.optional(),       // envelope
-  position: Vec3.optional(),           // envelope: min corner in assembly coordinates
-  rotation: Vec3.optional(),           // envelope: degrees about its own min corner, applied first
-  points: z.array(Vec3).optional(),    // line: 2..12 points in assembly coordinates
+  shape: ShapeSchema.extend({ innerD: GuideNum.optional(), wall: GuideNum.optional() }).optional(), // envelope; absent = box
+  localExtents: GuideVec3.optional(),       // envelope
+  position: GuideVec3.optional(),           // envelope: min corner in assembly coordinates
+  rotation: GuideVec3.optional(),           // envelope: degrees about its own min corner, applied first
+  points: z.array(GuideVec3).optional(),    // line: 2..12 points in assembly coordinates
+  /**
+   * The expression strings `resolveSpec` evaluated into the numeric fields above,
+   * kept (as for components) so an unresolvable one is reported again on a second
+   * resolve and the guide follows parameter edits. Written by code, never requested.
+   */
+  expr: z.object({
+    localExtents: ExprVec3.optional(),
+    position: ExprVec3.optional(),
+    rotation: ExprVec3.optional(),
+    points: z.array(ExprVec3.nullable()).optional(),
+    innerD: z.string().optional(),
+    wall: z.string().optional(),
+  }).optional(),
 });
 export type Guide = z.infer<typeof GuideSchema>;
 
@@ -143,6 +166,24 @@ export const StressPointSchema = z.object({
 });
 export type StressPoint = z.infer<typeof StressPointSchema>;
 
+/**
+ * Models sometimes send an array field as a JSON string of the array. Parse it
+ * when it is a string; on failure leave the value so zod reports the error.
+ */
+function jsonArray<T extends z.ZodType>(schema: T) {
+  return z.preprocess((v) => {
+    if (typeof v !== 'string') return v;
+    let parsed: unknown;
+    try { parsed = JSON.parse(v); } catch { return v; }
+    // A wrapper object around the array, e.g. {"parameters": [...]}: unwrap a single array value.
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const values = Object.values(parsed);
+      if (values.length === 1 && Array.isArray(values[0])) return values[0];
+    }
+    return parsed;
+  }, schema.optional());
+}
+
 export const AssemblySpecSchema = z.object({
   sheet: z.string().default(''),
   assemblyName: z.string(),
@@ -159,7 +200,7 @@ export const AssemblySpecSchema = z.object({
     partB: z.string().optional(),
   })).optional(),
   /** Named dimensions the design is built from; component fields may refer to them by name. */
-  parameters: z.array(z.object({
+  parameters: jsonArray(z.array(z.object({
     name: z.string(),
     value: z.number(),
     min: z.number(),
@@ -167,11 +208,11 @@ export const AssemblySpecSchema = z.object({
     step: z.number().optional(),
     unit: z.enum(['mm', 'deg', 'count']),
     description: z.string(),
-  })).optional(),
+  }))),
   /** Values computed from parameters (and earlier derived values), evaluated in order. */
-  derived: z.array(z.object({ name: z.string(), expr: z.string() })).optional(),
+  derived: jsonArray(z.array(z.object({ name: z.string(), expr: z.string() }))),
   /** Constraints that must hold between parameters, each with the reason it must. */
-  relations: z.array(z.object({ expr: z.string(), why: z.string() })).optional(),
+  relations: jsonArray(z.array(z.object({ expr: z.string(), why: z.string() }))),
   components: z.array(z.object({
     /** snake_case; becomes `module <name>()` verbatim. Normalised after parsing by spec-normalize.ts. */
     name: z.string(),
@@ -291,6 +332,12 @@ export function omitRequestComponentFields(json: Record<string, unknown>, fields
   }
   if (Array.isArray(items.required)) {
     items.required = items.required.filter((r) => !fields.includes(r));
+  }
+  // Guides carry the same code-written `expr`; it is never requested either.
+  const guides = (props?.guides as { items?: { properties?: Record<string, unknown>; required?: string[] } } | undefined)?.items;
+  if (guides?.properties && fields.includes('expr')) {
+    delete guides.properties.expr;
+    if (Array.isArray(guides.required)) guides.required = guides.required.filter((r) => r !== 'expr');
   }
   return json;
 }

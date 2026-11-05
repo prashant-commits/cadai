@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AssemblySpecSchema, type AssemblySpec } from './assembly-spec';
+import { AssemblySpecSchema, assemblySpecRequestSchema, type AssemblySpec } from './assembly-spec';
 import { auditSpecCoherence } from './spec-coherence';
 import { ExprError, evalExpr, resolveSpec } from './spec-expr';
 
@@ -111,9 +111,13 @@ describe('review round 1', () => {
     expect(twice.spec).toEqual(once.spec);
   });
 
-  it('keeps guide shapes numeric-only', () => {
+  it('accepts guide expressions when validating (P0b) but still requests numbers only', () => {
     const withGuide = { ...base, guides: [{ label: 'dryer', kind: 'envelope', localExtents: [60, 60, 200], position: [0, 0, 0], shape: { kind: 'tube', axis: 'z', innerD: 'w/2' } }] };
-    expect(AssemblySpecSchema.safeParse(withGuide).success).toBe(false);
+    expect(AssemblySpecSchema.safeParse(withGuide).success).toBe(true);
+    const guideProps = (assemblySpecRequestSchema() as any).properties.guides.items.properties;
+    for (const f of [guideProps.localExtents, guideProps.position, guideProps.shape.anyOf[0].properties.innerD, guideProps.shape.anyOf[0].properties.wall]) {
+      expect(JSON.stringify(f)).not.toContain('"string"');
+    }
   });
 
   it('reports duplicate and shadowing names', () => {

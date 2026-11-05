@@ -1,5 +1,6 @@
 import type { AssemblySpec } from './assembly-spec';
 import { resolveSpec } from './spec-expr';
+import { impliedEnvelope } from './spec-coherence';
 import { identifierIssue } from '../spec-sheet/blockout-scad';
 
 
@@ -25,7 +26,8 @@ export function toSnakeCase(name: string): string {
 export function normalizeSpec(rawSpec: AssemblySpec): AssemblySpec {
   // Expression strings become numbers first, so every step below (and every consumer) sees numbers.
   // Unresolvable fields are left at 0 here; auditSpecCoherence reports them to the Architect's retry.
-  const spec = resolveSpec(rawSpec).spec;
+  const resolved = resolveSpec(rawSpec);
+  const spec = resolved.spec;
   const rename = new Map<string, string>();
   const prose = new Set<string>();
   const used = new Set<string>();
@@ -62,9 +64,19 @@ export function normalizeSpec(rawSpec: AssemblySpec): AssemblySpec {
     }
   }
 
+  // A relational spec's envelope is derived: the model's separately declared box is
+  // a second place to get the arithmetic wrong. Literal-only specs keep theirs.
+  // Only when every expression resolved: a field left at 0 by a failure would corrupt the box, and the
+  // declared one may well be right. The errors recur on every pass (the source strings are kept in `expr`).
+  const envelope = spec.parameters?.length && resolved.errors.length === 0 ? impliedEnvelope({ ...spec, components }) : null;
+  const boundingBox = envelope
+    ? { width: envelope.size[0], length: envelope.size[1], height: envelope.size[2] }
+    : spec.boundingBox;
+
   return {
     ...spec,
     sheet,
+    boundingBox,
     components,
     jointContracts: spec.jointContracts?.map((j) => ({ ...j, partA: ref(j.partA), partB: ref(j.partB) })),
     stressPoints: spec.stressPoints.map((s) => ({ ...s, component: ref(s.component) })),
