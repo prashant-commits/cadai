@@ -1,4 +1,5 @@
 import type { AssemblySpec } from './assembly-spec';
+import { resolveSpec } from './spec-expr';
 import { identifierIssue } from '../spec-sheet/blockout-scad';
 
 
@@ -21,7 +22,10 @@ export function toSnakeCase(name: string): string {
  * has a position. Applied to what the Architect returns and to what the client
  * sends back from the spec gate, so downstream code never sees "Cup Receptacle".
  */
-export function normalizeSpec(spec: AssemblySpec): AssemblySpec {
+export function normalizeSpec(rawSpec: AssemblySpec): AssemblySpec {
+  // Expression strings become numbers first, so every step below (and every consumer) sees numbers.
+  // Unresolvable fields are left at 0 here; auditSpecCoherence reports them to the Architect's retry.
+  const spec = resolveSpec(rawSpec).spec;
   const rename = new Map<string, string>();
   const prose = new Set<string>();
   const used = new Set<string>();
