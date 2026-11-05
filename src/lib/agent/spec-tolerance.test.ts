@@ -37,11 +37,24 @@ describe('model-output tolerance for relational specs (P0b)', () => {
   });
 });
 
+/** True if any node in the JSON Schema accepts both a number and a string (label/kind/enums are legitimately strings). */
+function hasNumberOrString(node: unknown): boolean {
+  if (Array.isArray(node)) return node.some(hasNumberOrString);
+  if (!node || typeof node !== 'object') return false;
+  const n = node as Record<string, unknown>;
+  const types = Array.isArray(n.type) ? n.type : [];
+  const branches = Array.isArray(n.anyOf) ? n.anyOf.map((b) => (b as { type?: unknown }).type) : [];
+  if ((types.includes('number') && types.includes('string')) || (branches.includes('number') && branches.includes('string'))) return true;
+  return Object.values(n).some(hasNumberOrString);
+}
+
 describe('P0b review round 1', () => {
   it('does not advertise strings for guide fields in the Claude request schema (H1)', async () => {
     const { claudeVariantSpecSchema } = await import('./llm-schemas');
-    const json = JSON.stringify((claudeVariantSpecSchema() as { properties: { guides: unknown } }).properties.guides);
-    expect(json).not.toContain('"string"');
+    // The original assertion (`not.toContain('"string"')` on the whole guides schema) cannot pass on any
+    // tree: `label` and `kind` are strings. It is narrowed to what it meant: no number|string field.
+    const guides = (claudeVariantSpecSchema() as { properties: { guides: unknown } }).properties.guides;
+    expect(hasNumberOrString(guides)).toBe(false);
   });
 
   it('reports a guide expression that does not resolve (H2)', () => {
@@ -59,6 +72,34 @@ describe('P0b review round 1', () => {
   it('unwraps a JSON string holding an object around the array', () => {
     const parsed = AssemblySpecSchema.safeParse({ ...base, guides: [], components: comps, parameters: JSON.stringify({ parameters: params }) });
     expect(parsed.success && parsed.data.parameters?.[0].name).toBe('w');
+  });
+
+  it('advertises numbers only for guides, and no guide expr, in every request schema', async () => {
+    const { assemblySpecRequestSchema, variantSpecRequestSchema } = await import('./assembly-spec');
+    const { claudeVariantSpecSchema } = await import('./llm-schemas');
+    for (const schema of [assemblySpecRequestSchema(), variantSpecRequestSchema(), claudeVariantSpecSchema()]) {
+      const items = (schema as { properties: { guides: { items: { properties: Record<string, unknown> } } } }).properties.guides.items;
+      expect(Object.keys(items.properties)).not.toContain('expr');
+      expect(hasNumberOrString(items)).toBe(false);
+    }
+  });
+
+  it('keeps a guide expression through a second normalize, so it follows parameter edits and stays reported', () => {
+    const raw = { ...base, parameters: params, components: comps,
+      guides: [{ label: 'g', kind: 'envelope', localExtents: ['w', 10, 10], position: [0, 0, 0], shape: { kind: 'box' } }] };
+    const once = normalizeSpec(AssemblySpecSchema.parse(raw));
+    expect(once.guides[0].localExtents).toEqual([80, 10, 10]);
+    const edited = normalizeSpec({ ...once, parameters: [{ ...params[0], unit: 'mm' as const, value: 100 }] });
+    expect(edited.guides[0].localExtents).toEqual([100, 10, 10]);
+    const bad = normalizeSpec(normalizeSpec(AssemblySpecSchema.parse({ ...raw, guides: [{ ...raw.guides[0], localExtents: ['nope', 10, 10] }] })));
+    expect(auditSpecCoherence(bad).some((v) => v.severity === 'error' && /nope/.test(v.message))).toBe(true);
+  });
+
+  it('unwraps wrapper objects for derived and relations too', () => {
+    const parsed = AssemblySpecSchema.safeParse({ ...base, guides: [], components: comps,
+      derived: JSON.stringify({ derived: [{ name: 'half', expr: 'w/2' }] }), relations: JSON.stringify({ items: [{ expr: 'w > 0', why: 'x' }] }) });
+    expect(parsed.success && parsed.data.derived?.[0].name).toBe('half');
+    expect(parsed.success && parsed.data.relations?.[0].why).toBe('x');
   });
 });
 

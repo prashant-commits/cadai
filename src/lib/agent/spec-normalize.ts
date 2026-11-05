@@ -26,7 +26,8 @@ export function toSnakeCase(name: string): string {
 export function normalizeSpec(rawSpec: AssemblySpec): AssemblySpec {
   // Expression strings become numbers first, so every step below (and every consumer) sees numbers.
   // Unresolvable fields are left at 0 here; auditSpecCoherence reports them to the Architect's retry.
-  const spec = resolveSpec(rawSpec).spec;
+  const resolved = resolveSpec(rawSpec);
+  const spec = resolved.spec;
   const rename = new Map<string, string>();
   const prose = new Set<string>();
   const used = new Set<string>();
@@ -65,7 +66,9 @@ export function normalizeSpec(rawSpec: AssemblySpec): AssemblySpec {
 
   // A relational spec's envelope is derived: the model's separately declared box is
   // a second place to get the arithmetic wrong. Literal-only specs keep theirs.
-  const envelope = spec.parameters?.length ? impliedEnvelope({ ...spec, components }) : null;
+  // Only when every expression resolved: a field left at 0 by a failure would corrupt the box, and the
+  // declared one may well be right. The errors recur on every pass (the source strings are kept in `expr`).
+  const envelope = spec.parameters?.length && resolved.errors.length === 0 ? impliedEnvelope({ ...spec, components }) : null;
   const boundingBox = envelope
     ? { width: envelope.size[0], length: envelope.size[1], height: envelope.size[2] }
     : spec.boundingBox;

@@ -51,28 +51,40 @@ export const ShapeSchema = z.object({
 });
 export type Shape = z.infer<typeof ShapeSchema>;
 /**
- * Guides are reference geometry. The REQUEST schema advertises plain numbers for
- * them, but real model output sometimes puts a parameter expression ("w") in a
- * guide field, and rejecting the whole spec for that cost 4 of 72 parses. So the
- * validating schema tolerates number|string and `resolveSpec` evaluates the
- * strings into numbers (no `expr` is kept for guides). The static type stays
- * `number`, as for NumOrExpr.
+ * Guides are reference geometry. The model is asked for plain numbers, but real
+ * output sometimes puts a parameter expression ("w") in a guide field, and
+ * rejecting the whole spec for that cost 4 of 72 parses. So the validating
+ * schema accepts number|string while the emitted JSON Schema stays
+ * `{"type":"number"}` (zod honours `_zod.toJSONSchema`), which keeps every
+ * request schema byte-identical to before. `resolveSpec` turns the strings into
+ * numbers. The static type stays `number`, as for NumOrExpr.
  */
-function guideSchema(num: z.ZodNumber) {
-  const vec3 = z.array(num).length(3);
-  return z.object({
-    label: z.string(),
-    kind: z.enum(['envelope', 'line']),
-    shape: ShapeSchema.extend({ innerD: num.optional(), wall: num.optional() }).optional(), // envelope; absent = box
-    localExtents: vec3.optional(),       // envelope
-    position: vec3.optional(),           // envelope: min corner in assembly coordinates
-    rotation: vec3.optional(),           // envelope: degrees about its own min corner, applied first
-    points: z.array(vec3).optional(),    // line: 2..12 points in assembly coordinates
-  });
-}
-export const GuideSchema = guideSchema(NumOrExpr);
-/** Numbers only: what the model is asked for. Used to build the request schemas. */
-const GuideRequestSchema = guideSchema(z.number());
+const GuideNum = z.union([z.number(), z.string()]) as unknown as z.ZodNumber;
+(GuideNum as unknown as { _zod: { toJSONSchema?: () => object } })._zod.toJSONSchema = () => ({ type: 'number' });
+const GuideVec3 = z.array(GuideNum).length(3);
+
+export const GuideSchema = z.object({
+  label: z.string(),
+  kind: z.enum(['envelope', 'line']),
+  shape: ShapeSchema.extend({ innerD: GuideNum.optional(), wall: GuideNum.optional() }).optional(), // envelope; absent = box
+  localExtents: GuideVec3.optional(),       // envelope
+  position: GuideVec3.optional(),           // envelope: min corner in assembly coordinates
+  rotation: GuideVec3.optional(),           // envelope: degrees about its own min corner, applied first
+  points: z.array(GuideVec3).optional(),    // line: 2..12 points in assembly coordinates
+  /**
+   * The expression strings `resolveSpec` evaluated into the numeric fields above,
+   * kept (as for components) so an unresolvable one is reported again on a second
+   * resolve and the guide follows parameter edits. Written by code, never requested.
+   */
+  expr: z.object({
+    localExtents: ExprVec3.optional(),
+    position: ExprVec3.optional(),
+    rotation: ExprVec3.optional(),
+    points: z.array(ExprVec3.nullable()).optional(),
+    innerD: z.string().optional(),
+    wall: z.string().optional(),
+  }).optional(),
+});
 export type Guide = z.infer<typeof GuideSchema>;
 
 /*
@@ -161,7 +173,14 @@ export type StressPoint = z.infer<typeof StressPointSchema>;
 function jsonArray<T extends z.ZodType>(schema: T) {
   return z.preprocess((v) => {
     if (typeof v !== 'string') return v;
-    try { return JSON.parse(v); } catch { return v; }
+    let parsed: unknown;
+    try { parsed = JSON.parse(v); } catch { return v; }
+    // A wrapper object around the array, e.g. {"parameters": [...]}: unwrap a single array value.
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const values = Object.values(parsed);
+      if (values.length === 1 && Array.isArray(values[0])) return values[0];
+    }
+    return parsed;
   }, schema.optional());
 }
 
@@ -314,6 +333,12 @@ export function omitRequestComponentFields(json: Record<string, unknown>, fields
   if (Array.isArray(items.required)) {
     items.required = items.required.filter((r) => !fields.includes(r));
   }
+  // Guides carry the same code-written `expr`; it is never requested either.
+  const guides = (props?.guides as { items?: { properties?: Record<string, unknown>; required?: string[] } } | undefined)?.items;
+  if (guides?.properties && fields.includes('expr')) {
+    delete guides.properties.expr;
+    if (Array.isArray(guides.required)) guides.required = guides.required.filter((r) => r !== 'expr');
+  }
   return json;
 }
 
@@ -327,11 +352,8 @@ function requireComponentFields(json: Record<string, unknown>, fields: string[])
   return json;
 }
 
-/** The validating schema with numeric-only guides: the shape the model is asked for. */
-const RequestSpecSchema = AssemblySpecSchema.extend({ guides: z.array(GuideRequestSchema).default([]) });
-
 export function assemblySpecRequestSchema(): Record<string, unknown> {
-  const json = z.toJSONSchema(RequestSpecSchema) as Record<string, unknown>;
+  const json = z.toJSONSchema(AssemblySpecSchema) as Record<string, unknown>;
   delete json.$schema;
   if (json.properties) {
     delete (json.properties as Record<string, unknown>).specApprovedAt;
@@ -356,7 +378,7 @@ export function assemblySpecRequestSchema(): Record<string, unknown> {
 }
 
 export function variantSpecRequestSchema(): Record<string, unknown> {
-  const json = z.toJSONSchema(RequestSpecSchema) as Record<string, unknown>;
+  const json = z.toJSONSchema(AssemblySpecSchema) as Record<string, unknown>;
   delete json.$schema;
   if (json.properties) {
     delete (json.properties as Record<string, unknown>).specApprovedAt;
