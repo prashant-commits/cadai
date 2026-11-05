@@ -202,7 +202,7 @@ export function summarize(rows: GenerationMetrics[]): Record<string, string> {
     meanParamCount: meanOf(rows, (m) => m.paramCount),
     meanDeadParams: meanOf(rows, (m) => m.deadParams),
     meanBuildFallbacks: meanOf(rows, (m) => m.buildFallbacks),
-    liveParamRate: (Math.round(liveRate * 10) / 10).toFixed(1),
+    liveParamRate: liveRate.toFixed(2),
   };
 }
 
