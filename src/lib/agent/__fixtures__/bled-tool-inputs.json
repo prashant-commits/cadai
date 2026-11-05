@@ -1,0 +1,567 @@
+{
+ "hair_dryer_nocup-s2-B": {
+  "sheet": "## In-use pose\n- The backplate lies flat against a vertical wall. The wall is the plane y = 0; the wall normal is +y, pointing out into the room.\n- Z is up. The holder's lowest point is z = 0 (plate bottom edge). The plate's back face sits on y = 0.\n- The user stands on the +y side. The ring opening faces along +x (horizontal, parallel to the wall), so the dryer slides in sideways.\n- The plate is fixed by two screws through two holes along +y. The holes sit outside the ring footprint.\n- The ring axis is parallel to the wall (along x). A triangular profile bracket in the yz plane carries the ring off the plate face.\n\n## Variant B: wall-parallel ring on bracket\nRead of the brief: \"ring plane parallel to the wall\" is taken as the ring axis lying parallel to the wall, per the shared assumption \"ring axis parallel to the wall\". The annular faces are therefore perpendicular to the wall.\n\n## Geometry (all mm)\n- Backplate: 120 (x) x 5 (y, thickness) x 140 (z). Origin at (0,0,0).\n- Ring: tube, axis x, length 40 (ring depth), outer diameter 100 (ring wall 5), bore 90. Centred on the plate in x and z, so x 40..80 and z 20..120. Axis at y = 75.\n- Bracket: triangular profile in the yz plane, extruded 40 along x (same span as the ring). Vertices in (y,z): (5,45), (5,95), (27.5,70). The base lies on the plate front face (y = 5). The apex (y = 27.5) sits inside the ring wall at mid-wall radius 47.5 from the axis.\n- Screw holes: two through holes, d = 4.5 (M4 clearance), along y, centred at x = 15 and x = 105, z = 70. Both lie outside the ring footprint (x 40..80).\n\n## Placement arithmetic\n- Ring axis y = plate_t + standoff = 5 + 70 = 75. Position y = 75 - 50 = 25.\n- Ring position x = (120 - 40)/2 = 40. Position z = 70 - 50 = 20.\n- Bracket position: x = 40, y = 5 (plate face), z = 70 - 25 = 45.\n\n## Checks\n- Ring bore 90 clears the dryer body (the envelope is drawn at 90).\n- Bounding box: x 0..120, y 0..125, z 0..140, which matches the component union.\n- Hole inset 15 + 2.25 < ring_x 40, so the holes clear the ring footprint.\n- Bracket apex y 27.5 > plate face y 5, so the bracket joins the plate and the ring.\n\n## Open items (user to confirm)\n- Plate width/height/thickness, hole diameter and spacing, ring wall and depth, and ring orientation are all set to the nominal values above.\n- Ring is centred on the plate.\n- The bracket profile points are fixed to the nominal standoff (70) and half-base (25); regenerate them if those change.",
+  "assemblyName": "wall_hair_dryer_holder_variant_B_wall_parallel_ring",
+  "boundingBox": {
+   "width": 120,
+   "length": 125,
+   "height": 140
+  },
+  "jointContracts": [],
+  "parameters": "[{\"name\": \"plate_w\", \"value\": 120, \"min\": 80, \"max\": 200, \"step\": 1, \"unit\": \"mm\", \"description\": \"Backplate width along x.\"}, {\"name\": \"plate_h\", \"value\": 140, \"min\": 100, \"max\": 260, \"step\": 1, \"unit\": \"mm\", \"description\": \"Backplate height along z.\"}, {\"name\": \"plate_t\", \"value\": 5, \"min\": 3, \"max\": 10, \"step\": 0.5, \"unit\": \"mm\", \"description\": \"Backplate thickness along the wall normal y.\"}, {\"name\": \"hole_d\", \"value\": 4.5, \"min\": 3.4, \"max\": 6, \"step\": 0.1, \"unit\": \"mm\", \"description\": \"Screw through-hole diameter (M4 clearance).\"}, {\"name\": \"hole_inset\", \"value\": 15, \"min\": 10, \"max\": 40, \"step\": 1, \"unit\": \"mm\", \"description\": \"Hole centre distance from the plate side edges.\"}, {\"name\": \"ring_id\", \"value\": 90, \"min\": 90, \"max\": 90, \"step\": 1, \"unit\": \"mm\", \"description\": \"Ring inner diameter (stated: dryer clearance).\"}, {\"name\": \"ring_wall\", \"value\": 5, \"min\": 3, \"max\": 10, \"step\": 0.5, \"unit\": \"mm\", \"description\": \"Ring wall thickness (radial).\"}, {\"name\": \"ring_depth\", \"value\": 40, \"min\": 20, \"max\": 80, \"step\": 1, \"unit\": \"mm\", \"description\": \"Ring length along x (axial depth).\"}, {\"name\": \"standoff\", \"value\": 70, \"min\": 60, \"max\": 100, \"step\": 1, \"unit\": \"mm\", \"description\": \"Distance from the plate front face to the ring axis (bracket profile fixed to nominal 70).\"}], \"derived\": [{\"name\": \"ring_od\", \"expr\": \"ring_id + 2 * ring_wall\"}, {\"name\": \"ring_r\", \"expr\": \"ring_od / 2\"}, {\"name\": \"ring_x\", \"expr\": \"(plate_w - ring_depth) / 2\"}, {\"name\": \"ring_cz\", \"expr\": \"plate_h / 2\"}, {\"name\": \"ring_cy\", \"expr\": \"plate_t + standoff\"}, {\"name\": \"ring_y0\", \"expr\": \"ring_cy - ring_r\"}, {\"name\": \"ring_z0\", \"expr\": \"ring_cz - ring_r\"}, {\"name\": \"bracket_apex_y\", \"expr\": \"ring_cy - ring_r + ring_wall / 2\"}, {\"name\": \"bracket_reach\", \"expr\": \"bracket_apex_y - plate_t\"}, {\"name\": \"hole_x\", \"expr\": \"plate_w - hole_inset\"}], \"relations\": [{\"expr\": \"ring_id == 90\", \"why\": \"Stated dryer clearance bore.\"}, {\"expr\": \"ring_od < plate_h\", \"why\": \"Ring must fit within the plate height.\"}, {\"expr\": \"hole_inset + hole_d / 2 < ring_x\", \"why\": \"Left screw hole must clear the ring footprint.\"}, {\"expr\": \"ring_x + ring_depth < hole_x - hole_d / 2\", \"why\": \"Right screw hole must clear the ring footprint.\"}, {\"expr\": \"bracket_apex_y > plate_t\", \"why\": \"Bracket apex must reach into the ring wall past the plate face.\"}], \"components\": [{\"name\": \"backplate\", \"description\": \"Flat wall plate, 120 x 140 x 5, with two M4 through holes.\", \"localExtents\": [\"plate_w\", \"plate_t\", \"plate_h\"], \"position\": [0, 0, 0], \"rotation\": [0, 0, 0], \"positionNote\": \"\", \"holes\": [{\"d\": \"hole_d\", \"axis\": \"y\", \"at\": [\"hole_inset\", 0, \"ring_cz\"], \"note\": \"Left screw hole, through plate, outside ring footprint.\"}, {\"d\": \"hole_d\", \"axis\": \"y\", \"at\": [\"hole_x\", 0, \"ring_cz\"], \"note\": \"Right screw hole, through plate, outside ring footprint.\"}], \"shape\": {\"kind\": \"box\", \"axis\": \"z\", \"innerD\": 0, \"wall\": 0, \"openFace\": \"+Z\", \"plane\": \"xy\", \"points\": [], \"holes\": []}}, {\"name\": \"ring\", \"description\": \"Tube ring, axis along x, 90 mm bore, carried off the plate.\", \"localExtents\": [\"ring_depth\", \"ring_od\", \"ring_od\"], \"position\": [\"ring_x\", \"ring_y0\", \"ring_z0\"], \"rotation\": [0, 0, 0], \"positionNote\": \"x = (120-40)/2 = 40; y = 5 + 70 - 50 = 25; z = 70 - 50 = 20.\", \"holes\": [], \"shape\": {\"kind\": \"tube\", \"axis\": \"x\", \"innerD\": \"ring_id\", \"wall\": 0, \"openFace\": \"+Z\", \"plane\": \"xy\", \"points\": [], \"holes\": []}}, {\"name\": \"bracket\", \"description\": \"Triangular yz-profile bracket joining plate front face to ring outer surface.\", \"localExtents\": [\"ring_depth\", \"bracket_reach\", 50], \"position\": [\"ring_x\", \"plate_t\", \"ring_cz - 25\"], \"rotation\": [0, 0, 0], \"positionNote\": \"x = 40; y = plate face 5; z = 70 - 25 = 45.\", \"holes\": [], \"shape\": {\"kind\": \"profile\", \"axis\": \"z\", \"innerD\": 0, \"wall\": 0, \"openFace\": \"+Z\", \"plane\": \"yz\", \"points\": [[0, 0], [0, 50], [22.5, 25]], \"holes\": []}}], \"guides\": [{\"label\": \"Dryer body envelope (90 mm, ring bore)\", \"kind\": \"envelope\", \"rotation\": [0, 0, 0], \"localExtents\": [40, 90, 90], \"position\": [40, 30, 25], \"shape\": {\"kind\": \"cylinder\", \"axis\": \"x\", \"innerD\": 0, \"wall\": 0, \"openFace\": \"+Z\", \"plane\": \"xy\", \"points\": [], \"holes\": []}}], \"assumptions\": [{\"field\": \"plate_w\", \"value\": \"120 mm\", \"rationale\": \"Open in the brief; nominal chosen for a hair dryer holder.\"}, {\"field\": \"plate_h\", \"value\": \"140 mm\", \"rationale\": \"Open in the brief; nominal chosen so the ring sits inside the plate with margin.\"}, {\"field\": \"plate_t\", \"value\": \"5 mm\", \"rationale\": \"Open in the brief; nominal chosen for a rigid wall plate.\"}, {\"field\": \"hole_d / hole_inset\", \"value\": \"4.5 mm / 15 mm\", \"rationale\": \"M4 clearance hole; inset puts the holes outside the ring footprint.\"}, {\"field\": \"ring_wall / ring_depth\", \"value\": \"5 mm / 40 mm\", \"rationale\": \"Open in the brief; nominal chosen for a 90 mm bore holder.\"}, {\"field\": \"ring orientation\", \"value\": \"axis along x, parallel to wall\", \"rationale\": \"Variant B per shared assumptions; brief's 'plane parallel to wall' read as axis parallel to wall.\"}, {\"field\": \"standoff\", \"value\": \"70 mm\", \"rationale\": \"Ring axis from plate face; gives a clear bracket span. Bracket profile points are fixed to this nominal.\"}, {\"field\": \"bracket profile\", \"value\": \"triangle (5,45),(5,95),(27.5,70) in yz\", \"rationale\": \"Half-base 25 mm; apex inside the ring wall at mid-wall radius, spanning the ring depth.\"}, {\"field\": \"ring position\", \"value\": \"centred on plate in x and z\", \"rationale\": \"Suggested default: centred.\"}]}"
+ },
+ "hair_dryer_holder-s0-B": {
+  "sheet": "## In-use pose\n- The backplate lies flat against a vertical wall. The wall is the plane y = 0; the plate occupies x 0..140 and z 0..150 and is 5 mm thick along +Y, away from the wall.\n- Up is +Z. The lowest point of the model is the plate bottom edge at z = 0.\n- The user faces the front of the plate (+Y side). The cup ring projects straight out from the plate front face along +Y, so its axis is normal to the wall and its opening faces away from the wall.\n- Two M4 clearance through-holes (axis Y) fix the plate to the wall. They sit near the bottom edge, at z = 12, at x = 30 and x = 110.\n- The dryer barrel or nozzle rests horizontally inside the 90 mm bore, with its axis along Y. A retaining ledge sits under the ring floor, between the plate face and the ring front, to resist the dryer sliding out.\n\n## Parameters (assembly mm)\n- plate_w = 140 (plate width along X)\n- plate_h = 150 (plate height along Z)\n- plate_t = 5 (plate thickness along Y)\n- hole_d = 4.5 (M4 clearance through-hole)\n- hole_spacing = 80 (centre-to-centre, along X)\n- hole_z = 12 (hole centre height above the wall-plate bottom)\n- bore_d = 90 (ring inner diameter, user-stated, pinned)\n- wall = 8 (ring wall radial thickness)\n- ring_h = 25 (ring axial length along Y)\n- ledge_w = 30 (ledge width along X)\n- ledge_h = 15 (ledge depth below the ring outer bottom)\n\n## Derived\n- ring_od = bore_d + 2*wall = 106\n- ring_r = ring_od / 2 = 53\n- ring_cx = plate_w / 2 = 70 (ring axis X)\n- ring_cz = plate_h / 2 = 75 (ring axis Z)\n- hole_x1 = plate_w/2 - hole_spacing/2 = 30\n- hole_x2 = plate_w/2 + hole_spacing/2 = 110\n- ledge top = ring_cz - ring_r + wall = 30 (ledge meets the ring bore bottom line, no intrusion into the 90 mm bore)\n\n## Components\n1. backplate: box 140 x 150 x 5 at the origin. Two through holes along Y at (30, 12) and (110, 12), d 4.5. Sharp edges.\n2. cup_ring: tube along Y, outer diameter 106, inner bore 90, length 25. Placed with its local min corner at (17, 5, 22), so its axis is at x = 70, z = 75. Its back face touches the plate front face at y = 5. Full closed ring, sharp edges.\n3. retaining_ledge: box 30 (X) x 25 (Y) x 23 (Z). Placed at (55, 5, 7). It spans from the plate front face (y = 5) to the ring front (y = 30). Its top at z = 30 lies inside the ring bottom wall, so the bore stays clear. Its bottom at z = 7 is above the ground plane.\n\n## Clearances and checks\n- Ring bore 90 mm is an open circle: no obstruction inside the bore from the plate face (the plate face is flat at y = 5 and is not inside the bore).\n- Holes at (30, 12) and (110, 12): distance from ring axis to hole centre is sqrt(40^2 + 63^2) = 74.6, which exceeds ring_r + hole_r = 55.25. The holes clear the ring.\n- Ledge bottom at z = 7 and plate bottom at z = 0, so the lowest point is z = 0.\n- Bounding box: X 0..140, Y 0..30, Z 0..150.\n\n## Joints\nAll parts are permanently joined by touching faces (ring to plate at y = 5, ledge to plate at y = 5 and to ring wall). No jointContract.",
+  "assemblyName": "wall_hair_dryer_holder_B_ledge",
+  "boundingBox": {
+   "width": 140,
+   "length": 30,
+   "height": 150
+  },
+  "jointContracts": [],
+  "parameters": "[{\"name\": \"plate_w\", \"value\": 140, \"min\": 100, \"max\": 200, \"step\": 1, \"unit\": \"mm\", \"description\": \"Backplate width along X\"}, {\"name\": \"plate_h\", \"value\": 150, \"min\": 110, \"max\": 220, \"step\": 1, \"unit\": \"mm\", \"description\": \"Backplate height along Z\"}, {\"name\": \"plate_t\", \"value\": 5, \"min\": 3, \"max\": 10, \"step\": 0.5, \"unit\": \"mm\", \"description\": \"Backplate thickness along Y\"}, {\"name\": \"hole_d\", \"value\": 4.5, \"min\": 2.4, \"max\": 6, \"step\": 0.1, \"unit\": \"mm\", \"description\": \"Screw through-hole diameter (M4 clearance)\"}, {\"name\": \"hole_spacing\", \"value\": 80, \"min\": 40, \"max\": 120, \"step\": 1, \"unit\": \"mm\", \"description\": \"Centre-to-centre spacing of the two screw holes along X\"}, {\"name\": \"hole_z\", \"value\": 12, \"min\": 8, \"max\": 30, \"step\": 1, \"unit\": \"mm\", \"description\": \"Screw hole centre height above plate bottom\"}, {\"name\": \"bore_d\", \"value\": 90, \"min\": 90, \"max\": 90, \"step\": 1, \"unit\": \"mm\", \"description\": \"Ring inner diameter (user-pinned)\"}, {\"name\": \"wall\", \"value\": 8, \"min\": 4, \"max\": 15, \"step\": 0.5, \"unit\": \"mm\", \"description\": \"Ring wall thickness\"}, {\"name\": \"ring_h\", \"value\": 25, \"min\": 15, \"max\": 50, \"step\": 1, \"unit\": \"mm\", \"description\": \"Ring axial length along Y\"}, {\"name\": \"ledge_w\", \"value\": 30, \"min\": 15, \"max\": 60, \"step\": 1, \"unit\": \"mm\", \"description\": \"Retaining ledge width along X\"}, {\"name\": \"ledge_h\", \"value\": 15, \"min\": 5, \"max\": 30, \"step\": 1, \"unit\": \"mm\", \"description\": \"Retaining ledge depth below the ring outer bottom\"}], \"derived\": [{\"name\": \"ring_od\", \"expr\": \"bore_d + 2*wall\"}, {\"name\": \"ring_r\", \"expr\": \"ring_od/2\"}, {\"name\": \"ring_cx\", \"expr\": \"plate_w/2\"}, {\"name\": \"ring_cz\", \"expr\": \"plate_h/2\"}, {\"name\": \"hole_x1\", \"expr\": \"plate_w/2 - hole_spacing/2\"}, {\"name\": \"hole_x2\", \"expr\": \"plate_w/2 + hole_spacing/2\"}], \"relations\": [{\"expr\": \"bore_d + 2*wall < plate_w\", \"why\": \"Ring outer diameter fits within the plate width\"}, {\"expr\": \"ring_od < plate_h\", \"why\": \"Ring outer diameter fits within the plate height\"}, {\"expr\": \"hole_z + hole_d/2 < ring_cz - ring_r\", \"why\": \"Screw holes sit below the ring outer bottom\"}, {\"expr\": \"sqrt((hole_spacing/2)*(hole_spacing/2) + (ring_cz - hole_z)*(ring_cz - hole_z)) > ring_r + hole_d/2\", \"why\": \"Screw holes lie outside the ring outer circle\"}, {\"expr\": \"ring_cz - ring_r - ledge_h >= 0\", \"why\": \"Ledge bottom stays above the ground plane z = 0\"}, {\"expr\": \"2*wall < bore_d\", \"why\": \"Ring wall leaves a bore\"}], \"components\": [{\"name\": \"backplate\", \"description\": \"Flat rectangular wall plate with two M4 clearance through-holes\", \"localExtents\": [\"plate_w\", \"plate_t\", \"plate_h\"], \"position\": [0, 0, 0], \"positionNote\": \"Origin at the wall corner: plate spans x 0..plate_w, y 0..plate_t (wall at y=0), z 0..plate_h\", \"rotation\": [0, 0, 0], \"holes\": [{\"d\": \"hole_d\", \"axis\": \"y\", \"at\": [\"hole_x1\", 0, \"hole_z\"], \"note\": \"Through screw hole, left, enters from the wall face\"}, {\"d\": \"hole_d\", \"axis\": \"y\", \"at\": [\"hole_x2\", 0, \"hole_z\"], \"note\": \"Through screw hole, right, enters from the wall face\"}], \"shape\": {\"kind\": \"box\", \"axis\": \"z\", \"innerD\": 0, \"wall\": 0, \"openFace\": \"+Z\", \"plane\": \"xy\", \"points\": [], \"holes\": []}}, {\"name\": \"cup_ring\", \"description\": \"Full closed cup ring, 90 mm bore, axis along Y, attached to the plate front face\", \"localExtents\": [\"ring_od\", \"ring_h\", \"ring_od\"], \"position\": [\"ring_cx - ring_r\", \"plate_t\", \"ring_cz - ring_r\"], \"positionNote\": \"x = ring_cx - ring_r = 70 - 53 = 17; y = plate_t = 5 (touches plate front face); z = ring_cz - ring_r = 75 - 53 = 22\", \"rotation\": [0, 0, 0], \"holes\": [], \"shape\": {\"kind\": \"tube\", \"axis\": \"y\", \"innerD\": \"bore_d\", \"wall\": 0, \"openFace\": \"+Y\", \"plane\": \"xy\", \"points\": [], \"holes\": []}}, {\"name\": \"retaining_ledge\", \"description\": \"Short ledge block under the ring floor between plate face and ring front\", \"localExtents\": [\"ledge_w\", \"ring_h\", \"ledge_h + wall\"], \"position\": [\"ring_cx - ledge_w/2\", \"plate_t\", \"ring_cz - ring_r - ledge_h\"], \"positionNote\": \"x = ring_cx - ledge_w/2 = 70 - 15 = 55; y = plate_t = 5; z = ring_cz - ring_r - ledge_h = 22 - 15 = 7; top at z = 30 = ring bottom wall inner line\", \"rotation\": [0, 0, 0], \"holes\": [], \"shape\": {\"kind\": \"box\", \"axis\": \"z\", \"innerD\": 0, \"wall\": 0, \"openFace\": \"+Z\", \"plane\": \"xy\", \"points\": [], \"holes\": []}}]",
+  "guides": [
+   {
+    "kind": "envelope",
+    "label": "Hair dryer barrel zone within 90 mm bore",
+    "localExtents": [
+     90,
+     25,
+     90
+    ],
+    "position": [
+     25,
+     5,
+     30
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "shape": {
+     "kind": "cylinder",
+     "axis": "y",
+     "innerD": 0,
+     "wall": 0,
+     "openFace": "+Y",
+     "plane": "xy",
+     "points": [],
+     "holes": []
+    }
+   },
+   {
+    "kind": "line",
+    "label": "Wall plane (y = 0)",
+    "points": [
+     [
+      0,
+      0,
+      0
+     ],
+     [
+      140,
+      0,
+      0
+     ],
+     [
+      140,
+      0,
+      150
+     ],
+     [
+      0,
+      0,
+      150
+     ],
+     [
+      0,
+      0,
+      0
+     ]
+    ],
+    "localExtents": [],
+    "position": [
+     0,
+     0,
+     0
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "shape": {
+     "kind": "box",
+     "axis": "z",
+     "innerD": 0,
+     "wall": 0,
+     "openFace": "+Z",
+     "plane": "xy",
+     "points": [],
+     "holes": []
+    }
+   }
+  ],
+  "assumptions": [
+   {
+    "field": "plate_w",
+    "value": "140 mm",
+    "rationale": "Not stated by the user; chosen so the 106 mm ring outer diameter sits inside the plate with a 17 mm margin each side."
+   },
+   {
+    "field": "plate_h",
+    "value": "150 mm",
+    "rationale": "Not stated; gives 22 mm of plate above and below the ring so the ring and holes sit on the plate."
+   },
+   {
+    "field": "plate_t",
+    "value": "5 mm",
+    "rationale": "Not stated; a stiff plate for two screws and the cantilevered ring load."
+   },
+   {
+    "field": "hole_d",
+    "value": "4.5 mm (M4 clearance)",
+    "rationale": "Screw type not stated; M4 clearance is the standard hole for an M4 screw and is the common default."
+   },
+   {
+    "field": "hole_spacing",
+    "value": "80 mm",
+    "rationale": "Not stated; spacing is set by the stud or anchor layout, so it is a placeholder parameter."
+   },
+   {
+    "field": "hole_z",
+    "value": "12 mm",
+    "rationale": "Holes sit in the plate strip below the ring so they do not cross the ring outer circle."
+   },
+   {
+    "field": "wall",
+    "value": "8 mm",
+    "rationale": "Not stated; ring wall stiff enough for a hair dryer's weight with a 90 mm bore."
+   },
+   {
+    "field": "ring_h",
+    "value": "25 mm",
+    "rationale": "Not stated; axial length of the cup, enough to cradle a barrel."
+   },
+   {
+    "field": "ledge_w",
+    "value": "30 mm",
+    "rationale": "Not stated; short ledge width across the ring bottom."
+   },
+   {
+    "field": "ledge_h",
+    "value": "15 mm",
+    "rationale": "Not stated; short ledge, kept above z = 0 with the plate bottom as the lowest point."
+   },
+   {
+    "field": "ledge placement",
+    "value": "Under ring bottom, between plate face and ring front, top flush with the ring inner bottom line",
+    "rationale": "The brief asks for a ledge under the ring floor; placing its top at the bore bottom line keeps the 90 mm bore clear."
+   },
+   {
+    "field": "dryer envelope",
+    "value": "90 mm cylinder along Y, ring length",
+    "rationale": "The dryer's own dimensions are not stated, so the envelope is drawn as the 90 mm bore zone it must fit."
+   }
+  ]
+ },
+ "pen_holder-s0-A": {
+  "sheet": "## In-use pose\nThe pen holder stands on its square base on a flat surface. The base bottom sits on the ground plane z = 0. The four tubes point straight up (+Z) from the top face of the base. Tube openings face up (+Z) at the top and down into the base at the bottom. Nothing is rotated. The user reaches in from above.\n\n## Variant A: Literal four tubes on square base\n- base: solid square plate, 80 x 80 mm in X and Y, base_t thick in Z (5 mm suggested), bottom face on z = 0. Occupies x 0..80, y 0..80, z 0..5.\n- tubes: four open-ended vertical tubes, outer diameter tube_od = tube_id + 2 x wall = 20 + 2 x 2 = 24 mm, inner diameter 20 mm, height tube_h = 100 mm. Each tube stands on the base top face at z = base_t = 5 and reaches z = 105.\n- tube layout: 2 x 2 grid. Tube centres inset 20 mm from each base edge, so centres sit at x = 20 and 60, y = 20 and 60. Tube min corners are at 20 - 12 = 8 and 60 - 12 = 48 in X and Y.\n- tube bore: through-bore, open at top. The bore bottom is closed by the base plate, which is solid under each tube.\n- joins: the tubes are permanently joined to the base (touching, sharing the base top face). No joint clearance.\n- edges: sharp, no chamfers, fillets or rounds.\n- no other features. No holes declared (no fasteners).\n\n## Overall extents\n- X: 0 .. 80 mm\n- Y: 0 .. 80 mm\n- Z: 0 .. 105 mm (base_t + tube_h)\n\n## Checks\n- tube_od 24 mm is larger than tube_id 20 mm (wall 2 mm).\n- Each tube fits inside the footprint: tube_lo = 8 >= 0 and tube_hi + tube_od = 48 + 24 = 72 <= 80.\n- Gap between adjacent tube outer walls: 40 - 24 = 16 mm.\n",
+  "assemblyName": "Pen Holder - Variant A Literal",
+  "boundingBox": {
+   "width": 80,
+   "length": 80,
+   "height": 105
+  },
+  "jointContracts": [],
+  "parameters": "[{\"name\": \"base_w\", \"value\": 80, \"min\": 40, \"max\": 150, \"step\": 1, \"unit\": \"mm\", \"description\": \"Square base edge length in X and Y (stated 80 mm).\"}, {\"name\": \"base_t\", \"value\": 5, \"min\": 2, \"max\": 15, \"step\": 0.5, \"unit\": \"mm\", \"description\": \"Base plate thickness in Z (open question; suggested 5 mm).\"}, {\"name\": \"tube_id\", \"value\": 20, \"min\": 5, \"max\": 60, \"step\": 0.5, \"unit\": \"mm\", \"description\": \"Tube inner diameter (stated 20 mm).\"}, {\"name\": \"wall\", \"value\": 2, \"min\": 1, \"max\": 10, \"step\": 0.5, \"unit\": \"mm\", \"description\": \"Tube wall thickness (open question; suggested 2 mm).\"}, {\"name\": \"tube_h\", \"value\": 100, \"min\": 20, \"max\": 300, \"step\": 1, \"unit\": \"mm\", \"description\": \"Tube height above the base top face (stated 100 mm).\"}, {\"name\": \"inset\", \"value\": 20, \"min\": 12, \"max\": 40, \"step\": 1, \"unit\": \"mm\", \"description\": \"Distance from each base edge to the tube centre line (open question; suggested equal inset).\"}]</parameters>\n<parameter name=\"derived\">[{\"name\": \"tube_od\", \"expr\": \"tube_id + 2*wall\"}, {\"name\": \"tube_r\", \"expr\": \"tube_od/2\"}, {\"name\": \"tube_lo\", \"expr\": \"inset - tube_r\"}, {\"name\": \"tube_hi\", \"expr\": \"base_w - inset - tube_r\"}, {\"name\": \"overall_h\", \"expr\": \"base_t + tube_h\"}]",
+  "relations": [
+   {
+    "expr": "tube_od > tube_id",
+    "why": "Tube wall must be positive so the bore is a real through-hole in a tube."
+   },
+   {
+    "expr": "tube_lo >= 0",
+    "why": "Tubes must sit fully inside the base footprint on the low side."
+   },
+   {
+    "expr": "tube_hi + tube_od <= base_w",
+    "why": "Tubes must sit fully inside the base footprint on the high side."
+   },
+   {
+    "expr": "overall_h == base_t + tube_h",
+    "why": "Assembly height is base plate plus tube height, matching the bounding box height of 105 mm."
+   }
+  ],
+  "components": [
+   {
+    "name": "base",
+    "description": "Solid square base plate 80 x 80 mm carrying the four tubes.",
+    "localExtents": [
+     "base_w",
+     "base_w",
+     "base_t"
+    ],
+    "position": [
+     0,
+     0,
+     0
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "positionNote": "",
+    "holes": [],
+    "shape": {
+     "kind": "box",
+     "axis": "z",
+     "innerD": 0,
+     "wall": 0,
+     "openFace": "+Z",
+     "plane": "xy",
+     "points": [],
+     "holes": []
+    }
+   },
+   {
+    "name": "tube_a",
+    "description": "Open-ended vertical tube at the low-x low-y grid position.",
+    "localExtents": [
+     "tube_od",
+     "tube_od",
+     "tube_h"
+    ],
+    "position": [
+     "tube_lo",
+     "tube_lo",
+     "base_t"
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "positionNote": "x = inset - tube_r = 8; y = inset - tube_r = 8; z = base_t = 5 (stands on base top face).",
+    "holes": [],
+    "shape": {
+     "kind": "tube",
+     "axis": "z",
+     "innerD": "tube_id",
+     "wall": 0,
+     "openFace": "+Z",
+     "plane": "xy",
+     "points": [],
+     "holes": []
+    }
+   },
+   {
+    "name": "tube_b",
+    "description": "Open-ended vertical tube at the high-x low-y grid position.",
+    "localExtents": [
+     "tube_od",
+     "tube_od",
+     "tube_h"
+    ],
+    "position": [
+     "tube_hi",
+     "tube_lo",
+     "base_t"
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "positionNote": "x = base_w - inset - tube_r = 48; y = 8; z = 5 (stands on base top face).",
+    "holes": [],
+    "shape": {
+     "kind": "tube",
+     "axis": "z",
+     "innerD": "tube_id",
+     "wall": 0,
+     "openFace": "+Z",
+     "plane": "xy",
+     "points": [],
+     "holes": []
+    }
+   },
+   {
+    "name": "tube_c",
+    "description": "Open-ended vertical tube at the low-x high-y grid position.",
+    "localExtents": [
+     "tube_od",
+     "tube_od",
+     "tube_h"
+    ],
+    "position": [
+     "tube_lo",
+     "tube_hi",
+     "base_t"
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "positionNote": "x = 8; y = base_w - inset - tube_r = 48; z = 5 (stands on base top face).",
+    "holes": [],
+    "shape": {
+     "kind": "tube",
+     "axis": "z",
+     "innerD": "tube_id",
+     "wall": 0,
+     "openFace": "+Z",
+     "plane": "xy",
+     "points": [],
+     "holes": []
+    }
+   },
+   {
+    "name": "tube_d",
+    "description": "Open-ended vertical tube at the high-x high-y grid position.",
+    "localExtents": [
+     "tube_od",
+     "tube_od",
+     "tube_h"
+    ],
+    "position": [
+     "tube_hi",
+     "tube_hi",
+     "base_t"
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "positionNote": "x = 48; y = 48; z = 5 (stands on base top face).",
+    "holes": [],
+    "shape": {
+     "kind": "tube",
+     "axis": "z",
+     "innerD": "tube_id",
+     "wall": 0,
+     "openFace": "+Z",
+     "plane": "xy",
+     "points": [],
+     "holes": []
+    }
+   }
+  ],
+  "guides": [],
+  "assumptions": [
+   {
+    "field": "wall",
+    "value": "2 mm",
+    "rationale": "Open question on tube wall; suggested 2 mm gives OD 24 mm with the stated 20 mm ID."
+   },
+   {
+    "field": "base_t",
+    "value": "5 mm",
+    "rationale": "Open question on base plate thickness; suggested 5 mm."
+   },
+   {
+    "field": "inset",
+    "value": "20 mm",
+    "rationale": "Open question on tube layout; a 2 x 2 grid with equal 20 mm inset puts centres at 20 and 60 mm, fully inside the 80 mm footprint, with a 16 mm gap between tube walls."
+   },
+   {
+    "field": "base solidity",
+    "value": "solid plate under each tube",
+    "rationale": "Brief states the base closes the bottom of each tube; no bore through the base."
+   },
+   {
+    "field": "tube_od",
+    "value": "24 mm",
+    "rationale": "Derived from tube_id 20 mm plus 2 x wall 2 mm."
+   },
+   {
+    "field": "guides",
+    "value": "none",
+    "rationale": "No object is named as held by the holder in the request, so no envelope guide is drawn."
+   }
+  ],
+  "sheet_dummy": 0
+ },
+ "headphone_hook_underdesk-s2-A": {
+  "sheet": "## In-use pose\nThe hook is screwed flat to the underside of a desk. The desk is overhead, so up is toward the desk (+z). The plate's top face sits against the desk underside at z = 53. The vertical arm hangs down from the plate and the horizontal hook sits at the bottom, with its underside on the ground plane z = 0. The hook's tip points in +x, away from the plate's centre. The user stands on the -y side of the hook and faces +y, so the headband is hung on the hook from below.\n\n## Geometry (all mm)\n- Mounting plate: 60 x 40 x 3, local origin at its min corner, placed at [0, 0, 50]. Plate underside at z = 50, top at z = 53.\n- Two through holes, 4.5 mm diameter, axis z, centred at x = 10 and x = 50, y = 20 (plate centreline). Both are 10 mm from the plate ends and clear of the arm.\n- Vertical arm: 10 x 10 square bar, 50 long, from z = 0 to z = 50. Centred on the plate at x = 25 to 35, y = 15 to 25. Its top face touches the plate underside.\n- Horizontal hook: 10 x 10 square bar, 40 long in +x, from the outer face of the arm at x = 35 to x = 75, at y = 15 to 25, z = 0 to 10. Its underside is on z = 0.\n\n## Overall extents\n- X: 0 to 75 (plate 0 to 60; hook tip 75)\n- Y: 0 to 40 (plate width)\n- Z: 0 to 53 (hook underside 0; plate top 53)\n\n## Parts (3 free bodies, all box shapes)\n1. mount_plate (with two through holes)\n2. drop_arm\n3. hook_tip (horizontal hook section, reads as the headband rest)\n\nPermanently joined parts touch on shared faces. No jointContract.\n\n## Fit checks\n- Holes (x = 10 and 50, y = 20) clear the arm (x = 25 to 35) by 12.75 mm and 15 mm respectively, and lie wholly inside the plate.\n- Hook reach 40 mm beyond the arm. The hook extends from x = 35 to x = 75.\n\n## Open items (carried as assumptions)\n- Plate thickness 3 mm, arm section 10 x 10 mm, hole diameter 4.5 mm, arm and hole placement, and hook direction are not stated in the request and are set as assumptions.\n- Desk edge position is not given, so clearance to the desk edge is not verified here.\n\n## Edges\nAll edges are sharp. No chamfers, fillets or rounds.",
+  "assemblyName": "headphone_hook_under_desk",
+  "boundingBox": {
+   "width": 75,
+   "length": 40,
+   "height": 53
+  },
+  "jointContracts": [],
+  "parameters": "[{\"name\": \"plate_w\", \"value\": 60, \"min\": 30, \"max\": 120, \"step\": 1, \"unit\": \"mm\", \"description\": \"Mounting plate length along x (stated 60 mm).\"}, {\"name\": \"plate_d\", \"value\": 40, \"min\": 20, \"max\": 80, \"step\": 1, \"unit\": \"mm\", \"description\": \"Mounting plate width along y (stated 40 mm).\"}, {\"name\": \"plate_t\", \"value\": 3, \"min\": 1, \"max\": 10, \"step\": 0.5, \"unit\": \"mm\", \"description\": \"Mounting plate thickness (assumed, not stated).\"}, {\"name\": \"drop\", \"value\": 50, \"min\": 20, \"max\": 120, \"step\": 1, \"unit\": \"mm\", \"description\": \"Drop of the vertical arm from the plate underside to the hook underside (stated 50 mm).\"}, {\"name\": \"reach\", \"value\": 40, \"min\": 20, \"max\": 80, \"step\": 1, \"unit\": \"mm\", \"description\": \"Horizontal hook length beyond the arm outer face (stated 40 mm).\"}, {\"name\": \"arm_s\", \"value\": 10, \"min\": 5, \"max\": 20, \"step\": 0.5, \"unit\": \"mm\", \"description\": \"Square section of arm and hook (assumed, not stated).\"}, {\"name\": \"hole_inset\", \"value\": 10, \"min\": 5, \"max\": 20, \"step\": 1, \"unit\": \"mm\", \"description\": \"Distance from plate end to first screw hole centre along x (assumed).\"}, {\"name\": \"hole_d\", \"value\": 4.5, \"min\": 3, \"max\": 6, \"step\": 0.1, \"unit\": \"mm\", \"description\": \"Screw through-hole diameter for M4 clearance (assumed).\"}], \"derived\": [{\"name\": \"arm_x\", \"expr\": \"(plate_w - arm_s) / 2\"}, {\"name\": \"arm_y\", \"expr\": \"(plate_d - arm_s) / 2\"}, {\"name\": \"hook_x\", \"expr\": \"arm_x + arm_s\"}, {\"name\": \"hole_x1\", \"expr\": \"hole_inset\"}, {\"name\": \"hole_x2\", \"expr\": \"plate_w - hole_inset\"}, {\"name\": \"total_w\", \"expr\": \"hook_x + reach\"}, {\"name\": \"total_h\", \"expr\": \"drop + plate_t\"}], \"relations\": [{\"expr\": \"arm_s * 2 < plate_w\", \"why\": \"Arm section fits across the plate width.\"}, {\"expr\": \"arm_x > hole_x1 + hole_d / 2\", \"why\": \"Arm clears the first screw hole.\"}, {\"expr\": \"hole_x2 + hole_d / 2 < plate_w\", \"why\": \"Second screw hole lies inside the plate.\"}, {\"expr\": \"hole_x1 - hole_d / 2 > 0\", \"why\": \"First screw hole lies inside the plate.\"}, {\"expr\": \"total_w == 75\", \"why\": \"Overall x extent matches the bounding box.\"}, {\"expr\": \"total_h == 53\", \"why\": \"Overall z extent matches the bounding box.\"}], \"components\": [{\"name\": \"mount_plate\", \"description\": \"Flat 60 x 40 x 3 mm mounting plate with two 4.5 mm screw through-holes.\", \"localExtents\": [\"plate_w\", \"plate_d\", \"plate_t\"], \"position\": [\"0\", \"0\", \"drop\"], \"rotation\": [0, 0, 0], \"positionNote\": \"x=0, y=0 at plate min corner; z = drop = 50 so the plate underside sits at the arm top.\", \"holes\": [{\"d\": \"hole_d\", \"axis\": \"z\", \"at\": [\"hole_x1\", \"plate_d/2\", 0], \"note\": \"Screw hole 1, x = 10, y = 20, through the plate.\"}, {\"d\": \"hole_d\", \"axis\": \"z\", \"at\": [\"hole_x2\", \"plate_d/2\", 0], \"note\": \"Screw hole 2, x = 50, y = 20, through the plate.\"}], \"shape\": {\"kind\": \"box\", \"axis\": \"z\", \"innerD\": 0, \"wall\": 0, \"openFace\": \"+Z\", \"plane\": \"xy\", \"points\": [], \"holes\": []}}, {\"name\": \"drop_arm\", \"description\": \"Vertical 10 x 10 mm square arm, 50 mm long, hanging from the plate underside.\", \"localExtents\": [\"arm_s\", \"arm_s\", \"drop\"], \"position\": [\"arm_x\", \"arm_y\", 0], \"rotation\": [0, 0, 0], \"positionNote\": \"x = (60 - 10)/2 = 25, y = (40 - 10)/2 = 15, z = 0 at the ground plane; top at z = 50 touches the plate.\", \"holes\": [], \"shape\": {\"kind\": \"box\", \"axis\": \"z\", \"innerD\": 0, \"wall\": 0, \"openFace\": \"+Z\", \"plane\": \"xy\", \"points\": [], \"holes\": []}}, {\"name\": \"hook_tip\", \"description\": \"Horizontal 10 x 10 mm square hook, 40 mm long in +x, at the bottom of the arm.\", \"localExtents\": [\"reach\", \"arm_s\", \"arm_s\"], \"position\": [\"hook_x\", \"arm_y\", 0], \"rotation\": [0, 0, 0], \"positionNote\": \"x = 25 + 10 = 35 (outer arm face), y = 15, z = 0 on the ground plane; extends to x = 75.\", \"holes\": [], \"shape\": {\"kind\": \"box\", \"axis\": \"z\", \"innerD\": 0, \"wall\": 0, \"openFace\": \"+Z\", \"plane\": \"xy\", \"points\": [], \"holes\": []}}]",
+  "guides": [
+   {
+    "label": "Desk underside (plate top plane)",
+    "kind": "line",
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "points": [
+     [
+      0,
+      0,
+      53
+     ],
+     [
+      75,
+      0,
+      53
+     ]
+    ]
+   }
+  ],
+  "assumptions": [
+   {
+    "field": "plate_thickness",
+    "value": "3 mm",
+    "rationale": "Not stated in the request; modest thickness for a small bracket. Open question."
+   },
+   {
+    "field": "arm_section",
+    "value": "10 x 10 mm square bar",
+    "rationale": "Not stated in the request; gives the arm and hook a solid cross-section. Open question."
+   },
+   {
+    "field": "screw_hole_diameter",
+    "value": "4.5 mm through holes",
+    "rationale": "M4 clearance, ISO 273 medium series. Request gives no size."
+   },
+   {
+    "field": "screw_hole_positions",
+    "value": "x = 10 and x = 50, y = 20, along z through the plate",
+    "rationale": "Placement not stated; keeps both holes inside the 60 x 40 plate and clear of the arm."
+   },
+   {
+    "field": "arm_position",
+    "value": "centred at x = 30, y = 20 on the plate (x 25 to 35, y 15 to 25)",
+    "rationale": "Placement not stated; centring keeps the load balanced over the plate."
+   },
+   {
+    "field": "drop_reference",
+    "value": "50 mm from plate underside (z = 50) to hook underside (z = 0)",
+    "rationale": "Request does not say where the 50 mm is measured; this reading ends the drop at the ground plane."
+   },
+   {
+    "field": "hook_direction",
+    "value": "horizontal section extends 40 mm in +x from the outer arm face (x = 35 to 75), z = 0 to 10",
+    "rationale": "Turn direction not stated; +x is the simplest reading."
+   },
+   {
+    "field": "edges",
+    "value": "all sharp, no chamfers or fillets",
+    "rationale": "Invariant: edges stay sharp."
+   },
+   {
+    "field": "variant",
+    "value": "Variant A: literal plate, drop arm and hook",
+    "rationale": "Request fixes the geometry and sizes, so one variant is sufficient."
+   }
+  ],
+  "sheet_dummy": "unused"
+ },
+ "pi_case-s2-A": {
+  "sheet": "## In-use pose\nThe tray stands flat on a desk or shelf. Its floor bottom sits on z = 0 (ground plane). The open face of the tray points up (+z). The Raspberry Pi 4 board sits on four standoffs inside the tray, and the flat lid sits on top of the tray walls, closing the opening. The user looks at the assembly from the front (-y side); the board's long (85 mm) edge runs along x. No port cutouts are made (not requested).\n\n## Fixed numbers (from the Raspberry Pi 4 published geometry and the brief)\n- Board outline: 85 x 56 mm.\n- Mounting-hole pattern: 58 x 49 mm rectangle, centred on the board.\n- Mounting-hole bore: 2.75 mm diameter (M2.5 clearance).\n\n## Placeholder numbers (brief shared assumptions)\n- Wall thickness 2 mm, floor thickness 2 mm (floor bottom at z = 0).\n- Tray wall height 20 mm above the floor top, so the tray is 22 mm tall overall.\n- Standoff height 5 mm above the floor top; standoff outer diameter 6 mm.\n- Lid: flat 2 mm plate matching the tray outer footprint.\n- Cavity clearance 0 mm beyond the board footprint. All edges sharp.\n\n## Derived footprint\n- Tray outer: 85 + 2 x 2 = 89 mm (x) by 56 + 2 x 2 = 60 mm (y), 22 mm tall.\n- Cavity (inside walls): 85 x 56 mm, x from 2 to 87, y from 2 to 58, z from 2 (floor top) upward.\n\n## Standoff layout\nBoard centre in the tray is (44.5, 30). Standoff bore centres are at x = 44.5 +/- 29 -> 15.5 and 73.5; y = 30 +/- 24.5 -> 5.5 and 54.5. Each 6 mm standoff's local origin is its min corner, so origins are centre minus 3:\n- pi_standoff_a: (12.5, 2.5)\n- pi_standoff_b: (70.5, 2.5)\n- pi_standoff_c: (12.5, 51.5)\n- pi_standoff_d: (70.5, 51.5)\nAll four stand on the floor top at z = 2 and rise to z = 7. Each carries a 2.75 mm through bore.\n\n## Board seating\nThe board rests on the four standoff tops at z = 7 (floor 2 + standoff 5). Board PCB thickness 1.5 mm is shown as a guide envelope only; the board is not built.\n\n## Lid\nFlat 89 x 60 x 2 mm plate at z = 22, sitting on the top edges of the four walls (tray top at z = 22). No skirt, no ledge, no clearance: lid and tray are a permanent-touch pair with no joint contract.\n\n## Component list (6 free bodies)\n1. pi_tray - open-top shell 89 x 60 x 22 mm, 2 mm walls and floor, open +Z.\n2. pi_standoff_a - tube, 6 mm OD, 2.75 mm bore, 5 mm tall.\n3. pi_standoff_b - tube, same.\n4. pi_standoff_c - tube, same.\n5. pi_standoff_d - tube, same.\n6. pi_lid - flat plate 89 x 60 x 2 mm.\n\n## Bounding box\n89 x 60 x 24 mm (lid top at z = 24). Lowest x, y, z are all 0.",
+  "assemblyName": "Pi4 Case - Variant A Flat Lid",
+  "boundingBox": {
+   "width": 89,
+   "length": 60,
+   "height": 24
+  },
+  "jointContracts": [],
+  "parameters": "[{\"name\": \"board_l\", \"value\": 85, \"min\": 84, \"max\": 86, \"step\": 1, \"unit\": \"mm\", \"description\": \"Raspberry Pi 4 board length along x (published outline, pinned).\"}, {\"name\": \"board_w\", \"value\": 56, \"min\": 55, \"max\": 57, \"step\": 1, \"unit\": \"mm\", \"description\": \"Raspberry Pi 4 board width along y (published outline, pinned).\"}, {\"name\": \"board_t\", \"value\": 1.5, \"min\": 1, \"max\": 2, \"step\": 0.1, \"unit\": \"mm\", \"description\": \"Board PCB thickness, guide envelope only.\"}, {\"name\": \"hole_x\", \"value\": 58, \"min\": 57, \"max\": 59, \"step\": 1, \"unit\": \"mm\", \"description\": \"Mounting-hole pattern spacing along x (pinned).\"}, {\"name\": \"hole_y\", \"value\": 49, \"min\": 48, \"max\": 50, \"step\": 1, \"unit\": \"mm\", \"description\": \"Mounting-hole pattern spacing along y (pinned).\"}, {\"name\": \"bore_d\", \"value\": 2.75, \"min\": 2.2, \"max\": 3.4, \"step\": 0.05, \"unit\": \"mm\", \"description\": \"Standoff bore diameter for M2.5 screws.\"}, {\"name\": \"wall_t\", \"value\": 2, \"min\": 1, \"max\": 5, \"step\": 0.5, \"unit\": \"mm\", \"description\": \"Tray wall thickness on all four sides.\"}, {\"name\": \"floor_t\", \"value\": 2, \"min\": 1, \"max\": 5, \"step\": 0.5, \"unit\": \"mm\", \"description\": \"Tray floor thickness; floor bottom on z = 0.\"}, {\"name\": \"wall_h\", \"value\": 20, \"min\": 10, \"max\": 40, \"step\": 1, \"unit\": \"mm\", \"description\": \"Tray wall height above the floor top.\"}, {\"name\": \"standoff_h\", \"value\": 5, \"min\": 2, \"max\": 15, \"step\": 0.5, \"unit\": \"mm\", \"description\": \"Standoff height above the floor top.\"}, {\"name\": \"so_od\", \"value\": 6, \"min\": 4, \"max\": 10, \"step\": 0.5, \"unit\": \"mm\", \"description\": \"Standoff outer diameter.\"}, {\"name\": \"lid_t\", \"value\": 2, \"min\": 1, \"max\": 5, \"step\": 0.5, \"unit\": \"mm\", \"description\": \"Flat lid plate thickness.\"}], \"derived\": [{\"name\": \"tray_l\", \"expr\": \"board_l + 2*wall_t\"}, {\"name\": \"tray_w\", \"expr\": \"board_w + 2*wall_t\"}, {\"name\": \"tray_h\", \"expr\": \"floor_t + wall_h\"}, {\"name\": \"board_z\", \"expr\": \"floor_t + standoff_h\"}, {\"name\": \"lid_z\", \"expr\": \"tray_h\"}, {\"name\": \"so_xa\", \"expr\": \"wall_t + (board_l - hole_x)/2 - so_od/2\"}, {\"name\": \"so_xb\", \"expr\": \"wall_t + (board_l + hole_x)/2 - so_od/2\"}, {\"name\": \"so_ya\", \"expr\": \"wall_t + (board_w - hole_y)/2 - so_od/2\"}, {\"name\": \"so_yb\", \"expr\": \"wall_t + (board_w + hole_y)/2 - so_od/2\"}], \"relations\": [{\"expr\": \"bore_d < so_od\", \"why\": \"bore must sit inside the standoff post wall.\"}, {\"expr\": \"2*wall_t < tray_h\", \"why\": \"walls must leave a cavity inside the shell.\"}, {\"expr\": \"hole_x < board_l and hole_y < board_w\", \"why\": \"mounting pattern sits within the board outline.\"}, {\"expr\": \"so_xa > wall_t and so_ya > wall_t\", \"why\": \"standoffs sit inside the cavity, clear of the walls.\"}, {\"expr\": \"board_z + board_t < lid_z\", \"why\": \"board and its standoffs fit under the lid.\"}, {\"expr\": \"lid_z == tray_h\", \"why\": \"lid plate rests on the top of the walls (variant A).\"}], \"components\": [{\"name\": \"pi_tray\", \"description\": \"Open-top rectangular tray shell with 2 mm walls and floor.\", \"localExtents\": [\"tray_l\", \"tray_w\", \"tray_h\"], \"position\": [0, 0, 0], \"rotation\": [0, 0, 0], \"positionNote\": \"\", \"holes\": [], \"shape\": {\"kind\": \"shell\", \"axis\": \"z\", \"innerD\": 0, \"wall\": \"wall_t\", \"openFace\": \"+Z\", \"plane\": \"xy\", \"points\": [], \"holes\": []}}, {\"name\": \"pi_standoff_a\", \"description\": \"Round standoff post with 2.75 mm bore at the front-left mounting hole.\", \"localExtents\": [\"so_od\", \"so_od\", \"standoff_h\"], \"position\": [\"so_xa\", \"so_ya\", \"floor_t\"], \"rotation\": [0, 0, 0], \"positionNote\": \"x = wall_t + (85-58)/2 - 3 = 12.5; y = wall_t + (56-49)/2 - 3 = 2.5; z = floor_t = 2 (stands on floor top).\", \"holes\": [{\"d\": \"bore_d\", \"axis\": \"z\", \"at\": [\"so_od/2\", \"so_od/2\", \"standoff_h\"], \"note\": \"bore through standoff\"}], \"shape\": {\"kind\": \"tube\", \"axis\": \"z\", \"innerD\": \"bore_d\", \"wall\": 0, \"openFace\": \"+Z\", \"plane\": \"xy\", \"points\": [], \"holes\": []}}, {\"name\": \"pi_standoff_b\", \"description\": \"Round standoff post with 2.75 mm bore at the front-right mounting hole.\", \"localExtents\": [\"so_od\", \"so_od\", \"standoff_h\"], \"position\": [\"so_xb\", \"so_ya\", \"floor_t\"], \"rotation\": [0, 0, 0], \"positionNote\": \"x = wall_t + (85+58)/2 - 3 = 70.5; y = 2.5; z = floor_t = 2.\", \"holes\": [{\"d\": \"bore_d\", \"axis\": \"z\", \"at\": [\"so_od/2\", \"so_od/2\", \"standoff_h\"], \"note\": \"bore through standoff\"}], \"shape\": {\"kind\": \"tube\", \"axis\": \"z\", \"innerD\": \"bore_d\", \"wall\": 0, \"openFace\": \"+Z\", \"plane\": \"xy\", \"points\": [], \"holes\": []}}, {\"name\": \"pi_standoff_c\", \"description\": \"Round standoff post with 2.75 mm bore at the rear-left mounting hole.\", \"localExtents\": [\"so_od\", \"so_od\", \"standoff_h\"], \"position\": [\"so_xa\", \"so_yb\", \"floor_t\"], \"rotation\": [0, 0, 0], \"positionNote\": \"x = 12.5; y = wall_t + (56+49)/2 - 3 = 51.5; z = floor_t = 2.\", \"holes\": [{\"d\": \"bore_d\", \"axis\": \"z\", \"at\": [\"so_od/2\", \"so_od/2\", \"standoff_h\"], \"note\": \"bore through standoff\"}], \"shape\": {\"kind\": \"tube\", \"axis\": \"z\", \"innerD\": \"bore_d\", \"wall\": 0, \"openFace\": \"+Z\", \"plane\": \"xy\", \"points\": [], \"holes\": []}}, {\"name\": \"pi_standoff_d\", \"description\": \"Round standoff post with 2.75 mm bore at the rear-right mounting hole.\", \"localExtents\": [\"so_od\", \"so_od\", \"standoff_h\"], \"position\": [\"so_xb\", \"so_yb\", \"floor_t\"], \"rotation\": [0, 0, 0], \"positionNote\": \"x = 70.5; y = 51.5; z = floor_t = 2.\", \"holes\": [{\"d\": \"bore_d\", \"axis\": \"z\", \"at\": [\"so_od/2\", \"so_od/2\", \"standoff_h\"], \"note\": \"bore through standoff\"}], \"shape\": {\"kind\": \"tube\", \"axis\": \"z\", \"innerD\": \"bore_d\", \"wall\": 0, \"openFace\": \"+Z\", \"plane\": \"xy\", \"points\": [], \"holes\": []}}, {\"name\": \"pi_lid\", \"description\": \"Flat rectangular lid plate resting on the top of the tray walls.\", \"localExtents\": [\"tray_l\", \"tray_w\", \"lid_t\"], \"position\": [0, 0, \"lid_z\"], \"rotation\": [0, 0, 0], \"positionNote\": \"z = tray_h = floor_t + wall_h = 22, the top of the walls.\", \"holes\": [], \"shape\": {\"kind\": \"box\", \"axis\": \"z\", \"innerD\": 0, \"wall\": 0, \"openFace\": \"+Z\", \"plane\": \"xy\", \"points\": [], \"holes\": []}}]",
+  "guides": [
+   {
+    "kind": "envelope",
+    "label": "Raspberry Pi 4 board (85 x 56 x 1.5, resting on standoff tops)",
+    "localExtents": [
+     85,
+     56,
+     1.5
+    ],
+    "position": [
+     2,
+     2,
+     7
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "shape": {
+     "kind": "box",
+     "axis": "z",
+     "innerD": 0,
+     "wall": 0,
+     "openFace": "+Z",
+     "plane": "xy",
+     "points": [],
+     "holes": []
+    }
+   }
+  ],
+  "assumptions": [
+   {
+    "field": "wall_h interpretation",
+    "value": "tray total height 22 mm (floor 2 + walls 20 above floor top)",
+    "rationale": "Brief says 'tray wall height: 20 mm above the floor', read as walls rising 20 mm above the floor top at z = 2."
+   },
+   {
+    "field": "board_t",
+    "value": "1.5 mm",
+    "rationale": "Board PCB thickness is not in the brief; used only for the board guide envelope, not built. Standard Pi 4 PCB thickness."
+   },
+   {
+    "field": "lid clearance",
+    "value": "0 mm (lid rests directly on wall tops)",
+    "rationale": "Brief specifies cavity clearance 0 and a flat lid resting on the rim; no joint clearance added."
+   },
+   {
+    "field": "standoff bore depth",
+    "value": "through standoff only; floor not drilled",
+    "rationale": "Brief says bore through each standoff; no floor hole is requested."
+   },
+   {
+    "field": "lid footprint",
+    "value": "89 x 60 mm full plate, no skirt, no ledge",
+    "rationale": "Brief: flat 2 mm lid plate matching tray outer footprint, variant A."
+   },
+   {
+    "field": "standoff/tray join",
+    "value": "standoffs stand on floor top, touching at z = 2",
+    "rationale": "Permanently joined parts touch; no joint contract."
+   },
+   {
+    "field": "ports and cutouts",
+    "value": "none",
+    "rationale": "Not requested; port access left to the user."
+   },
+   {
+    "field": "pinned board numbers",
+    "value": "85 x 56 outline, 58 x 49 pattern, 2.75 bore",
+    "rationale": "Official Raspberry Pi 4 published geometry, as stated in the brief."
+   }
+  ]
+ },
+ "bike_hook_wall-s1-A": {
+  "sheet": "## In-use pose\nThe hook is screwed to a vertical wall. The backplate lies flat against the wall face, so its face normal is horizontal (+Y points away from the wall). Up is +Z and z = 0 is the ground plane, which is the lowest point of the backplate. The user stands in front of the wall (+Y side). The arm projects horizontally in +Y from the wall face. Its opening, the space above the arm between the wall and the tip, faces up and toward the user. The three screw holes pass straight through the backplate along Y, entering from the wall face.\n\n## Geometry (all mm)\n- Wall face: plane Y = 0.\n- Backplate: 80 along X (wall width), 4 along Y (thickness), 150 along Z (height). Occupies X 0..80, Y 0..4, Z 0..150.\n- Three through-holes, d = 4.5 (M4 clearance), axis Y. Triangle layout in the backplate face: two at X = 20 and X = 60 on Z = 120, one at X = 40 on Z = 85. All holes stay above the arm root (Z > 60), so they do not cut the arm.\n- Hook profile: an L-shaped outline in the YZ plane, extruded 20 along X (arm width). It is centred on the backplate: X 30..50.\n  - Arm: Y 0..120 (120 mm from the wall face to the free end), Z 20..30 (10 thick). The arm root sits at Z = 20 above the ground plane.\n  - Upturned tip: Y 110..120 (10 thick at the free end), Z 20..60. It rises 30 above the arm top (Z 30 to 60).\n  - Profile points (Y, Z) relative to the hook origin: (0,0), (120,0), (120,40), (110,40), (110,10), (0,10). The root overlaps the backplate by 4 mm in Y, so the two bodies are joined.\n- Overall bounding box: X 0..80, Y 0..120, Z 0..150.\n\n## Joining\nBackplate and hook are one solid. They are permanently joined at the wall face, so there is no joint clearance and no jointContract.\n\n## Edges\nAll edges are sharp. No chamfers, fillets or rounds.\n\n## Values not stated in the request (confirm before drafting)\nBackplate thickness 4, arm section 20 wide by 10 thick, arm root height Z 20, tip thickness 10, screw hole d 4.5 with the triangle layout above.",
+  "assemblyName": "bike_hook_wall_variant_A",
+  "boundingBox": {
+   "width": 80,
+   "length": 120,
+   "height": 150
+  },
+  "jointContracts": [],
+  "parameters": "[{\"name\": \"backplate_w\", \"value\": 80, \"min\": 40, \"max\": 150, \"step\": 1, \"unit\": \"mm\", \"description\": \"Backplate width along X (parallel to the wall).\"}, {\"name\": \"backplate_h\", \"value\": 150, \"min\": 80, \"max\": 250, \"step\": 1, \"unit\": \"mm\", \"description\": \"Backplate height along Z (up).\"}, {\"name\": \"backplate_t\", \"value\": 4, \"min\": 2, \"max\": 10, \"step\": 0.5, \"unit\": \"mm\", \"description\": \"Backplate thickness along Y (not stated in request; assumed).\"}, {\"name\": \"arm_len\", \"value\": 120, \"min\": 60, \"max\": 200, \"step\": 1, \"unit\": \"mm\", \"description\": \"Horizontal arm projection from the wall face along Y.\"}, {\"name\": \"arm_w\", \"value\": 20, \"min\": 10, \"max\": 60, \"step\": 1, \"unit\": \"mm\", \"description\": \"Arm width along X (not stated; assumed).\"}, {\"name\": \"arm_t\", \"value\": 10, \"min\": 5, \"max\": 25, \"step\": 1, \"unit\": \"mm\", \"description\": \"Arm section thickness along Z (not stated; assumed).\"}, {\"name\": \"arm_z\", \"value\": 20, \"min\": 0, \"max\": 100, \"step\": 1, \"unit\": \"mm\", \"description\": \"Height of the arm root bottom above the ground plane (not stated; assumed).\"}, {\"name\": \"tip_h\", \"value\": 30, \"min\": 10, \"max\": 80, \"step\": 1, \"unit\": \"mm\", \"description\": \"Upturned tip rise above the arm top surface at the free end.\"}, {\"name\": \"hole_d\", \"value\": 4.5, \"min\": 3.4, \"max\": 6.5, \"step\": 0.1, \"unit\": \"mm\", \"description\": \"Screw hole diameter, M4 clearance (not stated; assumed).\"}, {\"name\": \"hole_inset\", \"value\": 20, \"min\": 10, \"max\": 30, \"step\": 1, \"unit\": \"mm\", \"description\": \"Side inset of the two top screw holes from the backplate edges.\"}, {\"name\": \"hole_top_z\", \"value\": 120, \"min\": 90, \"max\": 145, \"step\": 1, \"unit\": \"mm\", \"description\": \"Height of the two top screw holes.\"}, {\"name\": \"hole_mid_z\", \"value\": 85, \"min\": 70, \"max\": 120, \"step\": 1, \"unit\": \"mm\", \"description\": \"Height of the centre screw hole (triangle apex).\"}], \"derived\": [{\"name\": \"arm_top\", \"expr\": \"arm_z + arm_t\"}, {\"name\": \"hook_top\", \"expr\": \"arm_top + tip_h\"}, {\"name\": \"hook_h\", \"expr\": \"hook_top - arm_z\"}, {\"name\": \"arm_x\", \"expr\": \"(backplate_w - arm_w) / 2\"}], \"relations\": [{\"expr\": \"arm_z + arm_t + tip_h < backplate_h\", \"why\": \"The hook must stay within the backplate height.\"}, {\"expr\": \"arm_w < backplate_w\", \"why\": \"The arm must fit across the backplate width.\"}, {\"expr\": \"hole_top_z + hole_d / 2 < backplate_h\", \"why\": \"The top screw holes must lie inside the backplate.\"}, {\"expr\": \"hole_top_z > hook_top\", \"why\": \"Screw holes must sit above the hook root so they do not cut the arm.\"}, {\"expr\": \"hole_inset > hole_d\", \"why\": \"Screw holes must keep edge material beside them.\"}, {\"expr\": \"arm_z >= 0\", \"why\": \"Nothing may lie below the ground plane.\"}], \"components\": [{\"name\": \"backplate\", \"description\": \"Flat rectangular wall plate with three through screw holes.\", \"localExtents\": [\"backplate_w\", \"backplate_t\", \"backplate_h\"], \"position\": [0, 0, 0], \"rotation\": [0, 0, 0], \"positionNote\": \"Origin at the wall-face corner on the ground: X=0, Y=0 (wall face), Z=0 (ground). All coordinates are zero.\", \"holes\": [{\"d\": \"hole_d\", \"axis\": \"y\", \"at\": [\"hole_inset\", \"hole_top_z\"], \"note\": \"Top-left screw hole, through the backplate.\"}, {\"d\": \"hole_d\", \"axis\": \"y\", \"at\": [\"backplate_w - hole_inset\", \"hole_top_z\"], \"note\": \"Top-right screw hole, through the backplate.\"}, {\"d\": \"hole_d\", \"axis\": \"y\", \"at\": [\"backplate_w / 2\", \"hole_mid_z\"], \"note\": \"Centre screw hole (triangle apex), through the backplate.\"}], \"shape\": {\"kind\": \"box\", \"axis\": \"z\", \"innerD\": 0, \"wall\": 0, \"openFace\": \"+Z\", \"plane\": \"xy\", \"points\": [], \"holes\": []}}, {\"name\": \"hook_arm\", \"description\": \"L-shaped hook profile: horizontal arm with upturned tip at its free end, extruded across the arm width.\", \"localExtents\": [\"arm_w\", \"arm_len\", \"hook_h\"], \"position\": [\"arm_x\", 0, \"arm_z\"], \"rotation\": [0, 0, 0], \"positionNote\": \"X = (backplate_w - arm_w)/2 = 30 (centred on the backplate); Y = 0 (starts at the wall face); Z = arm_z = 20 (arm root height above the ground plane).\", \"holes\": [], \"shape\": {\"kind\": \"profile\", \"axis\": \"z\", \"innerD\": 0, \"wall\": 0, \"openFace\": \"+Z\", \"plane\": \"yz\", \"points\": [[0, 0], [120, 0], [120, 40], [110, 40], [110, 10], [0, 10]], \"holes\": []}}], \"guides\": [], \"assumptions\": [{\"field\": \"backplate_t\", \"value\": \"4 mm\", \"rationale\": \"Request does not state the thickness; a light sheet-metal-scale plate is assumed. The user must confirm.\"}, {\"field\": \"arm_w\", \"value\": \"20 mm\", \"rationale\": \"Arm cross-section width not stated; a modest width is assumed and must be confirmed.\"}, {\"field\": \"arm_t\", \"value\": \"10 mm\", \"rationale\": \"Arm section thickness not stated; assumed as a rectangular 20 by 10 section, to be confirmed.\"}, {\"field\": \"tip_h / tip thickness\", \"value\": \"tip 10 mm thick, rising 30 mm above arm top\", \"rationale\": \"The request gives the 30 mm rise. The tip thickness equals the arm thickness so the section stays consistent.\"}, {\"field\": \"arm_z\", \"value\": \"20 mm\", \"rationale\": \"Arm attachment height not stated; set near the bottom edge, as the brief suggests, and to be confirmed.\"}, {\"field\": \"hole_d\", \"value\": \"4.5 mm\", \"rationale\": \"Not stated; M4 clearance hole from the standard table is assumed.\"}, {\"field\": \"hole layout\", \"value\": \"triangle: (20,120), (60,120), (40,85) in X,Z\", \"rationale\": \"Not stated; a three-point triangle is assumed and kept above the arm root so the holes do not cut the arm.\"}, {\"field\": \"arm direction\", \"value\": \"+Y from the wall face, 120 mm to the free outer face\", \"rationale\": \"Literal reading of 'sticking out 120 mm horizontally from the wall'.\"}, {\"field\": \"profile points\", \"value\": \"[[0,0],[120,0],[120,40],[110,40],[110,10],[0,10]]\", \"rationale\": \"Profile points must be literal numbers. They are the baseline outline for the default parameters and must be regenerated if arm_len, tip_h or arm_t change.\"}]}",
+  "sheet_dummy": "unused"
+ }
+}

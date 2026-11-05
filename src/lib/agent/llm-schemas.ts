@@ -437,6 +437,48 @@ function normalizeStressPoint(sp: unknown): unknown {
   return s;
 }
 
+/** Array fields Claude sometimes returns as a string that swallowed the fields after it. */
+const BLEED_FIELDS = ['parameters', 'derived', 'relations'] as const;
+
+/**
+ * Claude (Haiku 5.5 most often) sometimes serialises a tool call's array field
+ * as a string that runs on past the array: `"[...], \"derived\": [...],
+ * \"components\": [...]"`, sometimes closing the outer object (`...]}`) or
+ * switching to `</parameter><parameter name="x">` markup half way. The fields
+ * after it are then missing from the input. Re-reading the string as the body
+ * of `{"<field>": ...}` recovers them; a recovered field fills a missing key
+ * and never overwrites one the model sent properly. When nothing parses the
+ * input is returned unchanged and the schema reports the string.
+ */
+export function recoverBledFields(input: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...input };
+  for (const field of BLEED_FIELDS) {
+    const value = out[field];
+    if (typeof value !== 'string') continue;
+    const recovered = parseBled(field, value);
+    if (!recovered) continue;
+    for (const [key, v] of Object.entries(recovered)) {
+      if (key === field || !(key in out) || out[key] === undefined || out[key] === null) out[key] = v;
+    }
+  }
+  return out;
+}
+
+function parseBled(field: string, text: string): Record<string, unknown> | null {
+  const body = text.trim();
+  const markup = body
+    .replace(/<\/parameters?>\s*<parameter name="([A-Za-z_][A-Za-z0-9_]*)">/g, ', "$1": ')
+    .replace(/<\/parameters?>\s*$/, '');
+  const candidates = [body, body.replace(/}\s*$/, ''), markup, markup.replace(/}\s*$/, '')];
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(`{"${field}": ${candidate}}`);
+      if (parsed && typeof parsed === 'object' && Array.isArray(parsed[field])) return parsed;
+    } catch { /* next candidate */ }
+  }
+  return null;
+}
+
 /**
  * Maps neutral values emitted by Claude back to "absent" so lenient zod schemas
  * parse the result identically to the OpenAI path. Pure; does not mutate input.
@@ -444,7 +486,7 @@ function normalizeStressPoint(sp: unknown): unknown {
 export function normalizeClaudeSentinels(raw: unknown): unknown {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
 
-  const out = { ...(raw as Record<string, unknown>) };
+  const out = recoverBledFields(raw as Record<string, unknown>);
 
   if (Array.isArray(out.jointContracts)) {
     out.jointContracts = out.jointContracts.map(normalizeJointContract);

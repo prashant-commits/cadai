@@ -130,8 +130,53 @@ describe('review round 1', () => {
   });
 
   it('reports a declared name outside the grammar, naming the declaration', () => {
-    const bad = { ...base, parameters: [{ name: 'Width', value: 10, min: 1, max: 20, unit: 'mm', description: 'a' }], components: [] };
-    expect(resolveSpec(bad as unknown as AssemblySpec).errors.join(' ')).toMatch(/Width/);
+    // A capitalised name is lowercased (see below); one that is invalid in any case is reported.
+    const bad = { ...base, parameters: [{ name: '2nd-width', value: 10, min: 1, max: 20, unit: 'mm', description: 'a' }], components: [] };
+    expect(resolveSpec(bad as unknown as AssemblySpec).errors.join(' ')).toMatch(/2nd-width/);
   });
 });
 
+
+describe('resolveSpec tolerates capitalised names and blank optional fields (P0b eval)', () => {
+  const base = {
+    sheet: '', assemblyName: 'a', boundingBox: { width: 1, length: 1, height: 1 }, assumptions: [], openQuestions: [],
+  };
+  const param = (name: string, value: number) => ({ name, value, min: 0, max: 1000, unit: 'mm' as const, description: '' });
+
+  it('lowercases capitalised parameter and derived names everywhere they are used', () => {
+    const raw = {
+      ...base,
+      parameters: [param('W', 120), param('peg_L', 40)],
+      derived: [{ name: 'R_o', expr: 'W / 2' }],
+      relations: [{ expr: 'peg_L < W', why: 'fits' }],
+      components: [{ name: 'p', description: '', localExtents: ['peg_L', 'R_o', 'W'], position: [0, 0, 0] }],
+    } as unknown as AssemblySpec;
+    const { spec, errors } = resolveSpec(raw);
+    expect(errors).toEqual([]);
+    expect(spec.parameters?.map((p) => p.name)).toEqual(['w', 'peg_l']);
+    expect(spec.derived).toEqual([{ name: 'r_o', expr: 'w / 2' }]);
+    expect(spec.relations?.[0].expr).toBe('peg_l < w');
+    expect(spec.components![0].localExtents).toEqual([40, 60, 120]);
+    expect(spec.components![0].expr?.localExtents).toEqual(['peg_l', 'r_o', 'w']);
+    expect(resolveSpec(spec)).toEqual({ spec, errors: [] }); // idempotent
+  });
+
+  it('keeps reporting a capitalised name whose lowercase form is taken', () => {
+    const raw = { ...base, parameters: [param('H', 1), param('h', 2)], components: [] } as unknown as AssemblySpec;
+    expect(resolveSpec(raw).errors.join('\n')).toMatch(/"H" is not a valid name/);
+  });
+
+  it('treats an empty string in an optional numeric field as unset', () => {
+    const raw = {
+      ...base,
+      components: [{
+        name: 'p', description: '', localExtents: [10, 10, 10], position: [0, 0, 0],
+        shape: { kind: 'tube', axis: 'z', innerD: '' }, holes: [{ d: 3, at: [1, 1, 0], axis: 'z', depth: '' }],
+      }],
+    } as unknown as AssemblySpec;
+    const { spec, errors } = resolveSpec(raw);
+    expect(errors).toEqual([]);
+    expect(spec.components![0].holes?.[0].depth).toBeUndefined();
+    expect(spec.components![0].shape?.innerD).toBeUndefined();
+  });
+});
