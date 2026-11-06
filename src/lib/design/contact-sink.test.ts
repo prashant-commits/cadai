@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AssemblySpec } from '../agent/assembly-spec';
 import { compileScad } from '../engine/scad-compiler';
-import { contactSinks } from './contact-sink';
+import { contactSinkPlan, contactSinks } from './contact-sink';
 import { composeAssembly, stripGeneratedAssembly } from './compose-assembly';
 
 // Council 2026-11-06, item 1: contact is placement, and placement is code.
@@ -57,7 +57,7 @@ describe('contactSinks', () => {
     const once = composeAssembly(code, s).code;
     expect(once).toContain('cup_ring_pos_y = 5;');
     expect(once).toContain('cup_ring_pos_y - 0.02');
-    expect(once).toContain('// 0.02 mm contact sink');
+    expect(once).toContain('// sinks 0.02 mm into backplate');
     expect(composeAssembly(stripGeneratedAssembly(once), s).code).toBe(once);
   });
 
@@ -80,6 +80,7 @@ describe('contactSinks', () => {
     const touch = (y: number) => spec([comp('a', [10, 10, 10], [0, 0, 0]), comp('b', [10, 10, 10], [0, y, 0])]);
     // 0.05 mm gap moves 0.07 mm, so the faces overlap by 0.02 mm. A 0.04 mm overlap is already joined.
     expect(contactSinks(touch(10.05)).get('b')).toEqual([0, -0.07, 0]);
+    expect(contactSinkPlan(touch(10.05)).notes.get('b')).toBe('sinks 0.07 mm into a');
     expect(contactSinks(touch(9.96)).size).toBe(0);
     expect(contactSinks(touch(10.06)).size).toBe(0);
   });
@@ -148,6 +149,8 @@ describe('contactSinks', () => {
     const out = composeAssembly(code, s).code;
     expect(out).toContain('arm_pos_z - 0.02');
     expect(out).not.toContain('arm_pos_z + 0.02');
+    expect(out).toContain('// sinks 0.02 mm into base');
+    expect(out).toContain('// sinks 0.04 mm: 0.02 into arm, which sank 0.02');
     const compiled = await compileScad(out);
     expect(compiled.shellCount).toBe(1);
   });
@@ -170,7 +173,93 @@ describe('contactSinks', () => {
       'module ring() { cube([10, 10, 10]); }',
       '',
     ].join('\n');
+    const out = composeAssembly(code, s).code;
+    expect(out).toContain('// sinks 0.04 mm: 0.02 into post, which sank 0.02');
+    const compiled = await compileScad(out);
+    expect(compiled.shellCount).toBe(1);
+  });
+
+  it('takes the largest same-axis move so a lintel follows the support that already sank', async () => {
+    // postA sits on the base, so it sinks 0.02. postB is already on the floor.
+    // The lintel must follow postA by 0.04, not stop at 0.02 and stay tangent on it.
+    const s = spec([
+      comp('base', [40, 10, 3], [0, 0, 0]),
+      comp('postB', [5, 10, 10], [30, 0, 0]),
+      comp('postA', [5, 10, 7], [5, 0, 3]),
+      comp('lintel', [40, 10, 3], [0, 0, 10]),
+    ]);
+    const sinks = contactSinks(s);
+    expect(sinks.get('postA')).toEqual([0, 0, -0.02]);
+    expect(sinks.get('lintel')).toEqual([0, 0, -0.04]);
+    expect(sinks.has('postB')).toBe(false);
+    expect(sinks.has('base')).toBe(false);
+    expect(contactSinkPlan(s).notes.get('lintel')).toBe('sinks 0.04 mm: 0.02 into postA, which sank 0.02');
+    const code = [
+      'module base() { cube([40, 10, 3]); }',
+      'module postB() { cube([5, 10, 10]); }',
+      'module postA() { cube([5, 10, 7]); }',
+      'module lintel() { cube([40, 10, 3]); }',
+      '',
+    ].join('\n');
     const compiled = await compileScad(composeAssembly(code, s).code);
     expect(compiled.shellCount).toBe(1);
+  });
+
+  it('moves by the larger same-direction gap instead of the nearer face', () => {
+    // near is flush (move 0.02). far is 0.05 mm back (move 0.07). Same direction.
+    const s = spec([
+      comp('near', [10, 10, 10], [0, 0, 0]),
+      comp('far', [9.95, 10, 10], [0, 0, 0]),
+      comp('block', [10, 10, 10], [10, 0, 5]),
+    ]);
+    expect(contactSinks(s).get('block')).toEqual([-0.07, 0, 0]);
+  });
+
+  it('does not fall through to a smaller same-direction move when the largest opens a gap', () => {
+    // +0.07 toward far would pull the bar off its 0.03 mm overlap with left.
+    // Taking the smaller +0.02 instead would leave far exactly tangent.
+    const s = spec([
+      comp('left', [10, 10, 10], [0, 0, 0]),
+      comp('near', [10, 10, 10], [19.97, 0, 0]),
+      comp('far', [10, 10, 10], [20.02, 0, 0]),
+      comp('bar', [10, 10, 10], [9.97, 0, 5]),
+    ]);
+    const bar = contactSinks(s).get('bar');
+    expect(bar?.[0] ?? 0).toBe(0);
+  });
+
+  it('refuses a move that would turn an overlap into a flush face', () => {
+    // The bar overlaps the left upright by 0.02 and is flush with the right.
+    // Moving +0.02 toward the right would leave the left face exactly tangent.
+    const s = spec([
+      comp('left', [5, 10, 40], [0, 0, 0]),
+      comp('right', [5, 10, 40], [44.98, 0, 0]),
+      comp('bar', [40, 10, 3], [4.98, 0, 30]),
+    ]);
+    expect(contactSinks(s).size).toBe(0);
+  });
+
+  it('returns when two components share a name and sinks the later one', () => {
+    const s = spec([
+      comp('a', [10, 10, 10], [0, 0, 0]),
+      comp('a', [10, 10, 10], [10, 0, 0]),
+    ]);
+    expect(contactSinks(s).get('a')).toEqual([-0.02, 0, 0]);
+  });
+
+  it('names each partner when one part sinks on two axes', () => {
+    const s = spec([
+      comp('base', [20, 20, 5], [0, 0, 0]),
+      comp('wall', [5, 20, 20], [0, 0, 0]),
+      comp('block', [10, 10, 10], [5, 5, 5]),
+    ]);
+    expect(contactSinks(s).get('block')).toEqual([-0.02, 0, -0.02]);
+    const code = [
+      'module base() { cube([20, 20, 5]); }',
+      'module wall() { cube([5, 20, 20]); }',
+      'module block() { cube([10, 10, 10]); }',
+      '',
+    ].join('\n');
+    expect(composeAssembly(code, s).code).toContain('// sinks 0.02 mm into wall; sinks 0.02 mm into base');
   });
 });
