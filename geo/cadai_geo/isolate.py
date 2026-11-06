@@ -1,8 +1,8 @@
 """Resource limits and uid drop for one geometry run.
 
-The HTTP service and the zygote child both use this. The zygote process
-itself is not limited; only the forked child is, and only after it has
-called ``setsid`` so the service can kill that process group.
+The HTTP service and the zygote's run stages both use this. The zygote
+process itself is not limited. The supervisor calls ``setsid`` so the
+service can kill that process group; each stage then applies these limits.
 """
 
 from __future__ import annotations

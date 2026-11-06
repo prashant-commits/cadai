@@ -7,8 +7,7 @@ import time
 
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("CADAI_GEO_TOKEN", "test-token")
-from cadai_geo.service import app, zygote  # noqa: E402
+from cadai_geo.service import app, zygote
 
 HEADERS = {"x-cadai-geo-token": "test-token"}
 client = TestClient(app)

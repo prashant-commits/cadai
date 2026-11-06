@@ -1,15 +1,25 @@
 """Pre-warmed fork server for the geometry service.
 
 The service execs this module with an empty environment, so the process
-never sees ``CADAI_GEO_TOKEN``. It imports build123d once (after pinning
-numeric libraries to one thread, which keeps the process single-threaded
-and makes ``fork`` safe). Each run is a child of that process: the child
-calls ``setsid``, applies the same rlimits and uid drop as a fresh CLI
-spawn, redirects stdout and stderr to the service's file, and runs the
-script. The service, not this process, enforces the wall-clock timeout by
-killing the child's process group.
+never sees ``CADAI_GEO_TOKEN`` or ``CADAI_GEO_TOKEN_FILE``. It imports
+build123d once (after pinning numeric libraries to one thread, which keeps
+the process single-threaded and makes ``fork`` safe). Each run is a
+supervisor forked from that process. The supervisor calls ``setsid`` so the
+service can kill the whole run by process group. It then forks two children,
+both with the same rlimits and uid drop:
 
-``python -I -m cadai_geo`` is unchanged and does not use this server.
+* untrusted — runs the script and may write only BREP into the scratch dir
+* trusted — reads that scratch dir, measures the shapes, and writes
+  ``result.json``, ``model.step``, and ``model.stl`` into the service outdir
+
+The untrusted child is not given the outdir (not on argv, not in the
+environment, not as its cwd). The outdir stays mode ``0700`` and owned by
+the service uid until the untrusted process group is gone, then it is handed
+to the trusted child. The service enforces the wall-clock timeout by killing
+the supervisor's process group.
+
+``python -I -m cadai_geo`` is unchanged and does not use this server. That
+CLI measures in-process; it is the local tool, not this sandbox.
 """
 
 from __future__ import annotations
@@ -19,6 +29,7 @@ import json
 import os
 import select
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -29,11 +40,20 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 
 from cadai_geo.isolate import _NUMERIC_THREADS, _kill_group, _limit_and_drop
-from cadai_geo.run import _remember_compound_sources, redact, run, write_result
+from cadai_geo.run import (
+    _remember_compound_sources,
+    capture_geometry,
+    measure_and_export,
+    redact,
+    write_result,
+)
 
 _READY_TIMEOUT_S = 120.0
 _SECRET_ENV = ("CADAI_GEO_TOKEN", "CADAI_GEO_TOKEN_FILE")
 _ARGV0 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "__main__.py")
+# Written by our exception handler after the script returns. A script that
+# exits first does not know to write this, so its stdout is not an error.
+_ERROR_MARK = b"cadaiexcept\n"
 
 
 @dataclass
@@ -262,7 +282,7 @@ def _warm() -> None:
         os.environ[key] = value
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
     _remember_compound_sources()
-    from build123d import export_step, export_stl  # noqa: F401
+    from build123d import export_brep, export_step, export_stl, import_brep  # noqa: F401
 
 
 def _redirect(stderr_path: str) -> None:
@@ -275,10 +295,11 @@ def _redirect(stderr_path: str) -> None:
     os.close(log_fd)
 
 
-def _close_extra_fds() -> None:
+def _close_extra_fds(keep: set[int] | None = None) -> None:
+    kept = keep or set()
     for name in os.listdir("/proc/self/fd"):
         fd = int(name)
-        if fd > 2:
+        if fd > 2 and fd not in kept:
             try:
                 os.close(fd)
             except OSError:
@@ -288,26 +309,104 @@ def _close_extra_fds() -> None:
 def _apply_child_env(request: dict) -> None:
     home = request["home"]
     path = request.get("path") or ""
+    tmpdir = request.get("tmpdir") or ""
     os.environ.clear()
     os.environ["HOME"] = home
     if path:
         os.environ["PATH"] = path
+    if tmpdir:
+        os.environ["TMPDIR"] = tmpdir
     os.environ.update(_NUMERIC_THREADS)
 
 
-def _run_child(request: dict) -> None:
-    os.setsid()
-    account = None
+def _account(request: dict):
     if request.get("uid") is not None and request.get("gid") is not None:
-        account = SimpleNamespace(pw_uid=int(request["uid"]), pw_gid=int(request["gid"]))
+        return SimpleNamespace(pw_uid=int(request["uid"]), pw_gid=int(request["gid"]))
+    return None
+
+
+def _emit_error(write_fd: int, message: str) -> None:
     try:
-        _limit_and_drop(float(request["timeout_s"]), int(request["as_limit"]), account)
+        os.write(write_fd, _ERROR_MARK + redact(message).encode("utf-8") + b"\n")
+    except OSError:
+        pass
+
+
+def _read_marked(fd: int) -> str:
+    chunks = []
+    total = 0
+    while total < 8192:
+        try:
+            data = os.read(fd, 4096)
+        except OSError:
+            break
+        if not data:
+            break
+        chunks.append(data)
+        total += len(data)
+    raw = b"".join(chunks)
+    if _ERROR_MARK not in raw:
+        return ""
+    text = raw.rsplit(_ERROR_MARK, 1)[1].decode("utf-8", errors="replace")
+    return redact(text).strip()[:4096]
+
+
+def _kill_peers() -> None:
+    """SIGKILL every other member of this process group (leftover grandchildren)."""
+    me = os.getpid()
+    pgid = os.getpgrp()
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid == me:
+            continue
+        try:
+            if os.getpgid(pid) == pgid:
+                os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    while True:
+        try:
+            found, _status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            break
+        if found == 0:
+            break
+
+
+def _run_untrusted(request: dict, write_fd: int) -> None:
+    """Script stage. argv is ``(program, script, scratch)`` — never the outdir."""
+    try:
+        _limit_and_drop(float(request["timeout_s"]), int(request["as_limit"]), _account(request))
+        _redirect(request["stderr"])
+        _close_extra_fds({write_fd})
+        _apply_child_env(request)
+        sys.argv = [request.get("argv0") or _ARGV0, request["script"], request["scratch"]]
+        os.chdir(request["home"])
+        capture_geometry(
+            request["script"],
+            request["scratch"],
+            lambda message: _emit_error(write_fd, message),
+        )
+    except Exception as exc:
+        _emit_error(write_fd, f"{type(exc).__name__}: {exc}")
+    os._exit(0)
+
+
+def _run_trusted(request: dict) -> None:
+    """Measure stage. Reads scratch, writes the service outdir, never runs the script."""
+    try:
+        _limit_and_drop(float(request["timeout_s"]), int(request["as_limit"]), _account(request))
         _redirect(request["stderr"])
         _close_extra_fds()
         _apply_child_env(request)
-        sys.argv = [request.get("argv0") or _ARGV0, request["script"], request["outdir"]]
-        os.chdir(request["home"])
-        payload = run(request["script"], request["outdir"])
+        os.chdir(request["outdir"])
+        payload = measure_and_export(
+            request["scratch"],
+            request["outdir"],
+            request.get("fallback_error") or None,
+        )
         try:
             write_result(request["outdir"], payload)
         except OSError:
@@ -323,6 +422,62 @@ def _run_child(request: dict) -> None:
             )
         except Exception:
             pass
+    os._exit(0)
+
+
+def _run_supervisor(request: dict) -> None:
+    """Session leader for one run. The service killpg's this pid.
+
+    The outdir string is in this process because it was forked from the
+    zygote. The untrusted child is a further fork, so the bytes can remain
+    on its heap; it is not told the path, and when the service is root the
+    directory is mode 0700 and owned by the service uid until this function
+    has reaped that child and killed the rest of the process group.
+    """
+    os.setsid()
+    tmpdir = request.get("tmpdir")
+    if tmpdir:
+        os.environ["TMPDIR"] = tmpdir
+    request.pop("fallback_error", None)
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        try:
+            os.close(read_fd)
+            _run_untrusted(request, write_fd)
+        finally:
+            os._exit(0)
+    os.close(write_fd)
+    try:
+        _pid, status = os.waitpid(pid, 0)
+    except ChildProcessError:
+        status = 0
+    if not os.WIFEXITED(status):
+        os.close(read_fd)
+        os._exit(0)
+    _kill_peers()
+    os.set_blocking(read_fd, False)
+    fallback = _read_marked(read_fd)
+    os.close(read_fd)
+    if fallback:
+        request["fallback_error"] = fallback
+    account = _account(request)
+    if account is not None:
+        try:
+            os.chown(request["outdir"], account.pw_uid, account.pw_gid)
+            os.chmod(request["outdir"], 0o700)
+        except OSError:
+            pass
+    trusted = os.fork()
+    if trusted == 0:
+        try:
+            _run_trusted(request)
+        finally:
+            os._exit(0)
+    try:
+        os.waitpid(trusted, 0)
+    except ChildProcessError:
+        pass
     os._exit(0)
 
 
@@ -366,7 +521,12 @@ def _handle(conn: socket.socket, listener: socket.socket) -> None:
     if request.get("ping") is True:
         _write_message(conn, {"pong": True})
         return
-    if _reject_secrets(request) or "script" not in request or "outdir" not in request:
+    if (
+        _reject_secrets(request)
+        or "script" not in request
+        or "outdir" not in request
+        or "scratch" not in request
+    ):
         _write_message(conn, {"error": "bad request"})
         return
     pid = os.fork()
@@ -374,9 +534,9 @@ def _handle(conn: socket.socket, listener: socket.socket) -> None:
         try:
             conn.close()
             listener.close()
-            _run_child(request)
+            _run_supervisor(request)
         finally:
-            os._exit(1)
+            os._exit(0)
     _write_message(conn, {"pid": pid})
     try:
         os.waitpid(pid, 0)

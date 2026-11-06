@@ -1,10 +1,9 @@
 """Acceptance tests for the geometry HTTP service (P1 Task 1)."""
-import base64, os
-import pytest
+import base64
+
 from fastapi.testclient import TestClient
 
-os.environ['CADAI_GEO_TOKEN'] = 'test-token'
-from cadai_geo.service import app  # noqa: E402
+from cadai_geo.service import app
 
 client = TestClient(app)
 SCRIPT = "from build123d import *\nresult = Box(10, 10, 10, align=(Align.MIN, Align.MIN, Align.MIN))\n"

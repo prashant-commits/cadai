@@ -3,13 +3,14 @@
 import base64
 import json
 import os
+import subprocess
+import sys
 import time
 
 import pytest
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("CADAI_GEO_TOKEN", "test-token")
-from cadai_geo.service import app, clamp_timeout  # noqa: E402
+from cadai_geo.service import app, clamp_timeout
 
 TOKEN = "test-token"
 HEADERS = {"x-cadai-geo-token": TOKEN}
@@ -67,9 +68,8 @@ def test_printed_json_cannot_change_parts():
 
 
 def test_symlink_export_is_not_followed():
-    # The spoof, plus symlinks at the fixed export names. A hard exit can
-    # leave a script-written result.json; the service still must not open
-    # the symlink or any path outside the temp dir.
+    # argv[2] is the scratch directory, not the service outdir. Symlinks and a
+    # forged result.json there must not be opened or returned.
     script = (
         "import json, os, sys\n"
         "outdir = sys.argv[2]\n"
@@ -84,13 +84,81 @@ def test_symlink_export_is_not_followed():
     response = client.post("/run", json={"script": script}, headers=HEADERS)
     assert response.status_code == 200
     payload = response.json()
-    # os._exit skips the runner, so this is the script's result.json.
-    # The fixed export names are symlinks and must not be inlined.
-    assert payload["ok"] is True
-    assert payload["parts"] == []
+    assert payload["ok"] is False
     assert "step" not in payload
     assert "stl" not in payload
     _foreign_file_absent(payload)
+
+
+def test_forged_result_and_foreign_bytes_are_not_returned():
+    # probeB_forge.py: forge measurements and copy a foreign file into the
+    # fixed export name and into the BREP slot, then exit before the runner.
+    script = (
+        "import json, os, sys\n"
+        "scratch = sys.argv[-1]\n"
+        "data = open('/etc/hostname', 'rb').read()\n"
+        "open(os.path.join(scratch, 'model.step'), 'wb').write(data)\n"
+        "open(os.path.join(scratch, 'result.brep'), 'wb').write(data)\n"
+        "open(os.path.join(scratch, 'result.json'), 'w').write(json.dumps({\n"
+        "    'ok': True, 'solids': 7,\n"
+        "    'parts': [{'label': 'FORGED', 'valid': True, 'volume': 999.0,\n"
+        "               'min': [0, 0, 0], 'max': [1, 1, 1]}],\n"
+        "    'bbox': {'min': [0, 0, 0], 'max': [1, 1, 1]}}))\n"
+        "os._exit(0)\n"
+    )
+    response = client.post("/run", json={"script": script}, headers=HEADERS)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload.get("solids") != 7
+    assert "FORGED" not in response.text
+    _foreign_file_absent(payload)
+
+
+def test_planted_brep_is_measured_not_trusted_from_json():
+    # A real shape planted in the scratch dir is measured by the trusted stage.
+    # The forged result.json and the hostname bytes in model.step are not.
+    script = (
+        "import json, os, sys\n"
+        "from build123d import Box, Align, export_brep\n"
+        "box = Box(4, 5, 6, align=(Align.MIN, Align.MIN, Align.MIN))\n"
+        "scratch = sys.argv[-1]\n"
+        "export_brep(box, os.path.join(scratch, 'result.brep'))\n"
+        "open(os.path.join(scratch, 'model.step'), 'wb').write(open('/etc/hostname', 'rb').read())\n"
+        "open(os.path.join(scratch, 'result.json'), 'w').write(json.dumps({\n"
+        "    'ok': True, 'solids': 7,\n"
+        "    'parts': [{'label': 'FORGED', 'valid': True, 'volume': 999.0,\n"
+        "               'min': [0, 0, 0], 'max': [1, 1, 1]}],\n"
+        "    'bbox': {'min': [0, 0, 0], 'max': [9, 9, 9]}}))\n"
+        "os._exit(0)\n"
+    )
+    response = client.post("/run", json={"script": script}, headers=HEADERS)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True, payload
+    assert payload["solids"] == 1
+    assert payload["parts"][0]["label"] == ""
+    assert payload["parts"][0]["volume"] == pytest.approx(120, rel=1e-6)
+    assert payload["bbox"]["max"] == pytest.approx([4, 5, 6], abs=1e-6)
+    assert "FORGED" not in response.text
+    step = base64.b64decode(payload["step"])
+    assert step.startswith(b"ISO-10303-21;")
+    _foreign_file_absent(payload)
+
+
+def test_env_token_refuses_to_start():
+    env = os.environ.copy()
+    env["CADAI_GEO_TOKEN"] = "nope"
+    proc = subprocess.run(
+        [sys.executable, "-c", "import cadai_geo.service"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode != 0
+    assert "refusing to start" in proc.stderr
+    assert "CADAI_GEO_TOKEN_FILE" in proc.stderr
 
 
 @pytest.mark.skipif(
@@ -326,6 +394,17 @@ def test_error_strips_temp_paths():
     assert "model.py" not in error
     assert "/tmp/" not in error
     assert "RuntimeError" in error
+
+
+def test_redact_strips_tmpdir_prefix(monkeypatch):
+    monkeypatch.setenv("TMPDIR", "/var/geo-tmp")
+    from cadai_geo.run import redact
+
+    text = redact("OSError: /var/geo-tmp/cadai-geo-1/stderr.txt and /tmp/cadai-geo-x/model.py")
+    assert "/var/geo-tmp" not in text
+    assert "/tmp/" not in text
+    assert "model.py" not in text
+    assert "[redacted]" in text
 
 
 def test_script_over_256kb_is_rejected():

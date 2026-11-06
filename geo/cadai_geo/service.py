@@ -1,18 +1,20 @@
 """HTTP sandbox around the geometry runner.
 
 Each ``POST /run`` writes the script into a fresh temp directory and asks the
-zygote (a long-lived helper that has already imported build123d) to fork a
-child. The service does not trust the child's stdout. It reads
-``<outdir>/result.json`` and inlines only ``model.step`` and ``model.stl``
-when those are regular files inside that directory.
+zygote (a long-lived helper that has already imported build123d) to run two
+stages. The untrusted stage may only write BREP into a scratch directory.
+A second child loads those files, measures them, and writes
+``<outdir>/result.json`` plus ``model.step`` and ``model.stl``. The service
+reads only that outdir. The script is not given the outdir path.
 
-The zygote is exec'd with an empty environment and never receives the token.
-The forked child applies the same isolation as the CLI spawn: uid drop to
-``georun`` when this process is root, rlimits, a new session, and stdout plus
-stderr pointed at a file of which only the last 4 KB is kept. The service
-kills that process group on timeout. ``python -I -m cadai_geo`` does not use
-the zygote. Network egress, a read-only root, and cgroup caps are host
-responsibilities; see the README.
+The token is read only from ``CADAI_GEO_TOKEN_FILE``. If ``CADAI_GEO_TOKEN``
+is set, the process refuses to start: removing the variable from
+``os.environ`` does not erase it from ``/proc/<pid>/environ``. The zygote is
+exec'd with an empty environment and never receives the token or the file
+path. Both stages drop to ``georun`` when this process is root, and both get
+the same rlimits. The service kills the supervisor's process group on
+timeout. ``python -I -m cadai_geo`` does not use the zygote. Network egress,
+a read-only root, and cgroup caps are host responsibilities; see the README.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ import hmac
 import json
 import os
 import pwd
-import stat
+import sys
 import tempfile
 from contextlib import asynccontextmanager
 
@@ -31,8 +33,24 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from cadai_geo.isolate import _DEFAULT_AS_LIMIT
-from cadai_geo.run import redact
+from cadai_geo.run import redact, regular_file_inside
 from cadai_geo.zygote import ZygoteServer
+
+
+def _refuse_env_token() -> None:
+    """Fail closed. An environment token stays readable in /proc."""
+    if "CADAI_GEO_TOKEN" in os.environ:
+        sys.stderr.write(
+            "refusing to start: CADAI_GEO_TOKEN is set. "
+            "The token is read only from CADAI_GEO_TOKEN_FILE "
+            "(mode 0400, owned by the service user). "
+            "An environment value stays visible in /proc/<pid>/environ "
+            "and is not accepted.\n"
+        )
+        raise SystemExit(1)
+
+
+_refuse_env_token()
 
 zygote = ZygoteServer()
 
@@ -56,12 +74,6 @@ _MAX_RESULT_BYTES = 1024 * 1024
 _STDERR_CAP = 4096
 _EXPORTS = (("step", "model.step"), ("stl", "model.stl"))
 
-# Env token, remembered after it is removed from the process environment so
-# /proc/<pid>/environ no longer contains it. A token file wins when set.
-_cached_env_token: str | None = None
-_env_token_loaded = False
-
-
 class RunRequest(BaseModel):
     script: str
     timeout_s: float = 60
@@ -80,29 +92,17 @@ def clamp_timeout(value: float) -> float:
     return number
 
 
-def _scrub_env_token() -> None:
-    global _cached_env_token, _env_token_loaded
-    if "CADAI_GEO_TOKEN" in os.environ:
-        _cached_env_token = os.environ.pop("CADAI_GEO_TOKEN")
-        _env_token_loaded = True
-
-
 def _expected_token() -> str | None:
-    """Token from ``CADAI_GEO_TOKEN_FILE``, else the scrubbed env value."""
-    global _cached_env_token, _env_token_loaded
-    _scrub_env_token()
+    """Token from ``CADAI_GEO_TOKEN_FILE`` only. Missing or empty fails closed."""
     file_path = os.environ.get("CADAI_GEO_TOKEN_FILE")
-    if file_path:
-        try:
-            with open(file_path, encoding="utf-8") as handle:
-                token = handle.read().strip()
-        except OSError:
-            return None
-        return token or None
-    if not _env_token_loaded:
-        _cached_env_token = None
-        _env_token_loaded = True
-    return _cached_env_token or None
+    if not file_path:
+        return None
+    try:
+        with open(file_path, encoding="utf-8") as handle:
+            token = handle.read().strip()
+    except OSError:
+        return None
+    return token or None
 
 
 def _authorized(header: str | None) -> bool:
@@ -149,19 +149,7 @@ def _georun():
 
 
 def _regular_inside(path: str, outdir: str) -> bool:
-    try:
-        info = os.lstat(path)
-    except OSError:
-        return False
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-        return False
-    root = os.path.realpath(outdir)
-    real = os.path.realpath(path)
-    try:
-        inside = os.path.commonpath([real, root]) == root
-    except ValueError:
-        return False
-    return inside and os.path.basename(real) == os.path.basename(path)
+    return regular_file_inside(path, outdir)
 
 
 def _stderr_tail_file(path: str) -> str:
@@ -222,40 +210,53 @@ def _run_cli(script: str, timeout_s: float) -> dict:
     as_limit = _as_limit()
     max_bytes = _max_export_bytes()
 
-    with tempfile.TemporaryDirectory(prefix="cadai-geo-") as temp_dir:
-        script_path = os.path.join(temp_dir, "model.py")
-        outdir = os.path.join(temp_dir, "out")
-        stderr_path = os.path.join(temp_dir, "stderr.txt")
-        os.makedirs(outdir)
-        with open(script_path, "w", encoding="utf-8") as handle:
-            handle.write(script)
-        os.close(os.open(stderr_path, os.O_WRONLY | os.O_CREAT, 0o600))
-        if account is not None:
-            _give_to_georun(account, temp_dir, script_path, outdir, stderr_path)
-        request = {
-            "script": script_path,
-            "outdir": outdir,
-            "stderr": stderr_path,
-            "timeout_s": timeout_s,
-            "as_limit": as_limit,
-            "home": temp_dir,
-        }
-        path = os.environ.get("PATH")
-        if path:
-            request["path"] = path
-        if account is not None:
-            request["uid"] = account.pw_uid
-            request["gid"] = account.pw_gid
-        outcome = zygote.execute(request, timeout_s)
-        if outcome.failed:
-            return {"ok": False, "error": "zygote"}
-        if outcome.timed_out:
-            return {"ok": False, "error": "timeout"}
-        payload = _read_result(outdir)
-        if payload is None:
-            message = _stderr_tail_file(stderr_path) or "no result"
-            return {"ok": False, "error": message or "no result"}
-        return _attach_exports(payload, outdir, max_bytes)
+    # ``work`` is the script's world (home + scratch). ``outdir`` is a
+    # different directory so the script cannot derive it from argv or cwd.
+    # It stays owned by the service uid until the untrusted stage has exited.
+    with tempfile.TemporaryDirectory(prefix="cadai-geo-") as work:
+        with tempfile.TemporaryDirectory(prefix="cadai-geo-out-") as outdir:
+            home = os.path.join(work, "home")
+            scratch = os.path.join(work, "scratch")
+            os.makedirs(home, mode=0o700)
+            os.makedirs(scratch, mode=0o700)
+            os.chmod(home, 0o700)
+            os.chmod(scratch, 0o700)
+            os.chmod(outdir, 0o700)
+            script_path = os.path.join(home, "model.py")
+            stderr_path = os.path.join(work, "stderr.txt")
+            with open(script_path, "w", encoding="utf-8") as handle:
+                handle.write(script)
+            os.close(os.open(stderr_path, os.O_WRONLY | os.O_CREAT, 0o600))
+            if account is not None:
+                _give_to_georun(account, work, home, scratch, script_path, stderr_path)
+            request = {
+                "script": script_path,
+                "scratch": scratch,
+                "outdir": outdir,
+                "stderr": stderr_path,
+                "timeout_s": timeout_s,
+                "as_limit": as_limit,
+                "home": home,
+            }
+            path = os.environ.get("PATH")
+            if path:
+                request["path"] = path
+            tmpdir = os.environ.get("TMPDIR")
+            if tmpdir:
+                request["tmpdir"] = tmpdir
+            if account is not None:
+                request["uid"] = account.pw_uid
+                request["gid"] = account.pw_gid
+            outcome = zygote.execute(request, timeout_s)
+            if outcome.failed:
+                return {"ok": False, "error": "zygote"}
+            if outcome.timed_out:
+                return {"ok": False, "error": "timeout"}
+            payload = _read_result(outdir)
+            if payload is None:
+                message = _stderr_tail_file(stderr_path) or "no result"
+                return {"ok": False, "error": message or "no result"}
+            return _attach_exports(payload, outdir, max_bytes)
 
 
 @app.get("/healthz")
