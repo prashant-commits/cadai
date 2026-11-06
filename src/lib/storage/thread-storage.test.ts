@@ -80,7 +80,7 @@ describe('thread-storage', () => {
   });
 
   it('round-trips threads, messages and per-message code across the three stores', async () => {
-    const target = thread({ id: 'thread-a', stlContent: 'solid x', selectedModel: 'gpt-6-luna' });
+    const target = thread({ id: 'thread-a', stlContent: 'solid x', selectedModel: 'claude-sonnet-5.5' });
     await upsertThread(target);
     await upsertMessage('thread-a', {
       id: 'm2',
@@ -344,18 +344,23 @@ describe('thread-storage', () => {
     });
   });
 
-  // Threads persisted before the Google lane was removed carry slugs like
-  // 'gemini-3.6-flash'. Those reach getChatModel on the next send and fail, so
-  // a stale slug has to be rewritten as the thread is read, not left to error.
+  // Threads persisted before the Experiential Labs gateway was removed carry
+  // slugs like 'gpt-6-luna' or 'deepseek-v4-flash'. Those reach getChatModel on
+  // the next send and fail, so a stale slug has to be rewritten as the thread
+  // is read, not left to error.
   describe('model slug coercion', () => {
-    it('rewrites a retired gemini slug to the gateway default', () => {
+    it('rewrites retired slugs (gemini, gpt, deepseek) to the default model', () => {
       expect(coerceModelSlug('gemini-3.6-flash')).toBe(DEFAULT_MODEL);
       expect(coerceModelSlug('gemini-2.5-flash-lite')).toBe(DEFAULT_MODEL);
+      expect(coerceModelSlug('gpt-6-luna')).toBe(DEFAULT_MODEL);
+      expect(coerceModelSlug('gpt-5.6-luna')).toBe(DEFAULT_MODEL);
+      expect(coerceModelSlug('deepseek-v4-flash')).toBe(DEFAULT_MODEL);
     });
 
-    it('keeps a slug the gateway still serves', () => {
-      expect(coerceModelSlug('gpt-6-luna')).toBe('gpt-6-luna');
-      expect(coerceModelSlug('gpt-5.6-luna')).toBe('gpt-5.6-luna');
+    it('keeps a slug that is currently offered', () => {
+      expect(coerceModelSlug('claude-haiku-5.5')).toBe('claude-haiku-5.5');
+      expect(coerceModelSlug('claude-sonnet-5.5')).toBe('claude-sonnet-5.5');
+      expect(coerceModelSlug('claude-opus-5.5')).toBe('claude-opus-5.5');
     });
 
     it('falls back to the default for an absent, empty or unknown slug', () => {
@@ -364,28 +369,21 @@ describe('thread-storage', () => {
       expect(coerceModelSlug('some-model-we-never-served')).toBe(DEFAULT_MODEL);
     });
 
-    it('loads a thread saved with a gemini slug on the default model', async () => {
-      await upsertThread(thread({ id: 'thread-a', selectedModel: 'gemini-3.6-flash' }));
-
-      const { threads } = await loadAllThreads();
-      expect(threads[0].selectedModel).toBe(DEFAULT_MODEL);
-    });
-
-    it('loads a thread saved with a retired deepseek slug on the default model', async () => {
-      await upsertThread(thread({ id: 'thread-a', selectedModel: 'deepseek-v4-flash' }));
-
-      const { threads } = await loadAllThreads();
-      expect(threads[0].selectedModel).toBe(DEFAULT_MODEL);
-    });
-
-    it('leaves a thread saved with a live gateway slug alone', async () => {
+    it('loads a thread saved with a retired slug on the default model', async () => {
       await upsertThread(thread({ id: 'thread-a', selectedModel: 'gpt-6-luna' }));
 
       const { threads } = await loadAllThreads();
-      expect(threads[0].selectedModel).toBe('gpt-6-luna');
+      expect(threads[0].selectedModel).toBe(DEFAULT_MODEL);
     });
 
-    it('starts a new thread on the gateway default', () => {
+    it('leaves a thread saved with an offered slug alone', async () => {
+      await upsertThread(thread({ id: 'thread-a', selectedModel: 'claude-sonnet-5.5' }));
+
+      const { threads } = await loadAllThreads();
+      expect(threads[0].selectedModel).toBe('claude-sonnet-5.5');
+    });
+
+    it('starts a new thread on the default model', () => {
       expect(createInitialThread().selectedModel).toBe(DEFAULT_MODEL);
     });
   });

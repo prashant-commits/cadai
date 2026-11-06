@@ -52,7 +52,7 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to explore
 
 ## Evaluating generation quality
 
-`npm run eval:generation -- --model deepseek-v4-flash --tag baseline` runs the prompts in
+`npm run eval:generation -- --model claude-haiku-5.5 --tag baseline` runs the prompts in
 `eval/generation/prompts.json` through the real agent graph (spec and accept gates
 auto-approved, automatic repair off) and prints first-draft rates: spec produced,
 placement composed from the spec, compiled, lowest point on the floor, no floating
@@ -76,7 +76,7 @@ other rates.
 ## Technologies Used
 - Next.js (App Router)
 - Model Context Protocol (MCP) SDK
-- LangGraph & the Experiential Labs model gateway
+- LangGraph & Anthropic API
 - Three.js / React Three Fiber
 - Monaco Editor
 - OpenSCAD WASM

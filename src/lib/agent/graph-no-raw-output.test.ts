@@ -104,7 +104,7 @@ async function runToGate(): Promise<{ messageTexts: string[]; deltas: string[]; 
   const messageTexts: string[] = [];
   const deltas: string[] = [];
   let interrupted = false;
-  const stream = await createCadAgent('gpt-5.6-luna').stream(
+  const stream = await createCadAgent('claude-haiku-5.5').stream(
     { messages: [new HumanMessage('a 40mm box')] },
     { configurable: { thread_id: key }, streamMode: ['messages', 'custom', 'updates'] }
   );

@@ -7,7 +7,6 @@ const saved = { ...process.env };
 
 beforeEach(() => {
   process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
-  delete process.env.EXPLABS_API_KEY;
   delete process.env.CADAI_MODEL;
 });
 

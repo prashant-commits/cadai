@@ -192,7 +192,7 @@ describe('H1: the drafter gets the CHOSEN variant, not the recommended one', () 
     });
 
     const config = { configurable: { thread_id: newKey() } };
-    const agent = createCadAgent('gpt-5.6-luna');
+    const agent = createCadAgent('claude-haiku-5.5');
     await agent.invoke({ messages: [new HumanMessage('a stand')] }, config);
     await agent.invoke(new Command({ resume: { action: 'approve', chosenVariantId: 'B' } }), config);
 
@@ -225,7 +225,7 @@ describe('H1: the drafter gets the CHOSEN variant, not the recommended one', () 
         if (ev?.t === 'delta' && typeof ev.text === 'string') notes.push(ev.text);
       },
     } as unknown as Parameters<ReturnType<typeof createCadAgent>['invoke']>[1];
-    const agent = createCadAgent('gpt-5.6-luna');
+    const agent = createCadAgent('claude-haiku-5.5');
     await agent.invoke({ messages: [new HumanMessage('a stand')] }, config);
     for (const comment of ['taller', 'wider', 'thicker']) {
       await agent.invoke(
@@ -255,7 +255,7 @@ describe('H2: a gate revise revises the chosen variant and never re-plans', () =
     });
 
     const config = { configurable: { thread_id: newKey() } };
-    const agent = createCadAgent('gpt-5.6-luna');
+    const agent = createCadAgent('claude-haiku-5.5');
     await agent.invoke({ messages: [new HumanMessage('a stand')] }, config);
     const result = await agent.invoke(
       new Command({ resume: { action: 'revise', chosenVariantId: 'B', comment: 'make walls 3mm' } }),
@@ -299,7 +299,7 @@ describe('H3: the Vercel budget starts before the planner and leaves room for th
     });
   }
   const run = async () =>
-    createCadAgent('gpt-5.6-luna').invoke(
+    createCadAgent('claude-haiku-5.5').invoke(
       { messages: [new HumanMessage('a 40mm box')] },
       { configurable: { thread_id: newKey() } }
     );
@@ -353,7 +353,7 @@ describe('H4: the reviewer judges the latest human message', () => {
         default: return pass;
       }
     });
-    await createCadAgent('gpt-5.6-luna').invoke(
+    await createCadAgent('claude-haiku-5.5').invoke(
       {
         messages: [
           new HumanMessage('a laptop stand with a 30 degree tilt'),
@@ -382,7 +382,7 @@ describe('M1: a failed revision keeps the last good spec', () => {
       }
     });
     const config = { configurable: { thread_id: newKey() } };
-    const agent = createCadAgent('gpt-5.6-luna');
+    const agent = createCadAgent('claude-haiku-5.5');
     const result = await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
     const v = gatePayload(result).variants![0];
     expect(v.spec?.assemblyName).toBe('good_spec');
@@ -405,7 +405,7 @@ describe('M3: sheets are not kept in graph state', () => {
       }
     });
     const config = { configurable: { thread_id: newKey() } };
-    const agent = createCadAgent('gpt-5.6-luna');
+    const agent = createCadAgent('claude-haiku-5.5');
     const result = await agent.invoke({ messages: [new HumanMessage('a stand')] }, config);
     expect(gatePayload(result).variants!.every((v) => v.sheetSvg?.includes('<svg'))).toBe(true);
     const state = (await agent.getState(config)).values;
@@ -473,7 +473,7 @@ describe('M5: placeholders are labelled for the reviewer sheet and the drafter',
       }
     });
     const config = { configurable: { thread_id: newKey() } };
-    const agent = createCadAgent('gpt-5.6-luna');
+    const agent = createCadAgent('claude-haiku-5.5');
     await agent.invoke({ messages: [new HumanMessage('a box')] }, config);
     await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
     const drafterCall = invokeMock.mock.calls.map((c) => c[0]).find((m) => kindOf(m) === 'drafter')!;
@@ -502,7 +502,7 @@ describe('M5: placeholders are labelled for the reviewer sheet and the drafter',
       }
     });
     const config = { configurable: { thread_id: newKey() } };
-    const agent = createCadAgent('gpt-5.6-luna');
+    const agent = createCadAgent('claude-haiku-5.5');
     const r = await agent.invoke({ messages: [new HumanMessage('a box')] }, config);
     if (isInterrupted(r)) await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
     const call = invokeMock.mock.calls.map((c) => c[0]).find((m) => kindOf(m) === 'drafter')!;
@@ -528,7 +528,7 @@ describe('M6: the no-spec drafter prompt keeps edges sharp', () => {
       throw new Error('no spec');
     });
     const config = { configurable: { thread_id: newKey() } };
-    const agent = createCadAgent('gpt-5.6-luna');
+    const agent = createCadAgent('claude-haiku-5.5');
     const result = await agent.invoke({ messages: [new HumanMessage('a box')] }, config);
     if (isInterrupted(result)) await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
     const call = invokeMock.mock.calls.map((c) => JSON.stringify(c[0])).find((t) => t.includes('Write one complete OpenSCAD script'))!;
@@ -551,7 +551,7 @@ describe('M7: the review loop never trips the recursion limit', () => {
       }
     });
     expect(graphRecursionLimit()).toBeGreaterThan(3 * (8 + 1) + 2);
-    const result = await createCadAgent('gpt-5.6-luna').invoke(
+    const result = await createCadAgent('claude-haiku-5.5').invoke(
       { messages: [new HumanMessage('a 40mm box')] },
       { configurable: { thread_id: newKey() }, recursionLimit: graphRecursionLimit() }
     );
@@ -560,7 +560,7 @@ describe('M7: the review loop never trips the recursion limit', () => {
 
     // The same run under LangGraph's default limit (25) is stopped.
     await expect(
-      createCadAgent('gpt-5.6-luna').invoke(
+      createCadAgent('claude-haiku-5.5').invoke(
         { messages: [new HumanMessage('a 40mm box')] },
         { configurable: { thread_id: newKey() } }
       )
@@ -578,7 +578,7 @@ describe('loop-table rows', () => {
         default: return pass;
       }
     });
-    const result = await createCadAgent('gpt-5.6-luna').invoke(
+    const result = await createCadAgent('claude-haiku-5.5').invoke(
       { messages: [new HumanMessage('a 40mm box')] },
       { configurable: { thread_id: newKey() } }
     );
@@ -597,7 +597,7 @@ describe('loop-table rows', () => {
         default: return pass;
       }
     });
-    const result = await createCadAgent('gpt-5.6-luna').invoke(
+    const result = await createCadAgent('claude-haiku-5.5').invoke(
       { messages: [new HumanMessage('a 40mm box')] },
       { configurable: { thread_id: newKey() } }
     );
@@ -633,7 +633,7 @@ describe('L5/N4: approve fallback merges the brief once, names the variant it us
         if (ev?.t === 'delta' && typeof ev.text === 'string') notes.push(ev.text);
       },
     } as unknown as Parameters<ReturnType<typeof createCadAgent>['invoke']>[1];
-    const agent = createCadAgent('gpt-5.6-luna');
+    const agent = createCadAgent('claude-haiku-5.5');
     await agent.invoke({ messages: [new HumanMessage('a stand')] }, config);
     await agent.invoke(new Command({ resume: { action: 'approve', chosenVariantId: 'A' } }), config);
 
@@ -686,7 +686,7 @@ describe('H3 (rest): per-call timeouts keep a slow round inside the Vercel budge
         if (ev?.t === 'delta' && typeof ev.text === 'string') notes.push(ev.text);
       },
     } as unknown as Parameters<ReturnType<typeof createCadAgent>['invoke']>[1];
-    const result = await createCadAgent('gpt-5.6-luna').invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
+    const result = await createCadAgent('claude-haiku-5.5').invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
 
     expect(isInterrupted(result)).toBe(true);
     expect(Date.now()).toBeLessThan(300000);
@@ -710,7 +710,7 @@ describe('H3 (rest): per-call timeouts keep a slow round inside the Vercel budge
         default: return pass;
       }
     });
-    await createCadAgent('gpt-5.6-luna').invoke(
+    await createCadAgent('claude-haiku-5.5').invoke(
       { messages: [new HumanMessage('a 40mm box')] },
       { configurable: { thread_id: newKey() } }
     );
@@ -748,7 +748,7 @@ describe('N6: a round is started only if it fits, and then it is not aborted', (
         default: return pass;
       }
     });
-    const result = await createCadAgent('gpt-5.6-luna').invoke(
+    const result = await createCadAgent('claude-haiku-5.5').invoke(
       { messages: [new HumanMessage('a 40mm box')] },
       { configurable: { thread_id: newKey() } }
     );
@@ -784,7 +784,7 @@ describe('N1: the retry decision uses the round that just finished, reviewer inc
         default: return pass;
       }
     });
-    const result = await createCadAgent('gpt-5.6-luna').invoke(
+    const result = await createCadAgent('claude-haiku-5.5').invoke(
       { messages: [new HumanMessage('a 40mm box')] },
       { configurable: { thread_id: newKey() } }
     );
@@ -813,7 +813,7 @@ describe('M4 (rest): errors on the last accepted attempt are labelled, never dro
         default: return pass;
       }
     });
-    const result = await createCadAgent('gpt-5.6-luna').invoke(
+    const result = await createCadAgent('claude-haiku-5.5').invoke(
       { messages: [new HumanMessage('a 40mm box')] },
       { configurable: { thread_id: newKey() } }
     );
@@ -867,7 +867,7 @@ describe('N3: a failed gate revise keeps the earlier review and says so', () => 
         if (ev?.t === 'delta' && typeof ev.text === 'string') notes.push(ev.text);
       },
     } as unknown as Parameters<ReturnType<typeof createCadAgent>['invoke']>[1];
-    const agent = createCadAgent('gpt-5.6-luna');
+    const agent = createCadAgent('claude-haiku-5.5');
     await agent.invoke({ messages: [new HumanMessage('a stand')] }, config);
     const result = await agent.invoke(
       new Command({ resume: { action: 'revise', chosenVariantId: 'B', comment: 'taller' } }),
@@ -919,7 +919,7 @@ describe('nits', () => {
       }
     });
     const config = { configurable: { thread_id: newKey() } };
-    const agent = createCadAgent('gpt-5.6-luna');
+    const agent = createCadAgent('claude-haiku-5.5');
     await agent.invoke({ messages: [new HumanMessage('a box')] }, config);
     await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
     const drafterCall = invokeMock.mock.calls.map((c) => c[0]).find((m) => kindOf(m) === 'drafter')!;
@@ -947,7 +947,7 @@ describe('nits', () => {
         if (ev?.t === 'delta' && typeof ev.text === 'string') deltas.push(ev.text);
       },
     } as unknown as Parameters<ReturnType<typeof createCadAgent>['invoke']>[1];
-    const agent = createCadAgent('gpt-5.6-luna');
+    const agent = createCadAgent('claude-haiku-5.5');
     const result = await agent.invoke({ messages: [new HumanMessage('a box')] }, config);
     if (isInterrupted(result)) await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
     expect(deltas.join('')).toContain('Planning up to 1 variant...');
@@ -969,7 +969,7 @@ describe('C: the review loop stops when it is not converging', () => {
         default: return pass;
       }
     });
-    const result = await createCadAgent('gpt-5.6-luna').invoke(
+    const result = await createCadAgent('claude-haiku-5.5').invoke(
       { messages: [new HumanMessage('a 40mm box')] },
       { configurable: { thread_id: newKey() } }
     );
@@ -1043,7 +1043,7 @@ describe('M3 (final review): a loop that ends past the soft deadline gates inste
         default: return pass;
       }
     });
-    const result = await createCadAgent('gpt-5.6-luna').invoke(
+    const result = await createCadAgent('claude-haiku-5.5').invoke(
       { messages: [new HumanMessage('a 40mm block')] },
       { configurable: { thread_id: newKey() } }
     );
@@ -1061,7 +1061,7 @@ describe('M3 (final review): a loop that ends past the soft deadline gates inste
         default: return pass;
       }
     });
-    const result = await createCadAgent('gpt-5.6-luna').invoke(
+    const result = await createCadAgent('claude-haiku-5.5').invoke(
       { messages: [new HumanMessage('a 40mm block')] },
       { configurable: { thread_id: newKey() } }
     );
@@ -1079,7 +1079,7 @@ describe('Fable M1: with no gate the only variant is the chosen one and its shee
         default: return pass;
       }
     });
-    const result = await createCadAgent('gpt-5.6-luna').invoke(
+    const result = await createCadAgent('claude-haiku-5.5').invoke(
       { messages: [new HumanMessage('a 40mm box')] },
       { configurable: { thread_id: newKey() } }
     );
@@ -1106,7 +1106,7 @@ describe('Fable M2 (server): transcript markers in model markdown are defused', 
         if (ev?.t === 'delta' && typeof ev.text === 'string') deltas.push(ev.text);
       },
     } as unknown as Parameters<ReturnType<typeof createCadAgent>['invoke']>[1];
-    await createCadAgent('gpt-5.6-luna').invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
+    await createCadAgent('claude-haiku-5.5').invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
     const all = deltas.join('');
     expect(all).toContain('Plan &lt;!--/s--> text');
     expect(all).toContain('## Plate &lt;!--gate:x--> 40mm');
@@ -1162,7 +1162,7 @@ describe('nits (final review)', () => {
         return pass;
       });
       const config = { configurable: { thread_id: newKey() } };
-      const agent = createCadAgent('gpt-5.6-luna');
+      const agent = createCadAgent('claude-haiku-5.5');
       const r = await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
       if (isInterrupted(r)) await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
       const repair = invokeMock.mock.calls.map((c) => c[0]).find((m) => JSON.stringify(m).includes('Repair Engineer'));

@@ -70,7 +70,7 @@ interface Args {
   only: string[];
   effort: Effort;
   sync: boolean;
-  /** anthropic: Anthropic API directly (batch by default). gateway: Experiential Labs, any family, sync. google: AI Studio key, sync. */
+  /** anthropic: Anthropic API directly (batch by default). gateway: app client (Anthropic), sync. google: AI Studio key, sync. */
   provider: 'anthropic' | 'gateway' | 'google';
   concurrency: number;
   /** A prompt arm from arms.ts appended to the planner and variant system prompts; a0 = the product prompt. */

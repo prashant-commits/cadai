@@ -1,16 +1,17 @@
 /**
- * The Architect eval's Experiential Labs gateway path: any model the gateway
- * serves (Gemini, GLM, DeepSeek, GPT, Grok, Kimi, Qwen, MiniMax, Mistral, ...),
- * called exactly the way the app calls it - getChatModel + structuredFor - so a
- * failure here is a failure the product would show, not an eval artefact.
- *
- * Calls run synchronously with bounded concurrency; there is no batch discount
- * on the gateway. Cost is computed from the gateway's own per-model pricing.
- *
- * The 'google' route sends the same calls to Google's OpenAI-compatible
- * endpoint with GOOGLE_API_KEY (AI Studio) instead of the gateway. Its cost is
- * estimated from the gateway's listed price for the same Gemini model.
+ * The Architect eval's synchronous path. The 'gateway' route (name kept for the
+ * --provider flag) calls the model exactly the way the app does - getChatModel
+ * (Anthropic) + structuredFor - so a failure here is a failure the product would
+ * show. The 'google' route sends the same calls to Google's OpenAI-compatible
+ * endpoint with GOOGLE_API_KEY (AI Studio). Calls run with bounded concurrency.
  */
+
+import { HumanMessage, SystemMessage, type BaseMessage } from '@langchain/core/messages';
+import { ChatOpenAI } from '@langchain/openai';
+import { getChatModel } from '@/lib/agent/model-provider';
+import { structuredFor, ArchitectPlanSchema } from '@/lib/agent/llm-schemas';
+import { variantSpecRequestSchema } from '@/lib/agent/assembly-spec';
+import type { Outcome } from './parse';
 
 export type Route = 'gateway' | 'google';
 
@@ -18,7 +19,7 @@ const RETRY_DELAYS_MS = [15_000, 30_000, 60_000, 120_000];
 
 const GOOGLE_OPENAI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/';
 
-/** The app's client for the gateway; the same client settings pointed at Google for the 'google' route. */
+/** The app's client (Anthropic); the same client settings pointed at Google for the 'google' route. */
 function chatModelFor(route: Route, slug: string): ChatOpenAI {
   if (route === 'gateway') return getChatModel(slug);
   const apiKey = process.env.GOOGLE_API_KEY;
@@ -26,19 +27,12 @@ function chatModelFor(route: Route, slug: string): ChatOpenAI {
   return new ChatOpenAI({
     apiKey,
     model: slug,
-    temperature: DEFAULT_TEMPERATURE,
+    temperature: 0.2,
     timeout: Number(process.env.CADAI_MODEL_TIMEOUT_MS ?? 240_000),
     maxRetries: 1,
     configuration: { baseURL: GOOGLE_OPENAI_BASE_URL },
   });
 }
-import { HumanMessage, SystemMessage, type BaseMessage } from '@langchain/core/messages';
-import { ChatOpenAI } from '@langchain/openai';
-import { DEFAULT_TEMPERATURE, getChatModel } from '@/lib/agent/model-provider';
-import { structuredFor, ArchitectPlanSchema } from '@/lib/agent/llm-schemas';
-import { variantSpecRequestSchema } from '@/lib/agent/assembly-spec';
-import { EXPLABS_BASE_URL } from '@/lib/agent/models';
-import type { Outcome } from './parse';
 
 export interface GatewayJob {
   id: string;
@@ -56,18 +50,10 @@ interface Pricing {
   output: number;
 }
 
-/** USD per token, from the gateway's catalogue (nano-USD per million tokens). Null when the gateway lists none. */
-export async function gatewayPricing(slug: string): Promise<Pricing | null> {
-  const r = await fetch(`${EXPLABS_BASE_URL}/models`, { headers: { Authorization: `Bearer ${process.env.EXPLABS_API_KEY}` } });
-  const j = (await r.json()) as { data?: { id: string; pricing?: Record<string, number | null> }[] };
-  const p = j.data?.find((m) => m.id === slug)?.pricing;
-  if (!p || p.input_nano_usd_per_million_tokens == null || p.output_nano_usd_per_million_tokens == null) return null;
-  const perToken = (nano: number) => nano / 1e9 / 1e6;
-  return {
-    input: perToken(p.input_nano_usd_per_million_tokens),
-    cachedInput: perToken(p.cached_input_nano_usd_per_million_tokens ?? p.input_nano_usd_per_million_tokens),
-    output: perToken(p.output_nano_usd_per_million_tokens),
-  };
+/** Per-token pricing for the sync route. The Experiential Labs price list is gone; costs come from score.ts PRICES. */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export async function gatewayPricing(_slug: string): Promise<Pricing | null> {
+  return null;
 }
 
 interface UsageMetadata {
