@@ -26,21 +26,7 @@ export function makeArchitectBuild(model: {
       return { currentCode: state.currentCode, attemptCount, buildFallbacks: 0, gateAction: null, gateFeedback: null };
     }
 
-    const componentNames = (spec.components ?? []).map((component) => component.name);
-    const reserved = [
-      ...(spec.parameters ?? []).map((parameter) => parameter.name),
-      ...(spec.derived ?? []).map((derived) => derived.name),
-    ];
-    const findings = errorFindings(state.specViolations ?? [], componentNames);
-    const notes = state.gateAction === 'revise' && state.gateFeedback ? [state.gateFeedback] : [];
-    const changes = findings.length > 0 || notes.length > 0 ? requiredChanges(findings, notes) : null;
-
-    const repeat = (state.currentCode ?? '').trim().length > 0;
-    const named = componentsNamed(findings, notes, componentNames);
-    // A human note that names no part applies to the whole assembly, so every body is in play.
-    const noteNamesNoPart = notes.some((note) => !componentNames.some((name) => hasWord(note, name)));
-    const ask = repeat && named.length > 0 && !noteNamesNoPart ? named : componentNames;
-    const keep = componentNames.filter((name) => !ask.includes(name));
+    const { componentNames, reserved, changes, ask, keep } = planBuildVisit(state, spec);
 
     const reply = await model.invoke(
       [new SystemMessage(systemPromptFor('build')), new HumanMessage(humanPrompt(spec, changes, ask, keep))],
@@ -68,15 +54,46 @@ export function makeArchitectBuild(model: {
       currentCode: placed.code,
       placementReport: placed.report,
       attemptCount,
-      buildFallbacks: countFallbacks(spec, componentNames, parsed),
+      buildFallbacks: countFallbacks(componentNames, parsed, (name) => blockoutBody(spec, name) !== null),
       gateAction: null,
       gateFeedback: null,
     };
   };
 }
 
+export interface BuildVisit {
+  componentNames: string[];
+  /** Parameter and derived names: the body may use them, never assign them. */
+  reserved: string[];
+  changes: string | null;
+  /** Components whose body the model writes on this visit. */
+  ask: string[];
+  /** Components that keep the body already in currentCode. */
+  keep: string[];
+}
+
+/** Which components to (re)write on this visit, shared by the OpenSCAD and B-rep builders. */
+export function planBuildVisit(state: AgentStateType, spec: AssemblySpec): BuildVisit {
+  const componentNames = (spec.components ?? []).map((component) => component.name);
+  const reserved = [
+    ...(spec.parameters ?? []).map((parameter) => parameter.name),
+    ...(spec.derived ?? []).map((derived) => derived.name),
+  ];
+  const findings = errorFindings(state.specViolations ?? [], componentNames);
+  const notes = state.gateAction === 'revise' && state.gateFeedback ? [state.gateFeedback] : [];
+  const changes = findings.length > 0 || notes.length > 0 ? requiredChanges(findings, notes) : null;
+
+  const repeat = (state.currentCode ?? '').trim().length > 0;
+  const named = componentsNamed(findings, notes, componentNames);
+  // A human note that names no part applies to the whole assembly, so every body is in play.
+  const noteNamesNoPart = notes.some((note) => !componentNames.some((name) => hasWord(note, name)));
+  const ask = repeat && named.length > 0 && !noteNamesNoPart ? named : componentNames;
+  const keep = componentNames.filter((name) => !ask.includes(name));
+  return { componentNames, reserved, changes, ask, keep };
+}
+
 /** Error-severity violations, each issue naming its component, as major findings. */
-function errorFindings(violations: SpecViolation[], names: string[]): { severity: string; issue: string }[] {
+export function errorFindings(violations: SpecViolation[], names: string[]): { severity: string; issue: string }[] {
   const findings: { severity: string; issue: string }[] = [];
   for (const violation of violations) {
     if (violation.severity !== 'error') continue;
@@ -100,7 +117,7 @@ function componentField(violation: SpecViolation): string | null {
 }
 
 /** Component names that appear in the findings or the human notes, in spec order. */
-function componentsNamed(
+export function componentsNamed(
   findings: { issue: string }[],
   notes: string[],
   names: string[],
@@ -142,17 +159,21 @@ function askLine(ask: string[], keep: string[]): string {
  * Components whose section was missing or dropped, so assembleScript drew the
  * blockout. An explicit `@body name blockout` is a choice, not a fallback.
  */
-function countFallbacks(spec: AssemblySpec, names: string[], parsed: ReturnType<typeof parseBuild>): number {
+export function countFallbacks(
+  names: string[],
+  parsed: ReturnType<typeof parseBuild>,
+  hasBlockout: (name: string) => boolean,
+): number {
   let count = 0;
   for (const name of names) {
     if (parsed.keepBlockout.includes(name)) continue;
     if (Object.prototype.hasOwnProperty.call(parsed.bodies, name)) continue;
-    if (blockoutBody(spec, name) !== null) count += 1;
+    if (hasBlockout(name)) count += 1;
   }
   return count;
 }
 
-function messageText(message: AIMessage): string {
+export function messageText(message: AIMessage): string {
   const content = message.content;
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
@@ -255,7 +276,7 @@ function stepOver(src: string, index: number): number {
   return index;
 }
 
-function hasWord(text: string, name: string): boolean {
+export function hasWord(text: string, name: string): boolean {
   return new RegExp(`\\b${escapeRegExp(name)}\\b`).test(text);
 }
 

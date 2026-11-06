@@ -14,5 +14,5 @@ export type StreamEvent =
   | { t: 'delta'; text: string }
   | { t: 'gate'; id: string; runId: string; payload: GatePayload; /** epoch ms after which the server may delete the paused run (now + CADAI_CHECKPOINT_TTL_MS) */ expiresAt?: number }
   /** Terminal for a completed run. `summary` becomes ChatMessage.content. */
-  | { t: 'result'; summary: string; code?: string; stl?: string; designContract?: DesignContract }
+  | { t: 'result'; summary: string; code?: string; stl?: string; /** base64 STEP, B-rep kernel only */ step?: string; /** language of `code`; absent means OpenSCAD */ language?: 'build123d'; designContract?: DesignContract }
   | { t: 'error'; message: string };
