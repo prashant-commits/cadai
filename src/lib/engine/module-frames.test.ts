@@ -34,6 +34,8 @@ describe('measureModuleFrames', () => {
     expect(hang.max[1]).toBeCloseTo(4, 3);
 
     expect(none.valid).toBe(false);
+    expect(none.shellCount).toBeUndefined();
+    expect(none.cavityCount).toBeUndefined();
   });
 
   it('returns an empty list for no names without compiling', async () => {
@@ -49,5 +51,13 @@ describe('measureModuleFrames', () => {
     const solid = 'module plate() { cube([10, 10, 10]); }\n';
     const [one] = await measureModuleFrames(solid, ['plate']);
     expect(one.shellCount === undefined || one.shellCount <= 1).toBe(true);
+  });
+
+  it('counts a sealed void as a cavity, not as a second piece', async () => {
+    const sealed = 'module box() { difference() { cube([20, 20, 20]); translate([5, 5, 5]) cube([10, 10, 10]); } }\n';
+    const [frame] = await measureModuleFrames(sealed, ['box']);
+    expect(frame.valid).toBe(true);
+    expect(frame.shellCount).toBe(1);
+    expect(frame.cavityCount).toBe(1);
   });
 });

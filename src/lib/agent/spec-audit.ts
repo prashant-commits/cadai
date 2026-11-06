@@ -8,8 +8,10 @@ export interface SpecViolation {
     | 'bbox'
     | 'manifold'
     | 'shells'
-    /** One component's own module is more than one shell: a cut runs through that part. */
+    /** One component's own module is more than one solid piece: a cut runs through that part. */
     | 'severed'
+    /** One component is a single solid that encloses an empty void. */
+    | 'sealed_cavity'
     | 'empty'
     | 'dimensionality'
     | 'buildplate'

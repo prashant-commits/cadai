@@ -439,13 +439,17 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
   }
 
   const stripped = stripTopLevelGeometry(code);
-  const shellOf = new Map(frames.map((frame) => [frame.name, frame.shellCount]));
+  // An invalid solo compile is not a measurement. Its shell count is not copied.
+  const measuredFrames = new Map(frames.filter((frame) => frame.valid).map((frame) => [frame.name, frame]));
   const components = buildPlacementComponents(spec, frames, true).map((c) => {
-    const shellCount = shellOf.get(c.name);
+    const frame = measuredFrames.get(c.name);
+    const shellCount = frame?.shellCount;
+    const cavityCount = frame?.cavityCount;
     return {
       ...c,
       gussets: gussetsFor(spec, c.name).reduce((n, g) => n + g.gusset.at.length, 0),
       ...(typeof shellCount === 'number' ? { shellCount } : {}),
+      ...(typeof cavityCount === 'number' && cavityCount > 0 ? { cavityCount } : {}),
     };
   });
   const noteFor = new Map((spec.components ?? []).map((c) => [c.name, c.positionNote?.replace(/\s+/g, ' ').trim()]));
@@ -524,6 +528,7 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
     if (!isZeroVec(c.correction)) {
       line += `   // local-frame correction: ${c.name} min corner measured at ${vec(c.localMin)}`;
     }
+    if (sinks.get(c.name)?.some((n) => n !== 0)) line += ' // 0.02 mm contact sink';
     calls.push(line);
   }
 

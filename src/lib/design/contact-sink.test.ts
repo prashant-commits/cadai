@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AssemblySpec } from '../agent/assembly-spec';
+import { compileScad } from '../engine/scad-compiler';
 import { contactSinks } from './contact-sink';
 import { composeAssembly, stripGeneratedAssembly } from './compose-assembly';
 
@@ -56,6 +57,7 @@ describe('contactSinks', () => {
     const once = composeAssembly(code, s).code;
     expect(once).toContain('cup_ring_pos_y = 5;');
     expect(once).toContain('cup_ring_pos_y - 0.02');
+    expect(once).toContain('// 0.02 mm contact sink');
     expect(composeAssembly(stripGeneratedAssembly(once), s).code).toBe(once);
   });
 
@@ -74,10 +76,11 @@ describe('contactSinks', () => {
     expect(contactSinks(s).get('tab')).toEqual([-0.02, 0, 0]);
   });
 
-  it('sinks a 0.05 mm gap and a 0.04 mm overlap, and ignores a 0.06 mm gap', () => {
+  it('closes a gap of up to 0.05 mm by the gap plus 0.02 mm, and leaves a real overlap alone', () => {
     const touch = (y: number) => spec([comp('a', [10, 10, 10], [0, 0, 0]), comp('b', [10, 10, 10], [0, y, 0])]);
-    expect(contactSinks(touch(10.05)).get('b')).toEqual([0, -0.02, 0]);
-    expect(contactSinks(touch(9.96)).get('b')).toEqual([0, -0.02, 0]);
+    // 0.05 mm gap moves 0.07 mm, so the faces overlap by 0.02 mm. A 0.04 mm overlap is already joined.
+    expect(contactSinks(touch(10.05)).get('b')).toEqual([0, -0.07, 0]);
+    expect(contactSinks(touch(9.96)).size).toBe(0);
     expect(contactSinks(touch(10.06)).size).toBe(0);
   });
 
@@ -101,5 +104,73 @@ describe('contactSinks', () => {
       { jointContracts: [{ type: 'peg', clearance: 0.2, partA: 'peg', partB: 'host' }] },
     );
     expect(contactSinks(s).size).toBe(0);
+  });
+
+  it('leaves a shelf flush between two uprights instead of sinking it into one of them', async () => {
+    // left x [0,5], shelf x [5,45] at z 30, right x [45,50]. Sinking the shelf
+    // into the left upright opens a gap at the right, and the union falls apart.
+    const s = spec([
+      comp('left', [5, 20, 60], [0, 0, 0]),
+      comp('right', [5, 20, 60], [45, 0, 0]),
+      comp('shelf', [40, 20, 3], [5, 0, 30]),
+    ]);
+    expect(contactSinks(s).size).toBe(0);
+    const code = [
+      'module left() { cube([5, 20, 60]); }',
+      'module right() { cube([5, 20, 60]); }',
+      'module shelf() { cube([40, 20, 3]); }',
+      '',
+    ].join('\n');
+    const out = composeAssembly(code, s).code;
+    expect(out).not.toMatch(/shelf_pos_[xyz] [+-]/);
+    const compiled = await compileScad(out);
+    expect(compiled.shellCount).toBe(1);
+  });
+
+  it('keeps an arm on its base when the spec lists the cap first', async () => {
+    // Spec order cap, base, arm. The arm must move down onto the base, and the
+    // cap must follow the arm, or the pair lifts off the base.
+    const s = spec([
+      comp('cap', [10, 10, 2], [0, 0, 10]),
+      comp('base', [10, 10, 5], [0, 0, 0]),
+      comp('arm', [10, 10, 5], [0, 0, 5]),
+    ]);
+    const sinks = contactSinks(s);
+    expect(sinks.get('arm')).toEqual([0, 0, -0.02]);
+    expect(sinks.get('cap')).toEqual([0, 0, -0.04]);
+    expect(sinks.has('base')).toBe(false);
+    const code = [
+      'module cap() { cube([10, 10, 2]); }',
+      'module base() { cube([10, 10, 5]); }',
+      'module arm() { cube([10, 10, 5]); }',
+      '',
+    ].join('\n');
+    const out = composeAssembly(code, s).code;
+    expect(out).toContain('arm_pos_z - 0.02');
+    expect(out).not.toContain('arm_pos_z + 0.02');
+    const compiled = await compileScad(out);
+    expect(compiled.shellCount).toBe(1);
+  });
+
+  it('sinks a ring relative to the post after the post has sunk into the plate', async () => {
+    // Equal absolute sinks leave the ring tangent on the post. The ring's move
+    // is measured from the post's final position, so the two overlap by 0.02 mm.
+    const s = spec([
+      comp('plate', [40, 20, 3], [0, 0, 0]),
+      comp('post', [10, 10, 10], [15, 5, 3]),
+      comp('ring', [10, 10, 10], [15, 5, 13]),
+    ]);
+    const sinks = contactSinks(s);
+    expect(sinks.get('post')).toEqual([0, 0, -0.02]);
+    expect(sinks.get('ring')).toEqual([0, 0, -0.04]);
+    expect(sinks.has('plate')).toBe(false);
+    const code = [
+      'module plate() { cube([40, 20, 3]); }',
+      'module post() { cube([10, 10, 10]); }',
+      'module ring() { cube([10, 10, 10]); }',
+      '',
+    ].join('\n');
+    const compiled = await compileScad(composeAssembly(code, s).code);
+    expect(compiled.shellCount).toBe(1);
   });
 });
