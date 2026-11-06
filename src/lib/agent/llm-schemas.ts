@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import { RunnableLambda } from '@langchain/core/runnables';
+import { JsonOutputKeyToolsParser } from '@langchain/core/output_parsers/openai_tools';
+import { assembleStructuredOutputPipeline } from '@langchain/core/language_models/structured_output';
 import { toAnthropicCompatibleSchema } from './strict-schema';
 import { AssemblySpecSchema, omitRequestComponentFields } from './assembly-spec';
 
-// Schemas handed to withStructuredOutput. The gateway enforces OpenAI strict
+// Schemas handed to withStructuredOutput. Anthropic's endpoint enforces strict
 // json_schema, which rejects `.optional()` (use `.default()` or a required field).
 
 /** What the Design Inspector is allowed to say about a set of renders. */
@@ -14,8 +16,7 @@ export const VisualCritiqueSchema = z.object({
       z.object({
         issue: z.string().describe('What is visibly wrong, in one sentence.'),
         severity: z.enum(['minor', 'major']),
-        // NOT optional. The vision default (gpt-5.6-luna) enforces OpenAI
-        // strict json_schema, which rejects any property missing from
+        // NOT optional. Strict json_schema rejects any property missing from
         // `required` with a 400 before the model ever runs.
         view: z.string().describe('front | right | top | iso, or "" if it applies to all views'),
       })
@@ -520,13 +521,14 @@ export function normalizeClaudeSentinels(raw: unknown): unknown {
 }
 
 /**
- * `model.withStructuredOutput(schema, opts)`, except for Claude slugs: those go
- * through the gateway to Anthropic's structured outputs.
+ * `model.withStructuredOutput(schema, opts)`, adapted for Claude models on the Anthropic endpoint.
  *
  * For Claude variant spec requests, strict structured output fails because Anthropic
  * compiles the whole schema into a decoding grammar:
  * "400 provider rejected the request: The compiled grammar is too large, which would cause performance issues. Simplify your tool schemas or reduce the number of strict tools."
- * Consequently, the variant spec uses non-strict tool calling (`method: 'functionCalling'`, no `strict` option).
+ * Furthermore, forced tool_choice returns 400 on claude-sonnet-5.5 and claude-opus-5.5.
+ * Consequently, the variant spec binds the tool with `tool_choice: 'auto'`, and the request prompt
+ * instructs the model to call the tool.
  * The 6-optional schema stays because it also keeps the tool schema small and the descriptions tell the model the neutral values.
  * Outputs from the variant spec are piped through normalizeClaudeSentinels.
  *
@@ -552,28 +554,80 @@ export function structuredFor<M extends { withStructuredOutput: (...args: never[
 
   if (isVariantSpec) {
     const safe = claudeVariantSpecSchema();
-    const variantOpts: { name: string; method: 'functionCalling'; includeRaw?: boolean } = {
-      name: opts.name ?? 'AssemblySpec',
-      method: 'functionCalling',
-    };
-    if (opts.includeRaw !== undefined) {
-      variantOpts.includeRaw = opts.includeRaw;
+    const toolName = opts.name ?? 'AssemblySpec';
+    let bound: unknown;
+
+    if (typeof (model as { bindTools?: unknown }).bindTools === 'function') {
+      const boundModel = (model as unknown as { bindTools: (tools: unknown[], kwargs?: unknown) => unknown }).bindTools(
+        [
+          {
+            type: 'function',
+            function: {
+              name: toolName,
+              description: 'Emit the Assembly Spec for this variant.',
+              parameters: safe,
+            },
+          },
+        ],
+        { tool_choice: 'auto' }
+      );
+      if (typeof (boundModel as { pipe?: unknown })?.pipe === 'function') {
+        const toolsParser = new JsonOutputKeyToolsParser({
+          keyName: toolName,
+          returnSingle: true,
+        });
+        // Handle real AIMessage tool calls, plain objects from mocks, and stringified JSON from test harnesses
+        const parser = RunnableLambda.from(async (msg: unknown) => {
+          if (msg && typeof msg === 'object' && !('content' in msg) && !('_getType' in msg)) {
+            return msg;
+          }
+          const parsedTool = await toolsParser.invoke(msg as never);
+          if (parsedTool !== undefined) return parsedTool;
+          if (msg && typeof msg === 'object' && 'content' in msg) {
+            const content = (msg as { content: unknown }).content;
+            if (typeof content === 'string') {
+              try {
+                const parsed = JSON.parse(content);
+                if (parsed && typeof parsed === 'object') return parsed;
+              } catch {
+                // ignore
+              }
+            }
+          }
+          return undefined;
+        });
+        bound = assembleStructuredOutputPipeline(boundModel as never, parser as never, opts.includeRaw);
+      } else {
+        bound = boundModel;
+      }
+    } else {
+      const variantOpts: { name: string; method: 'functionCalling'; includeRaw?: boolean } = {
+        name: toolName,
+        method: 'functionCalling',
+      };
+      if (opts.includeRaw !== undefined) {
+        variantOpts.includeRaw = opts.includeRaw;
+      }
+      bound = call.call(model, safe, variantOpts);
     }
-    const bound = call.call(model, safe, variantOpts);
+
     const normalizer = opts.includeRaw
       ? RunnableLambda.from((res: unknown) => {
           if (res && typeof res === 'object' && 'parsed' in res) {
             const rawObj = res as { parsed: unknown; raw?: unknown };
-            return { ...rawObj, parsed: normalizeClaudeSentinels(rawObj.parsed) };
+            return {
+              ...rawObj,
+              parsed: rawObj.parsed ? normalizeClaudeSentinels(rawObj.parsed) : rawObj.parsed,
+            };
           }
-          return normalizeClaudeSentinels(res);
+          return res ? normalizeClaudeSentinels(res) : res;
         })
-      : RunnableLambda.from(normalizeClaudeSentinels);
+      : RunnableLambda.from((res: unknown) => (res ? normalizeClaudeSentinels(res) : res));
 
     if (bound && typeof (bound as { pipe?: unknown }).pipe === 'function') {
       return (bound as unknown as { pipe: (n: unknown) => ReturnType<M['withStructuredOutput']> }).pipe(normalizer);
     }
-    return bound;
+    return bound as ReturnType<M['withStructuredOutput']>;
   }
 
   let json: Record<string, unknown>;

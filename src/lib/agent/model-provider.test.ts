@@ -1,12 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ChatOpenAI } from '@langchain/openai';
-import { getChatModel } from './model-provider';
-import { EXPLABS_BASE_URL, DEFAULT_MODEL } from './models';
+import { ANTHROPIC_OPENAI_BASE_URL, anthropicModelId, getChatModel } from './model-provider';
+import { DEFAULT_MODEL, MODELS, isOfferedModel, isVisionModel } from './models';
 
 const saved = { ...process.env };
 
 beforeEach(() => {
-  process.env.EXPLABS_API_KEY = 'test-explabs-key';
+  process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+  delete process.env.EXPLABS_API_KEY;
   delete process.env.CADAI_MODEL;
 });
 
@@ -15,58 +16,79 @@ afterEach(() => {
 });
 
 describe('getChatModel', () => {
-  it('sends every slug to the Experiential Labs gateway', () => {
-    const model = getChatModel('deepseek-v4-flash');
+  it('sends every model to the Anthropic API under its Anthropic model id', () => {
+    const model = getChatModel('claude-sonnet-5.5');
     expect(model).toBeInstanceOf(ChatOpenAI);
-    // The baseURL is the whole point of this lane: without it the client would
-    // talk to api.openai.com with a gateway key and 401.
-    expect(model.clientConfig.baseURL).toBe(EXPLABS_BASE_URL);
+    expect(model.clientConfig.baseURL).toBe(ANTHROPIC_OPENAI_BASE_URL);
+    expect(model.model).toBe('claude-sonnet-5-5');
   });
 
-  it('uses 0.2 by default and the requested temperature otherwise', () => {
-    expect(getChatModel('gpt-5.6-luna').temperature).toBe(0.2);
-    expect(getChatModel('gpt-5.6-luna', { temperature: 0.6 }).temperature).toBe(0.6);
+  it('never sends a temperature: Claude 5.5 rejects it on this endpoint', () => {
+    expect(getChatModel('claude-haiku-5.5').temperature).toBeUndefined();
+    expect(getChatModel('claude-opus-5.5', { temperature: 0.6 }).temperature).toBeUndefined();
   });
 
-  it('claude-opus-5.5 is pinned to temperature 1, overriding both the default and the revision temperature', () => {
-    expect(getChatModel('claude-opus-5.5').temperature).toBe(1);
-    expect(getChatModel('claude-opus-5.5', { temperature: 0.6 }).temperature).toBe(1);
+  it('defaults to Haiku 5.5, and CADAI_MODEL overrides it', () => {
+    expect(getChatModel().model).toBe('claude-haiku-5-5');
+    process.env.CADAI_MODEL = 'claude-sonnet-5.5';
+    expect(getChatModel().model).toBe('claude-sonnet-5-5');
   });
 
-  it('defaults to the multimodal model', () => {
-    expect(getChatModel().model).toBe(DEFAULT_MODEL);
-    expect(DEFAULT_MODEL).toBe('claude-haiku-5.5');
+  it('CADAI_MODEL is ignored with a warning when not an offered model', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.CADAI_MODEL = 'gpt-6-sol';
+    expect(getChatModel().model).toBe('claude-haiku-5-5');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('CADAI_MODEL "gpt-6-sol" is not an offered model')
+    );
+    warnSpy.mockRestore();
   });
 
-  it('lets CADAI_MODEL override the default without touching the picker', () => {
-    process.env.CADAI_MODEL = 'deepseek-v3.2';
-    expect(getChatModel().model).toBe('deepseek-v3.2');
+  it('sets maxTokens to 32000 by default, and CADAI_MAX_TOKENS overrides it', () => {
+    expect(getChatModel('claude-haiku-5.5').maxTokens).toBe(32000);
+    process.env.CADAI_MAX_TOKENS = '16000';
+    expect(getChatModel('claude-haiku-5.5').maxTokens).toBe(16000);
+    delete process.env.CADAI_MAX_TOKENS;
   });
 
-  // CADAI_MODEL is deliberately not validated against GATEWAY_MODELS, so a new
-  // gateway slug can be tried without a code change.
-  it('accepts a slug the picker does not list', () => {
-    const model = getChatModel('some-new-gateway-slug');
-    expect(model).toBeInstanceOf(ChatOpenAI);
-    expect(model.model).toBe('some-new-gateway-slug');
+  it('needs only ANTHROPIC_API_KEY, and says so when it is missing', () => {
+    expect(() => getChatModel()).not.toThrow();
+    delete process.env.ANTHROPIC_API_KEY;
+    expect(() => getChatModel()).toThrow(/ANTHROPIC_API_KEY/);
   });
 
-  it('explains which key is missing rather than failing at request time', () => {
-    delete process.env.EXPLABS_API_KEY;
-    expect(() => getChatModel('deepseek-v4-flash')).toThrow(/EXPLABS_API_KEY/);
+  it('maps app slugs to Anthropic ids', () => {
+    expect(anthropicModelId('claude-opus-5.5')).toBe('claude-opus-5-5');
   });
 });
 
 describe('model catalogue', () => {
-  it('offers gpt-6-sol as a vision model and defaults to claude-haiku-5.5', async () => {
-    const { GATEWAY_MODELS, isVisionModel, DEFAULT_MODEL } = await import('./models');
-    expect(GATEWAY_MODELS.map((m) => m.slug)).toEqual(['claude-haiku-5.5', 'gpt-5.6-luna', 'gpt-6-luna', 'gpt-6-sol', 'claude-opus-5.5']);
-    expect(GATEWAY_MODELS[0].label).toBe('Claude Haiku 5.5 - Recommended');
-    expect(GATEWAY_MODELS[3].label).toBe('GPT-6 Sol - higher quality (paid)');
-    expect(GATEWAY_MODELS[4].label).toBe('Claude Opus 5.5 - highest quality (paid)');
-    expect(isVisionModel('claude-opus-5.5')).toBe(true);
-    expect(isVisionModel('gpt-6-sol')).toBe(true);
-    expect(isVisionModel('claude-haiku-5.5')).toBe(true);
+  it('offers Haiku (default), Sonnet and Opus only', () => {
+    expect(MODELS.map((m) => m.slug)).toEqual(['claude-haiku-5.5', 'claude-sonnet-5.5', 'claude-opus-5.5']);
+    expect(MODELS[0].label).toBe('Claude Haiku 5.5 - Recommended');
     expect(DEFAULT_MODEL).toBe('claude-haiku-5.5');
+    for (const m of MODELS) expect(isVisionModel(m.slug)).toBe(true);
+  });
+
+  it('no longer offers the old gateway models', () => {
+    for (const slug of ['gpt-5.6-luna', 'gpt-6-sol', 'deepseek-v4-flash', 'gemini-3.6-flash']) expect(isOfferedModel(slug)).toBe(false);
+  });
+
+  it('isVisionModel accepts any claude- slug in dot or dash form', () => {
+    for (const slug of [
+      'claude-haiku-5.5',
+      'claude-haiku-5-5',
+      'claude-sonnet-5.5',
+      'claude-sonnet-5-5',
+      'claude-opus-5.5',
+      'claude-opus-5-5',
+      'claude-sonnet-5',
+      'claude/sonnet-5',
+    ]) {
+      expect(isVisionModel(slug)).toBe(true);
+    }
+    for (const slug of ['gpt-6-sol', 'deepseek-v4-flash', 'random-model', undefined, '']) {
+      expect(isVisionModel(slug)).toBe(false);
+    }
   });
 });

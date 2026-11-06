@@ -29,5 +29,7 @@ describe('eval run config', () => {
     expect(sheetsModelError('deepseek-v4-flash', 'on')).toMatch(/not a vision model/);
     expect(sheetsModelError('deepseek-v4-flash', 'off')).toBeNull();
     expect(sheetsModelError(DEFAULT_MODEL, 'on')).toBeNull();
+    expect(sheetsModelError('claude-haiku-5-5', 'on')).toBeNull();
+    expect(sheetsModelError('claude-sonnet-5.5', 'on')).toBeNull();
   });
 });

@@ -6,7 +6,7 @@ import type { StreamEvent } from '@/lib/agent/stream-events';
 import { deleteRunCheckpoint, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/tracing/langfuse';
 import { DesignContract } from '@/types';
-import { DEFAULT_MODEL } from '@/lib/agent/models';
+import { coerceRouteModel } from '@/lib/agent/models';
 import { graphRecursionLimit, describeGraphError } from '@/lib/agent/run-limits';
 import { randomUUID } from 'crypto';
 
@@ -33,7 +33,7 @@ export async function POST(req: NextRequest) {
 
     // Map client messages to LangChain BaseMessage objects
     const lcMessages = messages.map((m: { role: string; content: string; image?: string }) => {
-      let content: any = m.content;
+      let content: string | Array<{ type: string; text?: string; image_url?: { url: string } }> = m.content;
       
       if (m.image) {
         content = [
@@ -43,9 +43,9 @@ export async function POST(req: NextRequest) {
       }
 
       if (m.role === 'user') {
-        return new HumanMessage({ content });
+        return new HumanMessage({ content: content as never });
       } else {
-        return new AIMessage({ content });
+        return new AIMessage({ content: content as never });
       }
     });
 
@@ -76,16 +76,17 @@ export async function POST(req: NextRequest) {
       // Hoisted above the try so the finally block can flush it. The factory
       // swallows its own construction errors and returns null, so this cannot
       // throw outside the try.
+      const effectiveModel = coerceRouteModel(model);
       const langfuseHandler = getLangfuseCallbackHandler({
         sessionId: threadId,
-        tags: ['cadai', model || DEFAULT_MODEL],
+        tags: ['cadai', effectiveModel],
         metadata: {
-          model: model || DEFAULT_MODEL,
+          model: effectiveModel,
         },
       });
 
       try {
-        const agent = createCadAgent(model);
+        const agent = createCadAgent(effectiveModel);
 
         let sawGate = false;
         const stream = await agent.stream(

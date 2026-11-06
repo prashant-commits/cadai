@@ -3,7 +3,7 @@
  * auto-approved and automatic repair off, then reports first-draft quality.
  *
  *   npm run eval:generation -- --tag baseline
- *   npm run eval:generation -- --model deepseek-v4-flash --sheets off --tag baseline
+ *   npm run eval:generation -- --model claude-haiku-5.5 --sheets off --tag baseline
  *   npm run eval:generation -- --seed-dataset          # once, creates the Langfuse dataset
  *   npm run eval:generation -- --no-langfuse --limit 2 # local only
  *   npm run eval:generation -- --sheets off --drafter-start scratch --critic on
@@ -14,7 +14,7 @@
  *   --sheets on|off                  CADAI_SPEC_SHEETS     (default on)
  *   --drafter-start blockout|scratch CADAI_DRAFTER_START   (default blockout)
  *   --critic on|off                  CADAI_VISUAL_CRITIC   (default off)
- *   --critic-model <slug>            CADAI_CRITIC_MODEL    (default gpt-5.6-luna)
+ *   --critic-model <slug>            CADAI_CRITIC_MODEL    (default claude-haiku-5.5)
  *   --reviewer-model <slug>          CADAI_REVIEWER_MODEL  (default: the run model)
  *
  * runOne auto-approves up to 12 gates. Each resume is { action: 'approve' },
@@ -45,7 +45,7 @@ process.env.CADAI_MAX_VARIANTS ??= '1';
 process.env.CADAI_SPEC_SHEETS ??= 'on';
 process.env.CADAI_DRAFTER_START ??= 'blockout';
 process.env.CADAI_VISUAL_CRITIC ??= 'off';
-process.env.CADAI_CRITIC_MODEL ??= 'gpt-5.6-luna';
+process.env.CADAI_CRITIC_MODEL ??= 'claude-haiku-5.5';
 
 import { Command, INTERRUPT, isInterrupted } from '@langchain/langgraph';
 import type { GatePayload } from '@/types';

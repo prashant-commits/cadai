@@ -1,11 +1,22 @@
-import { describe, it, expect, vi, afterAll } from 'vitest';
+import { describe, it, expect, vi, afterAll, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import { getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
+import { DEFAULT_MODEL } from '@/lib/agent/models';
 
 const createAgent = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/agent/graph', () => ({ createCadAgent: createAgent }));
 
 import { POST } from './route';
+
+const saved = { ...process.env };
+
+beforeEach(() => {
+  delete process.env.CADAI_MODEL;
+});
+
+afterEach(() => {
+  process.env = { ...saved };
+});
 
 const keys: string[] = [];
 afterAll(async () => {
@@ -28,7 +39,7 @@ describe('POST /api/chat/resume', () => {
     expect(createAgent).not.toHaveBeenCalled();
   });
 
-  it('a live checkpoint is resumed', async () => {
+  it('a live checkpoint is resumed with coerced model slug', async () => {
     const key = runCheckpointKey('t-live', 'r-live');
     keys.push(key);
     await getCheckpointer().put(
@@ -39,8 +50,8 @@ describe('POST /api/chat/resume', () => {
     );
     createAgent.mockReset();
     createAgent.mockReturnValue({ stream: async () => (async function* () {})() });
-    const res = await call({ threadId: 't-live', runId: 'r-live', decision: { action: 'approve' } });
+    const res = await call({ threadId: 't-live', runId: 'r-live', model: 'gpt-6-luna', decision: { action: 'approve' } });
     await res.text();
-    expect(createAgent).toHaveBeenCalledTimes(1);
+    expect(createAgent).toHaveBeenCalledWith(DEFAULT_MODEL);
   });
 });

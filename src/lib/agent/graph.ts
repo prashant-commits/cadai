@@ -19,7 +19,7 @@ import { analyzeStl } from '../engine/geometry-utils';
 import { renderStlViews, RenderedView } from '../engine/stl-renderer';
 import { shouldGateSpec, shouldGateAccept } from './gate-policy';
 import { getChatModel } from './model-provider';
-import { isVisionModel, DEFAULT_MODEL } from './models';
+import { isVisionModel, isOfferedModel, DEFAULT_MODEL } from './models';
 import { renderVariantSheet } from '../spec-sheet/sheet-svg';
 import { blockoutScad } from '../spec-sheet/blockout-scad';
 import { freshVariantPrompt, requiredChanges, variantNamedIn, variantPlanContext } from './architect-prompts';
@@ -71,9 +71,6 @@ const MAX_ACCEPT_REVISIONS = 2;
  * the run; this only stops one failure class from starving the other.
  */
 const MAX_SEMANTIC_REPAIRS = 1;
-
-/** Sampling temperature of revision calls (fresh specs and the planner use 0.2). */
-export const REVISION_TEMPERATURE = 0.6;
 
 type VisualCritique = z.infer<typeof VisualCritiqueSchema>;
 
@@ -619,12 +616,39 @@ function write(
 export function createCadAgent(
   modelName?: string
 ) {
-  const selectedModel = modelName || process.env.CADAI_MODEL || DEFAULT_MODEL;
+  let selectedModel: string;
+  if (modelName) {
+    selectedModel = modelName;
+  } else {
+    const envModel = process.env.CADAI_MODEL;
+    if (envModel) {
+      if (isOfferedModel(envModel)) {
+        selectedModel = envModel;
+      } else {
+        console.warn(`CADAI_MODEL "${envModel}" is not an offered model; ignoring and falling back to "${DEFAULT_MODEL}".`);
+        selectedModel = DEFAULT_MODEL;
+      }
+    } else {
+      selectedModel = DEFAULT_MODEL;
+    }
+  }
   const model = getChatModel(selectedModel);
-  // Revisions sample warmer: at 0.2 the Architect re-emitted the previous
-  // skeleton under every finding. Fresh specs and the planner keep the default.
-  const revisionModel = getChatModel(selectedModel, { temperature: REVISION_TEMPERATURE });
-  const criticModel = process.env.CADAI_CRITIC_MODEL ? getChatModel(process.env.CADAI_CRITIC_MODEL) : model;
+  // Revisions previously sampled warmer to avoid re-emitting the previous skeleton,
+  // but temperature cannot be sent on this endpoint (Claude 5.5 models reject temperature).
+  // Revision calls use the model directly.
+  const revisionModel = model;
+
+  let criticSlug = selectedModel;
+  if (process.env.CADAI_CRITIC_MODEL) {
+    if (isOfferedModel(process.env.CADAI_CRITIC_MODEL)) {
+      criticSlug = process.env.CADAI_CRITIC_MODEL;
+    } else {
+      console.warn(
+        `CADAI_CRITIC_MODEL "${process.env.CADAI_CRITIC_MODEL}" is not an offered model; ignoring and falling back to "${selectedModel}".`
+      );
+    }
+  }
+  const criticModel = criticSlug !== selectedModel ? getChatModel(criticSlug) : model;
   
   // Architect operates in two steps: a planner call that streams a brief and
   // 1-3 candidate variant outlines, followed by parallel variant specifier calls
@@ -683,17 +707,17 @@ export function createCadAgent(
         variantMessages.push(
           new HumanMessage({
             content: [
-              { type: 'text', text: promptParts.join('\n\n') },
+              { type: 'text', text: `${promptParts.join('\n\n')}\n\nReply by calling the AssemblySpec tool.` },
               { type: 'text', text: 'Previous concept sheet render:' },
               { type: 'image_url', image_url: { url: prevSheetPngUrl } },
             ],
           })
         );
       } else {
-        variantMessages.push(new HumanMessage(promptParts.join('\n\n')));
+        variantMessages.push(new HumanMessage(`${promptParts.join('\n\n')}\n\nReply by calling the AssemblySpec tool.`));
       }
     } else {
-      variantMessages.push(new HumanMessage(freshVariantPrompt(variant, allVariants, brief, notes)));
+      variantMessages.push(new HumanMessage(`${freshVariantPrompt(variant, allVariants, brief, notes)}\n\nReply by calling the AssemblySpec tool.`));
     }
 
     const variantModel = structuredFor(previousSpec ? revisionModel : model, selectedModel, variantSpecRequestSchema(), {
@@ -726,14 +750,15 @@ export function createCadAgent(
         outOfTime = true;
         break;
       }
-      const retryPrompt = unchangedFeedback
+      const retryPrompt = (unchangedFeedback
         ? `Your revision did not change the geometry. You must change it to resolve: ${majorIssues.join('; ') || 'the required changes'}`
         : coherenceFeedback
         ? 'Your previous Assembly Spec was internally inconsistent:\n' +
           coherenceFeedback.map((v) => `- ${v.message}`).join('\n') +
           '\nResolve the errors above: ensure every declared parameter is used in a component or guide ' +
           'expression (or removed), all expressions resolve, and component placement arithmetic is consistent.'
-        : 'Your previous reply did not yield a valid Assembly Spec. Emit the structured spec now, with every dimension in millimetres and at most two decimal places.';
+        : 'Your previous reply did not yield a valid Assembly Spec. Emit the structured spec now, with every dimension in millimetres and at most two decimal places.') +
+        '\n\nReply by calling the AssemblySpec tool.';
 
       const attemptMessages =
         attempt === 0 ? variantMessages : [...variantMessages, new HumanMessage(retryPrompt)];
@@ -1222,10 +1247,19 @@ export function createCadAgent(
     const request = latestHumanText(state.messages) || 'the user request above';
     const contract = contractLines(state.designContract);
     // CADAI_REVIEWER_MODEL pins the reviewer so a model comparison is not
-    // confounded by each model reviewing its own designs.
-    const reviewerSlug = process.env.CADAI_REVIEWER_MODEL || selectedModel;
+    // confounded by each model reviewing its own designs. Only offered models are accepted.
+    let reviewerSlug: string = selectedModel;
+    if (process.env.CADAI_REVIEWER_MODEL) {
+      if (isOfferedModel(process.env.CADAI_REVIEWER_MODEL)) {
+        reviewerSlug = process.env.CADAI_REVIEWER_MODEL;
+      } else {
+        console.warn(
+          `CADAI_REVIEWER_MODEL "${process.env.CADAI_REVIEWER_MODEL}" is not an offered model; ignoring and falling back to "${selectedModel}".`
+        );
+      }
+    }
     const reviewerModel = structuredFor(
-      process.env.CADAI_REVIEWER_MODEL ? getChatModel(process.env.CADAI_REVIEWER_MODEL) : model,
+      reviewerSlug !== selectedModel ? getChatModel(reviewerSlug) : model,
       reviewerSlug,
       SheetReviewSchema
     ).withConfig({ tags: ['nostream'] });
@@ -1957,7 +1991,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
 
     let critique: VisualCritique | null = null;
     try {
-      critique = (await structuredFor(criticModel, process.env.CADAI_CRITIC_MODEL || selectedModel, VisualCritiqueSchema)
+      critique = (await structuredFor(criticModel, criticSlug, VisualCritiqueSchema)
         .invoke(
           [
             new SystemMessage(systemPromptFor('critic')),

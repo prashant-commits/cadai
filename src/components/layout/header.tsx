@@ -2,8 +2,8 @@
 
 import React from 'react';
 import { useAppStore } from '@/store/app-store';
-import { GATEWAY_MODELS } from '@/lib/agent/models';
-import { Box, Sparkles, RefreshCw, Cpu, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { MODELS } from '@/lib/agent/models';
+import { Box, RefreshCw, Cpu, CheckCircle2, AlertTriangle } from 'lucide-react';
 
 export function AppHeader() {
   const {
@@ -62,9 +62,9 @@ export function AppHeader() {
           value={selectedModel}
           onChange={(e) => setSelectedModel(e.target.value)}
           className="bg-slate-900 border border-slate-700 hover:border-slate-600 rounded-md px-2 py-1.5 text-xs text-indigo-300 font-mono focus:outline-none focus:border-indigo-500 cursor-pointer"
-          title="Select the model driving the agent. All models run through the Experiential Labs gateway and authenticate server-side."
+          title="Select the model driving the agent. All models run on the Anthropic API and authenticate server-side."
         >
-          {GATEWAY_MODELS.map((m) => (
+          {MODELS.map((m) => (
             <option key={m.slug} value={m.slug}>
               {m.label}
             </option>

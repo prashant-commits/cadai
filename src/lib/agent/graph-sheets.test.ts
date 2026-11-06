@@ -129,7 +129,7 @@ describe('spec sheets and reviewer loop', () => {
         findings: [],
       });
 
-      const agent = createCadAgent('gpt-5.6-luna');
+      const agent = createCadAgent('claude-haiku-5.5');
       const result = await agent.invoke(
         { messages: [new HumanMessage('a 40mm box')] },
         { configurable: { thread_id: newKey() } }
@@ -189,7 +189,7 @@ describe('spec sheets and reviewer loop', () => {
       });
 
       const threadKey = newKey();
-      const agent = createCadAgent('gpt-5.6-luna');
+      const agent = createCadAgent('claude-haiku-5.5');
       const result = await agent.invoke(
         { messages: [new HumanMessage('a 40mm box')] },
         { configurable: { thread_id: threadKey } }
@@ -242,7 +242,7 @@ describe('spec sheets and reviewer loop', () => {
         findings: [{ issue: 'Still wrong size', severity: 'major' }],
       });
 
-      const agent = createCadAgent('gpt-5.6-luna');
+      const agent = createCadAgent('claude-haiku-5.5');
       const result = await agent.invoke(
         { messages: [new HumanMessage('a 40mm box')] },
         { configurable: { thread_id: newKey() } }
@@ -274,7 +274,7 @@ describe('spec sheets and reviewer loop', () => {
         findings: [{ issue: 'Flaw', severity: 'major' }],
       });
 
-      const agent = createCadAgent('gpt-5.6-luna');
+      const agent = createCadAgent('claude-haiku-5.5');
       const result = await agent.invoke(
         { messages: [new HumanMessage('a 40mm box')] },
         { configurable: { thread_id: newKey() } }
@@ -299,7 +299,7 @@ describe('spec sheets and reviewer loop', () => {
       // Reviewer call throws
       invokeMock.mockRejectedValueOnce(new Error('Gateway timeout 504'));
 
-      const agent = createCadAgent('gpt-5.6-luna');
+      const agent = createCadAgent('claude-haiku-5.5');
       const result = await agent.invoke(
         { messages: [new HumanMessage('a 40mm box')] },
         { configurable: { thread_id: newKey() } }
@@ -332,7 +332,7 @@ describe('spec sheets and reviewer loop', () => {
 
       const key = newKey();
       const config = { configurable: { thread_id: key } };
-      const agent = createCadAgent('gpt-5.6-luna');
+      const agent = createCadAgent('claude-haiku-5.5');
       await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
 
       invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
@@ -367,7 +367,7 @@ describe('spec sheets and reviewer loop', () => {
 
       const key = newKey();
       const config = { configurable: { thread_id: key } };
-      const agent = createCadAgent('gpt-5.6-luna');
+      const agent = createCadAgent('claude-haiku-5.5');
       await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
 
       invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
@@ -402,7 +402,7 @@ describe('spec sheets and reviewer loop', () => {
 
       const key = newKey();
       const config = { configurable: { thread_id: key } };
-      const agent = createCadAgent('gpt-5.6-luna');
+      const agent = createCadAgent('claude-haiku-5.5');
       await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
       const callsBeforeRevise = invokeMock.mock.calls.length; // planner, A, B, reviewer x2
 
@@ -459,7 +459,7 @@ describe('spec sheets and reviewer loop', () => {
 
       const key = newKey();
       const config = { configurable: { thread_id: key } };
-      const agent = createCadAgent('gpt-5.6-luna');
+      const agent = createCadAgent('claude-haiku-5.5');
       await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
 
       invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
@@ -509,7 +509,7 @@ describe('spec sheets and reviewer loop', () => {
 
       const key = newKey();
       const config = { configurable: { thread_id: key } };
-      const agent = createCadAgent('gpt-5.6-luna');
+      const agent = createCadAgent('claude-haiku-5.5');
       await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
 
       invokeMock.mockResolvedValueOnce(draftResponse('cube([40,40,40]);'));
@@ -571,7 +571,7 @@ describe('spec sheets and reviewer loop', () => {
       });
 
       const key = newKey();
-      const agent = createCadAgent('gpt-5.6-luna');
+      const agent = createCadAgent('claude-haiku-5.5');
 
       const custom: Array<{ t: string; node?: string; text?: string }> = [];
       for await (const [mode, payload] of await agent.stream(
