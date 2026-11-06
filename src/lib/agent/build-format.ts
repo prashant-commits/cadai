@@ -1,5 +1,6 @@
 import type { AssemblySpec } from './assembly-spec';
 import { blockoutBody } from '../spec-sheet/blockout-scad';
+import { checkPythonBody } from '../brep/body-check';
 
 /**
  * The Architect's post-gate build reply:
@@ -221,10 +222,11 @@ export function sanitizePythonBody(
   if (wrapper) {
     const inner = lines.slice(1);
     if (inner.some((line) => /^\S/.test(line) && line.trim() !== '')) return null; // code after the def: not a single wrapper
-    lines = dedent(inner);
-  } else if (lines.some((line) => /^def[ \t]/.test(line))) {
-    return null; // helper defs beside the body cannot be assembled into one function
+    lines = inner;
   }
+  // A body written with a uniform indent (inside a def, a fence, or a list) is dedented first, so
+  // the parameter-write filter below and the token check see the code at its real depth.
+  lines = dedent(lines);
 
   const names = new Set(reserved);
   lines = lines.filter((line) => {
@@ -233,12 +235,13 @@ export function sanitizePythonBody(
   });
   const body = lines.join('\n').replace(/\s+$/, '');
 
-  // Checks run on code with comments blanked, so prose in a comment is not a violation.
-  const code = body.split('\n').map((line) => line.replace(/#.*$/, '')).join('\n');
-  if (/\bimport\b|\bexec\b|\beval\b|\bopen\s*\(|__|\bcompile\s*\(|\bglobals\b|\bgetattr\b/.test(code)) return null;
-  if (componentNames.some((name) => new RegExp(`(?<![\\w.])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`).test(code))) return null;
-  if (!/(^|\n)[ \t]*return\b/.test(code)) return null;
-  return body;
+  // Token-level check: imports, dynamic code, file access, dunders, defs, other components,
+  // and rebinding a parameter are rejected whatever the spelling. Rejection means the blockout.
+  const verdict = checkPythonBody(body, {
+    reserved,
+    components: [...componentNames, ...componentNames.map((name) => `${name}_part`)],
+  });
+  return verdict.ok ? body : null;
 }
 
 function dedent(lines: string[]): string[] {

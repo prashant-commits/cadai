@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 
 /**
@@ -18,6 +20,10 @@ export interface TestRun {
   ok: boolean;
   error?: string;
   parts: TestPart[];
+  /** Each component in its own frame before placement (`_local`), when the script lists it. */
+  local: TestPart[];
+  /** Labels of the children of `result`. */
+  children: string[];
   solids: number;
 }
 
@@ -39,19 +45,20 @@ try:
     items = ns.get("_parts")
     if items is None:
         items = [c for c in result.children if c.label]
-    parts = []
-    for p in items:
+    def measure(p):
         bb = p.bounding_box()
-        parts.append({
+        return {
             "label": p.label,
             "min": [bb.min.X, bb.min.Y, bb.min.Z],
             "max": [bb.max.X, bb.max.Y, bb.max.Z],
             "valid": bool(p.is_valid),
             "volume": float(p.volume),
-        })
-    out = {"ok": True, "parts": parts, "solids": len(result.solids())}
+        }
+    parts = [measure(p) for p in items]
+    local = [measure(p) for p in ns.get("_local", [])]
+    out = {"ok": True, "parts": parts, "local": local, "children": [c.label for c in result.children], "solids": len(result.solids())}
 except BaseException:
-    out = {"ok": False, "error": traceback.format_exc().strip().splitlines()[-1], "parts": [], "solids": 0}
+    out = {"ok": False, "error": traceback.format_exc().strip().splitlines()[-1], "parts": [], "local": [], "children": [], "solids": 0}
 print("@@RESULT@@" + json.dumps(out))
 `;
 
@@ -65,17 +72,67 @@ export function runScriptForTest(script: string, timeoutMs = 90_000): Promise<Te
     child.stderr.on('data', (d) => (stderr += d));
     child.on('error', (err) => {
       clearTimeout(timer);
-      resolve({ ok: false, error: err.message, parts: [], solids: 0 });
+      resolve({ ok: false, error: err.message, parts: [], local: [], children: [], solids: 0 });
     });
     child.on('close', () => {
       clearTimeout(timer);
       const line = stdout.split('\n').find((l) => l.startsWith('@@RESULT@@'));
       if (!line) {
-        resolve({ ok: false, error: stderr.trim().split('\n').pop() || 'no output', parts: [], solids: 0 });
+        resolve({ ok: false, error: stderr.trim().split('\n').pop() || 'no output', parts: [], local: [], children: [], solids: 0 });
         return;
       }
       resolve(JSON.parse(line.slice('@@RESULT@@'.length)) as TestRun);
     });
     child.stdin.end(script);
   });
+}
+
+export interface GeoCliRun {
+  ok: boolean;
+  error?: string;
+  /** Line of the script that raised, innermost. */
+  line?: number;
+  parts: TestPart[];
+  local?: TestPart[];
+  solids?: number;
+  bbox?: { min: number[]; max: number[] };
+}
+
+/**
+ * Runs THIS checkout's `geo/cadai_geo` CLI (not whichever copy the interpreter has installed)
+ * on a script and returns its JSON line. Used by tests of what the CLI reports about a failure
+ * or about each part's own frame.
+ */
+export async function runGeoCliForTest(script: string, timeoutMs = 90_000): Promise<GeoCliRun> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'cadai-geo-test-'));
+  try {
+    const scriptPath = path.join(dir, 'model.py');
+    const outDir = path.join(dir, 'out');
+    await mkdir(outDir);
+    await writeFile(scriptPath, script, 'utf-8');
+    const boot = [
+      'import sys, runpy',
+      `sys.path.insert(0, ${JSON.stringify(path.join(process.cwd(), 'geo'))})`,
+      'runpy.run_module("cadai_geo", run_name="__main__")',
+    ].join('; ');
+    const stdout = await new Promise<string>((resolve) => {
+      const child = spawn(geoPython(), ['-I', '-c', boot, scriptPath, outDir], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = '';
+      const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+      child.stdout.on('data', (d) => (out += d));
+      child.on('close', () => {
+        clearTimeout(timer);
+        resolve(out);
+      });
+      child.on('error', () => {
+        clearTimeout(timer);
+        resolve(out);
+      });
+    });
+    const line = stdout.split('\n').filter((l) => l.trim().startsWith('{')).pop();
+    if (!line) return { ok: false, error: 'no output', parts: [] };
+    return JSON.parse(line) as GeoCliRun;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }

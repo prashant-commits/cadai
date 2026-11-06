@@ -36,6 +36,19 @@ def _last_line(exc: BaseException) -> str:
     return redact(line)
 
 
+def _script_lines(exc: BaseException, script_path: str) -> list[int]:
+    """Line numbers in the script itself that the traceback passes through, outermost first."""
+    lines = [
+        frame.lineno
+        for frame in traceback.extract_tb(exc.__traceback__)
+        if frame.filename == script_path and frame.lineno
+    ]
+    # A SyntaxError carries its own position and no frame in the script.
+    if isinstance(exc, SyntaxError) and exc.filename == script_path and exc.lineno:
+        lines.append(exc.lineno)
+    return lines
+
+
 def _shape_sources(obj: object) -> list | None:
     if not isinstance(obj, Sequence) or isinstance(obj, (str, bytes)):
         return None
@@ -86,6 +99,18 @@ def _parts(result) -> list[dict]:
     return [_part(solid, "") for solid in result.solids()]
 
 
+def _local(namespace: dict) -> list[dict]:
+    """Labelled shapes in their own frames, before placement, when the script lists them in ``_local``."""
+    shapes = namespace.get("_local")
+    if not isinstance(shapes, (list, tuple)):
+        return []
+    return [
+        _part(shape, getattr(shape, "label", "") or "")
+        for shape in shapes
+        if hasattr(shape, "wrapped") and hasattr(shape, "bounding_box")
+    ]
+
+
 def _replace_output(path: str) -> None:
     """Remove anything already at ``path`` so export cannot follow a symlink."""
     if os.path.lexists(path):
@@ -102,7 +127,12 @@ def run(script_path: str | os.PathLike, outdir: str | os.PathLike) -> dict:
         try:
             namespace = runpy.run_path(os.fspath(script_path), run_name="__main__")
         except Exception as exc:
-            return {"ok": False, "error": _last_line(exc)}
+            failed = {"ok": False, "error": _last_line(exc)}
+            lines = _script_lines(exc, os.fspath(script_path))
+            if lines:
+                # The innermost line of the script that raised: which function body failed.
+                failed["line"] = lines[-1]
+            return failed
         if "result" not in namespace:
             return {"ok": False, "error": "assign result"}
 
@@ -121,6 +151,7 @@ def run(script_path: str | os.PathLike, outdir: str | os.PathLike) -> dict:
         return {
             "ok": True,
             "parts": _parts(result),
+            "local": _local(namespace),
             "solids": len(list(result.solids())),
             "bbox": {"min": _xyz(box.min), "max": _xyz(box.max)},
             "stl": stl_path,

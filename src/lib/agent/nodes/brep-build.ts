@@ -5,6 +5,7 @@ import { parseBuild } from '../build-format';
 import type { AgentStateType } from '../graph';
 import { systemPromptFor } from '../system-prompt';
 import { blockoutBody } from '../../brep/blockout-b123d';
+import { specNames } from '../../brep/py-names';
 import { emitBrepScript } from '../../brep/emit-script';
 import { countFallbacks, messageText, planBuildVisit } from './architect-build';
 
@@ -31,7 +32,8 @@ export function makeBrepBuild(model: {
       config,
     );
 
-    const parsed = parseBuild(messageText(reply), componentNames, reserved, { language: 'python' });
+    const { names } = specNames(spec, String);
+    const parsed = parseBuild(messageText(reply), componentNames, reserved.map((r) => names.map.get(r) ?? r), { language: 'python' });
     if (keep.length > 0 && state.currentCode) {
       for (const name of keep) {
         if (Object.prototype.hasOwnProperty.call(parsed.bodies, name)) continue;
@@ -59,7 +61,7 @@ function blockoutFor(spec: AssemblySpec, name: string): string | null {
   const component = (spec.components ?? []).find((c) => c.name === name);
   if (!component) return null;
   try {
-    return blockoutBody(component);
+    return blockoutBody(component, specNames(spec, String).names.ctx);
   } catch {
     return null;
   }
@@ -67,8 +69,10 @@ function blockoutFor(spec: AssemblySpec, name: string): string | null {
 
 function humanPrompt(spec: AssemblySpec, changes: string | null, ask: string[], keep: string[]): string {
   const { sheet, ...skeleton } = spec;
-  const parameters = (spec.parameters ?? []).map((parameter) => parameter.name);
-  const derived = (spec.derived ?? []).map((item) => item.name);
+  // The names as the script spells them (a name the script uses itself is prefixed `p_`).
+  const { names } = specNames(spec, String);
+  const parameters = (spec.parameters ?? []).map((parameter) => names.map.get(parameter.name) ?? parameter.name);
+  const derived = (spec.derived ?? []).map((item) => names.map.get(item.name) ?? item.name);
   const blockouts = (spec.components ?? []).map((component) => {
     const body = blockoutFor(spec, component.name);
     return body === null ? `# ${component.name}: no blockout` : `@body ${component.name}\n${body}\n@end`;

@@ -1,5 +1,6 @@
 import type { AssemblySpec, BedFace } from '../agent/assembly-spec';
 import { classifyComponent } from '../spec-sheet/geometry';
+import { comment, STANDALONE_CONTEXT, type TermContext } from './py-names';
 
 /**
  * The code-drawn blockout of one component as a build123d function body, in the
@@ -24,44 +25,61 @@ export const OVERSHOOT = 0.02;
 export const MIN3 = '(Align.MIN, Align.MIN, Align.MIN)';
 const CMIN = '(Align.CENTER, Align.CENTER, Align.MIN)';
 
-export function blockoutBody(comp: Component): string {
+export function blockoutBody(comp: Component, ctx: TermContext = STANDALONE_CONTEXT): string {
   const ext = comp.localExtents;
   if (!ext || ext.length < 3) throw new Error(`${comp.name}: missing localExtents`);
-  const [ex, ey, ez] = extentTerms(comp, ext[0], ext[1], ext[2]);
+  const [ex, ey, ez] = extentTerms(comp, ext[0], ext[1], ext[2], ctx);
   const decision = classifyComponent(comp);
-  const lines = [`# blockout of ${comp.name}${decision.kind === 'box' ? ` (placeholder box: ${decision.reason})` : ''}`];
-  lines.push(`part = ${shapeExpr(comp, ex, ey, ez, decision.kind !== 'shape')}`);
+  const lines = [`# blockout of ${comment(comp.name)}${decision.kind === 'box' ? ` (placeholder box: ${comment(decision.reason)})` : ''}`];
+  lines.push(`_part = ${shapeExpr(comp, ex, ey, ez, decision.kind !== 'shape', ctx)}`);
   (comp.holes ?? []).forEach((hole, i) => {
-    const cutter = holeExpr(hole, i, comp, ex, ey, ez);
-    if (cutter) lines.push(`part = part - ${cutter}  # hole ${i + 1}`);
+    const cutter = holeExpr(hole, i, comp, ex, ey, ez, ctx);
+    if (cutter) lines.push(`_part = _part - ${cutter}  # hole ${i + 1}`);
   });
-  lines.push('return part');
+  lines.push('return _part');
   return lines.join('\n');
 }
 
 /** The comment-free Python expression for the component's un-holed shape. */
-export function shapeExpr(comp: Component, ex: Term, ey: Term, ez: Term, fallback: boolean): string {
+export function shapeExpr(comp: Component, ex: Term, ey: Term, ez: Term, fallback: boolean, ctx: TermContext = STANDALONE_CONTEXT): string {
   const shape = comp.shape;
   if (fallback || !shape || shape.kind === 'box') return boxExpr(ex, ey, ez);
   if (shape.kind === 'cylinder' && shape.axis) {
-    return roundExpr(ex, ey, ez, shape.axis, crossDiameter(shape.axis, ex, ey), false);
+    return outerRound(ex, ey, ez, shape.axis);
   }
   if (shape.kind === 'tube' && shape.axis && shape.innerD !== undefined) {
-    const outer = roundExpr(ex, ey, ez, shape.axis, crossDiameter(shape.axis, ex, ey), false);
-    const inner = roundExpr(ex, ey, ez, shape.axis, fieldTerm(comp.expr?.innerD, shape.innerD), true);
+    const outer = outerRound(ex, ey, ez, shape.axis);
+    const inner = roundExpr(ex, ey, ez, shape.axis, ctx.term(comp.expr?.innerD, shape.innerD), true);
     return `${outer} - ${inner}`;
   }
   if (shape.kind === 'shell' && shape.openFace && shape.wall !== undefined) {
-    return shellExpr(ex, ey, ez, fieldTerm(comp.expr?.wall, shape.wall), shape.openFace);
+    return shellExpr(ex, ey, ez, ctx.term(comp.expr?.wall, shape.wall), shape.openFace);
   }
   if (shape.kind === 'profile' && shape.plane && shape.points) {
-    return profileExpr(comp, shape.plane, shape.points, shape.holes, ex, ey, ez);
+    return profileExpr(comp, shape.plane, shape.points, shape.holes, ex, ey, ez, ctx);
   }
   return boxExpr(ex, ey, ez);
 }
 
 export function boxExpr(ex: Term, ey: Term, ez: Term, align = MIN3): string {
   return `Box(${emit(ex)}, ${emit(ey)}, ${emit(ez)}, align=${align})`;
+}
+
+/**
+ * The outer body of a cylinder or tube along `axis`. Equal cross extents make a
+ * Cylinder. Unequal ones (the classifier allows up to 0.5 mm) make an elliptical
+ * prism, so the solid still spans both local extents exactly.
+ */
+function outerRound(ex: Term, ey: Term, ez: Term, axis: Axis): string {
+  // Rot(0, 90, 0) sends the sketch's x to Z; Rot(-90, 0, 0) sends its y to -Z.
+  const [c1, c2] = axis === 'x' ? [ez, ey] : axis === 'y' ? [ex, ez] : [ex, ey];
+  if (emit(c1) === emit(c2)) return roundExpr(ex, ey, ez, axis, crossDiameter(axis, ex, ey), false);
+  const extent = axis === 'x' ? ex : axis === 'y' ? ey : ez;
+  const prism = `extrude(Plane.XY * Ellipse(${emit(div(c1, 2))}, ${emit(div(c2, 2))}), amount=${emit(extent)})`;
+  // Cross-section centred on the two other axes, as for the cylinder.
+  if (axis === 'z') return `Pos(${emit(div(ex, 2))}, ${emit(div(ey, 2))}, 0) * ${prism}`;
+  if (axis === 'y') return `Pos(${emit(div(ex, 2))}, 0, ${emit(div(ez, 2))}) * Rot(-90, 0, 0) * ${prism}`;
+  return `Pos(0, ${emit(div(ey, 2))}, ${emit(div(ez, 2))}) * Rot(0, 90, 0) * ${prism}`;
 }
 
 /**
@@ -107,6 +125,12 @@ function cavity(
   return { origin, size };
 }
 
+/** The profile's outline alone (no holes), for the cavity that follows an insert. */
+export function profileOuterExpr(comp: Component, ex: Term, ey: Term, ez: Term, ctx: TermContext): string {
+  const shape = comp.shape;
+  return profileExpr(comp, shape?.plane ?? 'xy', shape?.points ?? [], undefined, ex, ey, ez, ctx, false);
+}
+
 function profileExpr(
   comp: Component,
   plane: Plane,
@@ -114,11 +138,13 @@ function profileExpr(
   holes: number[][][] | undefined,
   ex: Term,
   ey: Term,
-  ez: Term
+  ez: Term,
+  ctx: TermContext,
+  withHoles = true
 ): string {
-  const outline = loopTerms(points, comp.expr?.outline, true) ?? [];
-  const inners = (holes ?? [])
-    .map((hole, i) => loopTerms(hole, comp.expr?.outlineHoles?.[i], false))
+  const outline = loopTerms(points, comp.expr?.outline, true, ctx) ?? [];
+  const inners = (withHoles ? (holes ?? []) : [])
+    .map((hole, i) => loopTerms(hole, comp.expr?.outlineHoles?.[i], false, ctx))
     .filter((hole): hole is [Term, Term][] => hole !== null);
   const poly = (loop: [Term, Term][]) => `Polygon(${loop.map(([u, v]) => `(${emit(u)}, ${emit(v)})`).join(', ')}, align=None)`;
   const sketch = inners.length > 0 ? `(${[poly(outline), ...inners.map(poly)].join(' - ')})` : poly(outline);
@@ -139,25 +165,33 @@ export function holeExpr(
   comp: Component,
   ex: Term,
   ey: Term,
-  ez: Term
+  ez: Term,
+  ctx: TermContext = STANDALONE_CONTEXT
 ): string | null {
   if (!(hole.d > 0) || !hole.at || hole.at.length < 3) return null;
   const he = comp.expr?.holes?.[index];
-  const d = fieldTerm(he?.d, hole.d);
+  const d = ctx.term(he?.d, hole.d);
   const at: [Term, Term, Term] = [
-    fieldTerm(he?.at?.[0], hole.at[0]),
-    fieldTerm(he?.at?.[1], hole.at[1]),
-    fieldTerm(he?.at?.[2], hole.at[2]),
+    ctx.term(he?.at?.[0], hole.at[0]),
+    ctx.term(he?.at?.[1], hole.at[1]),
+    ctx.term(he?.at?.[2], hole.at[2]),
   ];
   const axis = hole.axis;
   const ext = comp.localExtents;
   const extentNum = ext && ext.length >= 3 ? ext[axis === 'x' ? 0 : axis === 'y' ? 1 : 2] : 0;
   const extent = axis === 'x' ? ex : axis === 'y' ? ey : ez;
-  const along = hole.at[axis === 'x' ? 0 : axis === 'y' ? 1 : 2];
+  const alongIndex = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
+  const along = hole.at[alongIndex];
   const fromMin = Math.abs(along) <= Math.abs(along - extentNum);
   const through = hole.depth === undefined;
-  const depth: Term = hole.depth === undefined ? 0 : fieldTerm(he?.depth, hole.depth);
-  const start: Term = through || fromMin ? -OVERSHOOT : sub(extent, depth);
+  const depth: Term = hole.depth === undefined ? 0 : ctx.term(he?.depth, hole.depth);
+  let start: Term = through || fromMin ? -OVERSHOOT : sub(extent, depth);
+  if (!through && [at[alongIndex], extent, depth].some((t) => typeof t === 'string')) {
+    // The mouth is on the nearer face. With a parameter in play that choice is made when the
+    // script runs, so moving the hole past the midpoint moves the cutter to the other face.
+    const a = at[alongIndex];
+    start = `(${emit(-OVERSHOOT)} if abs(${emit(a)}) <= abs(${emit(sub(a, extent))}) else ${emit(sub(extent, depth))})`;
+  }
   const height: Term = through ? add(extent, OVERSHOOT * 2) : add(depth, OVERSHOOT);
   return cylinderAt(axis, at, start, div(d, 2), height);
 }
@@ -167,10 +201,10 @@ function crossDiameter(axis: Axis, ex: Term, ey: Term): Term {
 }
 
 /** The loop as terms (expression where the spec kept one), closing vertex dropped, wound as asked. */
-function loopTerms(points: number[][] | undefined, exprs: (string | null)[][] | undefined, ccw: boolean): [Term, Term][] | null {
+function loopTerms(points: number[][] | undefined, exprs: (string | null)[][] | undefined, ccw: boolean, ctx: TermContext): [Term, Term][] | null {
   const loop = loopOf(points);
   if (!loop) return null;
-  const terms: [Term, Term][] = loop.map((p, i) => [fieldTerm(exprs?.[i]?.[0], p[0]), fieldTerm(exprs?.[i]?.[1], p[1])]);
+  const terms: [Term, Term][] = loop.map((p, i) => [ctx.term(exprs?.[i]?.[0], p[0]), ctx.term(exprs?.[i]?.[1], p[1])]);
   return signedArea(loop) > 0 === ccw ? terms : terms.reverse();
 }
 
@@ -203,13 +237,15 @@ export function fmt(value: number): string {
   return text === '-0' ? '0' : text;
 }
 
-export function fieldTerm(expr: string | null | undefined, value: number): Term {
-  return expr ? expr : value;
-}
-
-export function extentTerms(comp: Component, ex: number, ey: number, ez: number): [Term, Term, Term] {
+export function extentTerms(
+  comp: Component,
+  ex: number,
+  ey: number,
+  ez: number,
+  ctx: TermContext = STANDALONE_CONTEXT
+): [Term, Term, Term] {
   const e = comp.expr?.localExtents;
-  return [fieldTerm(e?.[0], ex), fieldTerm(e?.[1], ey), fieldTerm(e?.[2], ez)];
+  return [ctx.term(e?.[0], ex), ctx.term(e?.[1], ey), ctx.term(e?.[2], ez)];
 }
 
 /** An expression nested in a larger one is parenthesised; a literal formats plainly. */
