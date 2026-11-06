@@ -1,6 +1,6 @@
 import type { AssemblySpec } from './assembly-spec';
 import { resolveSpec } from './spec-expr';
-import { impliedEnvelope, markCodeDerivedBox } from './spec-coherence';
+import { impliedEnvelope } from './spec-coherence';
 import { identifierIssue } from '../spec-sheet/blockout-scad';
 
 
@@ -195,27 +195,21 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
   // a second place to get arithmetic wrong. Code derives it from impliedEnvelope when it can be computed
   // (literal specs included), falling back to the declared box, else zeros.
   // M1: When resolution has errors, fall back to the box implied by the partly resolved components
-  // (never 0x0x0 if any component has extents), and tag the box as code-derived.
+  // (never 0x0x0 if any component has extents).
   let boundingBox: { width: number; length: number; height: number };
   if (resolved.errors.length === 0) {
     const envelope = impliedEnvelope({ ...spec, components: normalizedComponents });
-    if (envelope) {
-      boundingBox = markCodeDerivedBox({ width: envelope.size[0], length: envelope.size[1], height: envelope.size[2] });
-    } else {
-      boundingBox = spec.boundingBox
-        ? spec.boundingBox
-        : markCodeDerivedBox({ width: 0, length: 0, height: 0 });
-    }
+    boundingBox = envelope
+      ? { width: envelope.size[0], length: envelope.size[1], height: envelope.size[2] }
+      : (spec.boundingBox ?? { width: 0, length: 0, height: 0 });
   } else {
     if (spec.boundingBox) {
       boundingBox = spec.boundingBox;
     } else {
       const partialEnvelope = impliedEnvelope({ ...spec, components: normalizedComponents });
-      boundingBox = markCodeDerivedBox(
-        partialEnvelope
-          ? { width: partialEnvelope.size[0], length: partialEnvelope.size[1], height: partialEnvelope.size[2] }
-          : { width: 0, length: 0, height: 0 }
-      );
+      boundingBox = partialEnvelope
+        ? { width: partialEnvelope.size[0], length: partialEnvelope.size[1], height: partialEnvelope.size[2] }
+        : { width: 0, length: 0, height: 0 };
     }
   }
 

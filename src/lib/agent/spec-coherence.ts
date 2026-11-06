@@ -1,38 +1,16 @@
 import type { AssemblySpec } from './assembly-spec';
 import type { SpecViolation } from './spec-audit';
 import { resolveSpec } from './spec-expr';
-import { auditSpecParameters } from './spec-param-lint';
 import { FRAME_EPS, placedBounds, Vec3 } from '../design/placement-geometry';
 
 export { auditSpecParameters } from './spec-param-lint';
-
-/** Marker attached to code-derived bounding boxes so coherence auditing skips comparing them against itself. */
-export const CODE_DERIVED_BOX = Symbol.for('cadai.codeDerivedBox');
-
-const codeDerivedBoxes = new WeakSet<object>();
-
-export function markCodeDerivedBox<T extends object>(box: T): T {
-  codeDerivedBoxes.add(box);
-  try {
-    Object.defineProperty(box, CODE_DERIVED_BOX, { value: true, enumerable: false, configurable: true });
-  } catch {
-    // ignore non-extensible
-  }
-  return box;
-}
-
-export function isCodeDerivedBox(box?: object | null): boolean {
-  if (!box) return false;
-  return codeDerivedBoxes.has(box) || Boolean((box as Record<string | symbol, unknown>)[CODE_DERIVED_BOX]);
-}
 
 /**
  * Spec-internal coherence: does the Architect's JSON agree with itself?
  *
  * Checks that all expressions resolve cleanly and that any declared bounding box
  * (for un-normalized inputs or fixtures) matches the envelope implied by the
- * component placements and local extents. Code-derived bounding boxes (normalized
- * specs) skip the declared-vs-implied comparison.
+ * component placements and local extents.
  *
  * Pure arithmetic: no compile, no geometry, no model call.
  */
@@ -127,19 +105,12 @@ export function auditSpecCoherence(rawSpec: AssemblySpec | null): SpecViolation[
         message: `A spec expression does not resolve: ${error}. Declare the name in parameters/derived, or use a number.`,
       });
     }
-    // When called from outside validateCode and outside architectNode (e.g. acceptance tests calling auditSpecCoherence directly),
-    // include auditSpecParameters.
-    const stack = new Error().stack;
-    if (!stack?.includes('validateCode') && !stack?.includes('architectNode')) {
-      violations.push(...auditSpecParameters(rawSpec));
-    }
   }
   const implied = impliedEnvelope(spec);
   if (!spec || !implied) return violations;
 
   const declared = spec.boundingBox;
-  const isCodeDerived = isCodeDerivedBox(declared) || isCodeDerivedBox(rawSpec?.boundingBox);
-  if (declared && !isCodeDerived) {
+  if (declared) {
     for (const { key, index, label } of AXES) {
       const stated = declared[key];
       if (typeof stated !== 'number' || !Number.isFinite(stated)) continue;

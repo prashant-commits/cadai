@@ -427,3 +427,61 @@ describe('Normalization idempotency', () => {
     expect(twice.components).toEqual(once.components);
   });
 });
+
+describe('L6: Profile pass skipped on resolution errors', () => {
+  it('does not shift profile points or override localExtents when expression resolution has errors', () => {
+    const rawSpec = {
+      ...base,
+      components: [
+        {
+          name: 'wedge',
+          description: '',
+          localExtents: ['unresolvable_expr + 1', 10, 20],
+          position: [0, 0, 0],
+          shape: {
+            kind: 'profile',
+            plane: 'xz',
+            points: [
+              [5, 2],
+              [45, 2],
+              [5, 22],
+            ],
+          },
+        },
+      ],
+    } as unknown as AssemblySpec;
+
+    const normalized = normalizeSpec(rawSpec);
+    const comp = normalized.components![0];
+
+    // Profile pass was skipped: points were not shifted to origin
+    expect(comp.shape?.points).toEqual([
+      [5, 2],
+      [45, 2],
+      [5, 22],
+    ]);
+  });
+});
+
+describe('M2 & N1: auditSpecCoherence never returns parameters.* violations', () => {
+  it('does not include dead parameter violations in auditSpecCoherence', () => {
+    const spec = {
+      ...base,
+      parameters: [param('unused_w', 40), param('unused_h', 20)],
+      components: [
+        {
+          name: 'c',
+          description: '',
+          localExtents: [10, 10, 10],
+          position: [0, 0, 0],
+        },
+      ],
+    } as unknown as AssemblySpec;
+
+    const coherence = auditSpecCoherence(spec);
+    expect(coherence.filter((v) => v.field.startsWith('parameters.'))).toEqual([]);
+
+    const paramAudit = auditSpecParameters(spec);
+    expect(paramAudit.map((v) => v.field)).toEqual(['parameters.unused_w', 'parameters.unused_h']);
+  });
+});

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AssemblySpecSchema, assemblySpecRequestSchema, type AssemblySpec } from './assembly-spec';
 import { normalizeSpec } from './spec-normalize';
-import { auditSpecCoherence } from './spec-coherence';
+import { auditSpecCoherence, auditSpecParameters } from './spec-coherence';
 import { auditSpecShapes } from './spec-shape-audit';
 
 // Council 2026-11-06, items 2 and 5: code owns the bounding box and the profile
@@ -62,16 +62,25 @@ describe('dead-parameter lint at the spec stage', () => {
       derived: [{ name: 'w2', expr: 'w * 2' }, { name: 'rise', expr: 'lean * 2' }],
       components: [comp(['w2', 't', 10])],
     } as unknown as AssemblySpec;
-    const dead = auditSpecCoherence(spec).filter((v) => v.field.startsWith('parameters.'));
+    const dead = auditSpecParameters(spec).filter((v) => v.field.startsWith('parameters.'));
     expect(dead.map((v) => v.field)).toEqual(['parameters.lean']);
     expect(dead[0].severity).toBe('error');
     expect(dead[0].message).toMatch(/lean/);
   });
 
   it('is silent for a literal spec and for parameters used only via derived', () => {
-    expect(auditSpecCoherence({ ...base, components: [comp([1, 2, 3])] } as unknown as AssemblySpec)
+    expect(auditSpecParameters({ ...base, components: [comp([1, 2, 3])] } as unknown as AssemblySpec)
       .filter((v) => v.field.startsWith('parameters.'))).toEqual([]);
     const spec = { ...base, parameters: [param('w', 4)], derived: [{ name: 'h', expr: 'w + 1' }], components: [comp(['h', 1, 1])] } as unknown as AssemblySpec;
+    expect(auditSpecParameters(spec).filter((v) => v.field.startsWith('parameters.'))).toEqual([]);
+  });
+
+  it('never returns parameters.* violations from auditSpecCoherence', () => {
+    const spec = {
+      ...base,
+      parameters: [param('w', 40), param('lean', 15)],
+      components: [comp([40, 10, 10])],
+    } as unknown as AssemblySpec;
     expect(auditSpecCoherence(spec).filter((v) => v.field.startsWith('parameters.'))).toEqual([]);
   });
 });
