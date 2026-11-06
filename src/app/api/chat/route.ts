@@ -8,6 +8,7 @@ import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/trac
 import { DesignContract } from '@/types';
 import { coerceRouteModel } from '@/lib/agent/models';
 import { graphRecursionLimit, describeGraphError } from '@/lib/agent/run-limits';
+import { badRequest, errorBody, toApiError } from '@/lib/contract/api-error';
 import { randomUUID } from 'crypto';
 
 export const runtime = 'nodejs';
@@ -25,7 +26,7 @@ export async function POST(req: NextRequest) {
     };
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
-      return new Response(JSON.stringify({ error: 'Messages array is required.' }), {
+      return new Response(JSON.stringify(errorBody(badRequest('Messages array is required.'))), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -113,7 +114,11 @@ export async function POST(req: NextRequest) {
         // Must not throw: getCheckpointer() used to re-throw here on Vercel
         // (read-only cwd), which skipped sendEvent and closed an empty stream.
         await deleteRunCheckpoint(checkpointKey);
-        await sendEvent({ t: 'error', message: describeGraphError(err, 'Agent execution failed') });
+        await sendEvent({
+          t: 'error',
+          message: describeGraphError(err, 'Agent execution failed'),
+          apiError: toApiError(err),
+        });
       } finally {
         // Langfuse batches spans and ships them on a timer. This IIFE is
         // detached from a request whose Response already returned, so nothing
@@ -145,9 +150,10 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return new Response(JSON.stringify({ error: message }), {
-      status: 500,
+    const body = errorBody(err);
+    const status = body.apiError.code === 'bad_request' ? 400 : 500;
+    return new Response(JSON.stringify(body), {
+      status,
       headers: { 'Content-Type': 'application/json' },
     });
   }

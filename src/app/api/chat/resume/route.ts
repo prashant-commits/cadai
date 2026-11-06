@@ -8,6 +8,7 @@ import { Command } from '@langchain/langgraph';
 import { GateDecision } from '@/types';
 import { coerceRouteModel } from '@/lib/agent/models';
 import { graphRecursionLimit, describeGraphError } from '@/lib/agent/run-limits';
+import { badRequest, errorBody, runExpired, toApiError } from '@/lib/contract/api-error';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -24,7 +25,7 @@ export async function POST(req: NextRequest) {
     };
 
     if (!threadId) {
-      return new Response(JSON.stringify({ error: 'Thread ID is required.' }), {
+      return new Response(JSON.stringify(errorBody(badRequest('Thread ID is required.'))), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -33,7 +34,7 @@ export async function POST(req: NextRequest) {
     // Without the runId there is no way to name the paused checkpoint, and
     // resuming the wrong one would silently continue a different run.
     if (!runId) {
-      return new Response(JSON.stringify({ error: 'Run ID is required to resume a gated run.' }), {
+      return new Response(JSON.stringify(errorBody(badRequest('Run ID is required to resume a gated run.'))), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -77,10 +78,12 @@ export async function POST(req: NextRequest) {
     // show an approved gate and a blank result. Say so instead.
     const paused = await getCheckpointer().getTuple({ configurable: { thread_id: checkpointKey } });
     if (!paused) {
+      const expired = 'This paused run expired or was not found on this server. Send the request again.';
       return new Response(
         `data: ${JSON.stringify({
           t: 'error',
-          message: 'This paused run expired or was not found on this server. Send the request again.',
+          message: expired,
+          apiError: toApiError(runExpired(expired)),
         } satisfies StreamEvent)}
 
 `,
@@ -129,7 +132,11 @@ export async function POST(req: NextRequest) {
         if (!sawGate) await deleteRunCheckpoint(checkpointKey);
       } catch (err: unknown) {
         await deleteRunCheckpoint(checkpointKey);
-        await sendEvent({ t: 'error', message: describeGraphError(err, 'Agent resume failed') });
+        await sendEvent({
+          t: 'error',
+          message: describeGraphError(err, 'Agent resume failed'),
+          apiError: toApiError(err),
+        });
       } finally {
         // See the matching comment in ../route.ts: the detached IIFE outlives
         // the returned Response, so the span queue must be drained explicitly
@@ -154,9 +161,10 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return new Response(JSON.stringify({ error: message }), {
-      status: 500,
+    const body = errorBody(err);
+    const status = body.apiError.code === 'bad_request' ? 400 : 500;
+    return new Response(JSON.stringify(body), {
+      status,
       headers: { 'Content-Type': 'application/json' },
     });
   }

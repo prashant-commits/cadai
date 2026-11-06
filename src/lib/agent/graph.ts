@@ -625,6 +625,18 @@ function write(
   config?.writer?.({ ...safe, node });
 }
 
+/** Tells the stream bridge a self-check is starting another attempt. The reason is one line and never a raw provider payload. */
+function writeRetry(
+  config: LangGraphRunnableConfig | undefined,
+  step: string,
+  attempt: number,
+  maxAttempts: number,
+  reason: string,
+): void {
+  const line = reason.split('\n').map((part) => part.trim()).find(Boolean) ?? 'retrying';
+  write(config, step, { t: 'retry', step, attempt, maxAttempts, reason: line.length > 200 ? `${line.slice(0, 197)}...` : line });
+}
+
 /**
  * Creates the CAD AI LangGraph agent graph with tool-calling capabilities.
  */
@@ -752,6 +764,7 @@ export function createCadAgent(
     // The parsed candidate with the fewest self-check errors so far. A later attempt that
     // fails schema or provider must not cost the variant a spec that already parsed.
     let best: { candidate: AssemblySpec; errors: SpecViolation[] } | null = null;
+    let retryReason: string | null = null;
 
     // THREE attempts, not two. Decoder degeneration is per-attempt and
     // independent, so retries compound: at the ~0.8 per-attempt success rate
@@ -765,6 +778,10 @@ export function createCadAgent(
         outOfTime = true;
         break;
       }
+      if (attempt > 0 && retryReason) {
+        writeRetry(config, 'architectNode', attempt + 1, MAX_ARCHITECT_ATTEMPTS, retryReason);
+      }
+      retryReason = null;
       const retryPrompt = (unchangedFeedback
         ? `Your revision did not change the geometry. You must change it to resolve: ${majorIssues.join('; ') || 'the required changes'}`
         : coherenceFeedback
@@ -795,6 +812,7 @@ export function createCadAgent(
             if (attempt < MAX_ARCHITECT_ATTEMPTS - 1) {
               unchangedFeedback = true;
               coherenceFeedback = null;
+              retryReason = 'revision did not change the geometry';
               console.warn(`architectNode: revision of variant ${variant.id} did not change the geometry (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS})`);
               continue;
             }
@@ -816,6 +834,7 @@ export function createCadAgent(
           if (incoherent.length > 0 && attempt < MAX_ARCHITECT_ATTEMPTS - 1) {
             if (best === null || incoherent.length < best.errors.length) best = { candidate, errors: incoherent };
             rawLastError = incoherent.map((v) => v.message).join(' ');
+            retryReason = incoherent[0]?.message || 'spec is self-inconsistent';
             console.warn(
               `architectNode: spec is self-inconsistent (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}):`,
               rawLastError
@@ -837,10 +856,12 @@ export function createCadAgent(
             `architectNode: variant ${variant.id} spec rejected (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}):`,
             rawLastError
           );
+          retryReason = 'Spec failed validation';
         }
       } catch (e: unknown) {
         hadProviderError = true;
         rawLastError = e instanceof Error ? e.message : String(e);
+        retryReason = 'provider error';
         // The raw provider error goes to the log ONLY. It was being sliced into
         // the UI, which is how a provider's 400 payload ended up rendered as the
         // agent's own output.
@@ -987,6 +1008,7 @@ export function createCadAgent(
       // reaching the review gate with no spec at all and three leave under 1%.
       // Two attempts is what let a real run surface an empty approval card.
       let plannerOutOfTime = false;
+      let plannerRetry: string | null = null;
       for (let attempt = 0; attempt < MAX_ARCHITECT_ATTEMPTS && !plan; attempt++) {
         // No billed call that cannot finish: stop when the hard limit has no room left.
         const left = remainingCallMs(runDeadline);
@@ -994,6 +1016,10 @@ export function createCadAgent(
           plannerOutOfTime = true;
           break;
         }
+        if (attempt > 0 && plannerRetry) {
+          writeRetry(config, 'architectNode', attempt + 1, MAX_ARCHITECT_ATTEMPTS, plannerRetry);
+        }
+        plannerRetry = null;
         const attemptMessages = attempt === 0
           ? plannerMessages
           : [
@@ -1011,12 +1037,14 @@ export function createCadAgent(
             if (plan.brief) write(config, 'architectNode', { t: 'delta', text: `${plan.brief}
 ` });
           } else {
+            plannerRetry = 'plan was not usable';
             console.warn(
               `architectNode: planner attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS} unusable:`,
               parsedPlan.success ? 'response missing variants' : parsedPlan.error.message
             );
           }
         } catch (e: unknown) {
+          plannerRetry = 'provider error';
           // The raw provider error goes to the log ONLY. It was being sliced into
           // the UI, which is how a provider's 400 payload ended up rendered as the
           // agent's own output.

@@ -22,6 +22,29 @@ afterEach(() => {
 const call = (body: unknown) =>
   POST(new NextRequest('http://localhost/api/chat', { method: 'POST', body: JSON.stringify(body) }));
 
+describe('POST /api/chat errors', () => {
+  it('returns ErrorBody when the messages array is missing', async () => {
+    const res = await call({ threadId: 't-test' });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('Messages array is required.');
+    expect(data.apiError).toEqual({ code: 'bad_request', message: 'Messages array is required.' });
+  });
+
+  it('keeps the SSE error message and adds apiError when the model is overloaded', async () => {
+    createAgent.mockReturnValue({
+      stream: async () => (async function* () {
+        throw Object.assign(new Error('529 overloaded_error'), { status: 529 });
+      })(),
+    });
+    const res = await call({ threadId: 't-test', messages: [{ role: 'user', content: 'hi' }] });
+    const events = (await res.text()).split('\n\n').filter(Boolean).map((line) => JSON.parse(line.replace(/^data: /, '')));
+    const error = events.find((event: { t?: string }) => event.t === 'error');
+    expect(error.message).toBe('Agent execution failed; see server logs.');
+    expect(error.apiError).toMatchObject({ code: 'model_unavailable', retryable: true });
+  });
+});
+
 describe('POST /api/chat model coercion', () => {
   it('coerces retired gateway slug to DEFAULT_MODEL', async () => {
     const res = await call({

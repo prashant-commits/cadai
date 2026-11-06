@@ -28,13 +28,36 @@ const call = (body: unknown) =>
   POST(new NextRequest('http://localhost/api/chat/resume', { method: 'POST', body: JSON.stringify(body) }));
 
 describe('POST /api/chat/resume', () => {
+  it('returns ErrorBody when the thread id is missing', async () => {
+    const res = await call({ runId: 'r-1', decision: { action: 'approve' } });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('Thread ID is required.');
+    expect(data.apiError).toEqual({ code: 'bad_request', message: 'Thread ID is required.' });
+  });
+
+  it('returns ErrorBody when the run id is missing', async () => {
+    const res = await call({ threadId: 't-1', decision: { action: 'approve' } });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('Run ID is required to resume a gated run.');
+    expect(data.apiError).toEqual({ code: 'bad_request', message: 'Run ID is required to resume a gated run.' });
+  });
+
   it('an expired / missing checkpoint gets a clear error event and never touches the graph', async () => {
     createAgent.mockClear();
     const res = await call({ threadId: 't-gone', runId: 'r-gone', decision: { action: 'approve' } });
     const text = await res.text();
     const events = text.split('\n\n').filter(Boolean).map((l) => JSON.parse(l.replace(/^data: /, '')));
     expect(events).toEqual([
-      { t: 'error', message: 'This paused run expired or was not found on this server. Send the request again.' },
+      {
+        t: 'error',
+        message: 'This paused run expired or was not found on this server. Send the request again.',
+        apiError: {
+          code: 'run_expired',
+          message: 'This paused run expired or was not found on this server. Send the request again.',
+        },
+      },
     ]);
     expect(createAgent).not.toHaveBeenCalled();
   });
