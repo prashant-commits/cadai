@@ -43,7 +43,7 @@ describe('literal profile outline with parametric extents', () => {
     expect(normalizeSpec(once).components![0].shape!.points).toEqual(once.components![0].shape!.points);
   });
 
-  it('Item 1: scales expressed inner outline coordinates and rewrites expressions to match numbers', () => {
+  it('Item 1: shifts expressed inner outline coordinates and rewrites expressions without scaling', () => {
     // Grok 1 failure scenario: xz profile 50x20, localExtents ['w', 'd', 'h'] with w=40 (scale 0.8 on x).
     // Inner outline with 'hx' = 25 on x axis.
     const spec = {
@@ -61,11 +61,11 @@ describe('literal profile outline with parametric extents', () => {
 
     const n = normalizeSpec(spec);
     const c = n.components![0];
-    // Numbers: 25 * 0.8 = 20, 35 * 0.8 = 28
-    expect(c.shape!.holes![0][0]).toEqual([20, 5]);
+    // Expressed vertex: hx = 25 shifts by min 0 -> 25; literal vertex 35 scales by 0.8 -> 28
+    expect(c.shape!.holes![0][0]).toEqual([25, 5]);
     expect(c.shape!.holes![0][1]).toEqual([28, 5]);
-    // Expressions: rewritten to ((term) - min) * k -> (hx) * 0.8
-    expect(c.expr?.outlineHoles?.[0][0][0]).toBe('(hx) * 0.8');
+    // Expression kept unscaled
+    expect(c.expr?.outlineHoles?.[0][0][0]).toBe('hx');
 
     // Re-resolve reproduces normalized numbers (resolve-stable)
     const r = resolveSpec(n);
@@ -77,7 +77,7 @@ describe('literal profile outline with parametric extents', () => {
     expect(n2.components![0].shape!.holes).toEqual(c.shape!.holes);
   });
 
-  it('Item 2: scales component holes[].at expressions on a scaled axis', () => {
+  it('Item 2: shifts component holes[].at expressions with the re-origin without scaling', () => {
     // Grok 2 failure scenario: xz profile 40x20, origin at (5, 2), extents [40, 10, 80] (scale 4 on z).
     // Hole at [12, 0, 'hz'] with hz = 12.
     const spec = {
@@ -94,19 +94,19 @@ describe('literal profile outline with parametric extents', () => {
     const c = n.components![0];
     // Outline became [[0, 0], [40, 0], [0, 80]]
     expect(c.shape!.points).toEqual([[0, 0], [40, 0], [0, 80]]);
-    // Hole: x shifted (12 - 5 = 7), z scaled ((12 - 2) * 4 = 40)
-    expect(c.holes![0].at).toEqual([7, 0, 40]);
-    // Hole expr rewritten to ((hz) - 2) * 4
-    expect(c.expr?.holes?.[0].at).toEqual([null, null, '((hz) - 2) * 4']);
+    // Hole: x shifted (12 - 5 = 7), z shifted only ((12 - 2) = 10, not scaled to 40)
+    expect(c.holes![0].at).toEqual([7, 0, 10]);
+    // Hole expr rewritten to shift only: (hz) - 2
+    expect(c.expr?.holes?.[0].at).toEqual([null, null, '(hz) - 2']);
 
     // Re-resolve reproduces the hole position
     const r = resolveSpec(n);
     expect(r.errors).toEqual([]);
-    expect(r.spec.components![0].holes![0].at).toEqual([7, 0, 40]);
+    expect(r.spec.components![0].holes![0].at).toEqual([7, 0, 10]);
 
     // Second normalize is identical
     const n2 = normalizeSpec(n);
-    expect(n2.components![0].holes![0].at).toEqual([7, 0, 40]);
+    expect(n2.components![0].holes![0].at).toEqual([7, 0, 10]);
   });
 
   it('Item 3: divides by unrounded span for 33.333 and 1.004 cases', () => {
@@ -243,5 +243,110 @@ describe('literal profile outline with parametric extents', () => {
     // 75 on 150 span scaled to 200: 75 * (200 / 150) = 100
     // 2.5 on 150 span scaled to 100: 2.5 * (100 / 150) = 1.67
     expect(c.holes![0].at).toEqual([10, 100, 1.67]);
+  });
+
+  it('N1: hole written relative to part size stays at correct position when parameter moves', () => {
+    // L bracket drawn at arm_len=150, bump to 166 -> hole at arm_len - 10 lands at 156 and arm_len / 2 at 83
+    const specL = {
+      sheet: '', assemblyName: 'l_bracket', assumptions: [], openQuestions: [],
+      parameters: [param('width', 20), param('arm_len', 166), param('plate_len', 150)],
+      components: [{
+        name: 'l_bracket', description: '', localExtents: ['width', 'arm_len', 'plate_len'], position: [0, 0, 0],
+        shape: { kind: 'profile', plane: 'yz', points: [[0, 0], [150, 0], [150, 5], [5, 5], [5, 150], [0, 150]] },
+        holes: [
+          { d: 4, at: [10, 'arm_len - 10', 2.5], axis: 'z' },
+          { d: 4, at: [10, 'arm_len / 2', 2.5], axis: 'z' },
+        ],
+      }],
+    } as unknown as AssemblySpec;
+
+    const n = normalizeSpec(specL);
+    const c = n.components![0];
+    expect(c.holes![0].at).toEqual([10, 156, 2.5]);
+    expect(c.holes![1].at).toEqual([10, 83, 2.5]);
+    expect(c.expr?.holes?.[0].at).toEqual([null, 'arm_len - 10', null]);
+    expect(c.expr?.holes?.[1].at).toEqual([null, 'arm_len / 2', null]);
+
+    // Slot w - 20 .. w - 10 on a plate drawn at 100 lands at 180..190 when w = 200
+    const specSlot = {
+      sheet: '', assemblyName: 'slot_plate', assumptions: [], openQuestions: [],
+      parameters: [param('w', 200), param('d', 10), param('h', 50)],
+      components: [{
+        name: 'plate', description: '', localExtents: ['w', 'd', 'h'], position: [0, 0, 0],
+        shape: {
+          kind: 'profile', plane: 'xz',
+          points: [[0, 0], [100, 0], [100, 50], [0, 50]],
+          holes: [[['w - 20', 10], ['w - 10', 10], ['w - 10', 20], ['w - 20', 20]]],
+        },
+      }],
+    } as unknown as AssemblySpec;
+
+    const nSlot = normalizeSpec(specSlot);
+    const cSlot = nSlot.components![0];
+    expect(cSlot.shape!.holes![0][0]).toEqual([180, 10]);
+    expect(cSlot.shape!.holes![0][1]).toEqual([190, 10]);
+    expect(cSlot.shape!.holes![0][2]).toEqual([190, 20]);
+    expect(cSlot.shape!.holes![0][3]).toEqual([180, 20]);
+  });
+
+  it('N2: repeated normalize passes leave expression strings unchanged', () => {
+    const s = {
+      sheet: '', assemblyName: 'repeated_passes', assumptions: [], openQuestions: [],
+      parameters: [param('width', 20), param('a', 100), param('plate_len', 150), param('hy', 75)],
+      components: [{
+        name: 'part', description: '', localExtents: ['width', 'a / 3', 'plate_len'], position: [0, 0, 0],
+        shape: {
+          kind: 'profile', plane: 'yz',
+          points: [[0, 0], [150, 0], [150, 5], [5, 5], [5, 150], [0, 150]],
+          holes: [[[1, 'hy'], [4, 'hy'], [4, 100], [1, 100]]],
+        },
+        holes: [{ d: 4, at: [10, 'hy', 2.5], axis: 'z' }],
+      }],
+    } as unknown as AssemblySpec;
+
+    let cur = normalizeSpec(s);
+    const initialHoleExpr = cur.components![0].expr?.holes?.[0]?.at?.[1];
+    const initialSlotExpr = cur.components![0].expr?.outlineHoles?.[0]?.[0]?.[1];
+    for (let pass = 2; pass <= 8; pass++) {
+      cur = normalizeSpec(cur);
+      const c = cur.components![0];
+      expect(c.expr?.holes?.[0]?.at?.[1]).toBe(initialHoleExpr);
+      expect(c.expr?.outlineHoles?.[0]?.[0]?.[1]).toBe(initialSlotExpr);
+    }
+  });
+
+  it('N3: shifts expressions and numbers by the exact same min', () => {
+    // min 2.005 on z, hole z = hz = 12
+    const spec = {
+      sheet: '', assemblyName: 'min_test', assumptions: [], openQuestions: [],
+      parameters: [param('w', 40), param('d', 10), param('h', 80), param('hz', 12)],
+      components: [{
+        name: 'part', description: '', localExtents: ['w', 'd', 'h'], position: [0, 0, 0],
+        shape: { kind: 'profile', plane: 'xz', points: [[5, 2.005], [45, 2.005], [5, 22.005]] },
+        holes: [{ d: 4, at: [12, 0, 'hz'], axis: 'y' }],
+      }],
+    } as unknown as AssemblySpec;
+
+    const n = normalizeSpec(spec);
+    const c = n.components![0];
+    expect(c.holes![0].at).toEqual([7, 0, 10]);
+    expect(c.expr?.holes?.[0].at).toEqual([null, null, '(hz) - 2.005']);
+  });
+
+  it('N4: unscaled, unshifted profile keeps unrounded hole numbers', () => {
+    const spec = {
+      sheet: '', assemblyName: 'unshifted', assumptions: [], openQuestions: [],
+      parameters: [param('a', 100)],
+      components: [{
+        name: 'part', description: '', localExtents: [20, 150, 150], position: [0, 0, 0],
+        shape: { kind: 'profile', plane: 'yz', points: [[0, 0], [150, 0], [150, 5], [5, 5], [5, 150], [0, 150]] },
+        holes: [{ d: 4, at: [10, 'a / 3', 2.5], axis: 'z' }],
+      }],
+    } as unknown as AssemblySpec;
+
+    const n = normalizeSpec(spec);
+    const c = n.components![0];
+    // a / 3 = 33.333333333333336, left untouched because profile did not move
+    expect(c.holes![0].at[1]).toBeCloseTo(100 / 3, 10);
   });
 });
