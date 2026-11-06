@@ -20,34 +20,38 @@ Run a script. It must assign `result`. One JSON line is printed, and the same ob
 geo/.venv/bin/python -I -m cadai_geo path/to/model.py path/to/outdir
 ```
 
-Start the HTTP service on a developer machine (this uid cannot `setuid`, so the uid split is not active here):
+Local dev for the Next.js app. This starts the service on `127.0.0.1:8765`. The first boot imports build123d once in a helper process; later runs fork that process instead of importing again. `npm run geo:serve` writes `${TMPDIR:-/tmp}/cadai-geo-dev-token` (mode `0400`, contents `dev`) and sets `CADAI_GEO_TOKEN_FILE` for the service process.
 
 ```bash
-export CADAI_GEO_TOKEN=dev-token
-export PORT=8000
-geo/.venv/bin/uvicorn cadai_geo.service:app --host 127.0.0.1 --port "$PORT"
-```
-
-Prefer a file for the token, including locally, so it is not sitting in the process environment:
-
-```bash
-install -m 0400 /dev/stdin "$HOME/geo-token" <<< "$CADAI_GEO_TOKEN"
 unset CADAI_GEO_TOKEN
-export CADAI_GEO_TOKEN_FILE="$HOME/geo-token"
+npm run geo:serve
 ```
+
+The service refuses to start if `CADAI_GEO_TOKEN` is set in its environment. That variable is not a token source: deleting it from `os.environ` leaves the bytes in `/proc/<pid>/environ`.
+
+In the Next.js app's environment (a different process from the service):
+
+```bash
+export CADAI_GEO_URL=http://127.0.0.1:8765
+export CADAI_GEO_TOKEN=dev
+```
+
+This uid cannot `setuid`, so the uid split is not active outside the container. The one-shot CLI above does not use the helper and does not apply the two-stage split; it is for local scripts, not untrusted ones.
 
 `POST /run` takes `{"script": "...", "timeout_s": 60}` and the header `x-cadai-geo-token`. `timeout_s` is clamped to 1..120 and defaults to 60. The response is the runner JSON with `stl` and `step` replaced by base64. A timeout returns `{"ok": false, "error": "timeout"}`. A bad token returns 401. A script larger than 256 KB returns 413. `GET /healthz` has no auth and returns `{"ok": true}`.
 
 ## What the code enforces
 
-- The service ignores the child's stdout. It reads only `<outdir>/result.json`, which the runner writes after the script returns. Printed JSON cannot change `ok` or `parts`.
-- `stl` and `step` are loaded only from `<outdir>/model.stl` and `<outdir>/model.step` when they are regular files inside that directory. Symlinks are rejected, so a path such as `/etc/hostname` in the JSON is not opened.
-- Child environment is `PATH`, `HOME` (the request temp directory), and a one-thread cap for OpenBLAS, OpenMP, MKL, NUMEXPR, and VECLIB. That cap keeps `RLIMIT_NPROC` 64 usable on a many-core host. `CADAI_GEO_TOKEN` is removed from the service environment after it is read. It is never passed to the child.
-- As root, each run drops to the `georun` user (`setgroups([])`, `setgid`, `setuid`) before exec. `georun` cannot read `/proc/<service-pid>/environ` or a `0400` token file owned by the service user.
+- The token is file-only (`CADAI_GEO_TOKEN_FILE`, mode `0400`, owned by the service user). The process exits at startup if `CADAI_GEO_TOKEN` is set. The environment value is not read and is not scrubbed out of `/proc`.
+- A run has two stages. The untrusted stage (the script) may only write BREP into a scratch directory. A second child, with the same rlimits and uid drop, loads those BREP files, measures them, and writes `<outdir>/result.json`, `model.step`, and `model.stl`. The script is not given the outdir (it is a different directory, mode `0700`, owned by the service uid until the untrusted process group is gone). Printed JSON, a forged `result.json`, and a copy of another file cannot change `ok`, `parts`, or the exports. Bytes that are not a BREP fail the run. A BREP the script wrote is measured as geometry.
+- `stl` and `step` are loaded only from `<outdir>/model.stl` and `<outdir>/model.step` when they are regular files inside that directory. Symlinks are rejected.
+- At boot the service execs a zygote with an empty environment. The zygote imports build123d once and holds no token and no token-file path. Each run forks a supervisor; the service kills that process group on timeout. If the zygote dies, the next request starts a new one.
+- Each stage's environment is `PATH`, `HOME` (the request home directory), `TMPDIR` when the service has one, and a one-thread cap for OpenBLAS, OpenMP, MKL, NUMEXPR, and VECLIB. That cap keeps `RLIMIT_NPROC` 64 usable on a many-core host and keeps the zygote single-threaded so `fork` is safe. The token is never passed to the zygote or either stage.
+- As root, each stage drops to the `georun` user (`setgroups([])`, `setgid`, `setuid`) before it does its work. `georun` cannot read `/proc/<service-pid>/environ` or a `0400` token file owned by the service user.
 - Timeout sends `SIGKILL` to the child's process group, so a grandchild started with `Popen` dies with the request.
 - Limits on each run: `RLIMIT_AS` 2 GB (`CADAI_GEO_RLIMIT_AS`), `RLIMIT_CPU` timeout+5 s, `RLIMIT_FSIZE` 256 MB, `RLIMIT_NPROC` 64 for `georun`, `RLIMIT_CORE` 0. Outside the container the process cap is raised just above this uid's existing threads so a local run can still import; it stays a finite cap.
 - Stderr kept for errors is at most 4 KB. Each export must be at most 64 MB (`CADAI_GEO_MAX_EXPORT_BYTES`) or the response is `output too large`.
-- Error strings have temp paths stripped.
+- Error strings have `/tmp` paths, `model.py`, and the `TMPDIR` prefix stripped.
 
 ## What the host must enforce
 
@@ -73,3 +77,51 @@ docker run --rm \
 ```
 
 Do not put the token in the environment or in the image. The file must be mode `0400` and owned by root (the service user in this image). Point the Next.js app at the service with `CADAI_GEO_URL` (origin only) and the same token in the `x-cadai-geo-token` header.
+
+## Before hosting
+
+This machine has no container runtime, so the root-only uid split is not exercised here. `test_token_file_and_proc_environ_are_unreadable` skips unless the process is root. Before hosting, build the image and run these checks.
+
+```bash
+docker build -t cadai-geo geo
+install -m 0400 /dev/stdin /tmp/geo-token <<< 'file-token-not-in-env-9f3c'
+```
+
+1. Run the skipped test as root inside the image. The image does not install pytest, so the venv goes on the tmpfs. `--cap-add SETUID --cap-add SETGID` is required for the drop to `georun`.
+
+```bash
+docker run --rm \
+  --cap-drop ALL --cap-add SETUID --cap-add SETGID \
+  --read-only --tmpfs /tmp \
+  --pids-limit 256 --memory 3g --cpus 1 \
+  -v "$PWD":/work:ro \
+  -v /tmp/geo-token:/run/secrets/geo-token:ro \
+  -e CADAI_GEO_TOKEN_FILE=/run/secrets/geo-token \
+  --entrypoint bash \
+  cadai-geo -lc 'python -m venv --system-site-packages /tmp/venv && /tmp/venv/bin/pip install -q pytest==9.2.0 httpx==0.28.1 && cd /work/geo && /tmp/venv/bin/python -m pytest -q tests/test_sandbox.py::test_token_file_and_proc_environ_are_unreadable'
+```
+
+The test passes only when the script cannot read `/proc/1/environ`, `/proc/<ppid>/environ`, or the token file.
+
+2. Confirm `georun` gets `EACCES` on the `0400` root-owned token file:
+
+```bash
+docker run --rm \
+  --cap-drop ALL --cap-add SETUID --cap-add SETGID \
+  --read-only --tmpfs /tmp \
+  -v /tmp/geo-token:/run/secrets/geo-token:ro \
+  --entrypoint python \
+  cadai-geo -c 'import os,pwd; a=pwd.getpwnam("georun"); p=os.fork()
+if p==0:
+ os.setgroups([]); os.setgid(a.pw_gid); os.setuid(a.pw_uid)
+ try:
+  open("/run/secrets/geo-token").read()
+ except PermissionError:
+  print("EACCES"); os._exit(0)
+ print("READABLE"); os._exit(1)
+os.waitpid(p,0)'
+```
+
+The output is `EACCES`. `stat` on the file shows mode `0400` and owner root.
+
+3. Re-run the forged-export probe under the uid split. Start the service with the flags in the host section above (token file mounted, `CADAI_GEO_TOKEN` unset). `POST /run` a script that copies `/etc/hostname` into `model.step` and `result.brep`, writes a `result.json` with `parts: [{label: FORGED, volume: 999}]`, and calls `os._exit(0)`. The response is `ok: false` (those bytes are not a BREP) and does not contain the hostname. A script that writes a real BREP and a forged `result.json` comes back as measurements of that shape, not volume `999` and not the hostname bytes. Copying the `0400` token file into the scratch dir fails for `georun`, so the token is not in the response. World-readable files can still be read by the script; they cannot be returned as STEP/STL unless they are valid BREP geometry the trusted stage re-exports.

@@ -57,3 +57,69 @@ def test_lists_each_part_in_its_own_frame(tmp_path):
     assert [round(box['max'][i] - box['min'][i], 3) for i in range(3)] == [40, 20, 10]
     placed = r['parts'][0]
     assert round(placed['max'][0] - placed['min'][0], 1) == 42.4  # turned 45 degrees: not the local size
+
+
+# ---- the same reports through the service's two-stage run (untrusted script, trusted measure)
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from cadai_geo.run import split_error_line  # noqa: E402
+from cadai_geo.service import app  # noqa: E402
+
+_client = TestClient(app)
+_HEADERS = {"x-cadai-geo-token": "test-token"}
+
+
+def _service(script):
+    response = _client.post("/run", json={"script": textwrap.dedent(script)}, headers=_HEADERS)
+    assert response.status_code == 200
+    return response.json()
+
+
+def test_service_reports_the_line_from_the_untrusted_stage():
+    payload = _service('''
+        from build123d import *
+        def first():
+            return Box(1, 1, 1)
+        def second():
+            return Box(1, 1)
+        a = first()
+        b = second()
+        result = Compound([a, b])
+    ''')
+    assert payload["ok"] is False
+    assert "TypeError" in payload["error"]
+    assert "␟" not in payload["error"]
+    assert payload["line"] == 6
+
+
+def test_service_measures_local_shapes_in_the_trusted_stage():
+    payload = _service('''
+        from build123d import *
+        a = Box(40, 20, 10, align=(Align.MIN, Align.MIN, Align.MIN)); a.label = 'plate'
+        placed = Pos(5, 5, 0) * Rot(0, 0, 45) * a; placed.label = 'plate'
+        _local = [a]
+        _cadai_parts = [placed]
+        result = Compound(children=[placed])
+    ''')
+    assert payload["ok"] is True
+    assert [p["label"] for p in payload["local"]] == ["plate"]
+    box = payload["local"][0]
+    assert [round(box["max"][i] - box["min"][i], 3) for i in range(3)] == [40, 20, 10]
+    assert [p["label"] for p in payload["parts"]] == ["plate"]
+
+
+def test_service_local_is_empty_when_the_script_lists_none():
+    payload = _service('''
+        from build123d import *
+        result = Box(1, 2, 3)
+    ''')
+    assert payload["ok"] is True
+    assert payload["local"] == []
+
+
+def test_split_error_line_only_accepts_the_exact_prefix():
+    assert split_error_line("␟L12␟TypeError: x") == ("TypeError: x", 12)
+    assert split_error_line("TypeError: ␟L12␟") == ("TypeError: ␟L12␟", None)
+    assert split_error_line("␟Lxx␟boom") == ("␟Lxx␟boom", None)
+    assert split_error_line("␟L0␟boom") == ("boom", None)
