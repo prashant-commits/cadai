@@ -50,4 +50,10 @@ describe('composeRunSummary', () => {
     expect(composeRunSummary({ spec: null, modelInfo: null, violations: [], attempts: 0, isValid: false }).trim()).not.toBe('');
   });
 
+
+  it('says the sweep and lint were skipped on the build123d kernel only', () => {
+    const base = { spec, modelInfo, violations: [], attempts: 1, isValid: true };
+    expect(composeRunSummary({ ...base, kernel: 'brep' })).toContain('not run');
+    expect(composeRunSummary({ ...base, kernel: 'openscad' })).not.toContain('not run');
+  });
 });

@@ -18,13 +18,16 @@ const round2v = (v: readonly number[]): Vec3 => [round2(v[0]), round2(v[1]), rou
 /** Decodes a base64 STL to ASCII; a binary STL is converted facet by facet. */
 export function stlToAscii(base64: string): string {
   const buf = Buffer.from(base64, 'base64');
-  const head = buf.subarray(0, 5).toString('latin1');
-  if (head === 'solid' && buf.toString('latin1', 0, Math.min(buf.length, 1024)).includes('facet')) {
-    return buf.toString('utf-8');
+  // A binary STL is an 80-byte header, a u32 facet count and 50 bytes per facet,
+  // exactly. The header may start with "solid", so the size is the only reliable test.
+  if (buf.length >= 84) {
+    const count = buf.readUInt32LE(80);
+    if (count > 0 && buf.length === 84 + count * 50) return binaryToAscii(buf, count);
   }
-  if (buf.length < 84) return buf.toString('utf-8');
-  const count = buf.readUInt32LE(80);
-  if (buf.length < 84 + count * 50) return buf.toString('utf-8');
+  return buf.toString('utf-8');
+}
+
+function binaryToAscii(buf: Buffer, count: number): string {
   const lines: string[] = ['solid model'];
   for (let i = 0; i < count; i++) {
     const o = 84 + i * 50;

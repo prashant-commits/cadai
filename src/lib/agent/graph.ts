@@ -2044,6 +2044,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       violations: state.specViolations,
       attempts: state.attemptCount,
       isValid: state.isValid,
+      kernel: state.kernel,
     });
 
     write(config, 'respondToUser', {

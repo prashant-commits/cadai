@@ -13,6 +13,14 @@ describe('stlToAscii', () => {
     expect(ascii.match(/vertex/g)).toHaveLength(3);
     expect(stlToAscii(Buffer.from(ascii).toString('base64'))).toBe(ascii);
   });
+
+  it('converts a binary STL whose header starts with "solid" and mentions facet', () => {
+    const buf = Buffer.alloc(84 + 50);
+    buf.write('solid part exported with facet data', 0, 'latin1');
+    buf.writeUInt32LE(1, 80);
+    [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0].forEach((v, i) => buf.writeFloatLE(v, 84 + i * 4));
+    expect(stlToAscii(buf.toString('base64'))).toContain('facet normal 0 0 1');
+  });
 });
 
 describe('toModuleFrames', () => {
