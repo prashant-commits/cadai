@@ -343,7 +343,7 @@ function skeletonSummary(spec: AssemblySpec | null): string {
  * most of them.
  */
 const REPAIR_KIND_PRIORITY: SpecViolation['kind'][] = [
-  'unknown_symbol', 'dimensionality', 'empty', 'manifold', 'shells', 'interference',
+  'unknown_symbol', 'dimensionality', 'empty', 'manifold', 'severed', 'sealed_cavity', 'shells', 'interference',
   'clearance', 'floating', 'floor', 'extents', 'bbox', 'standing', 'buildplate', 'compile', 'visual',
 ];
 function dominantViolationKind(violations: SpecViolation[]): SpecViolation['kind'] | null {
@@ -359,6 +359,8 @@ const REPAIR_HINTS: Partial<Record<SpecViolation['kind'], string>> = {
   dimensionality: 'The top-level object is 2D. Extrude every profile with linear_extrude() or rotate_extrude().',
   empty: 'The script produced no solid. Check for zero dimensions and for a difference() that removed everything.',
   manifold: 'The solid is not a valid 2-manifold: coincident faces or a zero-thickness membrane. Extend every cutter at least 0.02mm past each face it exits and sink fused parts 0.01mm into each other.',
+  severed: 'A component is cut into separate pieces. Stop the cut short of that part\'s edge, or bridge the pieces; do not invent another component.',
+  sealed_cavity: 'A component has a sealed cavity. Run the cutter 0.02 mm past the face that should be open.',
   shells: 'The result split into more shells than the spec has components: parts that should be joined are not touching. Overlap them by at least 0.01mm.',
   interference: 'The inserted part exceeds its skeleton and pokes past the cavity that code cuts in its host. Resize the inserted part to its localExtents; do not model a slot in the host or enlarge it.',
   clearance: 'A declared clearance was not achieved. Adjust the mating dimensions, not the placement.',
@@ -1476,7 +1478,10 @@ ${contract}`;
           // Without it the retrieval is invisible to tracing (or shows up as a
           // detached root trace), which is exactly the step you need to see
           // when a draft comes back with the wrong hardware module.
-          const toolResult = await getFunctionalCadModuleTool.invoke(toolCall.args as any, config);
+          const toolResult = await getFunctionalCadModuleTool.invoke(
+            toolCall.args as unknown as Parameters<typeof getFunctionalCadModuleTool.invoke>[0],
+            config,
+          );
           toolCallMessages.push(
             new ToolMessage({
               tool_call_id: toolCall.id || `tool-${Date.now()}`,
@@ -1575,6 +1580,32 @@ ${contract}`;
     const placementReport = state.placementReport ?? null;
     const modelMin = validation.summary?.boundingBox?.min ?? modelInfo?.boundingBox.min ?? null;
     specViolations.push(...auditPlacement(placementReport, modelMin, state.assemblySpec));
+    for (const component of placementReport?.components ?? []) {
+      // A failed solo compile is not a measurement (module-frames leaves the count off).
+      if (!component.measured) continue;
+      const counted = component as { shellCount?: number; cavityCount?: number };
+      const shellCount = counted.shellCount;
+      const cavityCount = counted.cavityCount;
+      if (cavityCount !== undefined && cavityCount > 0) {
+        specViolations.push({
+          kind: 'sealed_cavity',
+          field: component.name,
+          expected: 0,
+          measured: cavityCount,
+          severity: 'error',
+          message: `${component.name} has a sealed cavity; run the cutter 0.02 mm past the face it should open.`,
+        });
+      }
+      if (shellCount === undefined || shellCount <= 1) continue;
+      specViolations.push({
+        kind: 'severed',
+        field: component.name,
+        expected: 1,
+        measured: shellCount,
+        severity: 'error',
+        message: `${component.name} is cut into ${shellCount} separate pieces on its own - a cut runs through it. Stop the cut short of the edge or bridge the pieces.`,
+      });
+    }
     if (modelMin) {
 
     }
@@ -1806,7 +1837,10 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
           // Without it the retrieval is invisible to tracing (or shows up as a
           // detached root trace), which is exactly the step you need to see
           // when a draft comes back with the wrong hardware module.
-          const toolResult = await getFunctionalCadModuleTool.invoke(toolCall.args as any, config);
+          const toolResult = await getFunctionalCadModuleTool.invoke(
+            toolCall.args as unknown as Parameters<typeof getFunctionalCadModuleTool.invoke>[0],
+            config,
+          );
           toolCallMessages.push(
             new ToolMessage({
               tool_call_id: toolCall.id || `tool-${Date.now()}`,

@@ -8,6 +8,10 @@ export interface SpecViolation {
     | 'bbox'
     | 'manifold'
     | 'shells'
+    /** One component's own module is more than one solid piece: a cut runs through that part. */
+    | 'severed'
+    /** One component is a single solid that encloses an empty void. */
+    | 'sealed_cavity'
     | 'empty'
     | 'dimensionality'
     | 'buildplate'
@@ -140,7 +144,7 @@ export function auditSpec(
           kind: 'standing',
           field: name,
           expected: pin.value,
-          measured: p.value as any,
+          measured: p.value,
           severity: 'error',
           message: `The user pinned parameter '${name}' to ${pin.value}, but the code emitted ${p.value}. You must honor pinned values exactly.`
         });
