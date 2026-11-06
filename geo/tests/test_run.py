@@ -71,3 +71,18 @@ def test_stl_is_ascii(tmp_path):
     data = (out / 'model.stl').read_bytes()
     assert data.startswith(b'solid')
     assert b'facet normal' in data
+
+
+def test_measures_cadai_parts_before_fusing(tmp_path):
+    r, _ = run_cli(tmp_path, '''
+        from build123d import *
+        a = Box(10, 10, 10, align=(Align.MIN, Align.MIN, Align.MIN)); a.label = 'a'
+        b = Pos(0, 0, 10) * Box(10, 10, 5, align=(Align.MIN, Align.MIN, Align.MIN)); b.label = 'b'
+        _cadai_parts = [a, b]
+        fused = a + b
+        fused.label = 'a+b'
+        result = Compound(children=[fused])
+    ''')
+    assert r['ok'] is True
+    assert [p['label'] for p in r['parts']] == ['a', 'b']
+    assert r['solids'] == 1
