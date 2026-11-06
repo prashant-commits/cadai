@@ -5,7 +5,7 @@ import { isZeroVec, Vec3 } from './placement-geometry';
 import { gussetScad, gussetsFor } from './gussets';
 import { matingCuts } from './mating-cuts';
 import { shapeScad } from '../spec-sheet/blockout-scad';
-import { contactSinks } from './contact-sink';
+import { contactSinkPlan, contactSinks } from './contact-sink';
 
 /**
  * Deterministic assembly placement.
@@ -460,7 +460,8 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
   const reportNotes: string[] = [];
 
   const notesAttached = new Set<string>();
-  const sinks = contactSinks(spec);
+  const sinkPlan = contactSinkPlan(spec);
+  const sinks = sinkPlan.sinks;
   const posExprs = new Map<string, [string, string, string]>();
   for (const c of components) {
     // The parameter keeps the spec value. The sink is applied only on the translate.
@@ -528,7 +529,8 @@ export function composeAssembly(code: string, spec: AssemblySpec | null, frames:
     if (!isZeroVec(c.correction)) {
       line += `   // local-frame correction: ${c.name} min corner measured at ${vec(c.localMin)}`;
     }
-    if (sinks.get(c.name)?.some((n) => n !== 0)) line += ' // 0.02 mm contact sink';
+    const sinkNote = sinkPlan.notes.get(c.name);
+    if (sinkNote) line += ` // ${sinkNote}`;
     calls.push(line);
   }
 

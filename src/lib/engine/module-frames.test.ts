@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { measureModuleFrames } from './module-frames';
+import { measureModuleFrames, meshPieceCounts } from './module-frames';
 
 const CODE = `
 $fn = 24;
@@ -59,5 +59,19 @@ describe('measureModuleFrames', () => {
     expect(frame.valid).toBe(true);
     expect(frame.shellCount).toBe(1);
     expect(frame.cavityCount).toBe(1);
+  });
+});
+
+describe('meshPieceCounts', () => {
+  it('unions a long facet strip that lists each new vertex first', () => {
+    // That order makes a recursive find a chain of 20k calls.
+    const n = 20_000;
+    const v = (i: number) => `vertex ${i} ${i % 2} 0`;
+    const facets = ['solid s'];
+    for (let i = 2; i < n + 2; i++) {
+      facets.push(`facet normal 0 0 1\nouter loop\n${v(i)}\n${v(i - 1)}\n${v(i - 2)}\nendloop\nendfacet`);
+    }
+    facets.push('endsolid s');
+    expect(meshPieceCounts(facets.join('\n'))).toEqual({ positive: 0, negative: 0 });
   });
 });

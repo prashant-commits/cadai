@@ -10,11 +10,14 @@ import { placedBounds, type Vec3 } from './placement-geometry';
  * Sinks are applied in breadth-first order from the grounded parts (lowest
  * z <= 0.01), on the positions already decided, so a stack overlaps at every
  * joint instead of each part shifting by the same absolute amount. A part
- * sinks once per axis, toward the neighbour it is supported by. The move is
- * refused when it would open a gap to another part that was already flush or
- * overlapping (a crossbar between two uprights stays put) or when it would
- * drop the part below z = 0. Two grounded parts that only meet on the side
- * still sink: the ungrounded one, else the later one in spec order, moves.
+ * sinks once per axis. When several supports on that axis want a move, the
+ * part takes the largest of them, so a lintel follows a support that already
+ * sank instead of staying tangent on it. The move is refused when it would
+ * open a gap, or turn an overlap into a flush face, or drop the part below
+ * z = 0. Two grounded parts that only meet on the side still sink: the
+ * ungrounded one, else the later one in spec order, moves.
+ *
+ * Parts are tracked by spec index. Duplicate names cannot stall the walk.
  */
 
 const CONTACT_MM = 0.05;
@@ -25,31 +28,49 @@ const FACE_EPS = 1e-6;
 
 type Sink = [number, number, number];
 
-export function contactSinks(spec: AssemblySpec): Map<string, Sink> {
-  const parts = partBoxes(spec);
-  const acc = new Map<string, Sink>();
-  const used = new Map<string, [boolean, boolean, boolean]>();
-  const placed = new Set<string>();
-  const queued = new Set<string>();
+interface AxisMove {
+  axis: number;
+  delta: number;
+  partner: string;
+  partnerDelta: number;
+}
 
-  const vecOf = (name: string): Sink => {
-    let row = acc.get(name);
+export interface ContactSinkPlan {
+  sinks: Map<string, Sink>;
+  /** Emitted comment for each moved part, without the leading slashes. */
+  notes: Map<string, string>;
+}
+
+export function contactSinks(spec: AssemblySpec): Map<string, Sink> {
+  return contactSinkPlan(spec).sinks;
+}
+
+export function contactSinkPlan(spec: AssemblySpec): ContactSinkPlan {
+  const parts = partBoxes(spec);
+  const acc = new Map<number, Sink>();
+  const used = new Map<number, [boolean, boolean, boolean]>();
+  const reasons = new Map<number, AxisMove[]>();
+  const placed = new Set<number>();
+  const queued = new Set<number>();
+
+  const vecOf = (index: number): Sink => {
+    let row = acc.get(index);
     if (!row) {
       row = [0, 0, 0];
-      acc.set(name, row);
+      acc.set(index, row);
     }
     return row;
   };
-  const usedOf = (name: string): [boolean, boolean, boolean] => {
-    let row = used.get(name);
+  const usedOf = (index: number): [boolean, boolean, boolean] => {
+    let row = used.get(index);
     if (!row) {
       row = [false, false, false];
-      used.set(name, row);
+      used.set(index, row);
     }
     return row;
   };
   const interval = (part: Part, axis: number) => {
-    const d = acc.get(part.name)?.[axis] ?? 0;
+    const d = acc.get(part.index)?.[axis] ?? 0;
     return { min: part.min[axis] + d, max: part.max[axis] + d };
   };
   const areaOverlap = (a: Part, b: Part, axis: number): boolean => {
@@ -69,7 +90,7 @@ export function contactSinks(spec: AssemblySpec): Map<string, Sink> {
     return Math.max(bs.min - as.max, as.min - bs.max);
   };
   const adjacent = (a: Part, b: Part): boolean => {
-    if (joined(spec, a.name, b.name)) return false;
+    if (a.index === b.index || joined(spec, a.name, b.name)) return false;
     for (let axis = 0; axis < 3; axis++) {
       const gap = faceGap(a, b, axis);
       if (gap !== null && gap <= CONTACT_MM + FACE_EPS) return true;
@@ -91,74 +112,102 @@ export function contactSinks(spec: AssemblySpec): Map<string, Sink> {
     const mag = Math.round((gap + SINK_MM) * 1000) / 1000;
     return isHigher(mover, other, axis) ? -mag : mag;
   };
-  const opensGap = (mover: Part, axis: number, delta: number, consider: Set<string>): boolean => {
-    const prev = acc.get(mover.name);
+  const opensGap = (mover: Part, axis: number, delta: number, consider: Set<number>): boolean => {
+    const prev = acc.get(mover.index);
     const proposed: Sink = prev ? [prev[0], prev[1], prev[2]] : [0, 0, 0];
     proposed[axis] = delta;
     for (const other of parts) {
-      if (other.name === mover.name || !consider.has(other.name)) continue;
+      if (other.index === mover.index || !consider.has(other.index)) continue;
       if (joined(spec, mover.name, other.name)) continue;
       const before = faceGap(mover, other, axis);
       // Only a face that was flush or overlapping can be pulled apart.
       if (before === null || before > 1e-9) continue;
-      acc.set(mover.name, proposed);
+      acc.set(mover.index, proposed);
       const after = faceGap(mover, other, axis);
-      if (prev) acc.set(mover.name, prev);
-      else acc.delete(mover.name);
-      if (after !== null && after > 1e-9) return true;
+      if (prev) acc.set(mover.index, prev);
+      else acc.delete(mover.index);
+      if (after === null || after > 1e-9) return true;
+      // An overlap that lands exactly flush is the same tangent the float split.
+      if (before < -1e-9 && !(after < -1e-9)) return true;
     }
     return false;
   };
-  const tryCommit = (mover: Part, axis: number, delta: number, consider: Set<string>): boolean => {
-    if (usedOf(mover.name)[axis]) return false;
+  const tryCommit = (mover: Part, other: Part, axis: number, delta: number, consider: Set<number>): boolean => {
+    if (usedOf(mover.index)[axis]) return false;
     if (axis === 2 && mover.min[2] + delta < -1e-9) return false;
     if (opensGap(mover, axis, delta, consider)) return false;
-    vecOf(mover.name)[axis] = delta;
-    usedOf(mover.name)[axis] = true;
+    vecOf(mover.index)[axis] = delta;
+    usedOf(mover.index)[axis] = true;
+    const list = reasons.get(mover.index) ?? [];
+    list.push({
+      axis,
+      delta,
+      partner: other.name,
+      partnerDelta: acc.get(other.index)?.[axis] ?? 0,
+    });
+    reasons.set(mover.index, list);
     return true;
+  };
+  const commitLargest = (
+    part: Part,
+    options: { other: Part; axis: number; gap: number }[],
+    consider: Set<number>,
+    preferRest: boolean,
+  ): boolean => {
+    const grouped = new Map<string, { other: Part; axis: number; delta: number }>();
+    for (const opt of options) {
+      const delta = toward(part, opt.other, opt.axis, opt.gap);
+      const key = `${opt.axis}:${delta < 0 ? 0 : 1}`;
+      const prev = grouped.get(key);
+      if (!prev || Math.abs(delta) > Math.abs(prev.delta)) grouped.set(key, { other: opt.other, axis: opt.axis, delta });
+    }
+    const ordered = [...grouped.values()].sort((a, b) => {
+      if (preferRest) {
+        const aRest = a.axis === 2 && isHigher(part, a.other, 2) ? 0 : 1;
+        const bRest = b.axis === 2 && isHigher(part, b.other, 2) ? 0 : 1;
+        if (aRest !== bRest) return aRest - bRest;
+      }
+      if (Math.abs(a.delta) !== Math.abs(b.delta)) return Math.abs(b.delta) - Math.abs(a.delta);
+      return a.axis - b.axis || a.other.index - b.other.index;
+    });
+    for (const opt of ordered) {
+      if (tryCommit(part, opt.other, opt.axis, opt.delta, consider)) return true;
+    }
+    return false;
   };
   const sinkTowardSupport = (part: Part) => {
     const options: { other: Part; axis: number; gap: number }[] = [];
     for (const other of parts) {
-      if (!placed.has(other.name) || joined(spec, part.name, other.name)) continue;
+      if (!placed.has(other.index) || other.index === part.index || joined(spec, part.name, other.name)) continue;
       for (let axis = 0; axis < 3; axis++) {
         const gap = sinkable(part, other, axis);
         if (gap === null) continue;
         options.push({ other, axis, gap });
       }
     }
-    options.sort((a, b) => {
-      const aRest = a.axis === 2 && isHigher(part, a.other, 2) ? 0 : 1;
-      const bRest = b.axis === 2 && isHigher(part, b.other, 2) ? 0 : 1;
-      if (aRest !== bRest) return aRest - bRest;
-      if (a.gap !== b.gap) return a.gap - b.gap;
-      return a.axis - b.axis || a.other.index - b.other.index;
-    });
-    for (const opt of options) {
-      if (tryCommit(part, opt.axis, toward(part, opt.other, opt.axis, opt.gap), placed)) return;
-    }
+    commitLargest(part, options, placed, true);
   };
 
   const launch = (roots: Part[]) => {
-    const rootNames = new Set<string>();
+    const rootIds = new Set<number>();
     const queue: Part[] = [];
     for (const root of roots) {
-      if (queued.has(root.name)) continue;
-      queued.add(root.name);
-      rootNames.add(root.name);
+      if (queued.has(root.index)) continue;
+      queued.add(root.index);
+      rootIds.add(root.index);
       queue.push(root);
-      placed.add(root.name);
+      placed.add(root.index);
     }
     let head = 0;
     while (head < queue.length) {
       const cur = queue[head++];
-      if (!rootNames.has(cur.name)) {
+      if (!rootIds.has(cur.index)) {
         sinkTowardSupport(cur);
-        placed.add(cur.name);
+        placed.add(cur.index);
       }
       for (const other of parts) {
-        if (queued.has(other.name) || !adjacent(cur, other)) continue;
-        queued.add(other.name);
+        if (queued.has(other.index) || !adjacent(cur, other)) continue;
+        queued.add(other.index);
         queue.push(other);
       }
     }
@@ -167,16 +216,19 @@ export function contactSinks(spec: AssemblySpec): Map<string, Sink> {
   const grounded = parts.filter((part) => part.min[2] <= GROUND_Z);
   if (grounded.length > 0) launch(grounded);
   while (queued.size < parts.length) {
+    const rest = parts.filter((part) => !queued.has(part.index));
+    if (rest.length === 0) break;
     let minZ = Infinity;
-    for (const part of parts) {
-      if (!queued.has(part.name) && part.min[2] < minZ) minZ = part.min[2];
-    }
-    launch(parts.filter((part) => !queued.has(part.name) && part.min[2] <= minZ + 1e-9));
+    for (const part of rest) if (part.min[2] < minZ) minZ = part.min[2];
+    const roots = rest.filter((part) => part.min[2] <= minZ + 1e-9);
+    const before = queued.size;
+    launch(roots);
+    if (queued.size === before) break;
   }
 
   // Lateral contacts between parts that were already placed (two grounded
   // neighbours, or a second axis the support move did not use).
-  const everyone = new Set(parts.map((part) => part.name));
+  const everyone = new Set(parts.map((part) => part.index));
   const designatedMover = (part: Part, other: Part): boolean => {
     const partUp = part.min[2] > GROUND_Z;
     const otherUp = other.min[2] > GROUND_Z;
@@ -185,27 +237,51 @@ export function contactSinks(spec: AssemblySpec): Map<string, Sink> {
   };
   for (const part of parts) {
     for (let axis = 0; axis < 3; axis++) {
-      if (usedOf(part.name)[axis]) continue;
+      if (usedOf(part.index)[axis]) continue;
       const options: { other: Part; gap: number }[] = [];
       for (const other of parts) {
-        if (other.name === part.name || joined(spec, part.name, other.name)) continue;
+        if (other.index === part.index || joined(spec, part.name, other.name)) continue;
         if (!designatedMover(part, other)) continue;
         const gap = sinkable(part, other, axis);
         if (gap === null) continue;
         options.push({ other, gap });
       }
-      options.sort((a, b) => a.gap - b.gap || a.other.index - b.other.index);
-      for (const opt of options) {
-        if (tryCommit(part, axis, toward(part, opt.other, axis, opt.gap), everyone)) break;
-      }
+      commitLargest(
+        part,
+        options.map((opt) => ({ ...opt, axis })),
+        everyone,
+        false,
+      );
     }
   }
 
-  const out = new Map<string, Sink>();
-  for (const [name, sink] of acc) {
-    if (sink.some((n) => n !== 0)) out.set(name, [sink[0], sink[1], sink[2]]);
+  const sinks = new Map<string, Sink>();
+  const notes = new Map<string, string>();
+  for (const part of parts) {
+    const sink = acc.get(part.index);
+    if (!sink || sink.every((n) => n === 0)) continue;
+    const copy: Sink = [sink[0], sink[1], sink[2]];
+    sinks.set(part.name, copy);
+    const moves = reasons.get(part.index);
+    if (moves?.length) notes.set(part.name, describeMoves(moves));
   }
-  return out;
+  return { sinks, notes };
+}
+
+function describeMoves(moves: AxisMove[]): string {
+  return [...moves]
+    .sort((a, b) => a.axis - b.axis)
+    .map((move) => {
+      const mag = mm(move.delta);
+      if (move.partnerDelta === 0) return `sinks ${mag} mm into ${move.partner}`;
+      const into = mm(move.delta - move.partnerDelta);
+      return `sinks ${mag} mm: ${into} into ${move.partner}, which sank ${mm(move.partnerDelta)}`;
+    })
+    .join('; ');
+}
+
+function mm(n: number): string {
+  return String(Math.round(Math.abs(n) * 1000) / 1000);
 }
 
 interface Part {

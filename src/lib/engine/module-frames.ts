@@ -76,7 +76,14 @@ export function meshPieceCounts(stl: string): { positive: number; negative: numb
   const key = (v: number[]) => v.map((n) => n.toFixed(4)).join(',');
   const id = new Map<string, number>();
   const parent: number[] = [];
-  const find = (x: number): number => (parent[x] === x ? x : (parent[x] = find(parent[x])));
+  // Iterative path halving. A recursive find overflows on a long facet strip.
+  const find = (x: number): number => {
+    while (parent[x] !== x) {
+      parent[x] = parent[parent[x]];
+      x = parent[x];
+    }
+    return x;
+  };
   const tris: number[][] = [];
   for (let i = 0; i + 2 < verts.length; i += 3) {
     const tri = [verts[i], verts[i + 1], verts[i + 2]].map((v) => {
