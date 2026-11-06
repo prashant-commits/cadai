@@ -27,7 +27,7 @@ So build123d is viable for Haiku with a cheat sheet and a retry, and edits shoul
 ## Decisions
 
 1. **The agent stays in TypeScript.** LangGraph, the graph, the spec, the gates, streaming, storage and UI are all reused. Only the geometry layer changes language.
-2. **Generated Python runs in a separate geometry service** (user decision 2026-11-07). `geo/` is a FastAPI app in a container with build123d preinstalled, deployed on its own host. Each request runs the script in a fresh subprocess with a CPU/memory/time limit, no network, and a throwaway working directory. The Next.js app calls it over HTTPS with a shared-secret header (`CADAI_GEO_URL`, `CADAI_GEO_TOKEN`). Local development and evals can use the same CLI through a venv. One interface, `runBrep(script)`, hides which is used. Model-written Python never runs in the Next.js process.
+2. **Generated Python runs in a separate geometry service** (user decision 2026-11-07). `geo/` is a FastAPI app in a container with build123d preinstalled, deployed on its own host. Each request runs the script in a fresh subprocess. The Next.js app calls it over HTTPS with a shared-secret header (`CADAI_GEO_URL`). The token is read from `CADAI_GEO_TOKEN_FILE` (not left in the service environment). Local development and evals can use the same CLI through a venv. One interface, `runBrep(script)`, hides which is used. Model-written Python never runs in the Next.js process. What the code confines, and what only the container host can confine, is listed under "Geometry service sandbox".
 3. **The work happens on the branch `feat/brep`**, cut from `main` (user decision 2026-11-07). `main` and production stay on OpenSCAD until cut-over. On the branch, `CADAI_KERNEL=openscad|brep` remains so the A/B evals can run both kernels from one checkout.
 4. **The spec stays the source of truth for generation.** Code emits the build123d script from the spec, just as it emits OpenSCAD today:
    - parameters become a Python variable block;
@@ -84,6 +84,43 @@ Rough share: about 60% as is, 25% adapted or ported, 15% new.
   - OpenSCAD kept as a fallback for one release, then removed.
 
 Total is about 3–4 weeks, matching the earlier estimate. P1 alone already delivers STEP for code-drawn blockouts.
+
+## Geometry service sandbox
+
+A model-written script is hostile. Some limits are enforced by `geo/` itself. Others only exist if the container host sets them. The temp directory and the scrubbed child environment are defense in depth, not a jail.
+
+Code enforces:
+
+- The runner writes `<outdir>/result.json` after the script returns. The service ignores stdout and stderr except for the last 4 KB of stderr when that file is missing. A JSON line the script prints cannot change `ok` or `parts`.
+- STEP and STL are read only from `<outdir>/model.step` and `<outdir>/model.stl`, and only when `lstat` says they are regular files whose real path stays inside that directory. Symlinks and any other path are ignored, so a forged `"step": "/etc/hostname"` is not returned.
+- The shared secret comes from `CADAI_GEO_TOKEN_FILE` (mode `0400`, owned by the service user). If `CADAI_GEO_TOKEN` is in the environment (local tests), it is copied out and deleted so `/proc/<pid>/environ` no longer has it. The child environment is `PATH`, `HOME` (the request temp directory), and a one-thread cap for OpenBLAS, OpenMP, MKL, NUMEXPR, and VECLIB so the process cap stays usable on a many-core host. The token is not in that environment.
+- When the service is root and the user `georun` exists, each run calls `setgroups([])`, `setgid`, and `setuid` to `georun` before exec. The script then cannot read the service uid's `/proc/<pid>/environ` or the token file. Local pytest is not root, so it does not drop; that test is skipped unless it is run as root in the image.
+- On timeout the service sends `SIGKILL` to the child's process group, not only the direct pid.
+- `RLIMIT_AS` (default 2 GB, `CADAI_GEO_RLIMIT_AS`), `RLIMIT_CPU` (timeout + 5 s), `RLIMIT_FSIZE` (256 MB), `RLIMIT_NPROC` (64 for `georun`; outside the container, a small headroom above this uid's existing threads), and `RLIMIT_CORE` 0.
+- Each export must be at most 64 MB (`CADAI_GEO_MAX_EXPORT_BYTES`) or the run returns `output too large`.
+- `timeout_s` is clamped to 1..120 seconds. A script over 256 KB is rejected with HTTP 413. Traceback text has temp paths removed.
+- `GET /healthz` needs no token and returns `{"ok": true}`.
+
+The host must enforce (this process cannot):
+
+- **Egress.** The script shares the service network namespace. Block outbound traffic from the container except what the service needs to accept inbound calls on `PORT`. `--network none` also blocks those calls, so it is not the right control by itself.
+- **Cgroup cpu, memory, and pids** (`--cpus`, `--memory`, `--pids-limit`). `RLIMIT_NPROC` is not a pids cgroup, and `RLIMIT_AS` counts virtual address space.
+- **Read-only root filesystem** and a tmpfs for `/tmp` (`--read-only --tmpfs /tmp`). The per-request directory is only a working directory.
+- **Capability bounding:** `--cap-drop ALL --cap-add SETUID --cap-add SETGID`. The image is root so it can drop to `georun`, and for nothing else.
+- **`hidepid` on `/proc`**, as defense in depth behind the uid split.
+
+```
+docker run --rm \
+  --cap-drop ALL --cap-add SETUID --cap-add SETGID \
+  --read-only --tmpfs /tmp \
+  --pids-limit 128 --memory 3g --cpus 1 \
+  -v /path/geo-token:/run/secrets/geo-token:ro \
+  -e CADAI_GEO_TOKEN_FILE=/run/secrets/geo-token \
+  -e PORT=8000 -p 8000:8000 \
+  cadai-geo
+```
+
+The token file is mode `0400` and owned by root. Do not pass the token in the environment.
 
 ## Open questions for the user
 

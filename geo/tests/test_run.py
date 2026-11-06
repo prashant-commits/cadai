@@ -60,3 +60,14 @@ def test_single_part_without_label(tmp_path):
     ''')
     assert r['ok'] is True and r['solids'] == 1 and len(r['parts']) == 1
     assert r['parts'][0]['volume'] == pytest.approx(120, rel=1e-6)
+
+
+def test_stl_is_ascii(tmp_path):
+    r, out = run_cli(tmp_path, '''
+        from build123d import *
+        result = Box(4, 5, 6, align=(Align.MIN, Align.MIN, Align.MIN))
+    ''')
+    assert r['ok'] is True
+    data = (out / 'model.stl').read_bytes()
+    assert data.startswith(b'solid')
+    assert b'facet normal' in data
