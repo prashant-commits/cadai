@@ -1,7 +1,8 @@
 """Run a build123d script and report measurements plus STEP and STL paths.
 
-CLI: ``python -I -m cadai_geo <script.py> <outdir>`` prints one JSON line.
-The script must assign ``result`` (a Part or a Compound).
+CLI: ``python -I -m cadai_geo <script.py> <outdir>`` prints one JSON line and
+writes the same object to ``<outdir>/result.json``. The HTTP service reads
+only that file. The script must assign ``result`` (a Part or a Compound).
 """
 
 from __future__ import annotations
@@ -10,21 +11,29 @@ import contextlib
 import io
 import json
 import os
+import re
 import sys
 import traceback
 from collections.abc import Sequence
+
+# Temp script paths and /tmp directories must not leak back to the caller.
+_PATH_LEAK = re.compile(r"/tmp/\S+|\S*[/\\]model\.py")
 
 # build123d's Compound([shapes]) keeps only the OCC topology, so labels set on
 # the Python shapes are dropped. Remember the shapes that were passed in.
 _RECORDER_FLAG = "_cadai_sources"
 
 
+def redact(text: str) -> str:
+    """Drop temp-file paths from an error string."""
+    return _PATH_LEAK.sub("[redacted]", text)
+
+
 def _last_line(exc: BaseException) -> str:
     text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if lines:
-        return lines[-1]
-    return f"{type(exc).__name__}: {exc}"
+    line = lines[-1] if lines else f"{type(exc).__name__}: {exc}"
+    return redact(line)
 
 
 def _shape_sources(obj: object) -> list | None:
@@ -77,6 +86,12 @@ def _parts(result) -> list[dict]:
     return [_part(solid, "") for solid in result.solids()]
 
 
+def _replace_output(path: str) -> None:
+    """Remove anything already at ``path`` so export cannot follow a symlink."""
+    if os.path.lexists(path):
+        os.unlink(path)
+
+
 def run(script_path: str | os.PathLike, outdir: str | os.PathLike) -> dict:
     """Execute ``script_path`` and write ``model.step`` / ``model.stl`` into ``outdir``."""
     try:
@@ -94,9 +109,13 @@ def run(script_path: str | os.PathLike, outdir: str | os.PathLike) -> dict:
         result = namespace["result"]
         step_path = os.path.join(os.fspath(outdir), "model.step")
         stl_path = os.path.join(os.fspath(outdir), "model.stl")
+        _replace_output(step_path)
+        _replace_output(stl_path)
         if not export_step(result, step_path):
             return {"ok": False, "error": "export_step failed"}
-        if not export_stl(result, stl_path):
+        # ASCII so consumers that read the file as text (the web compile
+        # route decodes STL as UTF-8) get a mesh that starts with "solid".
+        if not export_stl(result, stl_path, ascii_format=True):
             return {"ok": False, "error": "export_stl failed"}
         box = result.bounding_box()
         return {
@@ -111,6 +130,19 @@ def run(script_path: str | os.PathLike, outdir: str | os.PathLike) -> dict:
         return {"ok": False, "error": _last_line(exc)}
 
 
+def write_result(outdir: str | os.PathLike, payload: dict) -> None:
+    """Atomically write ``<outdir>/result.json`` after the script has returned."""
+    path = os.path.join(os.fspath(outdir), "result.json")
+    temporary = path + ".tmp"
+    _replace_output(path)
+    if os.path.lexists(temporary):
+        os.unlink(temporary)
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+        handle.write("\n")
+    os.replace(temporary, path)
+
+
 def main(argv: list[str] | None = None) -> None:
     args = list(sys.argv if argv is None else argv)
     if len(args) != 3:
@@ -120,6 +152,10 @@ def main(argv: list[str] | None = None) -> None:
         sink = io.StringIO()
         with contextlib.redirect_stdout(sink):
             payload = run(args[1], args[2])
+            try:
+                write_result(args[2], payload)
+            except OSError:
+                payload = {"ok": False, "error": "result file"}
     sys.stdout.write(json.dumps(payload) + "\n")
 
 
