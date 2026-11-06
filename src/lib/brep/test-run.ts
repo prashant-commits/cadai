@@ -26,7 +26,7 @@ export function geoPython(): string {
   return process.env.CADAI_GEO_PYTHON || path.join(process.cwd(), 'geo', '.venv', 'bin', 'python');
 }
 
-// Measures `_parts` (the labelled, placed, un-fused parts the emitter binds) when
+// Measures `_cadai_parts` (the labelled, placed, un-fused parts the emitter binds) when
 // the script has it, else the labelled children of `result`.
 const RUNNER = `
 import json, sys, traceback
@@ -36,7 +36,7 @@ try:
     result = ns.get("result")
     if result is None:
         raise RuntimeError("script did not assign result")
-    items = ns.get("_parts")
+    items = ns.get("_cadai_parts")
     if items is None:
         items = [c for c in result.children if c.label]
     parts = []

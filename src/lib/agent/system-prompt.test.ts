@@ -405,5 +405,11 @@ describe('relational spec prompt (Task 3)', () => {
   it('keeps the relational instructions out of the planner', () => {
     expect(ARCHITECT_PLANNER_PREAMBLE).not.toContain('derived[]');
   });
-});
 
+  it('the brep-build prompt never tells the model to import', () => {
+    const prompt = systemPromptFor('brep-build');
+    expect(prompt).not.toMatch(/^\s*(from \S+ )?import /m);
+    expect(prompt).toContain('already has these in scope');
+    expect(prompt).toContain('## Primitives');
+  });
+});

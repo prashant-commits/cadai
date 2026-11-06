@@ -204,17 +204,17 @@ export function ChatPanel() {
           if (state.stl && state.stl.includes('facet normal')) {
             const { geometry, modelInfo } = parseStlToGeometry(state.stl);
             setCompileResult(
-              { success: true, stlContent: state.stl, geometry, modelInfo, compileTimeMs: 0, step: state.step },
+              { success: true, stlContent: state.stl, geometry, modelInfo, compileTimeMs: 0, step: state.step, language: state.language },
               targetThreadId
             );
           } else {
             if (useAppStore.getState().activeThreadId === targetThreadId) setCompileStatus('compiling');
-            const res = await compileModel(state.code);
+            const res = await compileModel(state.code, state.language);
             if (state.step && !res.step) res.step = state.step;
             setCompileResult(res, targetThreadId);
           }
         } else if (state.step) {
-          setCompileResult({ success: true, step: state.step }, targetThreadId);
+          setCompileResult({ success: true, step: state.step, language: state.language }, targetThreadId);
         }
 
         setIsGenerating(false);
