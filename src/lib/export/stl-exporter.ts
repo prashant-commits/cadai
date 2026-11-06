@@ -22,3 +22,19 @@ export function exportStl(stlContent: string, filename = 'cadai_model.stl') {
   }
   downloadFile(filename, stlContent, 'application/sla');
 }
+
+/**
+ * Exports base64-encoded STEP content to a downloaded file.
+ */
+export function exportStep(stepBase64: string, filename = 'cadai_model.step') {
+  if (!stepBase64) {
+    throw new Error('No STEP content available to export.');
+  }
+  const binaryString = atob(stepBase64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  const blob = new Blob([bytes], { type: 'application/step' });
+  downloadFile(filename, blob, 'application/step');
+}

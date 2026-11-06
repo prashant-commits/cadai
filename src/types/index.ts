@@ -158,6 +158,7 @@ export interface ChatThread {
   modelInfo?: ModelInfo | null;
   selectedModel?: string;
   designContract?: DesignContract;
+  step?: string | null;
 }
 
 export interface ModelDimensions {
@@ -195,6 +196,8 @@ export interface CompileResult {
   error?: string;
   compileTimeMs?: number;
   aborted?: boolean;
+  step?: string;
+  language?: 'openscad' | 'build123d';
 }
 
 export interface ViewportSettings {

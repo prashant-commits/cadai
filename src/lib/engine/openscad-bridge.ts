@@ -1,15 +1,16 @@
 import { parseStlToGeometry } from './geometry-utils';
 import { CompileResult } from '@/types';
+import { detectLanguage } from '@/lib/brep/language';
 
 /**
- * Compiles OpenSCAD code and returns Three.js BufferGeometry + ModelInfo.
- * Uses the fast, reliable server compiler endpoint with client-side fallback.
+ * Compiles CAD code (OpenSCAD or build123d) and returns Three.js BufferGeometry + ModelInfo.
+ * Uses the server compiler endpoint (/api/compile).
  */
 let compileTimeout: ReturnType<typeof setTimeout> | null = null;
 let currentCompileId = 0;
 let activeAbortController: AbortController | null = null;
 
-export function compileOpenScad(code: string): Promise<CompileResult> {
+export function compileModel(code: string, language?: 'openscad' | 'build123d'): Promise<CompileResult> {
   return new Promise((resolve) => {
     if (compileTimeout) clearTimeout(compileTimeout);
     
@@ -31,14 +32,16 @@ export function compileOpenScad(code: string): Promise<CompileResult> {
       const startTime = performance.now();
 
       if (!code || code.trim().length === 0) {
-        return resolve({ success: false, error: 'Empty OpenSCAD code provided.' });
+        return resolve({ success: false, error: 'Empty CAD code provided.' });
       }
+
+      const lang = language || detectLanguage(code);
 
       try {
         const response = await fetch('/api/compile', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code }),
+          body: JSON.stringify({ code, language: lang }),
           signal,
         });
 
@@ -53,6 +56,7 @@ export function compileOpenScad(code: string): Promise<CompileResult> {
             success: false,
             error: data.error || `Compilation failed with status ${response.status}`,
             compileTimeMs: Math.round(performance.now() - startTime),
+            language: lang,
           });
         }
 
@@ -63,7 +67,9 @@ export function compileOpenScad(code: string): Promise<CompileResult> {
           stlContent: data.stl,
           geometry,
           modelInfo,
-          compileTimeMs: Math.round(performance.now() - startTime),
+          step: data.step,
+          language: data.language || lang,
+          compileTimeMs: typeof data.compileTimeMs === 'number' ? data.compileTimeMs : Math.round(performance.now() - startTime),
         });
       } catch (err: unknown) {
         if (requestId !== currentCompileId || (err instanceof Error && err.name === 'AbortError')) {
@@ -74,8 +80,11 @@ export function compileOpenScad(code: string): Promise<CompileResult> {
           success: false,
           error: message,
           compileTimeMs: Math.round(performance.now() - startTime),
+          language: lang,
         });
       }
     }, 250);
   });
 }
+
+export const compileOpenScad = compileModel;
