@@ -10,7 +10,7 @@ import { auditSpecParameters } from './spec-param-lint';
 const param = (name: string, value: number) => ({ name, value, min: 0, max: 1000, unit: 'mm', description: '' });
 const bracket = (arm: number, plate: number) => ({
   sheet: '', assemblyName: 'shelf_bracket', assumptions: [], openQuestions: [],
-  parameters: [param('width', 20), param('arm_len', arm), param('plate_len', plate), param('wall', 5)],
+  parameters: [param('width', 20), param('arm_len', arm), param('plate_len', plate)],
   components: [{
     name: 'l_bracket', description: '', localExtents: ['width', 'arm_len', 'plate_len'], position: [0, 0, 0],
     // L outline in the yz plane, drawn at 150 x 150 in plain numbers.

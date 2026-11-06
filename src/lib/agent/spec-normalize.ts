@@ -87,44 +87,83 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
     const sizeU = round2(maxU - minU);
     const sizeV = round2(maxV - minV);
 
-    const shiftedPoints = c.shape.points.map(([u, v]) => [round2(u - minU), round2(v - minV)]);
-    const shiftedHoles = c.shape.holes?.map((hole) =>
-      hole.map(([u, v]) => [round2(u - minU), round2(v - minV)])
-    );
-
-    const [ex = 0, ey = 0, ez = 0] = (c.localExtents ?? []) as number[];
-    let localExtents: [number, number, number];
     let uAxis: 0 | 1 | 2;
     let vAxis: 0 | 1 | 2;
     if (c.shape.plane === 'xy') {
-      localExtents = [sizeU, sizeV, ez];
       uAxis = 0;
       vAxis = 1;
     } else if (c.shape.plane === 'xz') {
-      localExtents = [sizeU, ey, sizeV];
       uAxis = 0;
       vAxis = 2;
     } else {
-      localExtents = [ex, sizeU, sizeV];
       uAxis = 1;
       vAxis = 2;
     }
 
-    // M3: Shift component holes with the outline
+    const hasOutlineExpr = Boolean(
+      c.expr?.outline?.some((pt) => pt?.some((x) => x !== null && x !== undefined))
+    );
+
+    const [ex = 0, ey = 0, ez = 0] = (c.localExtents ?? []) as number[];
+    const targetU = ((c.localExtents ?? []) as number[])[uAxis] ?? 0;
+    const targetV = ((c.localExtents ?? []) as number[])[vAxis] ?? 0;
+
+    const uHasExpr = Boolean(c.expr?.localExtents?.[uAxis]);
+    const vHasExpr = Boolean(c.expr?.localExtents?.[vAxis]);
+
+    const scaleU = (!hasOutlineExpr && uHasExpr && sizeU > 0 && Number.isFinite(targetU)) ? targetU / sizeU : 1;
+    const scaleV = (!hasOutlineExpr && vHasExpr && sizeV > 0 && Number.isFinite(targetV)) ? targetV / sizeV : 1;
+
+    const finalSizeU = (!hasOutlineExpr && uHasExpr && Number.isFinite(targetU)) ? targetU : sizeU;
+    const finalSizeV = (!hasOutlineExpr && vHasExpr && Number.isFinite(targetV)) ? targetV : sizeV;
+
+    let localExtents: [number, number, number];
+    if (c.shape.plane === 'xy') {
+      localExtents = [finalSizeU, finalSizeV, ez];
+    } else if (c.shape.plane === 'xz') {
+      localExtents = [finalSizeU, ey, finalSizeV];
+    } else {
+      localExtents = [ex, finalSizeU, finalSizeV];
+    }
+
+    const shiftedPoints = c.shape.points.map(([u, v]) => [
+      round2((u - minU) * scaleU),
+      round2((v - minV) * scaleV),
+    ]);
+    const shiftedHoles = c.shape.holes?.map((hole) =>
+      hole.map(([u, v]) => [
+        round2((u - minU) * scaleU),
+        round2((v - minV) * scaleV),
+      ])
+    );
+
+    // M3: Shift and scale component holes with the outline
     let shiftedComponentHoles = c.holes;
     let shiftedExpr = c.expr ? { ...c.expr } : undefined;
 
-    if (c.holes && (minU !== 0 || minV !== 0)) {
-      shiftedComponentHoles = c.holes.map((h) => {
+    if (c.holes && (minU !== 0 || minV !== 0 || scaleU !== 1 || scaleV !== 1)) {
+      shiftedComponentHoles = c.holes.map((h, i) => {
         const at = Array.isArray(h.at) ? ([...h.at] as [number, number, number]) : h.at;
         if (at) {
-          if (minU !== 0) at[uAxis] = round2(at[uAxis] - minU);
-          if (minV !== 0) at[vAxis] = round2(at[vAxis] - minV);
+          const he = shiftedExpr?.holes?.[i];
+          const uHasHoleExpr = Boolean(he?.at?.[uAxis]);
+          const vHasHoleExpr = Boolean(he?.at?.[vAxis]);
+
+          if (minU !== 0 || scaleU !== 1) {
+            at[uAxis] = uHasHoleExpr
+              ? (minU !== 0 ? round2(at[uAxis] - minU) : at[uAxis])
+              : round2((at[uAxis] - minU) * scaleU);
+          }
+          if (minV !== 0 || scaleV !== 1) {
+            at[vAxis] = vHasHoleExpr
+              ? (minV !== 0 ? round2(at[vAxis] - minV) : at[vAxis])
+              : round2((at[vAxis] - minV) * scaleV);
+          }
         }
         return { ...h, at };
       });
 
-      if (shiftedExpr?.holes) {
+      if (shiftedExpr?.holes && (minU !== 0 || minV !== 0)) {
         shiftedExpr = {
           ...shiftedExpr,
           holes: shiftedExpr.holes.map((he) => {
@@ -169,8 +208,8 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
           leExpr[axis] = null;
         }
       };
-      checkAxis(uAxis, sizeU);
-      checkAxis(vAxis, sizeV);
+      checkAxis(uAxis, finalSizeU);
+      checkAxis(vAxis, finalSizeV);
       if (leExpr.every((x) => x === null || x === undefined)) {
         const restExpr = { ...shiftedExpr };
         delete restExpr.localExtents;

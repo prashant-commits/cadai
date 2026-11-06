@@ -49,12 +49,11 @@ describe('L6 & Schema verification: variantSpecRequestSchema and claudeVariantSp
 });
 
 describe('H1: profile pass vs component.expr', () => {
-  it('nulls expr entries that disagree with the outline by > 0.5 mm, keeps agreeing ones, and resolveSpec is stable', () => {
+  it('scales literal outline to expression extents and keeps expressions live', () => {
     // w=40, d=10, h=20; localExtents: ["w", "d", "h"]; profile xz.
-    // Triangle: [[0, 0], [50, 0], [0, 20]].
-    // Outline x-extent is 50, but expr "w" evaluates to 40. Delta = 10 > 0.5 mm -> nulled.
-    // Outline z-extent is 20, expr "h" evaluates to 20. Delta = 0 <= 0.5 mm -> kept!
-    // Extrusion y-extent is 10, expr "d" is kept.
+    // Triangle: [[0, 0], [50, 0], [0, 20]] in plain numbers.
+    // Outline has no expressions: keep expression-resolved extents [40, 10, 20]
+    // and scale outline along x to fit [0..40]. Expressions are kept live.
     const rawSpec = {
       ...base,
       parameters: [param('w', 40), param('d', 10), param('h', 20)],
@@ -70,6 +69,59 @@ describe('H1: profile pass vs component.expr', () => {
             points: [
               [0, 0],
               [50, 0],
+              [0, 20],
+            ],
+          },
+        },
+      ],
+    } as unknown as AssemblySpec;
+
+    const candidate = normalizeSpec(rawSpec);
+    const comp = candidate.components![0];
+
+    // Local extents kept from expressions: [40, 10, 20]
+    expect(comp.localExtents).toEqual([40, 10, 20]);
+    // Outline scaled along x: points max x is 40
+    expect(comp.shape?.points).toEqual([[0, 0], [40, 0], [0, 20]]);
+    // expr.localExtents: all kept
+    expect(comp.expr?.localExtents).toEqual(['w', 'd', 'h']);
+
+    // auditSpecCoherence on candidate must have no boundingBox errors
+    const violations = auditSpecCoherence(candidate);
+    expect(violations.filter((v) => v.field.startsWith('boundingBox'))).toEqual([]);
+
+    // re-resolving the normalized spec must match candidate's localExtents
+    const reResolved = resolveSpec(candidate);
+    expect(reResolved.errors).toEqual([]);
+    expect(reResolved.spec.components![0].localExtents).toEqual([40, 10, 20]);
+
+    // All parameters remain live because w drives the scaled geometry
+    const dead = auditSpecParameters(candidate);
+    expect(dead.map((v) => v.field)).toEqual([]);
+  });
+
+  it('nulls expr entries that disagree with an expression outline by > 0.5 mm, keeps agreeing ones, and resolveSpec is stable', () => {
+    // w=40, d=10, h=20; localExtents: ["w", "d", "h"]; profile xz.
+    // Triangle: [[0, 0], ['ow', 0], [0, 20]] with ow=50.
+    // When outline itself has expressions, outline wins:
+    // Outline x-extent is 50, but expr "w" evaluates to 40. Delta = 10 > 0.5 mm -> nulled.
+    // Outline z-extent is 20, expr "h" evaluates to 20. Delta = 0 <= 0.5 mm -> kept!
+    // Extrusion y-extent is 10, expr "d" is kept.
+    const rawSpec = {
+      ...base,
+      parameters: [param('w', 40), param('d', 10), param('h', 20), param('ow', 50)],
+      components: [
+        {
+          name: 'wedge',
+          description: '',
+          localExtents: ['w', 'd', 'h'],
+          position: [0, 0, 0],
+          shape: {
+            kind: 'profile',
+            plane: 'xz',
+            points: [
+              [0, 0],
+              ['ow', 0],
               [0, 20],
             ],
           },
@@ -101,10 +153,10 @@ describe('H1: profile pass vs component.expr', () => {
   });
 
   it('drops expr.localExtents entirely if all 3 entries become null', () => {
-    // All extents driven by expressions that disagree with outline
+    // All extents driven by expressions that disagree with outline expressions
     const rawSpec = {
       ...base,
-      parameters: [param('w', 40), param('h', 20)],
+      parameters: [param('w', 40), param('h', 20), param('ow', 60), param('oh', 30)],
       components: [
         {
           name: 'plate',
@@ -116,8 +168,8 @@ describe('H1: profile pass vs component.expr', () => {
             plane: 'xz',
             points: [
               [0, 0],
-              [60, 0],
-              [0, 30],
+              ['ow', 0],
+              [0, 'oh'],
             ],
           },
         },
