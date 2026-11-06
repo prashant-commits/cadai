@@ -23,11 +23,14 @@ export type NormalizedAssemblySpec = AssemblySpec & {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
-/** An expression term moved by -min with the outline; a literal (null) was already shifted as a number. */
-const shiftTerm = (term: string | null, min: number): string | null => {
-  if (term === null || min === 0) return term;
-  return min < 0 ? `(${term}) + ${round2(Math.abs(min))}` : `(${term}) - ${round2(min)}`;
-};
+/**
+ * Expressed coordinates (in outline inner holes and in component holes[].at)
+ * only shift with the re-origin, never scale; literal coordinates keep scaling.
+ */
+function shiftTerm(term: string | null | undefined, min: number): string | null {
+  if (term === null || term === undefined || min === 0) return term ?? null;
+  return min < 0 ? `(${term}) + ${Math.abs(min)}` : `(${term}) - ${min}`;
+}
 
 /**
  * Makes a parsed spec usable by deterministic code: component names become
@@ -83,62 +86,112 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
     }
 
     if (!Number.isFinite(minU) || !Number.isFinite(minV)) return c;
+    minU = Math.round(minU * 1e6) / 1e6;
+    minV = Math.round(minV * 1e6) / 1e6;
 
-    const sizeU = round2(maxU - minU);
-    const sizeV = round2(maxV - minV);
+    const spanU = maxU - minU;
+    const spanV = maxV - minV;
+    const sizeU = round2(spanU);
+    const sizeV = round2(spanV);
 
-    const shiftedPoints = c.shape.points.map(([u, v]) => [round2(u - minU), round2(v - minV)]);
-    const shiftedHoles = c.shape.holes?.map((hole) =>
-      hole.map(([u, v]) => [round2(u - minU), round2(v - minV)])
-    );
-
-    const [ex = 0, ey = 0, ez = 0] = (c.localExtents ?? []) as number[];
-    let localExtents: [number, number, number];
     let uAxis: 0 | 1 | 2;
     let vAxis: 0 | 1 | 2;
     if (c.shape.plane === 'xy') {
-      localExtents = [sizeU, sizeV, ez];
       uAxis = 0;
       vAxis = 1;
     } else if (c.shape.plane === 'xz') {
-      localExtents = [sizeU, ey, sizeV];
       uAxis = 0;
       vAxis = 2;
     } else {
-      localExtents = [ex, sizeU, sizeV];
       uAxis = 1;
       vAxis = 2;
     }
 
-    // M3: Shift component holes with the outline
+    const uOutlineHasExpr = Boolean(c.expr?.outline?.some((pt) => pt?.[0] != null));
+    const vOutlineHasExpr = Boolean(c.expr?.outline?.some((pt) => pt?.[1] != null));
+
+    const [ex = 0, ey = 0, ez = 0] = (c.localExtents ?? []) as number[];
+    const targetU = ((c.localExtents ?? []) as number[])[uAxis] ?? 0;
+    const targetV = ((c.localExtents ?? []) as number[])[vAxis] ?? 0;
+
+    const uHasExpr = Boolean(c.expr?.localExtents?.[uAxis]);
+    const vHasExpr = Boolean(c.expr?.localExtents?.[vAxis]);
+
+    const shouldScaleU = !uOutlineHasExpr && uHasExpr && spanU > 0 && targetU > 0 && Number.isFinite(targetU);
+    const shouldScaleV = !vOutlineHasExpr && vHasExpr && spanV > 0 && targetV > 0 && Number.isFinite(targetV);
+
+    const scaleU = shouldScaleU ? targetU / spanU : 1;
+    const scaleV = shouldScaleV ? targetV / spanV : 1;
+
+    const finalSizeU = shouldScaleU ? targetU : sizeU;
+    const finalSizeV = shouldScaleV ? targetV : sizeV;
+
+    let localExtents: [number, number, number];
+    if (c.shape.plane === 'xy') {
+      localExtents = [finalSizeU, finalSizeV, ez];
+    } else if (c.shape.plane === 'xz') {
+      localExtents = [finalSizeU, ey, finalSizeV];
+    } else {
+      localExtents = [ex, finalSizeU, finalSizeV];
+    }
+
+    const shiftedPoints = c.shape.points.map(([u, v]) => [
+      round2((u - minU) * scaleU),
+      round2((v - minV) * scaleV),
+    ]);
+    const shiftedHoles = c.shape.holes?.map((hole, holeIdx) =>
+      hole.map(([u, v], ptIdx) => {
+        const exprPt = c.expr?.outlineHoles?.[holeIdx]?.[ptIdx];
+        const uHasExpr = Boolean(exprPt?.[0]);
+        const vHasExpr = Boolean(exprPt?.[1]);
+        return [
+          uHasExpr
+            ? (minU !== 0 ? u - minU : u)
+            : round2((u - minU) * scaleU),
+          vHasExpr
+            ? (minV !== 0 ? v - minV : v)
+            : round2((v - minV) * scaleV),
+        ];
+      })
+    );
+
+    // M3: Shift and scale component holes with the outline
     let shiftedComponentHoles = c.holes;
     let shiftedExpr = c.expr ? { ...c.expr } : undefined;
 
-    if (c.holes && (minU !== 0 || minV !== 0)) {
-      shiftedComponentHoles = c.holes.map((h) => {
+    if (c.holes && (minU !== 0 || minV !== 0 || scaleU !== 1 || scaleV !== 1)) {
+      shiftedComponentHoles = c.holes.map((h, i) => {
         const at = Array.isArray(h.at) ? ([...h.at] as [number, number, number]) : h.at;
         if (at) {
-          if (minU !== 0) at[uAxis] = round2(at[uAxis] - minU);
-          if (minV !== 0) at[vAxis] = round2(at[vAxis] - minV);
+          const he = shiftedExpr?.holes?.[i];
+          const uHasHoleExpr = Boolean(he?.at?.[uAxis]);
+          const vHasHoleExpr = Boolean(he?.at?.[vAxis]);
+
+          if (minU !== 0 || scaleU !== 1) {
+            at[uAxis] = uHasHoleExpr
+              ? (minU !== 0 ? at[uAxis] - minU : at[uAxis])
+              : round2((at[uAxis] - minU) * scaleU);
+          }
+          if (minV !== 0 || scaleV !== 1) {
+            at[vAxis] = vHasHoleExpr
+              ? (minV !== 0 ? at[vAxis] - minV : at[vAxis])
+              : round2((at[vAxis] - minV) * scaleV);
+          }
         }
         return { ...h, at };
       });
 
-      if (shiftedExpr?.holes) {
+      if (shiftedExpr?.holes && (minU !== 0 || minV !== 0)) {
         shiftedExpr = {
           ...shiftedExpr,
           holes: shiftedExpr.holes.map((he) => {
             if (!he.at) return he;
-            const at = [...he.at];
+            const at = [...he.at] as [string | null, string | null, string | null];
             if (minU !== 0 && at[uAxis]) {
-              at[uAxis] = minU < 0
-                ? `(${at[uAxis]}) + ${round2(Math.abs(minU))}`
-                : `(${at[uAxis]}) - ${round2(minU)}`;
+              at[uAxis] = shiftTerm(at[uAxis], minU);
             }
             if (minV !== 0 && at[vAxis]) {
-              at[vAxis] = minV < 0
-                ? `(${at[vAxis]}) + ${round2(Math.abs(minV))}`
-                : `(${at[vAxis]}) - ${round2(minV)}`;
+              at[vAxis] = shiftTerm(at[vAxis], minV);
             }
             return { ...he, at };
           }),
@@ -148,10 +201,10 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
 
     // The kept outline expressions follow the shift, so a parametric outline stays parametric
     // (and a second resolve of this spec does not undo the shift).
-    if (shiftedExpr?.outline || shiftedExpr?.outlineHoles) {
-      const shiftPoint = (pt: (string | null)[]) => [
-        shiftTerm(pt[0], minU),
-        shiftTerm(pt[1], minV),
+    if ((minU !== 0 || minV !== 0) && (shiftedExpr?.outline || shiftedExpr?.outlineHoles)) {
+      const shiftPoint = (pt: (string | null)[]): [string | null, string | null] => [
+        shiftTerm(pt?.[0], minU),
+        shiftTerm(pt?.[1], minV),
       ];
       shiftedExpr = {
         ...shiftedExpr,
@@ -169,8 +222,8 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
           leExpr[axis] = null;
         }
       };
-      checkAxis(uAxis, sizeU);
-      checkAxis(vAxis, sizeV);
+      checkAxis(uAxis, finalSizeU);
+      checkAxis(vAxis, finalSizeV);
       if (leExpr.every((x) => x === null || x === undefined)) {
         const restExpr = { ...shiftedExpr };
         delete restExpr.localExtents;
