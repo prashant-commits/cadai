@@ -6,7 +6,7 @@ import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/trac
 import { deleteRunCheckpoint, getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { Command } from '@langchain/langgraph';
 import { GateDecision } from '@/types';
-import { DEFAULT_MODEL } from '@/lib/agent/models';
+import { coerceRouteModel } from '@/lib/agent/models';
 import { graphRecursionLimit, describeGraphError } from '@/lib/agent/run-limits';
 
 export const runtime = 'nodejs';
@@ -99,16 +99,17 @@ export async function POST(req: NextRequest) {
       // Hoisted above the try so the finally block can flush it. The factory
       // swallows its own construction errors and returns null, so this cannot
       // throw outside the try.
+      const effectiveModel = coerceRouteModel(model);
       const langfuseHandler = getLangfuseCallbackHandler({
         sessionId: threadId,
-        tags: ['cadai', model || DEFAULT_MODEL, 'resume'],
+        tags: ['cadai', effectiveModel, 'resume'],
         metadata: {
-          model: model || DEFAULT_MODEL,
+          model: effectiveModel,
         },
       });
 
       try {
-        const agent = createCadAgent(model);
+        const agent = createCadAgent(effectiveModel);
 
         let sawGate = false;
         const stream = await agent.stream(new Command({ resume: decision }), {

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ChatOpenAI } from '@langchain/openai';
 import { ANTHROPIC_OPENAI_BASE_URL, anthropicModelId, getChatModel } from './model-provider';
 import { DEFAULT_MODEL, MODELS, isOfferedModel, isVisionModel } from './models';
@@ -7,6 +7,7 @@ const saved = { ...process.env };
 
 beforeEach(() => {
   process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+  delete process.env.EXPLABS_API_KEY;
   delete process.env.CADAI_MODEL;
 });
 
@@ -33,6 +34,23 @@ describe('getChatModel', () => {
     expect(getChatModel().model).toBe('claude-sonnet-5-5');
   });
 
+  it('CADAI_MODEL is ignored with a warning when not an offered model', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.CADAI_MODEL = 'gpt-6-sol';
+    expect(getChatModel().model).toBe('claude-haiku-5-5');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('CADAI_MODEL "gpt-6-sol" is not an offered model')
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('sets maxTokens to 32000 by default, and CADAI_MAX_TOKENS overrides it', () => {
+    expect(getChatModel('claude-haiku-5.5').maxTokens).toBe(32000);
+    process.env.CADAI_MAX_TOKENS = '16000';
+    expect(getChatModel('claude-haiku-5.5').maxTokens).toBe(16000);
+    delete process.env.CADAI_MAX_TOKENS;
+  });
+
   it('needs only ANTHROPIC_API_KEY, and says so when it is missing', () => {
     expect(() => getChatModel()).not.toThrow();
     delete process.env.ANTHROPIC_API_KEY;
@@ -54,5 +72,23 @@ describe('model catalogue', () => {
 
   it('no longer offers the old gateway models', () => {
     for (const slug of ['gpt-5.6-luna', 'gpt-6-sol', 'deepseek-v4-flash', 'gemini-3.6-flash']) expect(isOfferedModel(slug)).toBe(false);
+  });
+
+  it('isVisionModel accepts any claude- slug in dot or dash form', () => {
+    for (const slug of [
+      'claude-haiku-5.5',
+      'claude-haiku-5-5',
+      'claude-sonnet-5.5',
+      'claude-sonnet-5-5',
+      'claude-opus-5.5',
+      'claude-opus-5-5',
+      'claude-sonnet-5',
+      'claude/sonnet-5',
+    ]) {
+      expect(isVisionModel(slug)).toBe(true);
+    }
+    for (const slug of ['gpt-6-sol', 'deepseek-v4-flash', 'random-model', undefined, '']) {
+      expect(isVisionModel(slug)).toBe(false);
+    }
   });
 });

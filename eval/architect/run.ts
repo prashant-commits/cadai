@@ -5,12 +5,10 @@
  *   npm run eval:architect -- --model claude-haiku-5-5 --limit 2 --sync --tag smoke
  *   npm run eval:architect -- --model claude-sonnet-5-5 --samples 3 --tag s55
  *   npm run eval:architect -- --model claude-opus-5-5 --effort high --samples 3 --tag o55
- *   npm run eval:architect -- --provider gateway --model glm-5.3 --samples 3 --tag glm53
  *   npm run eval:architect -- --provider google --model gemini-3.8-flash --samples 3 --tag g38
  *
  * Calls Anthropic directly with ANTHROPIC_API_KEY (or an `ant auth login`
- * profile), not the gateway; a key not scoped to a workspace also needs
- * ANTHROPIC_WORKSPACE_ID. By default both rounds go through the Message
+ * profile); a key not scoped to a workspace also needs ANTHROPIC_WORKSPACE_ID. By default both rounds go through the Message
  * Batches API at half price; --sync sends the same requests one by one at full
  * price, for a quick smoke run.
  *

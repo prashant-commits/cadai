@@ -50,7 +50,7 @@ interface Pricing {
   output: number;
 }
 
-/** Per-token pricing for the sync route. The Experiential Labs price list is gone; costs come from score.ts PRICES. */
+/** Per-token pricing for the sync route. Returned as null so cost is reported as unknown. */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export async function gatewayPricing(_slug: string): Promise<Pricing | null> {
   return null;
@@ -71,7 +71,9 @@ function usdFor(pricing: Pricing | null, usage: UsageMetadata | undefined): numb
 
 function messagesFor(job: GatewayJob): BaseMessage[] {
   const msgs: BaseMessage[] = [new SystemMessage(job.system), new HumanMessage(job.prompt)];
-  if (job.variantText) msgs.push(new HumanMessage(job.variantText));
+  if (job.variantText) {
+    msgs.push(new HumanMessage(`${job.variantText}\n\nReply by calling the AssemblySpec tool.`));
+  }
   return msgs;
 }
 

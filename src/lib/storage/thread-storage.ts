@@ -210,7 +210,7 @@ async function assembleThread(
     ...row,
     // Every loaded thread carries a contract, as the old loader guaranteed.
     designContract: row.designContract || { standing: {}, pinnedParams: {} },
-    // ...and a slug the gateway still serves.
+    // ...and a slug currently offered.
     selectedModel: coerceModelSlug(row.selectedModel),
     messages,
   };

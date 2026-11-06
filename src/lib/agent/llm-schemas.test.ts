@@ -906,6 +906,102 @@ describe('structuredFor', () => {
     expect('strict' in (seenRawOpts as object)).toBe(false);
   });
 
+  it('structuredFor variant spec on Claude models binds tool_choice auto and never forced tool choice', async () => {
+    const { structuredFor } = await import('./llm-schemas');
+    const { variantSpecRequestSchema } = await import('./assembly-spec');
+    const { ChatOpenAI } = await import('@langchain/openai');
+    const { AIMessage } = await import('@langchain/core/messages');
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    function findChatOpenAI(node: any): any {
+      if (!node) return null;
+      if (node.completions) return node;
+      if (node.first) return findChatOpenAI(node.first);
+      if (node.steps?.raw) return findChatOpenAI(node.steps.raw);
+      if (node.bound) return findChatOpenAI(node.bound);
+      if (node.runnable) return findChatOpenAI(node.runnable);
+      return null;
+    }
+
+    for (const slug of ['claude-sonnet-5.5', 'claude-opus-5.5', 'claude-haiku-5.5']) {
+      const model = new ChatOpenAI({
+        apiKey: 'test-key',
+        model: slug.replace(/\./g, '-'),
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const bound: any = structuredFor(model, slug, variantSpecRequestSchema(), {
+        name: 'AssemblySpec',
+        strict: true,
+      });
+
+      const innerLlm = findChatOpenAI(bound);
+      expect(innerLlm).toBeInstanceOf(ChatOpenAI);
+      const params = innerLlm.completions.invocationParams(innerLlm.defaultOptions);
+
+      // Verify tool_choice is 'auto', never forced or rejected types
+      expect(params.tool_choice).toBe('auto');
+      expect(typeof params.tool_choice === 'object' && params.tool_choice !== null).toBe(false);
+      expect(['tool', 'any', 'required']).not.toContain(params.tool_choice);
+      expect(params.tools).toBeDefined();
+      expect(params.tools[0].function.name).toBe('AssemblySpec');
+
+      // Also verify when includeRaw is true
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rawBound: any = structuredFor(model, slug, variantSpecRequestSchema(), {
+        name: 'AssemblySpec',
+        strict: true,
+        includeRaw: true,
+      });
+      const rawInnerLlm = findChatOpenAI(rawBound);
+      expect(rawInnerLlm).toBeInstanceOf(ChatOpenAI);
+      const rawParams = rawInnerLlm.completions.invocationParams(rawInnerLlm.defaultOptions);
+      expect(rawParams.tool_choice).toBe('auto');
+      expect(['tool', 'any', 'required']).not.toContain(rawParams.tool_choice);
+    }
+
+    // Verify reply without tool call returns undefined (treated as failed attempt)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let seenBindOpts: any;
+    const fakeWithBind = {
+      bindTools(_tools: unknown[], kwargs: unknown) {
+        seenBindOpts = kwargs;
+        return {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          pipe(next: any) {
+            return {
+              invoke: async () => next.invoke(new AIMessage({ content: 'I made no tool call' })),
+            };
+          },
+        };
+      },
+      withStructuredOutput() { throw new Error('should not be called'); },
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const boundFake: any = structuredFor(fakeWithBind as any, 'claude-sonnet-5.5', variantSpecRequestSchema(), {
+      name: 'AssemblySpec',
+    });
+    expect(seenBindOpts).toEqual({ tool_choice: 'auto' });
+    const result = await boundFake.invoke([]);
+    expect(result).toBeUndefined();
+  });
+
+  it('contains no stale gateway comments in schema and storage files', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+    const files = [
+      path.resolve(__dirname, 'llm-schemas.ts'),
+      path.resolve(__dirname, 'strict-schema.ts'),
+      path.resolve(__dirname, '../storage/thread-storage.ts'),
+    ];
+    for (const file of files) {
+      const content = fs.readFileSync(file, 'utf8');
+      expect(content).not.toContain('The gateway enforces');
+      expect(content).not.toContain('The gateway forwards');
+      expect(content).not.toContain('a slug the gateway still serves');
+      expect(content).not.toContain('through the gateway');
+    }
+  });
+
 });
 
 

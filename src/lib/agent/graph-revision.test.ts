@@ -4,7 +4,6 @@ import { BaseMessage, HumanMessage } from '@langchain/core/messages';
 import { getCheckpointer, runCheckpointKey } from './checkpointer';
 import type { GatePayload } from '@/types';
 import { skeletonSignature } from './spec-variants';
-import { REVISION_TEMPERATURE } from './graph';
 
 /** Records the temperature of the model instance each call was made on. */
 const callMock = vi.fn();
@@ -192,7 +191,6 @@ describe('revision change check', () => {
 
 describe('revision temperature', () => {
   it('revision calls never send temperature: Claude 5.5 rejects it on this endpoint', async () => {
-    expect(REVISION_TEMPERATURE).toBe(0.6);
     const { calls } = await run([box(46)]);
     for (const c of calls) {
       expect(c.temperature).toBeUndefined();
@@ -203,7 +201,7 @@ describe('revision temperature', () => {
   });
 });
 
-describe('pinned sheet reviewer', () => {
+describe('pinned sheet reviewer and env model validation', () => {
   it('CADAI_REVIEWER_MODEL routes only the reviewer to that model; unset, the run model reviews', async () => {
     process.env.CADAI_REVIEWER_MODEL = 'claude-sonnet-5.5';
     try {
@@ -218,5 +216,52 @@ describe('pinned sheet reviewer', () => {
     callMock.mockReset();
     const { calls } = await run([box(46)]);
     expect(calls.every((c) => c.model === 'claude-haiku-5-5')).toBe(true);
+  });
+
+  it('CADAI_REVIEWER_MODEL is ignored with a warning when not an offered model', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.CADAI_REVIEWER_MODEL = 'gpt-6-sol';
+    try {
+      const { calls } = await run([box(46)]);
+      const reviewers = calls.filter((c) => c.kind === 'reviewer');
+      expect(reviewers.length).toBeGreaterThan(0);
+      expect(reviewers.every((c) => c.model === 'claude-haiku-5-5')).toBe(true);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('CADAI_REVIEWER_MODEL "gpt-6-sol" is not an offered model')
+      );
+    } finally {
+      delete process.env.CADAI_REVIEWER_MODEL;
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('CADAI_CRITIC_MODEL is ignored with a warning when not an offered model', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.CADAI_CRITIC_MODEL = 'gpt-5.6-luna';
+    try {
+      const { createCadAgent } = await import('./graph');
+      createCadAgent('claude-haiku-5.5');
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('CADAI_CRITIC_MODEL "gpt-5.6-luna" is not an offered model')
+      );
+    } finally {
+      delete process.env.CADAI_CRITIC_MODEL;
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('CADAI_MODEL in createCadAgent is ignored with a warning when not an offered model', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.CADAI_MODEL = 'gpt-6-sol';
+    try {
+      const { createCadAgent } = await import('./graph');
+      createCadAgent();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('CADAI_MODEL "gpt-6-sol" is not an offered model')
+      );
+    } finally {
+      delete process.env.CADAI_MODEL;
+      warnSpy.mockRestore();
+    }
   });
 });

@@ -37,5 +37,19 @@ export function isOfferedModel(slug: string | undefined): boolean {
 }
 
 export function isVisionModel(slug: string | undefined): boolean {
-  return isOfferedModel(slug);
+  if (!slug || typeof slug !== 'string') return false;
+  return isOfferedModel(slug) || slug.startsWith('claude-') || slug.startsWith('claude/');
+}
+
+/**
+ * Coerces a client-supplied model slug in chat routes:
+ * offered -> as is; otherwise DEFAULT_MODEL (CADAI_MODEL may still override
+ * only when it is itself an offered slug).
+ */
+export function coerceRouteModel(model: string | undefined): string {
+  if (model && isOfferedModel(model)) return model;
+  if (process.env.CADAI_MODEL && isOfferedModel(process.env.CADAI_MODEL)) {
+    return process.env.CADAI_MODEL;
+  }
+  return DEFAULT_MODEL;
 }

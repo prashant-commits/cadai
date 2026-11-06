@@ -1,5 +1,5 @@
 import { ChatOpenAI } from '@langchain/openai';
-import { DEFAULT_MODEL } from './models';
+import { DEFAULT_MODEL, isOfferedModel } from './models';
 
 /**
  * Model routing for the CAD agent.
@@ -32,16 +32,31 @@ export function anthropicModelId(slug: string): string {
 export type CadChatModel = ChatOpenAI;
 
 /**
- * Builds a chat model for `modelName` (an app slug; defaults to CADAI_MODEL, then
- * DEFAULT_MODEL). `opts.temperature` is accepted for revision call sites but never
- * sent: Claude 5.5 models reject `temperature` on this endpoint.
+ * Builds a chat model for `modelName` (an app slug; defaults to CADAI_MODEL if offered, then
+ * DEFAULT_MODEL). Temperature cannot be sent on this endpoint (Claude 5.5 models reject
+ * temperature values below 1 or non-default values).
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function getChatModel(modelName?: string, _opts?: { temperature?: number }): CadChatModel {
-  const selectedModel = modelName || process.env.CADAI_MODEL || DEFAULT_MODEL;
+  let selectedModel = modelName;
+  if (!selectedModel) {
+    const envModel = process.env.CADAI_MODEL;
+    if (envModel) {
+      if (isOfferedModel(envModel)) {
+        selectedModel = envModel;
+      } else {
+        console.warn(`CADAI_MODEL "${envModel}" is not an offered model; ignoring and falling back to "${DEFAULT_MODEL}".`);
+        selectedModel = DEFAULT_MODEL;
+      }
+    } else {
+      selectedModel = DEFAULT_MODEL;
+    }
+  }
+
   return new ChatOpenAI({
     apiKey: anthropicKey(),
     model: anthropicModelId(selectedModel),
+    maxTokens: Number(process.env.CADAI_MAX_TOKENS ?? 32000),
     // The OpenAI client defaults to a 10-minute timeout with 2 retries, so one
     // stalled request can hold a run for half an hour; 4 minutes is generous.
     timeout: Number(process.env.CADAI_MODEL_TIMEOUT_MS ?? 240_000),
