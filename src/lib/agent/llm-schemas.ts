@@ -441,7 +441,9 @@ function normalizeStressPoint(sp: unknown): unknown {
 }
 
 /** Array fields Claude sometimes returns as a string that swallowed the fields after it. */
-const BLEED_FIELDS = ['parameters', 'derived', 'relations'] as const;
+const BLEED_FIELDS = [
+  'parameters', 'derived', 'relations', 'components', 'guides', 'jointContracts', 'stressPoints', 'assumptions', 'openQuestions',
+] as const;
 
 /**
  * Claude (Haiku 5.5 most often) sometimes serialises a tool call's array field

@@ -23,6 +23,12 @@ export type NormalizedAssemblySpec = AssemblySpec & {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+/** An expression term moved by -min with the outline; a literal (null) was already shifted as a number. */
+const shiftTerm = (term: string | null, min: number): string | null => {
+  if (term === null || min === 0) return term;
+  return min < 0 ? `(${term}) + ${round2(Math.abs(min))}` : `(${term}) - ${round2(min)}`;
+};
+
 /**
  * Makes a parsed spec usable by deterministic code: component names become
  * module identifiers (with every reference renamed to match), every component
@@ -138,6 +144,20 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
           }),
         };
       }
+    }
+
+    // The kept outline expressions follow the shift, so a parametric outline stays parametric
+    // (and a second resolve of this spec does not undo the shift).
+    if (shiftedExpr?.outline || shiftedExpr?.outlineHoles) {
+      const shiftPoint = (pt: (string | null)[]) => [
+        shiftTerm(pt[0], minU),
+        shiftTerm(pt[1], minV),
+      ];
+      shiftedExpr = {
+        ...shiftedExpr,
+        ...(shiftedExpr.outline ? { outline: shiftedExpr.outline.map(shiftPoint) } : {}),
+        ...(shiftedExpr.outlineHoles ? { outlineHoles: shiftedExpr.outlineHoles.map((h) => h.map(shiftPoint)) } : {}),
+      };
     }
 
     // H1: Null out in-plane expr.localExtents entries that disagree with the outline by > 0.5 mm
