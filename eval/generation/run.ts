@@ -40,6 +40,8 @@ for (const f of ['.env', '.env.local']) {
 // blockout, critic off, one shared judge model. An env var already set in the
 // shell still wins until a flag below overrides it.
 process.env.CADAI_MAX_ATTEMPTS ??= '1';
+// One variant, as production runs (Vercel CADAI_MAX_VARIANTS=1).
+process.env.CADAI_MAX_VARIANTS ??= '1';
 process.env.CADAI_SPEC_SHEETS ??= 'on';
 process.env.CADAI_DRAFTER_START ??= 'blockout';
 process.env.CADAI_VISUAL_CRITIC ??= 'off';

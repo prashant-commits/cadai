@@ -35,6 +35,8 @@ import Anthropic from '@anthropic-ai/sdk';
 for (const f of ['.env', '.env.local']) {
   try { process.loadEnvFile(f); } catch { /* absent is fine */ }
 }
+// One variant, as production runs (Vercel CADAI_MAX_VARIANTS=1). An exported shell value still wins.
+process.env.CADAI_MAX_VARIANTS ??= '1';
 
 import { systemPromptFor } from '@/lib/agent/system-prompt';
 import { ArchitectPlanSchema, claudeVariantSpecSchema } from '@/lib/agent/llm-schemas';
