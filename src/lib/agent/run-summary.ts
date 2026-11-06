@@ -8,6 +8,8 @@ export interface RunSummaryInput {
   /** Total draft+repair passes. 1 means the first draft compiled. */
   attempts: number;
   isValid: boolean;
+  /** Geometry kernel of the run; 'brep' skips the parameter sweep and literal lint. */
+  kernel?: 'openscad' | 'brep' | null;
 }
 
 /**
@@ -20,7 +22,7 @@ export interface RunSummaryInput {
  * behind the message's own code disclosure.
  */
 export function composeRunSummary(input: RunSummaryInput): string {
-  const { spec, modelInfo, violations, attempts, isValid } = input;
+  const { spec, modelInfo, violations, attempts, isValid, kernel } = input;
   const lines: string[] = [];
 
   if (!isValid) {
@@ -43,6 +45,10 @@ export function composeRunSummary(input: RunSummaryInput): string {
     if (attempts > 1) {
       lines.push(`Took ${attempts - 1} repair pass${attempts - 1 === 1 ? '' : 'es'} after the first draft.`);
     }
+  }
+
+  if (kernel === 'brep') {
+    lines.push('\nbuild123d kernel: the dead-parameter sweep and the literal lint were not run.');
   }
 
   if (violations.length) {

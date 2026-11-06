@@ -113,6 +113,12 @@ describe('readStream', () => {
     expect(final.designContract).toBeDefined();
   });
 
+  it('carries language off the result event', async () => {
+    const { final } = await run([{ t: 'result', summary: 'ok', code: 'PY', step: 'U1RFUA==', language: 'build123d' }]);
+    expect(final.language).toBe('build123d');
+    expect(final.step).toBe('U1RFUA==');
+  });
+
   it('carries step off the result event when present', async () => {
     const { final } = await run([
       { t: 'result', summary: 'ok', code: 'PY', step: 'U1RFUA==' } as unknown as StreamEvent,

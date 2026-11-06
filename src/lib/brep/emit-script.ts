@@ -35,7 +35,7 @@ import { comment, specNames, isReservedName, type TermContext } from './py-names
  *   7. `result = Compound(...)` of the fused groups.
  *
  * Fusing loses labels, so the labelled, placed, un-fused, un-cut parts are also
- * bound to `_parts`; a runner that measures per component reads that list.
+ * bound to the module-level `_cadai_parts`; a runner that measures per component reads that list.
  */
 
 const AXES = ['x', 'y', 'z'] as const;
@@ -196,7 +196,7 @@ export function emitBrepScript(spec: AssemblySpec, bodies: Record<string, string
   }
   lines.push('# ---- parts: each measured in its own frame, then placed in the assembly (labelled)', ...partLines);
   lines.push(`_local = [${drawn.map((c) => localVar(c.name)).join(', ')}]`);
-  lines.push(`_parts = [${drawn.map((c) => varOf(c.name)).join(', ')}]`, '');
+  lines.push(`_cadai_parts = [${drawn.map((c) => varOf(c.name)).join(', ')}]`, '');
 
   // 5. Mating cavities.
   const cutLines: string[] = [];

@@ -6,11 +6,13 @@ import { checkpointTtlMs } from './checkpointer';
 export const NODE_LABELS: Record<string, string> = {
   architectNode: 'Mechanical Architect',
   architectBuild: 'Mechanical Architect · Build',
+  brepBuild: 'Mechanical Architect · Build (build123d)',
   specIllustrator: 'Concept Sheets',
   specReviewer: 'Sheet Reviewer',
   specGate: 'Spec Review',
   drafterNode: 'Parametric Drafter',
   validateCode: 'Physical Validator',
+  validateBrep: 'Physical Validator (build123d)',
   fixCode: 'Repair',
   visualCritic: 'Design Inspector',
   acceptGate: 'Model Review',
@@ -19,10 +21,11 @@ export const NODE_LABELS: Record<string, string> = {
 
 /**
  * Nodes whose `messages`-mode chunks must never reach the UI: structured-output
- * JSON, and the Architect's raw `@body` build reply. The structured nodes render
+ * JSON, and the Architect's raw `@body` build reply (OpenSCAD or build123d), and the
+ * B-rep validator's `[Validation Report]` message. The structured nodes render
  * their own markdown over `custom`.
  */
-const STRUCTURED_NODES = new Set(['architectNode', 'specReviewer', 'visualCritic', 'architectBuild']);
+const STRUCTURED_NODES = new Set(['architectNode', 'specReviewer', 'visualCritic', 'architectBuild', 'brepBuild', 'validateBrep']);
 
 type CustomPayload = StreamEvent & { node?: string };
 

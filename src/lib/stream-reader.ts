@@ -11,6 +11,8 @@ export interface StreamState {
   code?: string;
   stl?: string;
   step?: string;
+  /** Language of `code` when the server says so (build123d runs); absent means OpenSCAD. */
+  language?: 'openscad' | 'build123d';
   designContract?: DesignContract;
   /** The paused run to POST back to /api/chat/resume. */
   runId?: string;
@@ -101,7 +103,8 @@ export async function readStream(response: Response, callbacks: StreamCallbacks)
         state.summary = event.summary;
         if (event.code) state.code = event.code;
         if (event.stl) state.stl = event.stl;
-        if ((event as { step?: string }).step) state.step = (event as { step?: string }).step;
+        if (event.step) state.step = event.step;
+        if (event.language) state.language = event.language;
         if (event.designContract) state.designContract = event.designContract;
         // A resumed run that reaches a result really has finished, even if it
         // paused earlier in this same stream.

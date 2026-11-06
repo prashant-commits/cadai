@@ -212,7 +212,7 @@ describe('blind holes follow a parameter past the midpoint (Low 7)', () => {
       components: [comp('plate', [40, 30, 10], [0, 0, 0], { holes: [{ d: 6, axis: 'z', at: [20, 15, 'm'], depth: 4 }] })],
     });
   const slab = (z0: number, z1: number) =>
-    `\n_slab = Pos(0, 0, ${z0}) * Box(40, 30, ${z1 - z0}, align=(Align.MIN, Align.MIN, Align.MIN))\n_cut = (_p_plate & _slab)\n_cut.label = "slab"\n_parts = [_cut]\n`;
+    `\n_slab = Pos(0, 0, ${z0}) * Box(40, 30, ${z1 - z0}, align=(Align.MIN, Align.MIN, Align.MIN))\n_cut = (_p_plate & _slab)\n_cut.label = "slab"\n_cadai_parts = [_cut]\n`;
   run('the cutter sits on the face the parameter selects', async () => {
     const { script } = emitBrepScript(blind(0));
     const bottomVol = async (s: string) => part(await runScriptForTest(s + slab(0, 2)), 'slab').volume;
@@ -238,7 +238,7 @@ describe('profile inserts get a mating cavity (Low 8)', () => {
     });
     const { script } = emitBrepScript(s);
     expect(script).toContain('offset(');
-    const r = await runScriptForTest(`${script}\n_parts = list(result.children)\n`);
+    const r = await runScriptForTest(`${script}\n_cadai_parts = list(result.children)\n`);
     expect(r.ok, r.error).toBe(true);
     const host = part(r, 'h');
     // The prism fills 15 mm of the host (area 50); the cavity is that grown by 0.3 mm: more, but not much more.

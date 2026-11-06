@@ -89,7 +89,13 @@ def _part(shape, label: str) -> dict:
     }
 
 
-def _parts(result) -> list[dict]:
+def _parts(result, measured=None) -> list[dict]:
+    # The emitter binds the labelled, placed, pre-fusion parts to ``_cadai_parts``;
+    # measure those, not the fused result.
+    if isinstance(measured, (list, tuple)) and measured and all(
+        hasattr(item, "bounding_box") and hasattr(item, "wrapped") for item in measured
+    ):
+        return [_part(item, getattr(item, "label", "") or "") for item in measured]
     children = list(getattr(result, "children", []) or [])
     sources = getattr(result, _RECORDER_FLAG, None)
     if children:
@@ -150,7 +156,7 @@ def run(script_path: str | os.PathLike, outdir: str | os.PathLike) -> dict:
         box = result.bounding_box()
         return {
             "ok": True,
-            "parts": _parts(result),
+            "parts": _parts(result, namespace.get("_cadai_parts")),
             "local": _local(namespace),
             "solids": len(list(result.solids())),
             "bbox": {"min": _xyz(box.min), "max": _xyz(box.max)},
