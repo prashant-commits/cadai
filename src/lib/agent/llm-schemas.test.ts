@@ -169,7 +169,8 @@ describe('structuredFor', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const schemaObj = claudeVariant.seen[0].schema as any;
     expect(schemaObj.additionalProperties).toBe(false);
-    expect(schemaObj.required[0]).toBe('sheet'); // sheet first
+    expect(schemaObj.required.at(-1)).toBe('sheet'); // sheet last
+    expect(Object.keys(schemaObj.properties).at(-1)).toBe('sheet');
     expect(schemaObj.required).toContain('components');
     const compReq = schemaObj.properties.components.items.required;
     expect(compReq).toContain('position');

@@ -36,7 +36,7 @@ import type { ModuleFrame } from '../engine/module-frames';
 import { placeAssembly } from './place-assembly';
 import { PlacementReport } from '../design/placement-report';
 import { auditPlacement } from './placement-audit';
-import { auditSpecCoherence } from './spec-coherence';
+import { auditSpecCoherence, auditSpecParameters } from './spec-coherence';
 import { auditModuleGuards } from '../design/module-guards';
 import { auditHoles } from './hole-audit';
 import { normalizeSpec } from './spec-normalize';
@@ -728,8 +728,8 @@ export function createCadAgent(
         : coherenceFeedback
         ? 'Your previous Assembly Spec was internally inconsistent:\n' +
           coherenceFeedback.map((v) => `- ${v.message}`).join('\n') +
-          '\nRecompute the placement arithmetic and emit a spec whose boundingBox equals the extent of its ' +
-          'own components once each is rotated about its origin and moved to its position.'
+          '\nResolve the errors above: ensure every declared parameter is used in a component or guide ' +
+          'expression (or removed), all expressions resolve, and component placement arithmetic is consistent.'
         : 'Your previous reply did not yield a valid Assembly Spec. Emit the structured spec now, with every dimension in millimetres and at most two decimal places.';
 
       const attemptMessages =
@@ -766,6 +766,7 @@ export function createCadAgent(
           // the check so the violation is never lost.
           const incoherent = [
             ...auditSpecCoherence(candidate).filter((v) => v.severity === 'error'),
+            ...auditSpecParameters(candidate).filter((v) => v.severity === 'error'),
             ...auditSpecShapes(candidate).filter((v) => v.severity === 'error'),
             ...auditSpecGround(candidate).filter((v) => v.severity === 'error'),
           ];

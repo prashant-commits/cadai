@@ -3,28 +3,16 @@ import type { SpecViolation } from './spec-audit';
 import { resolveSpec } from './spec-expr';
 import { FRAME_EPS, placedBounds, Vec3 } from '../design/placement-geometry';
 
+export { auditSpecParameters } from './spec-param-lint';
+
 /**
- * Spec-internal coherence: does the Architect's own JSON agree with itself?
+ * Spec-internal coherence: does the Architect's JSON agree with itself?
  *
- * Every other audit compares compiled geometry against the spec, so it can only
- * ever catch the Drafter disagreeing with the Architect. When the Architect is
- * the one who is wrong, the Drafter implements it faithfully, the composer
- * places it faithfully, and every measurement matches - the pipeline confirms a
- * part nobody asked for. That is the failure the user sees as "the output is
- * bad", and no amount of measuring the compiled model can reach it.
+ * Checks that all expressions resolve cleanly and that any declared bounding box
+ * (for un-normalized inputs or fixtures) matches the envelope implied by the
+ * component placements and local extents.
  *
- * What makes it reachable is that the Architect states the assembly envelope
- * TWICE and independently: once as `boundingBox`, and once implicitly, as the
- * union of every component's `position` + `rotation` + `localExtents`. Those
- * two statements have no reason to disagree, and both are pure arithmetic over
- * numbers the model chose. Requiring them to agree forces the placement
- * arithmetic to be done twice and come out the same - which is exactly the
- * arithmetic (trigonometry, stacked heights, rotated offsets) that language
- * models get wrong, and exactly what a bounding-box-vs-reality check cannot
- * see, because a wrong spec moves both sides of that comparison together.
- *
- * It costs nothing and needs no geometry, so it runs at the spec gate, BEFORE
- * the Drafter is paid to implement a spec that is already inconsistent.
+ * Pure arithmetic: no compile, no geometry, no model call.
  */
 
 /**
