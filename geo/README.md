@@ -20,13 +20,20 @@ Run a script. It must assign `result`. One JSON line is printed, and the same ob
 geo/.venv/bin/python -I -m cadai_geo path/to/model.py path/to/outdir
 ```
 
-Start the HTTP service on a developer machine (this uid cannot `setuid`, so the uid split is not active here):
+Local dev for the Next.js app. This starts the service on `127.0.0.1:8765` with the dev token. The first boot imports build123d once in a helper process; later runs fork that process instead of importing again.
 
 ```bash
-export CADAI_GEO_TOKEN=dev-token
-export PORT=8000
-geo/.venv/bin/uvicorn cadai_geo.service:app --host 127.0.0.1 --port "$PORT"
+npm run geo:serve
 ```
+
+In the app's environment:
+
+```bash
+export CADAI_GEO_URL=http://127.0.0.1:8765
+export CADAI_GEO_TOKEN=dev
+```
+
+This uid cannot `setuid`, so the uid split is not active outside the container. The one-shot CLI above does not use the helper.
 
 Prefer a file for the token, including locally, so it is not sitting in the process environment:
 
@@ -42,8 +49,9 @@ export CADAI_GEO_TOKEN_FILE="$HOME/geo-token"
 
 - The service ignores the child's stdout. It reads only `<outdir>/result.json`, which the runner writes after the script returns. Printed JSON cannot change `ok` or `parts`.
 - `stl` and `step` are loaded only from `<outdir>/model.stl` and `<outdir>/model.step` when they are regular files inside that directory. Symlinks are rejected, so a path such as `/etc/hostname` in the JSON is not opened.
-- Child environment is `PATH`, `HOME` (the request temp directory), and a one-thread cap for OpenBLAS, OpenMP, MKL, NUMEXPR, and VECLIB. That cap keeps `RLIMIT_NPROC` 64 usable on a many-core host. `CADAI_GEO_TOKEN` is removed from the service environment after it is read. It is never passed to the child.
-- As root, each run drops to the `georun` user (`setgroups([])`, `setgid`, `setuid`) before exec. `georun` cannot read `/proc/<service-pid>/environ` or a `0400` token file owned by the service user.
+- At boot the service execs a zygote with an empty environment. The zygote imports build123d once and holds no token. Each run forks a child; the service kills that child's process group on timeout. If the zygote dies, the next request starts a new one.
+- The forked child's environment is `PATH`, `HOME` (the request temp directory), and a one-thread cap for OpenBLAS, OpenMP, MKL, NUMEXPR, and VECLIB. That cap keeps `RLIMIT_NPROC` 64 usable on a many-core host and keeps the zygote single-threaded so `fork` is safe. `CADAI_GEO_TOKEN` is removed from the service environment after it is read. It is never passed to the zygote or the child.
+- As root, each forked child drops to the `georun` user (`setgroups([])`, `setgid`, `setuid`) before the script runs. `georun` cannot read `/proc/<service-pid>/environ` or a `0400` token file owned by the service user.
 - Timeout sends `SIGKILL` to the child's process group, so a grandchild started with `Popen` dies with the request.
 - Limits on each run: `RLIMIT_AS` 2 GB (`CADAI_GEO_RLIMIT_AS`), `RLIMIT_CPU` timeout+5 s, `RLIMIT_FSIZE` 256 MB, `RLIMIT_NPROC` 64 for `georun`, `RLIMIT_CORE` 0. Outside the container the process cap is raised just above this uid's existing threads so a local run can still import; it stays a finite cap.
 - Stderr kept for errors is at most 4 KB. Each export must be at most 64 MB (`CADAI_GEO_MAX_EXPORT_BYTES`) or the response is `output too large`.

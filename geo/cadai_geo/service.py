@@ -1,57 +1,55 @@
-"""HTTP sandbox around the geometry CLI.
+"""HTTP sandbox around the geometry runner.
 
-Each ``POST /run`` writes the script into a fresh temp directory and runs
-``python -I -m cadai_geo`` in a subprocess. The service does not trust the
-child's stdout. It reads ``<outdir>/result.json`` and inlines only
-``model.step`` and ``model.stl`` when those are regular files inside that
-directory.
+Each ``POST /run`` writes the script into a fresh temp directory and asks the
+zygote (a long-lived helper that has already imported build123d) to fork a
+child. The service does not trust the child's stdout. It reads
+``<outdir>/result.json`` and inlines only ``model.step`` and ``model.stl``
+when those are regular files inside that directory.
 
-The child environment is only ``PATH`` and ``HOME`` (HOME is the temp dir).
-When this process is root and the ``georun`` user exists, the child drops to
-that uid before exec so it cannot read the service's ``/proc/<pid>/environ``
-or the token file. Resource limits and a process-group kill bound CPU, file
-size, process count, and timeouts. Network egress, a read-only root, and
-cgroup caps are host responsibilities; see the README.
+The zygote is exec'd with an empty environment and never receives the token.
+The forked child applies the same isolation as the CLI spawn: uid drop to
+``georun`` when this process is root, rlimits, a new session, and stdout plus
+stderr pointed at a file of which only the last 4 KB is kept. The service
+kills that process group on timeout. ``python -I -m cadai_geo`` does not use
+the zygote. Network egress, a read-only root, and cgroup caps are host
+responsibilities; see the README.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hmac
 import json
 import os
 import pwd
-import resource
-import signal
 import stat
-import subprocess
-import sys
 import tempfile
-import threading
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
+from cadai_geo.isolate import _DEFAULT_AS_LIMIT
 from cadai_geo.run import redact
+from cadai_geo.zygote import ZygoteServer
 
-app = FastAPI()
+zygote = ZygoteServer()
 
-_DEFAULT_AS_LIMIT = 2 * 1024**3
-_FSIZE_LIMIT = 256 * 1024 * 1024
-_NPROC_LIMIT = 64
-# Local pytest shares a uid that already has many tasks. Linux counts those
-# tasks against RLIMIT_NPROC, so a hard 64 makes the import fail. Headroom
-# stays small enough that a fork bomb still hits EAGAIN.
-_NPROC_DEV_HEADROOM = 48
-# OpenBLAS/OpenMP default to one thread per CPU, which on a large host
-# exceeds the georun cap of 64 during import, before the script runs.
-_NUMERIC_THREADS = {
-    "OPENBLAS_NUM_THREADS": "1",
-    "OMP_NUM_THREADS": "1",
-    "MKL_NUM_THREADS": "1",
-    "NUMEXPR_NUM_THREADS": "1",
-    "VECLIB_MAXIMUM_THREADS": "1",
-}
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Import build123d once at boot. /run also starts the helper if this
+    # lifespan did not run (the test client does not enter it).
+    await asyncio.to_thread(zygote.start_locked)
+    try:
+        yield
+    finally:
+        zygote.stop()
+
+
+app = FastAPI(lifespan=_lifespan)
+
 _MAX_EXPORT_BYTES = 64 * 1024 * 1024
 _MAX_SCRIPT_BYTES = 256 * 1024
 _MAX_RESULT_BYTES = 1024 * 1024
@@ -136,35 +134,11 @@ def _max_export_bytes() -> int:
     return max(1, value)
 
 
-def _uid_task_count() -> int:
-    """Threads of this real uid. Linux ``RLIMIT_NPROC`` counts tasks."""
-    uid = os.getuid()
-    total = 0
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        try:
-            with open(f"/proc/{entry}/status", encoding="utf-8") as handle:
-                text = handle.read()
-        except OSError:
-            continue
-        real_uid = None
-        threads = 1
-        for line in text.splitlines():
-            if line.startswith("Uid:"):
-                real_uid = int(line.split()[1])
-            elif line.startswith("Threads:"):
-                threads = int(line.split()[1])
-        if real_uid == uid:
-            total += threads
-    return total
-
-
 def _georun():
     """Return the ``georun`` account when this process may drop to it.
 
     Local pytest is not root, so it cannot setuid. The container image runs
-    as root (with only SETUID/SETGID kept) and does drop.
+    as root (with only SETUID/SETGID kept) and the forked child drops.
     """
     if os.geteuid() != 0:
         return None
@@ -172,36 +146,6 @@ def _georun():
         return pwd.getpwnam("georun")
     except KeyError:
         return False
-
-
-def _set_both(resource_id: int, value: int) -> None:
-    resource.setrlimit(resource_id, (value, value))
-
-
-def _limit_and_drop(timeout_s: float, as_limit: int, account) -> None:
-    _set_both(resource.RLIMIT_CORE, 0)
-    _set_both(resource.RLIMIT_AS, as_limit)
-    _set_both(resource.RLIMIT_CPU, int(timeout_s) + 5)
-    _set_both(resource.RLIMIT_FSIZE, _FSIZE_LIMIT)
-    if account is not None:
-        # georun has no other processes, so 64 is a real cap. Set it before
-        # the uid change; the value sticks to this process.
-        _set_both(resource.RLIMIT_NPROC, _NPROC_LIMIT)
-        os.setgroups([])
-        os.setgid(account.pw_gid)
-        os.setuid(account.pw_uid)
-        return
-    _set_both(
-        resource.RLIMIT_NPROC,
-        max(_NPROC_LIMIT, _uid_task_count() + _NPROC_DEV_HEADROOM),
-    )
-
-
-def _child_env(home: str) -> dict[str, str]:
-    env = {"HOME": home, **_NUMERIC_THREADS}
-    if "PATH" in os.environ:
-        env["PATH"] = os.environ["PATH"]
-    return env
 
 
 def _regular_inside(path: str, outdir: str) -> bool:
@@ -220,24 +164,17 @@ def _regular_inside(path: str, outdir: str) -> bool:
     return inside and os.path.basename(real) == os.path.basename(path)
 
 
-def _stderr_tail(stream) -> str:
-    buf = bytearray()
-    while True:
-        chunk = stream.read(4096)
-        if not chunk:
-            break
-        buf += chunk
-        if len(buf) > _STDERR_CAP:
-            del buf[:-_STDERR_CAP]
-    text = buf.decode("utf-8", errors="replace").replace("\x00", "")
-    return redact(text).strip()[-_STDERR_CAP:]
-
-
-def _kill_group(pid: int) -> None:
+def _stderr_tail_file(path: str) -> str:
     try:
-        os.killpg(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - _STDERR_CAP))
+            data = handle.read(_STDERR_CAP)
+    except OSError:
+        return ""
+    text = data.decode("utf-8", errors="replace").replace("\x00", "")
+    return redact(text).strip()[-_STDERR_CAP:]
 
 
 def _read_result(outdir: str) -> dict | None:
@@ -285,48 +222,38 @@ def _run_cli(script: str, timeout_s: float) -> dict:
     as_limit = _as_limit()
     max_bytes = _max_export_bytes()
 
-    def preexec() -> None:
-        _limit_and_drop(timeout_s, as_limit, account)
-
     with tempfile.TemporaryDirectory(prefix="cadai-geo-") as temp_dir:
         script_path = os.path.join(temp_dir, "model.py")
         outdir = os.path.join(temp_dir, "out")
+        stderr_path = os.path.join(temp_dir, "stderr.txt")
         os.makedirs(outdir)
         with open(script_path, "w", encoding="utf-8") as handle:
             handle.write(script)
+        os.close(os.open(stderr_path, os.O_WRONLY | os.O_CREAT, 0o600))
         if account is not None:
-            _give_to_georun(account, temp_dir, script_path, outdir)
-        proc = subprocess.Popen(
-            [sys.executable, "-I", "-m", "cadai_geo", script_path, outdir],
-            cwd=temp_dir,
-            env=_child_env(temp_dir),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            preexec_fn=preexec,
-            start_new_session=True,
-        )
-        assert proc.stderr is not None
-        tail: dict[str, str] = {}
-
-        def drain() -> None:
-            tail["text"] = _stderr_tail(proc.stderr)
-
-        reader = threading.Thread(target=drain, daemon=True)
-        reader.start()
-        timed_out = False
-        try:
-            proc.wait(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            _kill_group(proc.pid)
-            proc.wait()
-        reader.join(timeout=2)
-        if timed_out:
+            _give_to_georun(account, temp_dir, script_path, outdir, stderr_path)
+        request = {
+            "script": script_path,
+            "outdir": outdir,
+            "stderr": stderr_path,
+            "timeout_s": timeout_s,
+            "as_limit": as_limit,
+            "home": temp_dir,
+        }
+        path = os.environ.get("PATH")
+        if path:
+            request["path"] = path
+        if account is not None:
+            request["uid"] = account.pw_uid
+            request["gid"] = account.pw_gid
+        outcome = zygote.execute(request, timeout_s)
+        if outcome.failed:
+            return {"ok": False, "error": "zygote"}
+        if outcome.timed_out:
             return {"ok": False, "error": "timeout"}
         payload = _read_result(outdir)
         if payload is None:
-            message = tail.get("text") or "no result"
+            message = _stderr_tail_file(stderr_path) or "no result"
             return {"ok": False, "error": message or "no result"}
         return _attach_exports(payload, outdir, max_bytes)
 
