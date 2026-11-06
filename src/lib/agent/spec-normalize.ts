@@ -23,11 +23,29 @@ export type NormalizedAssemblySpec = AssemblySpec & {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
-/** An expression term moved by -min with the outline; a literal (null) was already shifted as a number. */
-const shiftTerm = (term: string | null, min: number): string | null => {
-  if (term === null || min === 0) return term;
-  return min < 0 ? `(${term}) + ${round2(Math.abs(min))}` : `(${term}) - ${round2(min)}`;
-};
+/**
+ * Profile scaling rule: an expressed coordinate (in outline inner holes or in component holes[].at)
+ * on a scaled axis is scaled in the same way as its number, by rewriting the term to
+ * ((term) - min) * k where k = target / span.
+ */
+function transformTerm(term: string | null | undefined, min: number, scale: number): string | null {
+  if (term === null || term === undefined) return null;
+  if (min === 0 && scale === 1) return term;
+
+  let shifted: string;
+  if (min === 0) {
+    shifted = term;
+  } else if (min < 0) {
+    shifted = `(${term}) + ${round2(Math.abs(min))}`;
+  } else {
+    shifted = `(${term}) - ${round2(min)}`;
+  }
+
+  if (scale === 1) return shifted;
+
+  const kStr = Number.isInteger(scale) ? String(scale) : String(Number(scale.toFixed(6)));
+  return `(${shifted}) * ${kStr}`;
+}
 
 /**
  * Makes a parsed spec usable by deterministic code: component names become
@@ -84,8 +102,10 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
 
     if (!Number.isFinite(minU) || !Number.isFinite(minV)) return c;
 
-    const sizeU = round2(maxU - minU);
-    const sizeV = round2(maxV - minV);
+    const spanU = maxU - minU;
+    const spanV = maxV - minV;
+    const sizeU = round2(spanU);
+    const sizeV = round2(spanV);
 
     let uAxis: 0 | 1 | 2;
     let vAxis: 0 | 1 | 2;
@@ -100,9 +120,8 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
       vAxis = 2;
     }
 
-    const hasOutlineExpr = Boolean(
-      c.expr?.outline?.some((pt) => pt?.some((x) => x !== null && x !== undefined))
-    );
+    const uOutlineHasExpr = Boolean(c.expr?.outline?.some((pt) => pt?.[0] != null));
+    const vOutlineHasExpr = Boolean(c.expr?.outline?.some((pt) => pt?.[1] != null));
 
     const [ex = 0, ey = 0, ez = 0] = (c.localExtents ?? []) as number[];
     const targetU = ((c.localExtents ?? []) as number[])[uAxis] ?? 0;
@@ -111,11 +130,14 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
     const uHasExpr = Boolean(c.expr?.localExtents?.[uAxis]);
     const vHasExpr = Boolean(c.expr?.localExtents?.[vAxis]);
 
-    const scaleU = (!hasOutlineExpr && uHasExpr && sizeU > 0 && Number.isFinite(targetU)) ? targetU / sizeU : 1;
-    const scaleV = (!hasOutlineExpr && vHasExpr && sizeV > 0 && Number.isFinite(targetV)) ? targetV / sizeV : 1;
+    const shouldScaleU = !uOutlineHasExpr && uHasExpr && spanU > 0 && targetU > 0 && Number.isFinite(targetU);
+    const shouldScaleV = !vOutlineHasExpr && vHasExpr && spanV > 0 && targetV > 0 && Number.isFinite(targetV);
 
-    const finalSizeU = (!hasOutlineExpr && uHasExpr && Number.isFinite(targetU)) ? targetU : sizeU;
-    const finalSizeV = (!hasOutlineExpr && vHasExpr && Number.isFinite(targetV)) ? targetV : sizeV;
+    const scaleU = shouldScaleU ? targetU / spanU : 1;
+    const scaleV = shouldScaleV ? targetV / spanV : 1;
+
+    const finalSizeU = shouldScaleU ? targetU : sizeU;
+    const finalSizeV = shouldScaleV ? targetV : sizeV;
 
     let localExtents: [number, number, number];
     if (c.shape.plane === 'xy') {
@@ -141,43 +163,27 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
     let shiftedComponentHoles = c.holes;
     let shiftedExpr = c.expr ? { ...c.expr } : undefined;
 
-    if (c.holes && (minU !== 0 || minV !== 0 || scaleU !== 1 || scaleV !== 1)) {
-      shiftedComponentHoles = c.holes.map((h, i) => {
+    if (c.holes) {
+      shiftedComponentHoles = c.holes.map((h) => {
         const at = Array.isArray(h.at) ? ([...h.at] as [number, number, number]) : h.at;
         if (at) {
-          const he = shiftedExpr?.holes?.[i];
-          const uHasHoleExpr = Boolean(he?.at?.[uAxis]);
-          const vHasHoleExpr = Boolean(he?.at?.[vAxis]);
-
-          if (minU !== 0 || scaleU !== 1) {
-            at[uAxis] = uHasHoleExpr
-              ? (minU !== 0 ? round2(at[uAxis] - minU) : at[uAxis])
-              : round2((at[uAxis] - minU) * scaleU);
-          }
-          if (minV !== 0 || scaleV !== 1) {
-            at[vAxis] = vHasHoleExpr
-              ? (minV !== 0 ? round2(at[vAxis] - minV) : at[vAxis])
-              : round2((at[vAxis] - minV) * scaleV);
-          }
+          at[uAxis] = round2((at[uAxis] - minU) * scaleU);
+          at[vAxis] = round2((at[vAxis] - minV) * scaleV);
         }
         return { ...h, at };
       });
 
-      if (shiftedExpr?.holes && (minU !== 0 || minV !== 0)) {
+      if (shiftedExpr?.holes && (minU !== 0 || minV !== 0 || scaleU !== 1 || scaleV !== 1)) {
         shiftedExpr = {
           ...shiftedExpr,
           holes: shiftedExpr.holes.map((he) => {
             if (!he.at) return he;
-            const at = [...he.at];
-            if (minU !== 0 && at[uAxis]) {
-              at[uAxis] = minU < 0
-                ? `(${at[uAxis]}) + ${round2(Math.abs(minU))}`
-                : `(${at[uAxis]}) - ${round2(minU)}`;
+            const at = [...he.at] as [string | null, string | null, string | null];
+            if (minU !== 0 || scaleU !== 1) {
+              at[uAxis] = transformTerm(at[uAxis], minU, scaleU);
             }
-            if (minV !== 0 && at[vAxis]) {
-              at[vAxis] = minV < 0
-                ? `(${at[vAxis]}) + ${round2(Math.abs(minV))}`
-                : `(${at[vAxis]}) - ${round2(minV)}`;
+            if (minV !== 0 || scaleV !== 1) {
+              at[vAxis] = transformTerm(at[vAxis], minV, scaleV);
             }
             return { ...he, at };
           }),
@@ -185,17 +191,17 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
       }
     }
 
-    // The kept outline expressions follow the shift, so a parametric outline stays parametric
-    // (and a second resolve of this spec does not undo the shift).
+    // The kept outline expressions follow the shift and scale, so a parametric outline stays parametric
+    // (and a second resolve of this spec does not undo the shift/scale).
     if (shiftedExpr?.outline || shiftedExpr?.outlineHoles) {
-      const shiftPoint = (pt: (string | null)[]) => [
-        shiftTerm(pt[0], minU),
-        shiftTerm(pt[1], minV),
+      const transformPoint = (pt: (string | null)[]): [string | null, string | null] => [
+        transformTerm(pt?.[0], minU, scaleU),
+        transformTerm(pt?.[1], minV, scaleV),
       ];
       shiftedExpr = {
         ...shiftedExpr,
-        ...(shiftedExpr.outline ? { outline: shiftedExpr.outline.map(shiftPoint) } : {}),
-        ...(shiftedExpr.outlineHoles ? { outlineHoles: shiftedExpr.outlineHoles.map((h) => h.map(shiftPoint)) } : {}),
+        ...(shiftedExpr.outline ? { outline: shiftedExpr.outline.map(transformPoint) } : {}),
+        ...(shiftedExpr.outlineHoles ? { outlineHoles: shiftedExpr.outlineHoles.map((h) => h.map(transformPoint)) } : {}),
       };
     }
 
