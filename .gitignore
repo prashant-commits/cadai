@@ -51,6 +51,12 @@ next-env.d.ts
 .vercel
 .env*
 
+# geometry service local env (npm run geo:setup)
+/geo/.venv/
+/geo/*.egg-info/
+/geo/.pytest_cache/
+__pycache__/
+
 # scratch probes / one-off diagnostic harnesses
 # These are throwaway benchmark and API-smoke scripts written while debugging a
 # provider or a schema. They hardcode prompts and model slugs, go stale within a
