@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { NextRequest } from 'next/server';
 import { getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { DEFAULT_MODEL } from '@/lib/agent/models';
@@ -10,19 +13,19 @@ import { POST } from './route';
 
 const saved = { ...process.env };
 
+let runDir = '';
 beforeEach(() => {
   delete process.env.CADAI_MODEL;
+  runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadai-resume-'));
+  process.env.CADAI_RUN_DIR = runDir;
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await new Promise((r) => setTimeout(r, 150)); // let the debounced checkpoint flush land first
   process.env = { ...saved };
+  fs.rmSync(runDir, { recursive: true, force: true });
 });
 
-const keys: string[] = [];
-afterAll(async () => {
-  for (const k of keys) await getCheckpointer().deleteThread(k);
-  await new Promise((r) => setTimeout(r, 200));
-});
 
 const call = (body: unknown) =>
   POST(new NextRequest('http://localhost/api/chat/resume', { method: 'POST', body: JSON.stringify(body) }));
@@ -33,15 +36,19 @@ describe('POST /api/chat/resume', () => {
     const res = await call({ threadId: 't-gone', runId: 'r-gone', decision: { action: 'approve' } });
     const text = await res.text();
     const events = text.split('\n\n').filter(Boolean).map((l) => JSON.parse(l.replace(/^data: /, '')));
-    expect(events).toEqual([
-      { t: 'error', message: 'This paused run expired or was not found on this server. Send the request again.' },
-    ]);
+    // Legacy fields are unchanged; the run envelope and apiError are additive.
+    const err = events.find((e) => e.t === 'error');
+    expect(err).toMatchObject({
+      t: 'error',
+      message: 'This paused run expired or was not found on this server. Send the request again.',
+      apiError: { code: 'run_expired' },
+    });
+    expect(events.every((e) => e.t === 'run' || e.t === 'error')).toBe(true);
     expect(createAgent).not.toHaveBeenCalled();
   });
 
   it('a live checkpoint is resumed with coerced model slug', async () => {
     const key = runCheckpointKey('t-live', 'r-live');
-    keys.push(key);
     await getCheckpointer().put(
       { configurable: { thread_id: key } },
       { v: 1, id: 'cp', ts: new Date().toISOString(), channel_values: {}, channel_versions: {}, versions_seen: {} } as never,

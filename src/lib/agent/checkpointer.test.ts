@@ -2,6 +2,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import type { Checkpoint } from '@langchain/langgraph';
 import { FileCheckpointSaver, checkpointStoreDir, deleteRunCheckpoint } from './checkpointer';
 
 // A fresh temp dir per test run - this is the on-disk store /api/chat/resume's
@@ -22,7 +23,7 @@ function fakeCheckpoint(id: string) {
     channel_values: {},
     channel_versions: {},
     versions_seen: {},
-  } as any;
+  } as unknown as Checkpoint;
 }
 
 describe('FileCheckpointSaver', () => {
@@ -32,7 +33,7 @@ describe('FileCheckpointSaver', () => {
     await saverA.put(
       { configurable: { thread_id: threadId } },
       fakeCheckpoint('cp-1'),
-      { source: 'update', step: 0, parents: {} } as any,
+      { source: 'update', step: 0, parents: {} } as never,
       {}
     );
 
@@ -52,7 +53,7 @@ describe('FileCheckpointSaver', () => {
     await saver.put(
       { configurable: { thread_id: threadId } },
       fakeCheckpoint('cp-cancel'),
-      { source: 'update', step: 0, parents: {} } as any,
+      { source: 'update', step: 0, parents: {} } as never,
       {}
     );
     await new Promise((r) => setTimeout(r, 200));
@@ -169,6 +170,73 @@ describe('checkpoint TTL', () => {
     } finally {
       await new Promise((r) => setTimeout(r, 250));
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('shared store (cross-instance)', () => {
+  const put = (saver: FileCheckpointSaver, thread: string, id: string) =>
+    saver.put(
+      { configurable: { thread_id: thread } },
+      fakeCheckpoint(id),
+      { source: 'update', step: 0, parents: {} } as never,
+      {}
+    );
+  const get = (saver: FileCheckpointSaver, thread: string) =>
+    saver.getTuple({ configurable: { thread_id: thread } });
+
+  it('a running instance sees a checkpoint another instance wrote after it started', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadai-shared-'));
+    try {
+      const a = new FileCheckpointSaver(dir);
+      const b = new FileCheckpointSaver(dir); // started before A wrote anything
+      await put(a, 'paused-on-a', 'cp-a');
+      a.flushNow();
+      expect((await get(b, 'paused-on-a'))?.checkpoint.id).toBe('cp-a');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('flushes merge: two instances writing different threads do not erase each other', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadai-shared-'));
+    try {
+      const a = new FileCheckpointSaver(dir);
+      const b = new FileCheckpointSaver(dir);
+      await put(a, 'ta', 'cp-a');
+      await put(b, 'tb', 'cp-b');
+      a.flushNow();
+      b.flushNow();
+      const c = new FileCheckpointSaver(dir);
+      expect((await get(c, 'ta'))?.checkpoint.id).toBe('cp-a');
+      expect((await get(c, 'tb'))?.checkpoint.id).toBe('cp-b');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a delete on one instance is seen by the other', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadai-shared-'));
+    try {
+      const a = new FileCheckpointSaver(dir);
+      const b = new FileCheckpointSaver(dir);
+      await put(a, 'gone', 'cp');
+      a.flushNow();
+      expect(await get(b, 'gone')).toBeDefined();
+      await b.deleteThread('gone');
+      b.flushNow();
+      expect(await get(a, 'gone')).toBeUndefined();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('CADAI_RUN_DIR points the checkpoint store at the shared directory', () => {
+    process.env.CADAI_RUN_DIR = '/some/shared/dir';
+    try {
+      expect(checkpointStoreDir()).toBe(path.resolve('/some/shared/dir'));
+    } finally {
+      delete process.env.CADAI_RUN_DIR;
     }
   });
 });
