@@ -1,5 +1,6 @@
 import type { AssemblySpec } from './assembly-spec';
 import type { SpecViolation } from './spec-audit';
+import { resolveSpec } from './spec-expr';
 
 const KNOWN_FUNCTIONS = new Set(['min', 'max', 'sqrt', 'abs', 'sin', 'cos', 'tan']);
 
@@ -117,11 +118,17 @@ export function collectExprStrings(spec: AssemblySpec | null, resolvedSpec?: Ass
  * Transitive reachability through `derived` is followed.
  * Relations do not count as use.
  * Literal specs (no parameters) produce nothing.
+ * Skipped when expression resolution has errors (L5).
  */
 export function lintDeadParameters(rawSpec: AssemblySpec | null, resolvedSpec?: AssemblySpec | null): SpecViolation[] {
   if (!rawSpec) return [];
   const declaredParams = rawSpec.parameters ?? [];
   if (declaredParams.length === 0) return [];
+
+  // L5: skip lint when resolution has errors (e.g. typos like "wdith" shouldn't report "width" dead)
+  const res = resolveSpec(rawSpec);
+  if (res.errors.length > 0) return [];
+  const resolved = resolvedSpec ?? res.spec;
 
   const derivedMap = new Map<string, string>();
   for (const d of rawSpec.derived ?? []) {
@@ -130,7 +137,7 @@ export function lintDeadParameters(rawSpec: AssemblySpec | null, resolvedSpec?: 
     }
   }
 
-  const exprStrings = collectExprStrings(rawSpec, resolvedSpec);
+  const exprStrings = collectExprStrings(rawSpec, resolved);
   const reached = new Set<string>();
 
   for (const expr of exprStrings) {
@@ -171,4 +178,14 @@ export function lintDeadParameters(rawSpec: AssemblySpec | null, resolvedSpec?: 
   }
 
   return violations;
+}
+
+/**
+ * Spec-gate audit for dead parameters.
+ * Runs only at the spec stage (prior to code generation), returning errors for any
+ * declared parameter that is never reached by any component or guide expression.
+ * Skipped if expression resolution produces errors.
+ */
+export function auditSpecParameters(rawSpec: AssemblySpec | null): SpecViolation[] {
+  return lintDeadParameters(rawSpec);
 }

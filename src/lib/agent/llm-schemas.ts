@@ -286,7 +286,7 @@ function annotateClaudeDescriptions(json: Record<string, unknown>): void {
  * "400 provider rejected the request: The compiled grammar is too large, which would cause performance issues. Simplify your tool schemas or reduce the number of strict tools."
  * Consequently, the variant spec uses non-strict tool calling (`method: 'functionCalling'`, no `strict` option).
  * The 6-optional schema stays because it also keeps the tool schema small and the descriptions tell the model the neutral values.
- * Every property is required except exactly 6 (under Anthropic's cap of 24), sheet first, neutral value descriptions added,
+ * Every property is required except exactly 6 (under Anthropic's cap of 24), sheet last, neutral value descriptions added,
  * unsupported Anthropic keywords stripped, additionalProperties: false.
  */
 export function claudeVariantSpecSchema(): Record<string, unknown> {
@@ -297,10 +297,11 @@ export function claudeVariantSpecSchema(): Record<string, unknown> {
     delete props.specApprovedAt;
     // Stress points and gussets are engineering analysis, not modelling: not requested from the Architect.
     delete props.stressPoints;
-    if (Array.isArray(json.required)) json.required = (json.required as string[]).filter((k) => k !== 'stressPoints');
     delete props.openQuestions;
     delete props.boundingBox;
-    if (Array.isArray(json.required)) json.required = (json.required as string[]).filter((k) => k !== 'stressPoints' && k !== 'boundingBox');
+    if (Array.isArray(json.required)) {
+      json.required = (json.required as string[]).filter((k) => k !== 'stressPoints' && k !== 'boundingBox');
+    }
 
     // Place sheet last in properties
     if ('sheet' in props) {
@@ -586,9 +587,9 @@ export function structuredFor<M extends { withStructuredOutput: (...args: never[
       }
       if ('sheet' in props) {
         const { sheet, ...rest } = props;
-        json.properties = { sheet, ...rest };
+        json.properties = { ...rest, sheet };
         if (Array.isArray(json.required) && json.required.includes('sheet')) {
-          json.required = ['sheet', ...(json.required as string[]).filter((k) => k !== 'sheet')];
+          json.required = [...(json.required as string[]).filter((k) => k !== 'sheet'), 'sheet'];
         }
       }
     }

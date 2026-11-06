@@ -1,6 +1,6 @@
 import type { AssemblySpec } from './assembly-spec';
 import { resolveSpec } from './spec-expr';
-import { impliedEnvelope } from './spec-coherence';
+import { impliedEnvelope, markCodeDerivedBox } from './spec-coherence';
 import { identifierIssue } from '../spec-sheet/blockout-scad';
 
 
@@ -63,6 +63,11 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
       return c;
     }
 
+    // L1: If no localExtents, leave the profile alone so the shape error still fires
+    if (!c.localExtents || !Array.isArray(c.localExtents) || c.localExtents.length < 3) {
+      return c;
+    }
+
     let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
     for (const [u, v] of c.shape.points) {
       if (u < minU) minU = u;
@@ -83,23 +88,94 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
 
     const [ex = 0, ey = 0, ez = 0] = (c.localExtents ?? []) as number[];
     let localExtents: [number, number, number];
+    let uAxis: 0 | 1 | 2;
+    let vAxis: 0 | 1 | 2;
     if (c.shape.plane === 'xy') {
       localExtents = [sizeU, sizeV, ez];
+      uAxis = 0;
+      vAxis = 1;
     } else if (c.shape.plane === 'xz') {
       localExtents = [sizeU, ey, sizeV];
+      uAxis = 0;
+      vAxis = 2;
     } else {
       localExtents = [ex, sizeU, sizeV];
+      uAxis = 1;
+      vAxis = 2;
     }
 
-    return {
+    // M3: Shift component holes with the outline
+    let shiftedComponentHoles = c.holes;
+    let shiftedExpr = c.expr ? { ...c.expr } : undefined;
+
+    if (c.holes && (minU !== 0 || minV !== 0)) {
+      shiftedComponentHoles = c.holes.map((h) => {
+        const at = Array.isArray(h.at) ? ([...h.at] as [number, number, number]) : h.at;
+        if (at) {
+          if (minU !== 0) at[uAxis] = round2(at[uAxis] - minU);
+          if (minV !== 0) at[vAxis] = round2(at[vAxis] - minV);
+        }
+        return { ...h, at };
+      });
+
+      if (shiftedExpr?.holes) {
+        shiftedExpr = {
+          ...shiftedExpr,
+          holes: shiftedExpr.holes.map((he) => {
+            if (!he.at) return he;
+            const at = [...he.at];
+            if (minU !== 0 && at[uAxis]) {
+              at[uAxis] = minU < 0
+                ? `(${at[uAxis]}) + ${round2(Math.abs(minU))}`
+                : `(${at[uAxis]}) - ${round2(minU)}`;
+            }
+            if (minV !== 0 && at[vAxis]) {
+              at[vAxis] = minV < 0
+                ? `(${at[vAxis]}) + ${round2(Math.abs(minV))}`
+                : `(${at[vAxis]}) - ${round2(minV)}`;
+            }
+            return { ...he, at };
+          }),
+        };
+      }
+    }
+
+    // H1: Null out in-plane expr.localExtents entries that disagree with the outline by > 0.5 mm
+    if (shiftedExpr?.localExtents) {
+      const leExpr = [...shiftedExpr.localExtents] as (string | null)[];
+      const checkAxis = (axis: number, outlineSize: number) => {
+        const currentVal = c.localExtents![axis];
+        if (typeof currentVal === 'number' && Math.abs(currentVal - outlineSize) > 0.5) {
+          leExpr[axis] = null;
+        }
+      };
+      checkAxis(uAxis, sizeU);
+      checkAxis(vAxis, sizeV);
+      if (leExpr.every((x) => x === null || x === undefined)) {
+        const restExpr = { ...shiftedExpr };
+        delete restExpr.localExtents;
+        shiftedExpr = Object.keys(restExpr).length > 0 ? restExpr : undefined;
+      } else {
+        shiftedExpr = { ...shiftedExpr, localExtents: leExpr };
+      }
+    }
+
+    const updated = {
       ...c,
       localExtents,
+      holes: shiftedComponentHoles,
       shape: {
         ...c.shape,
         points: shiftedPoints,
         ...(c.shape.holes ? { holes: shiftedHoles } : {}),
       },
     };
+    if (shiftedExpr) {
+      updated.expr = shiftedExpr;
+    } else {
+      delete updated.expr;
+    }
+    return updated;
   });
 
   const ref = (x?: string) => (x === undefined ? undefined : rename.get(x) ?? x);
@@ -118,11 +194,30 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
   // The assembly envelope is derived from the components: the model's separately declared box is
   // a second place to get arithmetic wrong. Code derives it from impliedEnvelope when it can be computed
   // (literal specs included), falling back to the declared box, else zeros.
-  // When resolution has errors, keep declared box (a field left at 0 by failure would corrupt the box).
-  const envelope = resolved.errors.length === 0 ? impliedEnvelope({ ...spec, components: normalizedComponents }) : null;
-  const boundingBox = envelope
-    ? { width: envelope.size[0], length: envelope.size[1], height: envelope.size[2] }
-    : (spec.boundingBox ?? { width: 0, length: 0, height: 0 });
+  // M1: When resolution has errors, fall back to the box implied by the partly resolved components
+  // (never 0x0x0 if any component has extents), and tag the box as code-derived.
+  let boundingBox: { width: number; length: number; height: number };
+  if (resolved.errors.length === 0) {
+    const envelope = impliedEnvelope({ ...spec, components: normalizedComponents });
+    if (envelope) {
+      boundingBox = markCodeDerivedBox({ width: envelope.size[0], length: envelope.size[1], height: envelope.size[2] });
+    } else {
+      boundingBox = spec.boundingBox
+        ? spec.boundingBox
+        : markCodeDerivedBox({ width: 0, length: 0, height: 0 });
+    }
+  } else {
+    if (spec.boundingBox) {
+      boundingBox = spec.boundingBox;
+    } else {
+      const partialEnvelope = impliedEnvelope({ ...spec, components: normalizedComponents });
+      boundingBox = markCodeDerivedBox(
+        partialEnvelope
+          ? { width: partialEnvelope.size[0], length: partialEnvelope.size[1], height: partialEnvelope.size[2] }
+          : { width: 0, length: 0, height: 0 }
+      );
+    }
+  }
 
   return {
     ...spec,

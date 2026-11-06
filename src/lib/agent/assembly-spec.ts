@@ -189,6 +189,9 @@ export type BoundingBox = z.infer<typeof BoundingBoxSchema>;
 
 export const AssemblySpecSchema = z.object({
   assemblyName: z.string(),
+  // Code derives boundingBox at runtime (normalizeSpec), so it is optional in the schema.
+  // Cast to z.ZodType<BoundingBox> preserves non-optional BoundingBox in static type AssemblySpec
+  // so existing consumers (summarizeSpec, graph, spec-audit) continue typechecking cleanly.
   boundingBox: BoundingBoxSchema.optional() as unknown as z.ZodType<BoundingBox>,
   jointContracts: z.array(z.object({
     type: z.string(),
@@ -285,6 +288,8 @@ export const AssemblySpecSchema = z.object({
   })).default([]),
   specApprovedAt: z.number().optional(),
   sheet: z.string().describe('Write last. At most 200 words: in-use pose, what varies, assumptions. Numbers live in the skeleton.').default(''),
+  // Enforces that an AssemblySpec declares at least components, guides, or boundingBox,
+  // rejecting completely empty/broken specs (e.g. { assemblyName: 'broken' }) at runtime.
 }).refine(
   (s) => s.components !== undefined || s.boundingBox !== undefined || (s.guides && s.guides.length > 0),
   { message: 'A spec must declare components, guides, or a boundingBox' }
