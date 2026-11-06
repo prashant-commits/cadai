@@ -9,16 +9,25 @@ import {
   RotateCw,
   Eye,
   Maximize2,
-  Compass,
   PenTool,
+  Download,
 } from 'lucide-react';
+import { exportStep } from '@/lib/export/stl-exporter';
 
 interface ViewportToolbarProps {
   onResetCamera: () => void;
 }
 
 export function ViewportToolbar({ onResetCamera }: ViewportToolbarProps) {
-  const { viewportSettings, updateViewportSettings, setIsAnnotating, setBaseSnapshot } = useAppStore();
+  const {
+    viewportSettings,
+    updateViewportSettings,
+    setIsAnnotating,
+    setBaseSnapshot,
+    step,
+    threads,
+    activeThreadId,
+  } = useAppStore();
 
   const handleSnapshot = () => {
     const canvas = document.querySelector('canvas');
@@ -26,6 +35,20 @@ export function ViewportToolbar({ onResetCamera }: ViewportToolbarProps) {
       const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
       setBaseSnapshot(dataUrl);
       setIsAnnotating(true);
+    }
+  };
+
+  const handleDownloadStep = () => {
+    if (!step) return;
+    const activeThread = threads.find((t) => t.id === activeThreadId);
+    const title = activeThread?.title?.trim() || 'model';
+    const baseTitle = title.replace(/\.step$/i, '') || 'model';
+    const filename = `${baseTitle}.step`;
+
+    try {
+      exportStep(step, filename);
+    } catch (err) {
+      console.error('Failed to download STEP file:', err);
     }
   };
 
@@ -117,6 +140,21 @@ export function ViewportToolbar({ onResetCamera }: ViewportToolbarProps) {
       >
         <PenTool className="w-4 h-4" />
       </button>
+
+      {/* STEP Download */}
+      {step && (
+        <>
+          <div className="w-px h-4 bg-slate-800 mx-0.5" />
+          <button
+            onClick={handleDownloadStep}
+            className="p-1.5 rounded-md text-xs text-indigo-400 hover:text-indigo-200 hover:bg-indigo-900/30 transition-colors flex items-center gap-1 font-medium"
+            title="Download STEP"
+          >
+            <Download className="w-4 h-4" />
+            <span>STEP</span>
+          </button>
+        </>
+      )}
     </div>
   );
 }

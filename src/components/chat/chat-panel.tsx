@@ -15,7 +15,7 @@ import {
   ensureGateOpenedAt,
   closedExpiredGateUpdate,
 } from '@/lib/chat/rehydrate';
-import { compileOpenScad } from '@/lib/engine/openscad-bridge';
+import { compileModel } from '@/lib/engine/openscad-bridge';
 import { parseStlToGeometry } from '@/lib/engine/geometry-utils';
 import { ChatMessage, GatePayload, GateDecision, GateRecord } from '@/types';
 import {
@@ -84,6 +84,7 @@ export function ChatPanel() {
     }
 
     const open = resumableGate(prepared);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPendingGate(open?.gate ?? null);
     setPendingRunId(open?.runId ?? null);
     setPendingMessageId(open?.messageId ?? null);
@@ -203,13 +204,17 @@ export function ChatPanel() {
           if (state.stl && state.stl.includes('facet normal')) {
             const { geometry, modelInfo } = parseStlToGeometry(state.stl);
             setCompileResult(
-              { success: true, stlContent: state.stl, geometry, modelInfo, compileTimeMs: 0 },
+              { success: true, stlContent: state.stl, geometry, modelInfo, compileTimeMs: 0, step: state.step },
               targetThreadId
             );
           } else {
             if (useAppStore.getState().activeThreadId === targetThreadId) setCompileStatus('compiling');
-            setCompileResult(await compileOpenScad(state.code), targetThreadId);
+            const res = await compileModel(state.code);
+            if (state.step && !res.step) res.step = state.step;
+            setCompileResult(res, targetThreadId);
           }
+        } else if (state.step) {
+          setCompileResult({ success: true, step: state.step }, targetThreadId);
         }
 
         setIsGenerating(false);

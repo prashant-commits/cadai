@@ -3,7 +3,8 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import Editor, { Monaco } from '@monaco-editor/react';
 import { useAppStore } from '@/store/app-store';
-import { compileOpenScad } from '@/lib/engine/openscad-bridge';
+import { compileModel } from '@/lib/engine/openscad-bridge';
+import { detectLanguage } from '@/lib/brep/language';
 import { OPENSCAD_LANGUAGE_ID, openscadLanguageDef } from '@/lib/editor/openscad-language';
 import {
   Play,
@@ -21,7 +22,6 @@ export function CodeEditorPanel() {
     code,
     setCode,
     compileStatus,
-    compileError,
     setCompileResult,
     setCompileStatus,
     isGenerating,
@@ -35,8 +35,11 @@ export function CodeEditorPanel() {
 
   // Sync editor value when store code changes from external source (e.g. AI generation)
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setEditorValue(code);
   }, [code]);
+
+  const language = detectLanguage(editorValue);
 
   const handleEditorWillMount = (monaco: Monaco) => {
     // Register custom OpenSCAD language
@@ -77,7 +80,7 @@ export function CodeEditorPanel() {
   const triggerRecompile = useCallback(
     async (codeToCompile: string) => {
       setCompileStatus('compiling');
-      const result = await compileOpenScad(codeToCompile);
+      const result = await compileModel(codeToCompile);
       setCompileResult(result);
     },
     [setCompileResult, setCompileStatus]
@@ -109,7 +112,9 @@ export function CodeEditorPanel() {
       <div className="px-3.5 py-2 bg-slate-950 border-b border-slate-800 flex items-center justify-between select-none">
         <div className="flex items-center gap-2 min-w-0">
           <FileCode className="w-4 h-4 text-cyan-400 shrink-0" />
-          <span className="text-xs font-semibold text-slate-200 truncate">OpenSCAD Code</span>
+          <span className="text-xs font-semibold text-slate-200 truncate">
+            {language === 'build123d' ? 'build123d Code' : 'OpenSCAD Code'}
+          </span>
           <span className="text-[10px] text-slate-500 font-mono hidden md:inline truncate">
             {isGenerating ? '(Streaming...)' : '(Live Sync)'}
           </span>
@@ -154,7 +159,7 @@ export function CodeEditorPanel() {
           <button
             onClick={handleCopy}
             className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 transition-colors cursor-pointer"
-            title="Copy OpenSCAD Code"
+            title={language === 'build123d' ? 'Copy build123d Code' : 'Copy OpenSCAD Code'}
           >
             {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
             <span className="text-[11px] hidden sm:inline">{copied ? 'Copied' : 'Copy'}</span>
@@ -164,7 +169,7 @@ export function CodeEditorPanel() {
             onClick={() => triggerRecompile(editorValue)}
             disabled={compileStatus === 'compiling'}
             className="flex items-center gap-1 text-xs px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-medium shadow-xs transition-colors cursor-pointer disabled:opacity-50"
-            title="Recompile OpenSCAD Code"
+            title={language === 'build123d' ? 'Recompile build123d Code' : 'Recompile OpenSCAD Code'}
           >
             <Play className="w-3 h-3 fill-current" />
             <span className="text-[11px]">Compile</span>
@@ -176,7 +181,7 @@ export function CodeEditorPanel() {
       <div className="flex-1 min-h-0 relative">
         <Editor
           height="100%"
-          language={OPENSCAD_LANGUAGE_ID}
+          language={language === 'build123d' ? 'python' : OPENSCAD_LANGUAGE_ID}
           theme="cad-dark"
           value={editorValue}
           onChange={handleEditorChange}

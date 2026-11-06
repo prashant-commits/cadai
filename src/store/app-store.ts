@@ -15,7 +15,7 @@ import {
 import { applyContract } from '@/lib/design/contract';
 import { parseParams } from '@/lib/design/parse-params';
 import { setParamValue } from '@/lib/design/write-params';
-import { compileOpenScad } from '@/lib/engine/openscad-bridge';
+import { compileModel } from '@/lib/engine/openscad-bridge';
 import { DEFAULT_MODEL } from '@/lib/agent/models';
 
 interface AppState {
@@ -29,6 +29,7 @@ interface AppState {
   geometry: THREE.BufferGeometry | null;
   stlContent: string | null;
   modelInfo: ModelInfo | null;
+  step: string | null;
   
   // Design Contract & Parameters
   params: ScadParam[];
@@ -93,6 +94,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   geometry: null,
   stlContent: null,
   modelInfo: null,
+  step: null,
   params: [],
   contractDiff: null,
   editorView: 'design',
@@ -127,6 +129,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       params: parseParams(initialCode),
       stlContent: active.stlContent || null,
       modelInfo: active.modelInfo || null,
+      step: active.step || null,
       selectedModel: active.selectedModel || DEFAULT_MODEL,
     });
   },
@@ -139,6 +142,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       updatedAt: Date.now(),
       selectedModel: get().selectedModel,
       code: DEFAULT_OPENSCAD_CODE,
+      step: null,
       messages: [
         {
           id: 'welcome-' + Date.now(),
@@ -160,6 +164,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       geometry: null,
       stlContent: null,
       modelInfo: null,
+      step: null,
       compileStatus: 'idle',
       compileError: null,
     });
@@ -183,6 +188,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       geometry: null, // will recompile on mount/switch
       stlContent: target.stlContent || null,
       modelInfo: target.modelInfo || null,
+      step: target.step || null,
       selectedModel: target.selectedModel || get().selectedModel,
       compileStatus: 'idle',
       compileError: null,
@@ -213,6 +219,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       geometry: null,
       stlContent: newActive.stlContent || null,
       modelInfo: newActive.modelInfo || null,
+      step: newActive.step || null,
     });
 
     void deleteThreadCascade(threadId);
@@ -372,18 +379,21 @@ export const useAppStore = create<AppState>((set, get) => ({
             ...t,
             stlContent: result.stlContent || t.stlContent,
             modelInfo: result.modelInfo || t.modelInfo,
+            step: result.step !== undefined ? (result.step || null) : (result.success && result.language === 'openscad' ? null : (t.step || null)),
             updatedAt: Date.now(),
           }
         : t
     );
 
     if (targetId === activeThreadId) {
+      const activeT = updatedThreads.find((t) => t.id === activeThreadId);
       set({
         compileStatus: result.success ? 'success' : 'error',
         compileError: result.error || null,
         geometry: result.geometry || null,
         stlContent: result.stlContent || null,
         modelInfo: result.modelInfo || null,
+        step: activeT?.step || null,
         compileTimeMs: result.compileTimeMs || 0,
         threads: updatedThreads,
       });
@@ -449,7 +459,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     // 4. Schedule debounced compile
     set({ compileStatus: 'compiling' });
-    compileOpenScad(get().code).then(result => {
+    compileModel(get().code).then(result => {
       get().setCompileResult(result);
     });
   },
@@ -480,7 +490,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().setCode(newCode, activeThreadId, 'user');
 
     set({ compileStatus: 'compiling' });
-    compileOpenScad(get().code).then(result => {
+    compileModel(get().code).then(result => {
       get().setCompileResult(result);
     });
   },
@@ -511,7 +521,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().setCode(newCode, activeThreadId, 'user');
 
     set({ compileStatus: 'compiling' });
-    compileOpenScad(get().code).then(result => {
+    compileModel(get().code).then(result => {
       get().setCompileResult(result);
     });
   },
@@ -577,6 +587,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             designContract: undefined,
             stlContent: null,
             modelInfo: null,
+            step: null,
             messages: createInitialThread().messages,
             updatedAt: Date.now(),
           }
@@ -590,6 +601,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       geometry: null,
       stlContent: null,
       modelInfo: null,
+      step: null,
       compileStatus: 'idle',
       compileError: null,
       threads: resetThreads,

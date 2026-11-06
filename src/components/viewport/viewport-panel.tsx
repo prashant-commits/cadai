@@ -7,7 +7,7 @@ import { useAppStore } from '@/store/app-store';
 import { CadModel } from './cad-model';
 import { ViewportToolbar } from './viewport-toolbar';
 import { Annotator } from './annotator';
-import { compileOpenScad } from '@/lib/engine/openscad-bridge';
+import { compileModel } from '@/lib/engine/openscad-bridge';
 import { Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 
@@ -30,7 +30,7 @@ export function ViewportPanel() {
     if (!geometry && code) {
       let isMounted = true;
       setCompileStatus('compiling');
-      compileOpenScad(code).then((result) => {
+      compileModel(code).then((result) => {
         if (isMounted) {
           setCompileResult(result);
         }
@@ -49,7 +49,7 @@ export function ViewportPanel() {
 
   const handleRecompile = async () => {
     setCompileStatus('compiling');
-    const result = await compileOpenScad(code);
+    const result = await compileModel(code);
     setCompileResult(result);
   };
 
@@ -92,7 +92,7 @@ export function ViewportPanel() {
         <div className="absolute inset-0 z-20 bg-black/40 backdrop-blur-2xs flex items-center justify-center pointer-events-none">
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl px-4 py-3 shadow-2xl flex items-center gap-3 text-slate-200 text-xs">
             <Loader2 className="w-4 h-4 text-indigo-400 animate-spin" />
-            <span>Compiling OpenSCAD geometry...</span>
+            <span>Compiling CAD geometry...</span>
           </div>
         </div>
       )}

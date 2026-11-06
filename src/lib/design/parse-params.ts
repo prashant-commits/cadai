@@ -1,6 +1,98 @@
 import { ScadParam, ParamKind, ParamValue } from '../../types';
+import { detectLanguage } from '../brep/language';
+
+function parseBuild123dParams(code: string): ScadParam[] {
+  const lines = code.split(/\r?\n/);
+  const params: ScadParam[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const originalLineNum = i + 1;
+
+    // Must be top-level (column 0) numeric assignment:
+    // name = <number>  # [min:step:max] description
+    // or # [min:max], or no bracket, or no comment
+    const match = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(-?\d+(?:\.\d+)?)\s*(?:#(.*))?$/);
+    if (!match) continue;
+
+    const name = match[1];
+    const value = Number(match[2]);
+    const authoredValue = value;
+    const rawComment = match[3];
+
+    let kind: ParamKind = 'number';
+    let label: string | undefined;
+    let min: number | undefined;
+    let max: number | undefined;
+    let step: number | undefined;
+
+    if (rawComment !== undefined) {
+      const commentPart = rawComment.trim();
+      if (commentPart.startsWith('[')) {
+        const endBracket = commentPart.indexOf(']');
+        if (endBracket !== -1) {
+          const annotation = commentPart.slice(1, endBracket).trim();
+          const afterAnnotation = commentPart.slice(endBracket + 1).trim();
+          if (afterAnnotation) {
+            label = afterAnnotation;
+          }
+
+          const parts = annotation.split(':').map(p => p.trim());
+          if (parts.length === 2) {
+            const p0 = Number(parts[0]);
+            const p1 = Number(parts[1]);
+            if (!isNaN(p0) && !isNaN(p1)) {
+              min = p0;
+              max = p1;
+              step = (parts[0].includes('.') || parts[1].includes('.')) ? 0.1 : 1;
+              kind = 'range';
+            }
+          } else if (parts.length === 3) {
+            const p0 = Number(parts[0]);
+            const p1 = Number(parts[1]);
+            const p2 = Number(parts[2]);
+            if (!isNaN(p0) && !isNaN(p1) && !isNaN(p2)) {
+              min = p0;
+              step = p1;
+              max = p2;
+              kind = 'range';
+            }
+          }
+        }
+      } else if (commentPart) {
+        label = commentPart;
+      }
+    }
+
+    const param: ScadParam = {
+      name,
+      kind,
+      value,
+      authoredValue,
+      group: 'Parameters',
+      line: originalLineNum,
+    };
+    if (label) param.label = label;
+    if (min !== undefined) param.min = min;
+    if (max !== undefined) param.max = max;
+    if (step !== undefined) param.step = step;
+
+    const existingIdx = params.findIndex(p => p.name === name);
+    if (existingIdx !== -1) {
+      params[existingIdx] = param;
+    } else {
+      params.push(param);
+    }
+  }
+
+  return params;
+}
 
 export function parseParams(code: string): ScadParam[] {
+  if (detectLanguage(code) === 'build123d') {
+    return parseBuild123dParams(code);
+  }
+
   const lines = code.split(/\r?\n/);
   const params: ScadParam[] = [];
   
@@ -42,7 +134,7 @@ export function parseParams(code: string): ScadParam[] {
 
     // Track brace depth on codePart, ignoring contents of strings
     inString = false;
-    let currentDepth = braceDepth;
+    const currentDepth = braceDepth;
     for (let j = 0; j < codePart.length; j++) {
       if (codePart[j] === '"' && (j === 0 || codePart[j-1] !== '\\')) {
         inString = !inString;
@@ -61,11 +153,10 @@ export function parseParams(code: string): ScadParam[] {
     if (!assignmentMatch) continue;
 
     const name = assignmentMatch[1];
-    let rawValue = assignmentMatch[2].trim();
+    const rawValue = assignmentMatch[2].trim();
 
     let value: ParamValue;
     let kind: ParamKind | null = null;
-    let isQuotedString = false;
     
     if (rawValue === 'true') {
       value = true;
@@ -77,7 +168,6 @@ export function parseParams(code: string): ScadParam[] {
       value = Number(rawValue);
     } else if (rawValue.startsWith('"') && rawValue.endsWith('"')) {
       value = rawValue.slice(1, -1);
-      isQuotedString = true;
     } else {
       continue;
     }

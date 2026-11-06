@@ -113,6 +113,13 @@ describe('readStream', () => {
     expect(final.designContract).toBeDefined();
   });
 
+  it('carries step off the result event when present', async () => {
+    const { final } = await run([
+      { t: 'result', summary: 'ok', code: 'PY', step: 'U1RFUA==' } as unknown as StreamEvent,
+    ]);
+    expect(final.step).toBe('U1RFUA==');
+  });
+
   it('surfaces an error event and closes the open section as failed', async () => {
     const { final } = await run([
       { t: 'section', id: 'n', label: 'N', state: 'open' },

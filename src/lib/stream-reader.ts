@@ -10,6 +10,7 @@ export interface StreamState {
   summary: string;
   code?: string;
   stl?: string;
+  step?: string;
   designContract?: DesignContract;
   /** The paused run to POST back to /api/chat/resume. */
   runId?: string;
@@ -100,6 +101,7 @@ export async function readStream(response: Response, callbacks: StreamCallbacks)
         state.summary = event.summary;
         if (event.code) state.code = event.code;
         if (event.stl) state.stl = event.stl;
+        if ((event as { step?: string }).step) state.step = (event as { step?: string }).step;
         if (event.designContract) state.designContract = event.designContract;
         // A resumed run that reaches a result really has finished, even if it
         // paused earlier in this same stream.
