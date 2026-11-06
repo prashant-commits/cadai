@@ -44,6 +44,13 @@ export function collectExprStrings(spec: AssemblySpec | null, resolvedSpec?: Ass
     }
   };
 
+  /** Profile outlines and inner outlines: arrays of [u, v] vertices, plus their kept expression sources. */
+  const addOutlines = (shape: { points?: unknown; holes?: unknown } | undefined, outline: unknown, outlineHoles: unknown) => {
+    for (const pts of [shape?.points, outline, ...(Array.isArray(shape?.holes) ? shape.holes : []), ...(Array.isArray(outlineHoles) ? outlineHoles : [])]) {
+      if (Array.isArray(pts)) for (const pt of pts) addArray(pt);
+    }
+  };
+
   const scan = (s: AssemblySpec | null | undefined) => {
     if (!s) return;
     for (const c of s.components ?? []) {
@@ -54,6 +61,7 @@ export function collectExprStrings(spec: AssemblySpec | null, resolvedSpec?: Ass
         add(c.shape.innerD);
         add(c.shape.wall);
       }
+      addOutlines(c.shape, c.expr?.outline, c.expr?.outlineHoles);
       if (c.holes) {
         for (const h of c.holes) {
           add(h.d);
@@ -90,6 +98,7 @@ export function collectExprStrings(spec: AssemblySpec | null, resolvedSpec?: Ass
         add(g.shape.innerD);
         add(g.shape.wall);
       }
+      addOutlines(g.shape, g.expr?.outline, g.expr?.outlineHoles);
       if (g.expr) {
         addArray(g.expr.localExtents);
         addArray(g.expr.position);

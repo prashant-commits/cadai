@@ -710,6 +710,9 @@ export function createCadAgent(
     let outOfTime = false;
     let unchangedFeedback = false;
     let unchangedFinal = false;
+    // The parsed candidate with the fewest self-check errors so far. A later attempt that
+    // fails schema or provider must not cost the variant a spec that already parsed.
+    let best: { candidate: AssemblySpec; errors: SpecViolation[] } | null = null;
 
     // THREE attempts, not two. Decoder degeneration is per-attempt and
     // independent, so retries compound: at the ~0.8 per-attempt success rate
@@ -771,6 +774,7 @@ export function createCadAgent(
             ...auditSpecGround(candidate).filter((v) => v.severity === 'error'),
           ];
           if (incoherent.length > 0 && attempt < MAX_ARCHITECT_ATTEMPTS - 1) {
+            if (best === null || incoherent.length < best.errors.length) best = { candidate, errors: incoherent };
             rawLastError = incoherent.map((v) => v.message).join(' ');
             console.warn(
               `architectNode: spec is self-inconsistent (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}):`,
@@ -805,6 +809,16 @@ export function createCadAgent(
           rawLastError
         );
       }
+    }
+
+    // The last attempt failed schema or provider (or time ran out) after an earlier one parsed:
+    // fall back to that candidate, its errors labelled exactly as on an accepted last attempt.
+    if (!spec && best) {
+      console.warn(
+        `architectNode: variant ${variant.id} falls back to the best parsed candidate (${best.errors.length} self-check error(s))`
+      );
+      spec = best.candidate;
+      specErrors = best.errors.map((v) => ({ severity: 'major' as const, issue: v.message }));
     }
 
     const shortErrorLabel = outOfTime

@@ -26,6 +26,18 @@ const Vec3OrExpr = z.array(NumOrExpr).length(3);
 const ExprVec3 = z.array(z.string().nullable()).length(3);
 
 export const Vec2 = z.array(z.number()).length(2);           // NOT z.tuple (prefixItems breaks decoders)
+/**
+ * A profile outline vertex: each coordinate a number or an expression over the
+ * parameters ("base_w"). Haiku parametrises outlines now that every parameter
+ * must drive geometry, and number-only points rejected 4 of 20 specs. The REQUEST
+ * schema allows the strings too (it says so, as for every other expression field),
+ * and resolveSpec evaluates them. The static type stays number, as for NumOrExpr.
+ */
+const Vec2OrExpr = z.array(NumOrExpr).length(2);
+/** Per-coordinate expression strings of one outline vertex; null where the coordinate was a literal. */
+const ExprVec2 = z.array(z.string().nullable()).length(2);
+/** Outline expressions kept beside the resolved numbers: one ExprVec2 per vertex. */
+const ExprOutline = z.array(ExprVec2);
 export const AxisSchema = z.enum(['x', 'y', 'z']);
 export const PlaneSchema = z.enum(['xy', 'xz', 'yz']);
 
@@ -46,8 +58,8 @@ export const ShapeSchema = z.object({
   wall: NumOrExpr.optional(),         // shell
   openFace: BedFaceSchema.optional(), // shell: the open face, same six-value enum as bedFace
   plane: PlaneSchema.optional(),      // profile
-  points: z.array(Vec2).optional(),   // profile outline
-  holes: z.array(z.array(Vec2)).optional(), // profile inner outlines
+  points: z.array(Vec2OrExpr).optional(),   // profile outline
+  holes: z.array(z.array(Vec2OrExpr)).optional(), // profile inner outlines
 });
 export type Shape = z.infer<typeof ShapeSchema>;
 /**
@@ -62,11 +74,17 @@ export type Shape = z.infer<typeof ShapeSchema>;
 const GuideNum = z.union([z.number(), z.string()]) as unknown as z.ZodNumber;
 (GuideNum as unknown as { _zod: { toJSONSchema?: () => object } })._zod.toJSONSchema = () => ({ type: 'number' });
 const GuideVec3 = z.array(GuideNum).length(3);
+const GuideVec2 = z.array(GuideNum).length(2);
 
 export const GuideSchema = z.object({
   label: z.string(),
   kind: z.enum(['envelope', 'line']),
-  shape: ShapeSchema.extend({ innerD: GuideNum.optional(), wall: GuideNum.optional() }).optional(), // envelope; absent = box
+  shape: ShapeSchema.extend({
+    innerD: GuideNum.optional(),
+    wall: GuideNum.optional(),
+    points: z.array(GuideVec2).optional(),
+    holes: z.array(z.array(GuideVec2)).optional(),
+  }).optional(), // envelope; absent = box
   localExtents: GuideVec3.optional(),       // envelope
   position: GuideVec3.optional(),           // envelope: min corner in assembly coordinates
   rotation: GuideVec3.optional(),           // envelope: degrees about its own min corner, applied first
@@ -83,6 +101,8 @@ export const GuideSchema = z.object({
     points: z.array(ExprVec3.nullable()).optional(),
     innerD: z.string().optional(),
     wall: z.string().optional(),
+    outline: ExprOutline.optional(),               // envelope profile: shape.points
+    outlineHoles: z.array(ExprOutline).optional(), // envelope profile: shape.holes
   }).optional(),
 });
 export type Guide = z.infer<typeof GuideSchema>;
@@ -265,6 +285,8 @@ export const AssemblySpecSchema = z.object({
       rotation: ExprVec3.optional(),
       innerD: z.string().optional(),
       wall: z.string().optional(),
+      outline: ExprOutline.optional(),               // profile: shape.points
+      outlineHoles: z.array(ExprOutline).optional(), // profile: shape.holes
       holes: z.array(z.object({
         d: z.string().optional(),
         at: ExprVec3.optional(),
@@ -277,7 +299,8 @@ export const AssemblySpecSchema = z.object({
   stressPoints: z.array(StressPointSchema).default([]),
   assumptions: z.array(z.object({
     field: z.string(),
-    value: z.string(),
+    // A number or boolean ("value": 3) is read as its text: 6 of 109 specs failed on it.
+    value: z.preprocess((v) => (typeof v === 'number' || typeof v === 'boolean' ? String(v) : v), z.string()),
     rationale: z.string()
   })).default([]),
   openQuestions: z.array(z.object({

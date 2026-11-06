@@ -276,6 +276,44 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
     return { value: parts.map((x) => x.value), expr: parts.some((x) => x.expr !== null) ? parts.map((x) => x.expr) : undefined };
   };
 
+  /**
+   * A profile's outline (shape.points) and inner outlines (shape.holes): every
+   * coordinate a number or an expression. Returns the resolved shape and the
+   * expression sources to keep beside it (undefined where all were literals).
+   */
+  type Outline = { expr: (string | null)[][] };
+  const outline = (
+    pts: unknown[][],
+    where: string,
+    prior?: (string | null)[][],
+  ): { value: number[][]; expr: Outline['expr'] | undefined } => {
+    const rows = pts.map((pt, i) => vec(pt, `${where}[${i}]`, prior?.[i]));
+    return {
+      value: rows.map((r) => r.value),
+      expr: rows.some((r) => r.expr) ? rows.map((r) => r.expr ?? [null, null]) : undefined,
+    };
+  };
+  const resolveOutlines = (
+    shape: NonNullable<Component['shape']>,
+    where: string,
+    prior: { outline?: (string | null)[][]; outlineHoles?: (string | null)[][][] } | undefined,
+  ): { shape: NonNullable<Component['shape']>; outline?: (string | null)[][]; outlineHoles?: (string | null)[][][] } => {
+    const out = { ...shape };
+    let outlineExpr: (string | null)[][] | undefined;
+    let holesExpr: (string | null)[][][] | undefined;
+    if (shape.points) {
+      const r = outline(shape.points, `${where} shape.points`, prior?.outline);
+      out.points = r.value;
+      outlineExpr = r.expr;
+    }
+    if (shape.holes) {
+      const rs = shape.holes.map((h, i) => outline(h, `${where} shape.holes[${i}]`, prior?.outlineHoles?.[i]));
+      out.holes = rs.map((r) => r.value);
+      if (rs.some((r) => r.expr)) holesExpr = rs.map((r) => r.expr ?? r.value.map(() => [null, null]));
+    }
+    return { shape: out, outline: outlineExpr, outlineHoles: holesExpr };
+  };
+
   const components = raw.components?.map((c) => {
     const w = `component "${c.name}"`;
     const out: Component = { ...c };
@@ -297,7 +335,10 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
         shape[f] = r.value;
         if (r.expr !== null) expr[f] = r.expr;
       }
-      out.shape = shape;
+      const o = resolveOutlines(shape, w, c.expr);
+      out.shape = o.shape;
+      if (o.outline) expr.outline = o.outline;
+      if (o.outlineHoles) expr.outlineHoles = o.outlineHoles;
     }
 
     if (c.holes) {
@@ -355,7 +396,10 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
         shape[f] = r.value;
         if (r.expr !== null) expr[f] = r.expr;
       }
-      out.shape = shape;
+      const o = resolveOutlines(shape, w, g.expr);
+      out.shape = o.shape;
+      if (o.outline) expr.outline = o.outline;
+      if (o.outlineHoles) expr.outlineHoles = o.outlineHoles;
     }
     if (Object.keys(expr).length) out.expr = expr;
     return out;
