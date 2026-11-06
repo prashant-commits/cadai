@@ -86,6 +86,8 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
     }
 
     if (!Number.isFinite(minU) || !Number.isFinite(minV)) return c;
+    minU = Math.round(minU * 1e6) / 1e6;
+    minV = Math.round(minV * 1e6) / 1e6;
 
     const spanU = maxU - minU;
     const spanV = maxV - minV;
@@ -144,10 +146,10 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
         const vHasExpr = Boolean(exprPt?.[1]);
         return [
           uHasExpr
-            ? (minU !== 0 ? round2(u - minU) : u)
+            ? (minU !== 0 ? u - minU : u)
             : round2((u - minU) * scaleU),
           vHasExpr
-            ? (minV !== 0 ? round2(v - minV) : v)
+            ? (minV !== 0 ? v - minV : v)
             : round2((v - minV) * scaleV),
         ];
       })
@@ -167,12 +169,12 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
 
           if (minU !== 0 || scaleU !== 1) {
             at[uAxis] = uHasHoleExpr
-              ? (minU !== 0 ? round2(at[uAxis] - minU) : at[uAxis])
+              ? (minU !== 0 ? at[uAxis] - minU : at[uAxis])
               : round2((at[uAxis] - minU) * scaleU);
           }
           if (minV !== 0 || scaleV !== 1) {
             at[vAxis] = vHasHoleExpr
-              ? (minV !== 0 ? round2(at[vAxis] - minV) : at[vAxis])
+              ? (minV !== 0 ? at[vAxis] - minV : at[vAxis])
               : round2((at[vAxis] - minV) * scaleV);
           }
         }

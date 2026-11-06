@@ -316,7 +316,7 @@ describe('literal profile outline with parametric extents', () => {
   });
 
   it('N3: shifts expressions and numbers by the exact same min', () => {
-    // min 2.005 on z, hole z = hz = 12
+    // min 2.005 on z, hole z = hz = 12 (tightened to exact equality in round 3)
     const spec = {
       sheet: '', assemblyName: 'min_test', assumptions: [], openQuestions: [],
       parameters: [param('w', 40), param('d', 10), param('h', 80), param('hz', 12)],
@@ -329,8 +329,11 @@ describe('literal profile outline with parametric extents', () => {
 
     const n = normalizeSpec(spec);
     const c = n.components![0];
-    expect(c.holes![0].at).toEqual([7, 0, 10]);
+    expect(c.holes![0].at).toEqual([7, 0, 12 - 2.005]);
     expect(c.expr?.holes?.[0].at).toEqual([null, null, '(hz) - 2.005']);
+    const r = resolveSpec(n);
+    expect(r.errors).toEqual([]);
+    expect(r.spec.components![0].holes![0].at).toEqual(c.holes![0].at);
   });
 
   it('N4: unscaled, unshifted profile keeps unrounded hole numbers', () => {
@@ -348,5 +351,46 @@ describe('literal profile outline with parametric extents', () => {
     const c = n.components![0];
     // a / 3 = 33.333333333333336, left untouched because profile did not move
     expect(c.holes![0].at[1]).toBeCloseTo(100 / 3, 10);
+  });
+
+  it('R1: snaps float residues to 0 and rounds tiny minimums to 1e-6 without exponent notation', () => {
+    // Outline whose min is r*cos(90) resolves with 0 errors after normalize
+    const specCos = {
+      sheet: '', assemblyName: 'cos_test', assumptions: [], openQuestions: [],
+      parameters: [param('r', 10), param('w', 20), param('d', 5), param('h', 10)],
+      components: [{
+        name: 'part', description: '', position: [0, 0, 0], localExtents: ['w', 'd', 'h'],
+        shape: {
+          kind: 'profile', plane: 'xz',
+          points: [['r*cos(90)', 0], [20, 0], [20, 10], ['r*cos(90)', 10]],
+        },
+      }],
+    } as unknown as AssemblySpec;
+
+    const nCos = normalizeSpec(specCos);
+    const rCos = resolveSpec(nCos);
+    expect(rCos.errors).toEqual([]);
+    expect(nCos.components![0].expr?.outline?.[0]?.[0]).toBe('r*cos(90)');
+
+    // Literal 5e-7 min writes - 0.000001
+    const spec5e7 = {
+      sheet: '', assemblyName: 'tiny_min', assumptions: [], openQuestions: [],
+      parameters: [param('w', 20), param('d', 5), param('h', 10), param('hx', 10)],
+      components: [{
+        name: 'part', description: '', position: [0, 0, 0], localExtents: ['w', 'd', 'h'],
+        shape: {
+          kind: 'profile', plane: 'xz',
+          points: [[0.0000005, 0], [20, 0], [20, 10], [0.0000005, 10]],
+        },
+        holes: [{ d: 3, at: ['hx', 2.5, 5], axis: 'y' }],
+      }],
+    } as unknown as AssemblySpec;
+
+    const n5e7 = normalizeSpec(spec5e7);
+    expect(n5e7.components![0].expr?.holes?.[0].at?.[0]).toBe('(hx) - 0.000001');
+    const r5e7 = resolveSpec(n5e7);
+    expect(r5e7.errors).toEqual([]);
+
+    // 2.005 unchanged is covered by N3
   });
 });
