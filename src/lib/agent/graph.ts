@@ -25,6 +25,8 @@ import { blockoutScad } from '../spec-sheet/blockout-scad';
 import { freshVariantPrompt, requiredChanges, variantNamedIn, variantPlanContext } from './architect-prompts';
 import { followUpEdit } from './follow-up';
 import { makeArchitectBuild } from './nodes/architect-build';
+import { makeBrepBuild } from './nodes/brep-build';
+import { validateBrep } from './nodes/validate-brep';
 import { svgToPngDataUrl } from '../spec-sheet/rasterize';
 import {
   stripGeneratedAssembly,
@@ -549,6 +551,11 @@ export const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => null,
   }),
+  /** STEP file of the latest B-rep build, base64. Null on the OpenSCAD kernel. */
+  stepContent: Annotation<string | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
   gateAction: Annotation<'approve' | 'revise' | 'cancel' | null>({
     reducer: (_, y) => y,
     default: () => null,
@@ -584,6 +591,14 @@ export const AgentState = Annotation.Root({
   }),
   /** Set once, on the thread's first architectNode entry, from CADAI_PIPELINE. Never changes afterwards. */
   pipeline: Annotation<'drafter' | 'architect' | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  /**
+   * Geometry kernel, pinned once per run beside `pipeline` from CADAI_KERNEL.
+   * 'brep' (build123d, STEP export) needs the Architect pipeline; the Drafter stays on OpenSCAD.
+   */
+  kernel: Annotation<'openscad' | 'brep' | null>({
     reducer: (_, y) => y,
     default: () => null,
   }),
@@ -1153,6 +1168,8 @@ export function createCadAgent(
     const assemblySpec = recommended?.spec ? mergeBriefIntoSpec(recommended.spec, brief) : null;
     const explanation = assemblySpec ? summarizeSpec(assemblySpec) : NO_SPEC_EXPLANATION;
 
+    // Pinned for the thread. A later entry keeps the value already stored.
+    const pipeline = state.pipeline ?? (process.env.CADAI_PIPELINE === 'architect' ? 'architect' : 'drafter');
     return {
       specBrief: brief,
       specVariants: variants,
@@ -1174,8 +1191,8 @@ export function createCadAgent(
       // reappear at a later node as if the human had just said it.
       gateAction: null,
       gateFeedback: null,
-      // Pinned for the thread. A later entry keeps the value already stored.
-      pipeline: state.pipeline ?? (process.env.CADAI_PIPELINE === 'architect' ? 'architect' : 'drafter'),
+      pipeline,
+      kernel: state.kernel ?? (pipeline === 'architect' && process.env.CADAI_KERNEL === 'brep' ? 'brep' : 'openscad'),
     };
   }
 
@@ -2034,6 +2051,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       summary,
       code: state.currentCode || undefined,
       stl: state.stlContent || undefined,
+      ...(state.kernel === 'brep' ? { step: state.stepContent || undefined, language: 'build123d' as const } : {}),
       designContract: state.designContract ?? undefined,
     });
 
@@ -2365,17 +2383,22 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
   }
 
   /** Finished spec: the Architect writes bodies, or the Drafter does. A null spec has nothing for the Architect to build. */
-  function draftTarget(state: AgentStateType): 'architectBuild' | 'drafterNode' | 'respondToUser' {
-    if (state.pipeline === 'architect') return state.assemblySpec ? 'architectBuild' : 'respondToUser';
+  function draftTarget(state: AgentStateType): 'architectBuild' | 'brepBuild' | 'drafterNode' | 'respondToUser' {
+    if (state.pipeline === 'architect') {
+      if (!state.assemblySpec) return 'respondToUser';
+      return state.kernel === 'brep' ? 'brepBuild' : 'architectBuild';
+    }
     return 'drafterNode';
   }
 
   /** Failed build: the Architect rewrites the named parts, or Repair does. Same attempt caps. */
-  function repairTarget(state: AgentStateType): 'architectBuild' | 'fixCode' {
-    return state.pipeline === 'architect' ? 'architectBuild' : 'fixCode';
+  function repairTarget(state: AgentStateType): 'architectBuild' | 'brepBuild' | 'fixCode' {
+    if (state.pipeline !== 'architect') return 'fixCode';
+    return state.kernel === 'brep' ? 'brepBuild' : 'architectBuild';
   }
 
   const architectBuild = makeArchitectBuild(model);
+  const brepBuild = makeBrepBuild(model);
 
   // Build the graph
   const workflow = new StateGraph(AgentState)
@@ -2385,7 +2408,9 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     .addNode('specGate', specGate)
     .addNode('drafterNode', drafterNode)
     .addNode('architectBuild', architectBuild)
+    .addNode('brepBuild', brepBuild)
     .addNode('validateCode', validateCode)
+    .addNode('validateBrep', validateBrep)
     .addNode('fixCode', fixCode)
     .addNode('visualCritic', visualCritic)
     .addNode('acceptGate', acceptGate)
@@ -2396,6 +2421,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       specGate: 'specGate',
       drafterNode: 'drafterNode',
       architectBuild: 'architectBuild',
+      brepBuild: 'brepBuild',
       respondToUser: 'respondToUser',
     })
     .addEdge('specIllustrator', 'specReviewer')
@@ -2404,16 +2430,25 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       specGate: 'specGate',
       drafterNode: 'drafterNode',
       architectBuild: 'architectBuild',
+      brepBuild: 'brepBuild',
       respondToUser: 'respondToUser',
     })
     .addConditionalEdges('specGate', checkReviseRoute, {
       architectNode: 'architectNode',
       drafterNode: 'drafterNode',
       architectBuild: 'architectBuild',
+      brepBuild: 'brepBuild',
       respondToUser: 'respondToUser'
     })
     .addEdge('drafterNode', 'validateCode')
     .addEdge('architectBuild', 'validateCode')
+    .addEdge('brepBuild', 'validateBrep')
+    .addConditionalEdges('validateBrep', checkValidationRoute, {
+      brepBuild: 'brepBuild',
+      visualCritic: 'visualCritic',
+      acceptGate: 'acceptGate',
+      respondToUser: 'respondToUser'
+    })
     .addConditionalEdges('validateCode', checkValidationRoute, {
       fixCode: 'fixCode',
       architectBuild: 'architectBuild',
@@ -2429,6 +2464,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     .addConditionalEdges('acceptGate', checkAcceptRoute, {
       fixCode: 'fixCode',
       architectBuild: 'architectBuild',
+      brepBuild: 'brepBuild',
       respondToUser: 'respondToUser'
     })
     .addEdge('respondToUser', END);

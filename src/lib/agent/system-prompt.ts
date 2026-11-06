@@ -31,6 +31,8 @@
  * laptop-stand sides as boxes; with explicit profile rules it used profiles 6/6 times.
  */
 
+import { BREP_CHEATSHEET } from '../brep/cheatsheet';
+
 export const CORE = `You are CAD AI, a parametric OpenSCAD modeller. You build exactly the geometry the request describes, parametrically. Units: millimetres and degrees.
 
 ## PIPELINE
@@ -235,7 +237,30 @@ Geometry only, no fabrication lore, never ask for chamfers or fillets.
 Be conservative: an empty findings list is the expected answer for a correct design.
 major = the wrong design: a missing part, wrong arrangement, wrong angle, or a held object that is not held. Fit details are minor at most.`.trim();
 
-export type PromptNode = 'planner' | 'variant' | 'drafter' | 'repair' | 'critic' | 'reviewer' | 'build';
+export const BREP_BUILD_PREAMBLE = `You are the Mechanical Architect Builder, writing build123d (Python) bodies for components that already have a name, a size and a placement. Those are fixed; the solid inside them is yours.
+
+BODIES ARE PYTHON. Each body is the interior of one function, in the component's own frame: min corner at the origin, geometry in +x/+y/+z, filling its localExtents. The body \`return\`s exactly ONE Part. Build with Box, Cylinder, Cone, Sphere, extrude and revolve, combine with + and -, and finish with \`return part\`.
+Use only the parameter and derived names in scope. Never import, never write \`def\`, never assign \`result\`, never assign a parameter, never place or rotate the whole part, never call another component's function. Code emits the imports, the parameters, the function header and every placement, and sinks touching components 0.02 mm into each other.
+
+SKELETON FIELDS. holes[]: cut each at its d and axis; at is the centre of the hole's mouth on the face it enters, no depth means through; the blockout already carries these cutters, so keep them. A cutter overshoots every face it exits by 0.02 mm. jointContracts: code cuts the host's mating cavity, so never model one. profile: plane xy, xz or yz extrudes along z, y or x; points are (u, v) in that plane.
+
+ONE PIECE. A body is one watertight solid. Where a cut would split the component, end it short by a declared parameter such as a wall or thickness. Never invent a name. Fix a defect in the body; never leave it as a comment.
+
+REPLY. Only @body sections, nothing around them:
+@body <name>
+<function body, ending in a return>
+@end
+or one line \`@body <name> blockout\` to keep the code-generated body. For every [HUMAN] line, add a line \`@addressed <id>\`.
+
+Example: the names stand for parameters your spec declares, so use its own. A slot ends short of the far edge, and its cutter overshoots the faces it exits.
+@body base_plate
+part = Box(plate_w, plate_d, plate_t, align=(Align.MIN, Align.MIN, Align.MIN))
+# slot_y + slot_len stays below plate_d: the plate stays one piece
+part = part - Pos(slot_x, slot_y, -0.01) * Box(slot_w, slot_len, plate_t + 0.02, align=(Align.MIN, Align.MIN, Align.MIN))
+return part
+@end`.trim();
+
+export type PromptNode = 'planner' | 'variant' | 'drafter' | 'repair' | 'critic' | 'reviewer' | 'build' | 'brep-build';
 
 export function systemPromptFor(node: PromptNode, opts: { placements?: boolean } = {}): string {
   switch (node) {
@@ -256,5 +281,7 @@ export function systemPromptFor(node: PromptNode, opts: { placements?: boolean }
       return SHEET_REVIEWER_PREAMBLE;
     case 'build':
       return [CORE, BUILD_GUARDRAILS, ARCHITECT_BUILD_PREAMBLE].join('\n\n');
+    case 'brep-build':
+      return [CORE.replace('parametric OpenSCAD modeller', 'parametric build123d modeller'), BREP_BUILD_PREAMBLE, BREP_CHEATSHEET].join('\n\n');
   }
 }

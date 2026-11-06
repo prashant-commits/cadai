@@ -37,7 +37,12 @@ function isBracedTransform(piece: Piece): piece is Extract<Piece, { kind: 'brace
   return piece.kind === 'braced-transform';
 }
 
-export function parseBuild(text: string, componentNames: string[], reserved: string[] = []): {
+export interface ParseBuildOptions {
+  /** `python`: bodies are build123d function bodies, sanitized by `sanitizePythonBody`. */
+  language?: 'openscad' | 'python';
+}
+
+export function parseBuild(text: string, componentNames: string[], reserved: string[] = [], options: ParseBuildOptions = {}): {
   bodies: Record<string, string>;
   keepBlockout: string[];
   addressed: string[];
@@ -121,6 +126,17 @@ export function parseBuild(text: string, componentNames: string[], reserved: str
     }
 
     const raw = collected.join('\n');
+    if (options.language === 'python') {
+      const python = sanitizePythonBody(raw, componentNames, reserved);
+      if (python === null) {
+        drop(name);
+        continue;
+      }
+      bodies[name] = python;
+      remove(keepBlockout, name);
+      remove(dropped, name);
+      continue;
+    }
     const cleaned = sanitizeBody(raw, reserved);
     if (!acceptsSection(raw, name, reserved) || !isUsableBody(cleaned, componentNames)) {
       drop(name);
@@ -182,6 +198,53 @@ export function sanitizeBody(body: string, reserved: string[]): string {
   }
 
   return changed ? current : body;
+}
+
+/**
+ * A build123d function body, cleaned, or null when it cannot be assembled.
+ *
+ * Peels a `def <name>():` wrapper the model may add (and dedents its body),
+ * then drops top-level assignments to parameter and derived names. Rejects a
+ * body that imports, execs, evals, opens files, touches a dunder, calls a
+ * component function (recursion or a duplicate part), or never returns.
+ * Rejection falls back to the blockout for that part.
+ */
+export function sanitizePythonBody(
+  raw: string,
+  componentNames: string[],
+  reserved: string[] = [],
+): string | null {
+  let lines = raw.replace(/\s+$/, '').split('\n');
+  while (lines.length > 0 && lines[0].trim() === '') lines.shift();
+
+  const wrapper = lines.length > 0 ? /^def[ \t]+([A-Za-z_]\w*)[ \t]*\([ \t]*\)[ \t]*(?:->[^:]*)?:[ \t]*(?:#.*)?$/.exec(lines[0]) : null;
+  if (wrapper) {
+    const inner = lines.slice(1);
+    if (inner.some((line) => /^\S/.test(line) && line.trim() !== '')) return null; // code after the def: not a single wrapper
+    lines = dedent(inner);
+  } else if (lines.some((line) => /^def[ \t]/.test(line))) {
+    return null; // helper defs beside the body cannot be assembled into one function
+  }
+
+  const names = new Set(reserved);
+  lines = lines.filter((line) => {
+    const m = /^([A-Za-z_]\w*)[ \t]*=(?!=)/.exec(line);
+    return !(m && names.has(m[1]));
+  });
+  const body = lines.join('\n').replace(/\s+$/, '');
+
+  // Checks run on code with comments blanked, so prose in a comment is not a violation.
+  const code = body.split('\n').map((line) => line.replace(/#.*$/, '')).join('\n');
+  if (/\bimport\b|\bexec\b|\beval\b|\bopen\s*\(|__|\bcompile\s*\(|\bglobals\b|\bgetattr\b/.test(code)) return null;
+  if (componentNames.some((name) => new RegExp(`(?<![\\w.])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`).test(code))) return null;
+  if (!/(^|\n)[ \t]*return\b/.test(code)) return null;
+  return body;
+}
+
+function dedent(lines: string[]): string[] {
+  const indents = lines.filter((line) => line.trim() !== '').map((line) => /^[ \t]*/.exec(line)![0].length);
+  const cut = indents.length > 0 ? Math.min(...indents) : 0;
+  return lines.map((line) => line.slice(Math.min(cut, /^[ \t]*/.exec(line)![0].length)));
 }
 
 export function assembleScript(
