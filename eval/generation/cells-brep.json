@@ -1,0 +1,6 @@
+[
+  { "name": "openscad-adaptive", "kernel": "openscad", "thinking": "adaptive", "model": "claude-haiku-5.5", "attempts": 3 },
+  { "name": "brep-adaptive", "kernel": "brep", "thinking": "adaptive", "model": "claude-haiku-5.5", "attempts": 3 },
+  { "name": "brep-off", "kernel": "brep", "thinking": "off", "model": "claude-haiku-5.5", "attempts": 3 },
+  { "name": "openscad-off", "kernel": "openscad", "thinking": "off", "model": "claude-haiku-5.5", "attempts": 3 }
+]

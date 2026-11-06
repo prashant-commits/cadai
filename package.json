@@ -12,6 +12,7 @@
     "mcp": "tsx src/mcp-server.ts",
     "eval:generation": "tsx eval/generation/run.ts",
     "eval:compare": "tsx eval/generation/compare.ts",
+    "eval:matrix": "tsx eval/generation/matrix.ts",
     "eval:architect": "tsx eval/architect/run.ts",
     "eval:architect:render": "tsx eval/architect/render.ts",
     "eval:architect:rescore": "tsx eval/architect/rescore.ts",
