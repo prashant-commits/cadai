@@ -104,4 +104,13 @@ describe('bridgeGraphStream', () => {
     expect(out.filter((e) => e.t === 'delta')).toEqual([]);
     expect(out.filter((e) => e.t === 'section')).toEqual([]);
   });
+
+  it.each([
+    ['brepBuild', '@body box\nreturn Box(40, 40, 40)\n@end'],
+    ['validateBrep', '[Validation Report]\nValidation Result: Failed'],
+  ])('drops raw %s output', async (node, content) => {
+    const out = await bridge([['messages', [{ content }, { langgraph_node: node }]]]);
+    expect(out.filter((e) => e.t === 'delta')).toEqual([]);
+    expect(out.filter((e) => e.t === 'section')).toEqual([]);
+  });
 });
