@@ -698,6 +698,9 @@ export function createCadAgent(
   // but temperature cannot be sent (Claude 5.5 models reject non-default temperatures).
   // Revision calls use the model directly.
   const revisionModel = model;
+  // The code-writing nodes (brepBuild, architectBuild, fixCode) get their own thinking and
+  // effort (CADAI_BUILD_THINKING / CADAI_BUILD_EFFORT); every other node keeps `model`.
+  const buildModel = getChatModel(selectedModel, { role: 'build' });
 
   let criticSlug = selectedModel;
   if (process.env.CADAI_CRITIC_MODEL) {
@@ -1954,7 +1957,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       new HumanMessage(fixPrompt),
     ];
 
-    const response = await invokeWithToolRound(model, fixMessages, config);
+    const response = await invokeWithToolRound(buildModel, fixMessages, config);
     
     const content = contentText(response.content);
     const extracted = extractReplyCode(response, content);
@@ -2378,8 +2381,8 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     return routeAfterAccept(state);
   }
 
-  const architectBuild = makeArchitectBuild(model);
-  const brepBuild = makeBrepBuild(model);
+  const architectBuild = makeArchitectBuild(buildModel);
+  const brepBuild = makeBrepBuild(buildModel);
 
   // Build the graph
   const workflow = new StateGraph(AgentState)

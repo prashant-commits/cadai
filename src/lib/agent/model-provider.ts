@@ -64,6 +64,19 @@ export function effortLevel(): EffortLevel {
   return envChoice('CADAI_EFFORT', EFFORT_LEVELS, 'high');
 }
 
+/**
+ * CADAI_BUILD_THINKING: `off` or `adaptive` for the code-writing build nodes
+ * (brepBuild, architectBuild, fixCode). Unset or invalid: inherits CADAI_THINKING.
+ */
+export function buildThinkingMode(): ThinkingMode {
+  return envChoice('CADAI_BUILD_THINKING', THINKING_MODES, thinkingMode());
+}
+
+/** CADAI_BUILD_EFFORT: `low`, `medium` or `high` for the build nodes. Unset or invalid: inherits CADAI_EFFORT. */
+export function buildEffortLevel(): EffortLevel {
+  return envChoice('CADAI_BUILD_EFFORT', EFFORT_LEVELS, effortLevel());
+}
+
 /** What is actually sent for `modelId`, after the per-model fallback. */
 export function thinkingFor(
   modelId: string,
@@ -84,11 +97,17 @@ const MAX_TOKENS_THINKING_OFF = 32_000;
 const MAX_TOKENS_THINKING_ON = 64_000;
 
 /**
+ * `build` is the code-writing nodes (brepBuild, architectBuild, fixCode), which read
+ * CADAI_BUILD_THINKING / CADAI_BUILD_EFFORT and inherit the global setting when those
+ * are unset. Every other caller passes no role and gets the global setting.
+ */
+export type ModelRole = 'build';
+
+/**
  * Builds a chat model for `modelName` (an app slug; defaults to CADAI_MODEL if offered, then
  * DEFAULT_MODEL). Temperature is never sent: Claude 5.5 models reject non-default values.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export function getChatModel(modelName?: string, _opts?: { temperature?: number }): CadChatModel {
+export function getChatModel(modelName?: string, opts?: { temperature?: number; role?: ModelRole }): CadChatModel {
   let selectedModel = modelName;
   if (!selectedModel) {
     const envModel = process.env.CADAI_MODEL;
@@ -105,7 +124,8 @@ export function getChatModel(modelName?: string, _opts?: { temperature?: number 
   }
 
   const model = anthropicModelId(selectedModel);
-  const { thinking, effort } = thinkingFor(model);
+  const { thinking, effort } =
+    opts?.role === 'build' ? thinkingFor(model, buildThinkingMode(), buildEffortLevel()) : thinkingFor(model);
   const defaultMaxTokens = thinking.type === 'disabled' ? MAX_TOKENS_THINKING_OFF : MAX_TOKENS_THINKING_ON;
 
   const chat = new ChatAnthropic({

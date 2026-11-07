@@ -13,4 +13,8 @@
 - `CADAI_CHECKPOINT_TTL_MS` (default `86400000`, 24 h): paused runs whose newest checkpoint is older than this are deleted, at startup and at most once an hour on write.
 - `CADAI_MAX_DURATION_MS` (default `300000`, Vercel only): the request's hard limit (the routes' `maxDuration`). Model calls before the spec gate are capped to what is left of it, less a 15 s tail.
 - `CADAI_MODEL_TIMEOUT_MS` (default `240000`): per-call timeout of the model client. On Vercel the review loop lowers it per call to the remaining budget.
+- `CADAI_THINKING` (default `off`): `off` or `adaptive` extended thinking for every model call. Sonnet 5.5 and Opus 5.5 reject `off`, so they run adaptive at effort `low` instead.
+- `CADAI_EFFORT` (default `high`): `low`, `medium` or `high` output effort sent with every call.
+- `CADAI_BUILD_THINKING` (default: `CADAI_THINKING`): `off` or `adaptive` thinking for the code-writing build nodes only (`brepBuild`, `architectBuild`, `fixCode`, repair visits included). Planner, variant spec, reviewer and critic keep `CADAI_THINKING`. Thinking pays off where code is written: B-rep build first-try success was 100% with it on against 78% off.
+- `CADAI_BUILD_EFFORT` (default: `CADAI_EFFORT`): `low`, `medium` or `high` effort for the same build nodes.
 - `CADAI_REVIEWER_MODEL` (default: the run model): pins the sheet reviewer to one model. Use it when comparing models, so each is not judged by its own reviewer (e.g. comparing Sonnet against Haiku).
