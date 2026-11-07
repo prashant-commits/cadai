@@ -205,7 +205,7 @@ describe('builder mode is rejected with a reason that names the fix', () => {
 
 describe('checkPythonScript', () => {
   it('accepts emitted starting script with designLanguage and _round calls in bodies and runs on geo stack', async () => {
-    const spec: AssemblySpec = {
+    const spec = {
       assemblyName: 'monolith_dock',
       boundingBox: { width: 40, length: 40, height: 20 },
       designLanguage: {
@@ -223,7 +223,7 @@ describe('checkPythonScript', () => {
           shape: { kind: 'box' },
         },
       ],
-    };
+    } as unknown as AssemblySpec;
     const bodies = {
       base: 'b = Box(40, 40, 20)\nreturn _round(b, edge_r, "outer")',
     };
@@ -247,7 +247,7 @@ describe('checkPythonScript', () => {
       assemblyName: 'box',
       boundingBox: { width: 10, length: 10, height: 10 },
       components: [{ name: 'b', localExtents: [10, 10, 10], position: [0, 0, 0], shape: { kind: 'box' } }],
-    }).script;
+    } as unknown as AssemblySpec).script;
 
     const withImport = valid + '\nimport os\n';
     expect(checkPythonScript(withImport)).toEqual({
@@ -267,7 +267,7 @@ describe('checkPythonScript', () => {
       assemblyName: 'box',
       boundingBox: { width: 10, length: 10, height: 10 },
       components: [{ name: 'b', localExtents: [10, 10, 10], position: [0, 0, 0], shape: { kind: 'box' } }],
-    }).script;
+    } as unknown as AssemblySpec).script;
 
     const modifiedPrelude = valid.replace('from build123d import *', 'from build123d import *\nimport os');
     expect(checkPythonScript(modifiedPrelude)).toEqual({

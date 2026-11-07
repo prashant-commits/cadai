@@ -609,7 +609,16 @@ export const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => null,
   }),
-
+  /** Total wall time in ms accumulated across all brepAgentBuild visits in this run. */
+  buildWallMs: Annotation<number>({
+    reducer: (_, y) => y,
+    default: () => 0,
+  }),
+  /** Total USD cost accumulated across all brepAgentBuild visits in this run. */
+  buildCostUsd: Annotation<number>({
+    reducer: (_, y) => y,
+    default: () => 0,
+  }),
 });
 
 export type AgentStateType = typeof AgentState.State;

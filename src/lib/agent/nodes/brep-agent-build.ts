@@ -19,6 +19,7 @@ import { BREP_CHEATSHEET } from '../../brep/cheatsheet';
 import { getBuildRequirements } from '../requirements';
 import { auditNesting } from '../nesting-audit';
 import { checkPythonScript } from '../../brep/body-check';
+import { DEFAULT_MODEL } from '../models';
 
 export interface ToolBindableModel {
   invoke(messages: BaseMessage[], config?: RunnableConfig): Promise<AIMessage>;
@@ -173,7 +174,7 @@ export const BREP_AGENT_SYSTEM_PROMPT = `You are the Mechanical Architect Builde
 
 # SCRIPT CONTRACT
 The final gate and the UI sliders depend on this contract:
-1. Top-level parameter lines: keep the format \`name = value  # [min:step:max] description\`. Add parameters for moving-part poses with sensible ranges (e.g. lid_open_deg = 0  # [0:5:120] lid opening angle in degrees), and narrow a range when a clash makes part of it unusable, explaining why in finish notes. A pose parameter changes the part's position, never its size.
+1. Top-level parameter lines: keep the format \`name = value  # [min:step:max] description\`. Add parameters for moving-part poses with sensible ranges (e.g. lid_open_deg = 0  # [0:5:120] lid opening angle in degrees), and narrow a range when a clash makes part of it unusable, explaining why in finish notes. A pose parameter changes the part's position, never its size. Pose parameters default to the closed/home pose (their range min); the model the user sees first is closed.
 2. Labelled parts in \`_cadai_parts\`: \`_cadai_parts\` must contain one labelled shape per spec component (label = component name), measured BEFORE any fusing; consolidation happens only in \`result\`. Every spec component must exist in \`_cadai_parts\` unless deliberately removed/replaced and declared in \`finish(omitted=[{component, reason}])\`.
 3. Exported shape: assign the final fused Compound / Part to \`result\`.
 4. Imports: no imports beyond the existing prelude.
@@ -182,6 +183,7 @@ The final gate and the UI sliders depend on this contract:
 # VERIFICATION BEFORE FINISH
 - Before finish, you must verify motion: if the model has a moving part, the script must expose a pose parameter (_deg or _travel with range). You must test the script at its range max (and min if not 0) using render or run_script and see zero unintended collisions.
 - A pose parameter changes the part's position, never its size.
+- Pose parameters default to the closed/home pose (their range min); the model the user sees first is closed.
 - Before finish, you must verify the atomic requirements checklist and report each requirement as met, partly, or unmet (with evidence).
 - All parts must touch or be within 0.5 mm of another part in the closed pose (pin in bore clearance <= 1 mm). Disconnected parts are rejected.
 - Inserted or stacking features must fit within their host opening without collision.
@@ -223,7 +225,74 @@ function parsePositiveInt(val: string | undefined, defaultVal: number): number {
 function parsePositiveFloat(val: string | undefined, defaultVal: number): number {
   if (!val) return defaultVal;
   const n = parseFloat(val);
-  return Number.isFinite(n) && n > 0 ? n : defaultVal;
+  return Number.isFinite(n) && n >= 0 ? n : defaultVal;
+}
+
+export const MODEL_PRICES: Record<string, { input: number; output: number }> = {
+  'claude-haiku-5-5': { input: 0.1, output: 0.5 },
+  'claude-haiku-5.5': { input: 0.1, output: 0.5 },
+  'claude-sonnet-5-5': { input: 2, output: 10 },
+  'claude-sonnet-5.5': { input: 2, output: 10 },
+  'claude-opus-5-5': { input: 4, output: 20 },
+  'claude-opus-5.5': { input: 4, output: 20 },
+  'claude-fable-5-1': { input: 10, output: 50 },
+  'claude-fable-5.1': { input: 10, output: 50 },
+};
+
+export function extractReplyUsage(reply: AIMessage): {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+} {
+  const meta = reply.usage_metadata;
+  const respUsage = (reply.response_metadata as { usage?: Record<string, unknown> } | undefined)?.usage;
+  const input = typeof meta?.input_tokens === 'number'
+    ? meta.input_tokens
+    : typeof respUsage?.input_tokens === 'number'
+      ? (respUsage.input_tokens as number)
+      : 0;
+  const output = typeof meta?.output_tokens === 'number'
+    ? meta.output_tokens
+    : typeof respUsage?.output_tokens === 'number'
+      ? (respUsage.output_tokens as number)
+      : 0;
+  const cacheCreation = typeof (meta as unknown as { input_token_details?: { cache_creation?: number } })?.input_token_details?.cache_creation === 'number'
+    ? (meta as unknown as { input_token_details?: { cache_creation?: number } }).input_token_details!.cache_creation!
+    : typeof respUsage?.cache_creation_input_tokens === 'number'
+      ? (respUsage.cache_creation_input_tokens as number)
+      : 0;
+  const cacheRead = typeof (meta as unknown as { input_token_details?: { cache_read?: number } })?.input_token_details?.cache_read === 'number'
+    ? (meta as unknown as { input_token_details?: { cache_read?: number } }).input_token_details!.cache_read!
+    : typeof respUsage?.cache_read_input_tokens === 'number'
+      ? (respUsage.cache_read_input_tokens as number)
+      : 0;
+
+  return {
+    input_tokens: input,
+    output_tokens: output,
+    cache_creation_input_tokens: cacheCreation,
+    cache_read_input_tokens: cacheRead,
+  };
+}
+
+export function estimateCostUsd(
+  modelSlug: string,
+  usage: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
+  }
+): number {
+  const norm = modelSlug.toLowerCase().replace(/\./g, '-');
+  const price = MODEL_PRICES[norm] ?? MODEL_PRICES[modelSlug] ?? MODEL_PRICES['claude-sonnet-5-5'];
+  const input =
+    (usage.input_tokens ?? 0) +
+    (usage.cache_creation_input_tokens ?? 0) * 1.25 +
+    (usage.cache_read_input_tokens ?? 0) * 0.1;
+  const output = usage.output_tokens ?? 0;
+  return (input * price.input + output * price.output) / 1_000_000;
 }
 
 export function makeBrepAgentBuild(model: ToolBindableModel): (
@@ -246,7 +315,13 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
 
     const maxTurns = parsePositiveInt(process.env.CADAI_AGENT_MAX_TURNS, 6);
     const maxRenders = parsePositiveInt(process.env.CADAI_AGENT_MAX_RENDERS, 3);
-    const maxWallSec = parsePositiveFloat(process.env.CADAI_AGENT_MAX_WALL_S, 300);
+    const maxWallSec = parsePositiveFloat(process.env.CADAI_AGENT_MAX_WALL_S, 180);
+    const maxUsd = parsePositiveFloat(process.env.CADAI_AGENT_MAX_USD, 0.60);
+
+    const initialWallMs = typeof state.buildWallMs === 'number' ? state.buildWallMs : 0;
+    let accumulatedCostUsd = typeof state.buildCostUsd === 'number' ? state.buildCostUsd : 0;
+    const visitStartMs = Date.now();
+    const modelSlug = process.env.CADAI_MODEL ?? DEFAULT_MODEL;
 
     const specComponentNames = (spec.components ?? []).map((c) => c.name);
     const startingScript = state.currentCode || emitBrepScript(spec).script;
@@ -271,8 +346,6 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
       }
       return ev;
     }
-
-    const startWallMs = Date.now();
 
     const runScriptTool = new DynamicStructuredTool({
       name: 'run_script',
@@ -347,10 +420,27 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
       new HumanMessage(promptText),
     ];
 
+    let budgetExceededReason: string | null = null;
+    const initialElapsedWallSec = initialWallMs / 1000;
+    if (initialElapsedWallSec >= maxWallSec) {
+      budgetExceededReason = `wall time limit of ${maxWallSec}s exceeded (${initialElapsedWallSec.toFixed(1)}s elapsed across build)`;
+    } else if (accumulatedCostUsd >= maxUsd) {
+      budgetExceededReason = `cost budget of $${maxUsd.toFixed(2)} exceeded ($${accumulatedCostUsd.toFixed(4)} spent across build)`;
+    }
+
     let turns = 0;
     while (turns < maxTurns && !finished) {
-      if ((Date.now() - startWallMs) / 1000 > maxWallSec) {
-        console.warn('brepAgentBuild: max wall time exceeded');
+      if (budgetExceededReason) break;
+
+      const elapsedWallSec = (initialWallMs + (Date.now() - visitStartMs)) / 1000;
+      if (elapsedWallSec >= maxWallSec) {
+        budgetExceededReason = `wall time limit of ${maxWallSec}s exceeded (${elapsedWallSec.toFixed(1)}s elapsed across build)`;
+        console.warn(`brepAgentBuild: ${budgetExceededReason}`);
+        break;
+      }
+      if (accumulatedCostUsd >= maxUsd) {
+        budgetExceededReason = `cost budget of $${maxUsd.toFixed(2)} exceeded ($${accumulatedCostUsd.toFixed(4)} spent across build)`;
+        console.warn(`brepAgentBuild: ${budgetExceededReason}`);
         break;
       }
       turns++;
@@ -386,6 +476,21 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
       }
 
       if (!reply) break;
+
+      const usage = extractReplyUsage(reply);
+      accumulatedCostUsd += estimateCostUsd(modelSlug, usage);
+
+      const elapsedAfterModelSec = (initialWallMs + (Date.now() - visitStartMs)) / 1000;
+      if (elapsedAfterModelSec >= maxWallSec) {
+        budgetExceededReason = `wall time limit of ${maxWallSec}s exceeded (${elapsedAfterModelSec.toFixed(1)}s elapsed across build)`;
+        console.warn(`brepAgentBuild: ${budgetExceededReason}`);
+      } else if (accumulatedCostUsd >= maxUsd) {
+        budgetExceededReason = `cost budget of $${maxUsd.toFixed(2)} exceeded ($${accumulatedCostUsd.toFixed(4)} spent across build)`;
+        console.warn(`brepAgentBuild: ${budgetExceededReason}`);
+      }
+      if (budgetExceededReason) {
+        break;
+      }
 
       const stop = unusableStop(reply);
       if (stop) {
@@ -816,10 +921,27 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
             continue;
           }
 
-          // Rule 3: Moving parts must move
+          // Rule 3: Moving parts must move and pose parameters default to home pose
+          const candidatePoseParams = parsePoseParameters(finalCandidateScript);
+          let poseError: string | null = null;
+          for (const pp of candidatePoseParams) {
+            if (Math.abs(pp.value - pp.min) > 1e-4) {
+              poseError = `Pose parameter '${pp.name}' defaults to ${pp.value}, but must default to its closed/home pose (their range min ${pp.min}); the model the user sees first is closed. Set ${pp.name} = ${pp.min} in the script before finish.`;
+              break;
+            }
+          }
+
+          if (poseError) {
+            conversation.push(new ToolMessage({
+              tool_call_id: callId,
+              name: call.name,
+              content: JSON.stringify({ ok: false, error: `Finish rejected: ${poseError}` }),
+            }));
+            continue;
+          }
+
           if (movingNeeded) {
-            const poseParams = parsePoseParameters(finalCandidateScript);
-            if (poseParams.length === 0) {
+            if (candidatePoseParams.length === 0) {
               conversation.push(new ToolMessage({
                 tool_call_id: callId,
                 name: call.name,
@@ -844,8 +966,7 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
               ev.defaultParts = partBounds;
             }
 
-            let poseError: string | null = null;
-            for (const pp of poseParams) {
+            for (const pp of candidatePoseParams) {
               const points = ev.testedPoints.get(pp.name) ?? [];
               const maxPoint = points.find((pt) => Math.abs(pt.value - pp.max) <= 1e-2);
               if (!maxPoint) {
@@ -980,6 +1101,12 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
       }
     }
 
+    if (budgetExceededReason) {
+      const budgetNote = `Agent build ended: ${budgetExceededReason}.`;
+      finishNotes.push(budgetNote);
+      config?.writer?.({ t: 'delta', text: `${budgetNote}\n`, node: 'brepAgentBuild' });
+    }
+
     let finalScript = '';
     if (lastOkScript && checkScriptGuardrails(lastOkScript).ok) {
       finalScript = lastOkScript;
@@ -989,16 +1116,29 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
       finalScript = startingScript;
     }
 
-    const allBuildNotes: Array<{ name: string; reason: string }> = [
+    const seenNotes = new Set<string>();
+    const allBuildNotes: Array<{ name: string; reason: string }> = [];
+    for (const note of [
+      ...(state.buildNotes ?? []).filter((n) => !n.reason.startsWith('Agent build ended:')),
       ...finishOmitted.map((o) => ({ name: o.component, reason: o.reason })),
       ...finishNotes.map((reason) => ({ name: '', reason })),
-    ];
+    ]) {
+      const key = `${note.name}::${note.reason}`;
+      if (!seenNotes.has(key)) {
+        seenNotes.add(key);
+        allBuildNotes.push(note);
+      }
+    }
+
+    const totalVisitWallMs = Date.now() - visitStartMs;
 
     return {
       currentCode: finalScript,
       attemptCount: state.attemptCount + 1,
       buildFallbacks: 0,
       buildNotes: allBuildNotes,
+      buildWallMs: initialWallMs + totalVisitWallMs,
+      buildCostUsd: accumulatedCostUsd,
       gateAction: null,
       gateFeedback: null,
       failureKind: finalScript ? 'none' : 'compile',

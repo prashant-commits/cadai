@@ -8,7 +8,7 @@
  *   npm run eval:matrix -- --tag brep1 --report      # rebuild the markdown from the jsonl
  *
  * Flags: --cells <file> (required unless --report or --rescore), --prompts <file>, --samples N (2),
- * --concurrency N (2), --tag, --limit N (first N prompts), --only a,b (cells), --report,
+ * --concurrency N (5), --tag, --limit N (first N prompts), --only a,b (cells), --report,
  * --results-dir <dir> (default eval/results), --rescore <tag>.
  *
  * --rescore <tag> recomputes the parameter, STEP and workable metrics from the saved
@@ -41,7 +41,7 @@ interface Args {
 
 function parseArgs(argv: string[]): Args {
   const a: Args = {
-    prompts: path.join(__dirname, 'prompts.json'), samples: 2, concurrency: 2, tag: 'run',
+    prompts: path.join(__dirname, 'prompts.json'), samples: 2, concurrency: 5, tag: 'run',
     limit: Infinity, only: [], report: false, resultsDir: DEFAULT_RESULTS,
   };
   for (let i = 0; i < argv.length; i++) {

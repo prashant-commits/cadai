@@ -18,7 +18,7 @@ const spec = resolveSpec({
   assumptions: [],
   openQuestions: [],
   parameters: [
-    { name: 'lean_deg', value: 70, min: 64, max: 90, unit: 'deg', description: 'backrest lean' },
+    { name: 'lean_angle', value: 70, min: 64, max: 90, unit: 'deg', description: 'backrest lean' },
     { name: 'lid_open_deg', value: 0, min: 0, max: 120, unit: 'deg', description: 'lid angle' },
   ],
   components: [
@@ -30,7 +30,7 @@ const spec = resolveSpec({
 const ASCII_STL = 'solid model\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 10 0 0\nvertex 0 10 0\nendloop\nendfacet\nendsolid model\n';
 
 const SCRIPT_1 = `from build123d import *
-lean_deg = 70  # [64:1:90] backrest lean
+lean_angle = 70  # [64:1:90] backrest lean
 lid_open_deg = 0  # [0:5:120] lid angle
 base = Box(180, 120, 8, align=(Align.MIN, Align.MIN, Align.MIN))
 lid = Pos(10, 70, 38) * Box(160, 40, 4, align=(Align.MIN, Align.MIN, Align.MIN))
@@ -41,7 +41,7 @@ result = Compound([base, lid])
 `;
 
 const SCRIPT_2 = `from build123d import *
-lean_deg = 70  # [64:1:90] backrest lean
+lean_angle = 70  # [64:1:90] backrest lean
 lid_open_deg = 120  # [0:5:120] lid angle
 base = Box(180, 120, 8, align=(Align.MIN, Align.MIN, Align.MIN))
 lid = Pos(10, 70, 38) * Box(160, 40, 4, align=(Align.MIN, Align.MIN, Align.MIN))
@@ -52,7 +52,7 @@ result = Compound([base, lid])
 `;
 
 const SCRIPT_FINAL = `from build123d import *
-lean_deg = 72  # [64:1:90] backrest lean
+lean_angle = 72  # [64:1:90] backrest lean
 lid_open_deg = 0  # [0:5:120] lid angle
 base = Box(180, 120, 8, align=(Align.MIN, Align.MIN, Align.MIN))
 lid = Pos(10, 70, 38) * Box(160, 40, 4, align=(Align.MIN, Align.MIN, Align.MIN))
@@ -66,7 +66,7 @@ describe('applyParameterOverrides', () => {
   it('updates parameter lines while keeping comments and ranges', () => {
     const out = applyParameterOverrides(SCRIPT_1, { lid_open_deg: 100 });
     expect(out).toContain('lid_open_deg = 100  # [0:5:120] lid angle');
-    expect(out).toContain('lean_deg = 70  # [64:1:90] backrest lean');
+    expect(out).toContain('lean_angle = 70  # [64:1:90] backrest lean');
   });
 });
 
@@ -127,7 +127,7 @@ describe('brepAgentBuild tool loop end to end', () => {
         ok: true,
         parts: [
           { label: 'base', valid: true, volume: 180 * 120 * 8, min: [0, 0, 0], max: [180, 120, 8] },
-          { label: 'lid', valid: true, volume: 160 * 40 * 4, min: [10, 70, 38], max: [170, 110, 42] },
+          { label: 'lid', valid: true, volume: 160 * 40 * 4, min: [10, 70, 38], max: [170, 110, isOverridden ? 70 : 42] },
         ],
         solids: 2,
         bbox: { min: [0, 0, 0], max: [180, 120, 42] },

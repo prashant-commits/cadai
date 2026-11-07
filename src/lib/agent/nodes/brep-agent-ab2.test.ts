@@ -3,7 +3,7 @@ import { AIMessage, HumanMessage, ToolMessage } from '@langchain/core/messages';
 import type { AgentStateType } from '../graph';
 import type { AssemblySpec } from '../assembly-spec';
 import { resolveSpec } from '../spec-expr';
-import { makeBrepAgentBuild, checkScriptGuardrails, applyParameterOverrides } from './brep-agent-build';
+import { makeBrepAgentBuild, checkScriptGuardrails, applyParameterOverrides, BREP_AGENT_SYSTEM_PROMPT } from './brep-agent-build';
 import { validateBrep } from './validate-brep';
 import { auditNesting } from '../nesting-audit';
 import { getBuildRequirements, clearBuildRequirementsCache } from '../requirements';
@@ -564,6 +564,94 @@ result = Compound([base, lid])
     expect(errB).toContain('Finish rejected');
     expect(errB).toContain('marked unmet without an explanation in evidence');
   });
+
+  it('system prompt instructs pose parameters default to closed/home pose (range min)', () => {
+    expect(BREP_AGENT_SYSTEM_PROMPT).toContain(
+      'Pose parameters default to the closed/home pose (their range min); the model the user sees first is closed.'
+    );
+  });
+
+  it('rejects finish when a pose parameter (_deg) defaults to open/non-min value', async () => {
+    const scriptHalfOpen = `from build123d import *
+lid_open_deg = 50  # [0:5:90] lid angle
+base = Box(100, 100, 40)
+lid = Pos(0, 0, 40) * Box(100, 100, 10)
+base.label = 'base'
+lid.label = 'lid'
+_cadai_parts = [base, lid]
+result = Compound([base, lid])
+`;
+    const turns = [
+      new AIMessage({
+        content: '',
+        tool_calls: [{ id: 'call_1', name: 'run_script', args: { script: scriptHalfOpen } }],
+      }),
+      new AIMessage({
+        content: '',
+        tool_calls: [{
+          id: 'call_2',
+          name: 'finish',
+          args: {
+            script: scriptHalfOpen,
+            requirements: [{ id: 'cad_request', status: 'met' }],
+          },
+        }],
+      }),
+    ];
+
+    const err = await runBuildWithTurns(turns);
+    expect(err).toContain('Finish rejected');
+    expect(err).toContain("Pose parameter 'lid_open_deg' defaults to 50");
+    expect(err).toContain('must default to its closed/home pose');
+    expect(err).toContain('range min 0');
+  });
+
+  it('rejects finish when a drawer pose parameter (_travel) defaults to non-min value', async () => {
+    const scriptDrawerOpen = `from build123d import *
+pull_out_travel = 50  # [0:10:100] drawer pull out travel in mm
+cabinet = Box(120, 120, 60)
+drawer = Pos(0, 0, 0) * Box(100, 100, 40)
+cabinet.label = 'cabinet'
+drawer.label = 'drawer'
+_cadai_parts = [cabinet, drawer]
+result = Compound([cabinet, drawer])
+`;
+    const turns = [
+      new AIMessage({
+        content: '',
+        tool_calls: [{ id: 'call_1', name: 'run_script', args: { script: scriptDrawerOpen } }],
+      }),
+      new AIMessage({
+        content: '',
+        tool_calls: [{
+          id: 'call_2',
+          name: 'finish',
+          args: {
+            script: scriptDrawerOpen,
+            requirements: [{ id: 'cad_request', status: 'met' }],
+          },
+        }],
+      }),
+    ];
+
+    const drawerSpec = resolveSpec({
+      assemblyName: 'drawer_cabinet',
+      boundingBox: { width: 120, length: 120, height: 60 },
+      parameters: [{ name: 'pull_out_travel', value: 50, min: 0, max: 100, unit: 'mm', description: 'drawer travel' }],
+      components: [
+        { name: 'cabinet', description: 'cabinet frame', localExtents: [120, 120, 60], position: [0, 0, 0], shape: { kind: 'box' } },
+        { name: 'drawer', description: 'sliding drawer', localExtents: [100, 100, 40], position: [0, 0, 0], shape: { kind: 'box' } },
+      ],
+      jointContracts: [
+        { type: 'slide', partA: 'cabinet', partB: 'drawer', clearance: 0.5 },
+      ],
+    } as unknown as AssemblySpec).spec;
+
+    const err = await runBuildWithTurns(turns, undefined, drawerSpec);
+    expect(err).toContain('Finish rejected');
+    expect(err).toContain("Pose parameter 'pull_out_travel' defaults to 50");
+    expect(err).toContain('must default to its closed/home pose');
+  });
 });
 
 const ESCAPE = `from build123d import *
@@ -832,5 +920,133 @@ describe('ab2 review regression tests (P1-P10)', () => {
     } as never;
     const v2 = auditNesting(sp2, [{ label: 'drawer', min: [2, 0, 2], max: [98, 80, 40] }, { label: 'shell', min: [0, 0, 0], max: [100, 80, 45] }], 'drawer');
     expect(v2.length).toBe(0);
+  });
+});
+
+describe('ab2m Item 3: Per-build run budget (wall time and USD)', () => {
+  beforeEach(() => {
+    delete process.env.CADAI_AGENT_MAX_WALL_S;
+    delete process.env.CADAI_AGENT_MAX_USD;
+    delete process.env.CADAI_AGENT_MAX_TURNS;
+  });
+
+  afterEach(() => {
+    delete process.env.CADAI_AGENT_MAX_WALL_S;
+    delete process.env.CADAI_AGENT_MAX_USD;
+    delete process.env.CADAI_AGENT_MAX_TURNS;
+  });
+
+  it('CADAI_AGENT_MAX_WALL_S applies across all brepAgentBuild visits in a run', async () => {
+    process.env.CADAI_AGENT_MAX_WALL_S = '10'; // 10 seconds limit for build
+    const fakeModel = {
+      invoke: vi.fn().mockImplementation(async () => {
+        return new AIMessage({
+          content: 'Working',
+          tool_calls: [{
+            id: 'call_run',
+            name: 'run_script',
+            args: { script: 'from build123d import *\nresult = Box(10, 10, 10)' },
+          }],
+        });
+      }),
+    };
+
+    vi.spyOn(brepRunner, 'runBrep').mockResolvedValue({
+      ok: true,
+      parts: [{ label: 'base', valid: true, volume: 1000, min: [0, 0, 0], max: [10, 10, 10] }],
+      solids: 1,
+      ms: 10,
+    });
+
+    const agentBuild = makeBrepAgentBuild(fakeModel as never);
+
+    // Visit 1: starts with 0 ms, runs for a bit
+    const stateVisit1 = {
+      assemblySpec: resolveSpec({
+        assemblyName: 'box',
+        boundingBox: { width: 10, length: 10, height: 10 },
+        components: [{ name: 'base', description: 'base box', localExtents: [10, 10, 10], position: [0, 0, 0], shape: { kind: 'box' } }],
+      } as unknown as AssemblySpec).spec,
+      currentCode: '',
+      attemptCount: 0,
+      buildWallMs: 0,
+      buildCostUsd: 0,
+      buildNotes: [],
+      messages: [new HumanMessage('simple box')],
+      failureKind: 'none',
+    } as unknown as AgentStateType;
+
+    const out1 = await agentBuild(stateVisit1);
+    expect(out1.buildWallMs).toBeGreaterThan(0);
+
+    // Visit 2: starts with 11 seconds already elapsed (exceeding 10s budget)
+    const stateVisit2 = {
+      ...stateVisit1,
+      currentCode: out1.currentCode,
+      attemptCount: out1.attemptCount ?? 1,
+      buildWallMs: 11_000, // 11s elapsed in prior visits
+      buildCostUsd: out1.buildCostUsd ?? 0,
+      buildNotes: out1.buildNotes ?? [],
+    } as unknown as AgentStateType;
+
+    const out2 = await agentBuild(stateVisit2);
+    // Should end immediately with last guardrail-passed script and a note
+    expect(out2.currentCode).toBe(out1.currentCode);
+    const budgetNote = out2.buildNotes?.find((n) => n.reason.includes('wall time limit of 10s exceeded'));
+    expect(budgetNote).toBeDefined();
+  });
+
+  it('CADAI_AGENT_MAX_USD applies across all brepAgentBuild visits in a run', async () => {
+    process.env.CADAI_AGENT_MAX_USD = '0.50'; // $0.50 budget
+    const fakeModel = {
+      invoke: vi.fn().mockImplementation(async () => {
+        const msg = new AIMessage({
+          content: 'Model turn',
+          tool_calls: [{
+            id: 'call_run',
+            name: 'run_script',
+            args: { script: 'from build123d import *\nresult = Box(10, 10, 10)' },
+          }],
+        });
+        // Model call uses 30,000 output tokens on Sonnet ($10/M) = $0.30
+        msg.usage_metadata = {
+          input_tokens: 10_000, // $0.02
+          output_tokens: 30_000, // $0.30 -> $0.32 per call
+          total_tokens: 40_000,
+        };
+        return msg;
+      }),
+    };
+
+    vi.spyOn(brepRunner, 'runBrep').mockResolvedValue({
+      ok: true,
+      parts: [{ label: 'base', valid: true, volume: 1000, min: [0, 0, 0], max: [10, 10, 10] }],
+      solids: 1,
+      ms: 10,
+    });
+
+    const agentBuild = makeBrepAgentBuild(fakeModel as never);
+
+    // Visit 1: starts with $0.30 already spent. One call adds $0.32 -> total $0.62 > $0.50!
+    const stateVisit1 = {
+      assemblySpec: resolveSpec({
+        assemblyName: 'box',
+        boundingBox: { width: 10, length: 10, height: 10 },
+        components: [{ name: 'base', description: 'base box', localExtents: [10, 10, 10], position: [0, 0, 0], shape: { kind: 'box' } }],
+      } as unknown as AssemblySpec).spec,
+      currentCode: 'from build123d import *\nresult = Box(10, 10, 10)',
+      attemptCount: 0,
+      buildWallMs: 0,
+      buildCostUsd: 0.30, // $0.30 from prior visit
+      buildNotes: [],
+      messages: [new HumanMessage('simple box')],
+      failureKind: 'none',
+    } as unknown as AgentStateType;
+
+    const out1 = await agentBuild(stateVisit1);
+    expect(out1.buildCostUsd).toBeGreaterThan(0.50);
+    const budgetNote = out1.buildNotes?.find((n) => n.reason.includes('cost budget of $0.50 exceeded'));
+    expect(budgetNote).toBeDefined();
+    expect(out1.currentCode).toContain('Box(10, 10, 10)');
   });
 });
