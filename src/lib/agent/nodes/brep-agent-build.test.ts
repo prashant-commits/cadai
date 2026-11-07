@@ -3,7 +3,7 @@ import { AIMessage, HumanMessage, type BaseMessage } from '@langchain/core/messa
 import type { AgentStateType } from '../graph';
 import type { AssemblySpec } from '../assembly-spec';
 import { resolveSpec } from '../spec-expr';
-import { makeBrepAgentBuild, applyParameterOverrides, checkScriptGuardrails } from './brep-agent-build';
+import { makeBrepAgentBuild, applyParameterOverrides, checkScriptGuardrails, renderCompactSpec } from './brep-agent-build';
 import * as brepRunner from '../../engine/brep-runner';
 import { routeAfterSpecGate, repairTarget, draftTarget } from '../graph-route';
 
@@ -79,6 +79,26 @@ describe('checkScriptGuardrails', () => {
 
   it('rejects builder-mode context managers', () => {
     expect(checkScriptGuardrails(SCRIPT_1 + '\nwith BuildPart(): pass').ok).toBe(false);
+  });
+});
+
+describe('renderCompactSpec', () => {
+  it('formats designLanguage with principles and radii', () => {
+    const s = resolveSpec({
+      assemblyName: 'dock',
+      designLanguage: {
+        name: 'soft monolith',
+        principles: ['one continuous body', 'soft 6mm radius'],
+        edgeRadius: 6,
+        minorRadius: 1.5,
+      },
+      boundingBox: { width: 100, length: 100, height: 50 },
+    } as unknown as AssemblySpec).spec;
+    const out = renderCompactSpec(s);
+    expect(out).toContain('Assembly: dock');
+    expect(out).toContain('Design Language: soft monolith (edgeRadius: 6 mm, minorRadius: 1.5 mm)');
+    expect(out).toContain('  - one continuous body');
+    expect(out).toContain('  - soft 6mm radius');
   });
 });
 

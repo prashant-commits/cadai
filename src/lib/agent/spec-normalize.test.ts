@@ -55,4 +55,25 @@ describe('normalizeSpec', () => {
     // Prose is rewritten for format renames (Mast -> mast) but not for the builtin suffix.
     expect(n.sheet).toBe('The Hull carries the mast.');
   });
+
+  it('normalises designLanguage when present', () => {
+    const spec = AssemblySpecSchema.parse({
+      assemblyName: 'dock',
+      designLanguage: {
+        name: '  soft monolith  ',
+        principles: [' one continuous body ', '  ', 'soft 6mm radius '],
+        edgeRadius: 6.004,
+        minorRadius: 1.509,
+      },
+      boundingBox: { width: 100, length: 120, height: 80 },
+      components: [{ name: 'Base', description: 'base' }],
+    });
+    const n = normalizeSpec(spec);
+    expect(n.designLanguage).toEqual({
+      name: 'soft monolith',
+      principles: ['one continuous body', 'soft 6mm radius'],
+      edgeRadius: 6,
+      minorRadius: 1.51,
+    });
+  });
 });

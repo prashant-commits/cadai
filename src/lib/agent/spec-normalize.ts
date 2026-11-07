@@ -286,8 +286,37 @@ export function normalizeSpec(rawSpec: AssemblySpec): NormalizedAssemblySpec {
     }
   }
 
+  let designLanguage = spec.designLanguage;
+  if (designLanguage) {
+    const name = (designLanguage.name ?? '').trim() || 'refined';
+    const principles = Array.isArray(designLanguage.principles)
+      ? designLanguage.principles
+          .map((p) => (typeof p === 'string' ? p.trim() : ''))
+          .filter(Boolean)
+      : [];
+    const edgeRadius =
+      typeof designLanguage.edgeRadius === 'number' &&
+      Number.isFinite(designLanguage.edgeRadius) &&
+      designLanguage.edgeRadius > 0
+        ? round2(designLanguage.edgeRadius)
+        : undefined;
+    const minorRadius =
+      typeof designLanguage.minorRadius === 'number' &&
+      Number.isFinite(designLanguage.minorRadius) &&
+      designLanguage.minorRadius > 0
+        ? round2(designLanguage.minorRadius)
+        : undefined;
+    designLanguage = {
+      name,
+      principles,
+      ...(edgeRadius !== undefined ? { edgeRadius } : {}),
+      ...(minorRadius !== undefined ? { minorRadius } : {}),
+    };
+  }
+
   return {
     ...spec,
+    ...(designLanguage ? { designLanguage } : {}),
     sheet,
     boundingBox,
     components: normalizedComponents,

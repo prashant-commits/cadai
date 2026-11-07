@@ -72,4 +72,30 @@ describe('createSpecRenderer', () => {
     });
     expect(out).toContain('- box_plate: box 40x30x5 mm @ [0, 0, 0]');
   });
+
+  it('renders designLanguage when present', () => {
+    const r = createSpecRenderer();
+    r.push({
+      assemblyName: 'phone_dock',
+      designLanguage: {
+        name: 'soft monolith',
+        principles: ['one continuous body', 'soft 6 mm radius family on outer edges'],
+        edgeRadius: 6,
+        minorRadius: 1,
+      },
+    });
+    const out = r.push({
+      assemblyName: 'phone_dock',
+      designLanguage: {
+        name: 'soft monolith',
+        principles: ['one continuous body', 'soft 6 mm radius family on outer edges'],
+        edgeRadius: 6,
+        minorRadius: 1,
+      },
+      boundingBox: { width: 100, length: 120, height: 80 },
+    });
+    expect(out).toContain('Design language: **soft monolith** (edge: 6 mm, minor: 1 mm)');
+    expect(out).toContain('- one continuous body');
+    expect(out).toContain('- soft 6 mm radius family on outer edges');
+  });
 });

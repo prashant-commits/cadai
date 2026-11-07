@@ -239,24 +239,27 @@ describe('structuredFor', () => {
 
   const LITERAL_R11_OPTIONAL_PATHS = [
     'components[].holes[].depth',
+    'designLanguage',
+    'designLanguage.edgeRadius',
+    'designLanguage.minorRadius',
     'guides[].shape',
     'guides[].localExtents',
     'guides[].position',
     'guides[].points',
   ];
 
-  it('counts optional properties across claudeVariantSpecSchema(): exactly the 5 literal R11 table paths (stressPoints no longer requested) via test-local walker (L1)', async () => {
+  it('counts optional properties across claudeVariantSpecSchema(): exactly the literal paths (stressPoints no longer requested, designLanguage optional) via test-local walker (L1)', async () => {
     const { claudeVariantSpecSchema, getOptionalProperties } = await import('./llm-schemas');
     const schema = claudeVariantSpecSchema();
 
     // Test-local walker enters anyOf, oneOf, allOf, $defs, and untyped properties nodes
     const testWalkerPaths = walkOptionalPaths(schema);
-    expect(testWalkerPaths).toHaveLength(5);
+    expect(testWalkerPaths).toHaveLength(8);
     expect([...testWalkerPaths].sort()).toEqual([...LITERAL_R11_OPTIONAL_PATHS].sort());
 
     // Module walker also matches the literal R11 table array
     const moduleWalkerPaths = getOptionalProperties(schema);
-    expect(moduleWalkerPaths).toHaveLength(5);
+    expect(moduleWalkerPaths).toHaveLength(8);
     expect([...moduleWalkerPaths].sort()).toEqual([...LITERAL_R11_OPTIONAL_PATHS].sort());
   });
 

@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import * as prompts from './system-prompt';
 import {
   systemPromptFor,
+  type PromptNode,
   CORE,
   SPEC_FIELDS,
   PLACEMENT_RULES,
@@ -426,5 +427,62 @@ describe('relational spec prompt (Task 3)', () => {
     const fences = [...BREP_CHEATSHEET.matchAll(/```python\n([\s\S]*?)```/g)].map((m) => m[1]);
     expect(fences.length).toBeGreaterThan(3);
     for (const fence of fences) expect(fence).not.toMatch(/\bBuild(?:Part|Sketch|Line)\b/);
+  });
+
+  describe('kernel-aware prompts (DL1)', () => {
+    it('OpenSCAD prompts are byte-identical whether kernel is omitted or explicit', () => {
+      const nodes: PromptNode[] = ['planner', 'variant', 'drafter', 'repair', 'critic', 'reviewer', 'build'];
+      for (const node of nodes) {
+        expect(systemPromptFor(node, { kernel: 'openscad' })).toBe(systemPromptFor(node));
+      }
+    });
+
+    it('OpenSCAD prompt snapshots/hashes remain pinned', () => {
+      const hashes: Record<string, string> = {
+        planner: sha256(systemPromptFor('planner', { kernel: 'openscad' })),
+        variant: sha256(systemPromptFor('variant', { kernel: 'openscad' })),
+        drafter: sha256(systemPromptFor('drafter', { kernel: 'openscad' })),
+        drafterPlaced: sha256(systemPromptFor('drafter', { placements: true, kernel: 'openscad' })),
+        repair: sha256(systemPromptFor('repair', { kernel: 'openscad' })),
+        critic: sha256(systemPromptFor('critic', { kernel: 'openscad' })),
+        reviewer: sha256(systemPromptFor('reviewer', { kernel: 'openscad' })),
+        build: sha256(systemPromptFor('build', { kernel: 'openscad' })),
+      };
+      // Pinned sha256 hashes verifying OpenSCAD prompts are unchanged
+      expect(hashes.planner).toBe(sha256(COMPOSED.planner));
+      expect(hashes.variant).toBe(sha256(COMPOSED.variant));
+      expect(hashes.drafter).toBe(sha256(COMPOSED.drafter));
+      expect(hashes.drafterPlaced).toBe(sha256(COMPOSED.drafterPlaced));
+      expect(hashes.repair).toBe(sha256(COMPOSED.repair));
+      expect(hashes.critic).toBe(sha256(COMPOSED.critic));
+      expect(hashes.reviewer).toBe(sha256(COMPOSED.reviewer));
+      expect(hashes.build).toBe(sha256(COMPOSED.build));
+    });
+
+    it('B-rep prompts contain design-language guidance and no "no fillets" text', () => {
+      const brepPlanner = systemPromptFor('planner', { kernel: 'brep' });
+      const brepVariant = systemPromptFor('variant', { kernel: 'brep' });
+      const brepReviewer = systemPromptFor('reviewer', { kernel: 'brep' });
+      const brepBuild = systemPromptFor('brep-build', { kernel: 'brep' });
+
+      for (const [name, prompt] of Object.entries({ brepPlanner, brepVariant, brepReviewer, brepBuild })) {
+        expect(prompt, `${name} has 'no chamfers'`).not.toMatch(/no chamfers, fillets, rounds/i);
+        expect(prompt, `${name} has 'no fillets or chamfers'`).not.toMatch(/no fillets or chamfers/i);
+        expect(prompt, `${name} has 'never ask for chamfers'`).not.toMatch(/never ask for chamfers or fillets/i);
+      }
+
+      expect(brepPlanner).toContain('designLanguage');
+      expect(brepPlanner).toContain('differ in form, not only structure');
+
+      expect(brepVariant).toContain('designLanguage');
+      expect(brepVariant).toContain('edgeRadius');
+      expect(brepVariant).toContain('edge_r');
+
+      expect(brepReviewer).toContain('Geometry and design language only');
+
+      expect(brepBuild).toContain('BUILD GUIDANCE');
+      expect(brepBuild).toContain('apply the variant\'s designLanguage');
+      expect(brepBuild).toContain('Round outer edges with the radius family');
+    });
   });
 });

@@ -21,6 +21,7 @@ const PLAUSIBLE_MAX_MM = 10_000;
 /** Top-level spec keys, in the order the schema emits them. */
 const KEY_ORDER = [
   'assemblyName',
+  'designLanguage',
   'boundingBox',
   'components',
   'jointContracts',
@@ -39,6 +40,32 @@ function renderKey(key: string, value: unknown): string {
   switch (key) {
     case 'assemblyName':
       return typeof value === 'string' && value ? `**${value}**\n` : '';
+    case 'designLanguage': {
+      const dl = value as
+        | { name?: unknown; principles?: unknown; edgeRadius?: unknown; minorRadius?: unknown }
+        | undefined;
+      if (!dl || typeof dl !== 'object') return '';
+      const parts: string[] = [];
+      if (typeof dl.name === 'string' && dl.name.trim()) {
+        parts.push(`Design language: **${dl.name.trim()}**`);
+      }
+      const radii: string[] = [];
+      if (typeof dl.edgeRadius === 'number') radii.push(`edge: ${num(dl.edgeRadius)} mm`);
+      if (typeof dl.minorRadius === 'number') radii.push(`minor: ${num(dl.minorRadius)} mm`);
+      if (radii.length > 0) {
+        parts.push(`(${radii.join(', ')})`);
+      }
+      let out = parts.length > 0 ? parts.join(' ') + '\n' : '';
+      if (Array.isArray(dl.principles) && dl.principles.length > 0) {
+        const lines = dl.principles
+          .filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+          .map((p) => `- ${p.trim()}`);
+        if (lines.length > 0) {
+          out += lines.join('\n') + '\n';
+        }
+      }
+      return out;
+    }
     case 'boundingBox': {
       const b = value as { width?: unknown; length?: unknown; height?: unknown } | undefined;
       if (!b) return '';

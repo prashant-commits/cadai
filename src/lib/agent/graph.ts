@@ -95,6 +95,9 @@ function truncateAtWord(text: string, max: number): string {
 
 /** Sheet notes, at most 3: placeholders and omissions first (they change how to read the sheet), then code-cut mating cavities, then the variant's own assumptions. */
 export function sheetNotes(spec: AssemblySpec): string[] {
+  const dlNotes = spec.designLanguage
+    ? [`style: ${spec.designLanguage.name}${spec.designLanguage.edgeRadius ? ` (r=${spec.designLanguage.edgeRadius} mm)` : ''}`]
+    : [];
   const placeholders = blockoutScad(spec).skipped.map((s) =>
     isStandIn(s.reason)
       ? `${s.name}: drawn as a box (${s.reason.replace(/;?\s*drawn as a box$/, '')})`
@@ -104,7 +107,7 @@ export function sheetNotes(spec: AssemblySpec): string[] {
     (c) => `${c.host}: cavity cut by code for ${c.inserted} (${c.clearance} mm)`
   );
   const assumptions = (spec.assumptions ?? []).map((a) => `${a.field}: ${a.value}`);
-  return [...placeholders, ...cutNotes, ...assumptions].map((n) => truncateAtWord(n, 60)).slice(0, 3); // 60 chars per note and 3 notes: the sheet's notes strip
+  return [...dlNotes, ...placeholders, ...cutNotes, ...assumptions].map((n) => truncateAtWord(n, 60)).slice(0, 3); // 60 chars per note and 3 notes: the sheet's notes strip
 }
 
 /** Renders a variant's concept sheet. Deterministic and fast, so state keeps only the spec and this is redrawn on demand. */
@@ -1035,9 +1038,11 @@ export function createCadAgent(
       write(config, 'architectNode', { t: 'delta', text: 'Editing the current design...\n' });
     }
     const isFresh = variants.length === 0;
+    const pipeline = state.pipeline ?? resolvePipeline(process.env);
+    const kernel = state.kernel ?? resolveKernel(pipeline, process.env);
 
     if (isFresh) {
-      const plannerSystemMessage = cachedSystemMessage(systemPromptFor('planner'));
+      const plannerSystemMessage = cachedSystemMessage(systemPromptFor('planner', { kernel }));
       const plannerMessages: BaseMessage[] = [plannerSystemMessage, ...conversationMessages];
 
       if (state.gateAction === 'revise' && state.gateFeedback) {
@@ -1145,7 +1150,7 @@ export function createCadAgent(
         };
       }
 
-      const variantSystemMessage = cachedSystemMessage(systemPromptFor('variant'));
+      const variantSystemMessage = cachedSystemMessage(systemPromptFor('variant', { kernel }));
       const variantBaseMessages: BaseMessage[] = [variantSystemMessage, ...conversationMessages];
       if (state.gateAction === 'revise' && state.gateFeedback) {
         variantBaseMessages.push(new HumanMessage(`The previous Assembly Spec was rejected at human review. Revise it accordingly:\n${state.gateFeedback}`));
@@ -1172,7 +1177,7 @@ export function createCadAgent(
 
     } else {
       // Revision mode
-      const variantSystemMessage = cachedSystemMessage(systemPromptFor('variant'));
+      const variantSystemMessage = cachedSystemMessage(systemPromptFor('variant', { kernel }));
       const variantBaseMessages: BaseMessage[] = [variantSystemMessage, ...conversationMessages];
 
       const currentBrief = brief ?? {
@@ -1258,7 +1263,6 @@ export function createCadAgent(
     const explanation = assemblySpec ? summarizeSpec(assemblySpec) : NO_SPEC_EXPLANATION;
 
     // Pinned for the thread. A later entry keeps the value already stored.
-    const pipeline = state.pipeline ?? resolvePipeline(process.env);
     return {
       specBrief: brief,
       specVariants: variants,
@@ -1281,7 +1285,7 @@ export function createCadAgent(
       gateAction: null,
       gateFeedback: null,
       pipeline,
-      kernel: state.kernel ?? resolveKernel(pipeline, process.env),
+      kernel,
     };
   }
 
@@ -1370,7 +1374,9 @@ export function createCadAgent(
       SheetReviewSchema
     ).withConfig({ tags: ['nostream'] });
 
-    const reviewerSystem = cachedSystemMessage(systemPromptFor('reviewer'));
+    const pipeline = state.pipeline ?? resolvePipeline(process.env);
+    const kernel = state.kernel ?? resolveKernel(pipeline, process.env, false);
+    const reviewerSystem = cachedSystemMessage(systemPromptFor('reviewer', { kernel }));
 
     // Variants that got a fresh model verdict this pass; the retry decision for
     // them is made AFTER every review has finished, on the fresh round time.

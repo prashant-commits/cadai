@@ -23,9 +23,13 @@ describe('bedFace is no longer requested from the model', () => {
     expect(JSON.stringify(claudeVariantSpecSchema())).toContain('"openFace"');
   });
 
-  it('keeps 6 optional paths on the Claude variant schema, none of them bedFace', () => {
+  it('keeps optional paths on the Claude variant schema, none of them bedFace', () => {
+    expect(CLAUDE_KEEP_OPTIONAL.has('components[].bedFace')).toBe(false);
     expect([...CLAUDE_KEEP_OPTIONAL].sort()).toEqual([
       'components[].holes[].depth',
+      'designLanguage',
+      'designLanguage.edgeRadius',
+      'designLanguage.minorRadius',
       'guides[].localExtents',
       'guides[].points',
       'guides[].position',

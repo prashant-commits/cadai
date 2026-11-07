@@ -39,6 +39,9 @@ type Tok =
   | { k: 'op'; v: string }
   | { k: 'nl' };
 
+/** Prelude helpers trusted and provided by the emitted script or runner. */
+const ALLOWED_PRELUDE_HELPERS = new Set(['_round', '_bevel', '_select_edges']);
+
 /** Names a body may not use as a name or an attribute. */
 const BANNED_ANYWHERE = new Set([
   'import', 'from', 'def', 'class', 'global', 'nonlocal', 'async', 'await', 'yield', 'format', 'format_map',
@@ -129,7 +132,7 @@ export function checkPythonBody(body: string, options: BodyCheckOptions = {}): B
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
     if (t.k !== 'name' || !t.v.startsWith('_') || t.v === '_' || attribute(i)) continue;
-    if (bound.has(t.v) || isKeywordArgument(tokens, i)) continue;
+    if (bound.has(t.v) || isKeywordArgument(tokens, i) || ALLOWED_PRELUDE_HELPERS.has(t.v)) continue;
     return reject(`refers to ${t.v}, which the body does not define`);
   }
 

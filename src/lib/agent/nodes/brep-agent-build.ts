@@ -29,6 +29,17 @@ export function renderCompactSpec(spec: AssemblySpec): string {
   if (spec.assemblyName) {
     parts.push(`Assembly: ${spec.assemblyName}`);
   }
+  if (spec.designLanguage) {
+    const dl = spec.designLanguage;
+    const radii: string[] = [];
+    if (dl.edgeRadius !== undefined) radii.push(`edgeRadius: ${dl.edgeRadius} mm`);
+    if (dl.minorRadius !== undefined) radii.push(`minorRadius: ${dl.minorRadius} mm`);
+    const radiiStr = radii.length > 0 ? ` (${radii.join(', ')})` : '';
+    const principlesStr = dl.principles && dl.principles.length > 0
+      ? '\n' + dl.principles.map((p) => `  - ${p}`).join('\n')
+      : '';
+    parts.push(`Design Language: ${dl.name}${radiiStr}${principlesStr}`);
+  }
   if (spec.boundingBox) {
     parts.push(`Bounding Box: ${spec.boundingBox.width} x ${spec.boundingBox.length} x ${spec.boundingBox.height} mm`);
   }
@@ -172,7 +183,7 @@ export const BREP_AGENT_SYSTEM_PROMPT = `You are the Mechanical Architect Builde
 - Consolidate permanently joined parts: parts that are static and permanently joined should be fused into a single solid.
 - Sized sensibly: walls and ribs must have appropriate thickness for structural rigidity.
 - Stable on its base: ensure the object does not tip over in use.
-- No fillets or chamfers: keep sharp geometry unless explicitly requested.
+- Design language: apply the variant's designLanguage. Prefer one shaped body over stacked plates where the design allows. Round outer edges with the radius family (via _round/_bevel or fillet/chamfer). Keep functional faces (mating faces, hinge axes, slots, holes) sharp and exact. Never let rounding change a stated dimension. Explain notable form choices in notes.
 - Nothing below z = 0: the entire model rests on or above the ground plane (z = 0).
 - Coordinate orientation: the side the user faces/uses faces -Y (front view looks along +Y into -Y face).
 
