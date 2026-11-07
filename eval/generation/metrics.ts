@@ -77,6 +77,24 @@ export interface GenerationMetrics {
   intentFindings?: Array<{ issue: string; severity: 'minor' | 'major'; view: string }> | null;
   /** USD for the judge's own tokens, metered apart from costUsd. */
   judgeCostUsd?: number | null;
+  /** Judge v2 overall 0-100 score (--judge v2). Null when v2 judge was not run. */
+  v2Overall?: number | null;
+  /** Judge v2 criterion scores (0-5 each). */
+  v2Criteria?: {
+    requirementsCoverage: number;
+    layoutAndClearances: number;
+    functionAndMotion: number;
+    accessibility: number;
+    manufacturabilityAndRobustness: number;
+    parametricQuality: number;
+    formAndAesthetics?: number;
+  } | null;
+  /** Judge v2 requirements coverage percentage (0-100). */
+  v2Coverage?: number | null;
+  /** USD cost of judge v2 call. */
+  v2CostUsd?: number | null;
+  /** Judge v2 findings. */
+  v2Findings?: Array<{ issue: string; severity: 'minor' | 'major'; criterion?: string }> | null;
   workable?: boolean;
   failureStage?: FailureStage;
   failureDetail?: string;

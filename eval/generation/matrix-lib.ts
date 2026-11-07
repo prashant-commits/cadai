@@ -14,7 +14,7 @@ export interface Cell {
   /** Extra env for this cell's child only (e.g. CADAI_BUILD_THINKING). */
   env?: Record<string, string>;
   /** Run the standalone intent judge on the final STL. */
-  judge?: boolean;
+  judge?: boolean | 'v2';
 }
 
 export const DEFAULT_CELL_MODEL = 'claude-haiku-5.5';
@@ -150,6 +150,8 @@ export function renderReport(tag: string, all: MatrixRow[], cellOrder?: string[]
     `| ${label} | ${cells.map((c) => f(byCell(c))).join(' | ')} |`;
   const wall = (rs: MatrixRow[]) => rs.map((r) => r.metrics?.wallMs).filter((v): v is number => typeof v === 'number');
   const judged = (rs: MatrixRow[]) => rs.filter((r) => r.metrics?.intentMatch !== undefined && r.metrics?.intentMatch !== null);
+  const judgedV2 = (rs: MatrixRow[]) => rs.filter((r) => r.metrics?.v2Overall !== undefined && r.metrics?.v2Overall !== null);
+  const hasV2 = rows.some((r) => r.metrics?.v2Overall !== undefined && r.metrics?.v2Overall !== null);
   const brepRows = (rs: MatrixRow[]) => rs.filter((r) => r.metrics?.kernel === 'brep');
 
   out.push(header, rule,
@@ -164,6 +166,17 @@ export function renderReport(tag: string, all: MatrixRow[], cellOrder?: string[]
     line(`live params (>= ${LIVE_PARAM_SHARE * 100}% per run)`, liveShare),
     line('intentMatch (judge)', (rs) => (judged(rs).length ? rate(judged(rs), (m) => m.intentMatch ?? null) : '-')),
     line('mean intentScore', (rs) => mean(judged(rs).map((r) => r.metrics?.intentScore), 1)),
+    ...(hasV2 ? [
+      line('v2Overall (judge v2)', (rs) => mean(judgedV2(rs).map((r) => r.metrics?.v2Overall), 1)),
+      line('v2Coverage (req %)', (rs) => mean(judgedV2(rs).map((r) => r.metrics?.v2Coverage), 1, '%')),
+      line('v2Coverage (score)', (rs) => mean(judgedV2(rs).map((r) => r.metrics?.v2Criteria?.requirementsCoverage), 1)),
+      line('v2LayoutAndClearances', (rs) => mean(judgedV2(rs).map((r) => r.metrics?.v2Criteria?.layoutAndClearances), 1)),
+      line('v2FunctionAndMotion', (rs) => mean(judgedV2(rs).map((r) => r.metrics?.v2Criteria?.functionAndMotion), 1)),
+      line('v2Accessibility', (rs) => mean(judgedV2(rs).map((r) => r.metrics?.v2Criteria?.accessibility), 1)),
+      line('v2Manufacturability', (rs) => mean(judgedV2(rs).map((r) => r.metrics?.v2Criteria?.manufacturabilityAndRobustness), 1)),
+      line('v2ParametricQuality', (rs) => mean(judgedV2(rs).map((r) => r.metrics?.v2Criteria?.parametricQuality), 1)),
+      line('mean v2 judge cost / run', (rs) => mean(judgedV2(rs).map((r) => r.metrics?.v2CostUsd), 4, '$')),
+    ] : []),
     line('median wall', (rs) => seconds(percentile(wall(rs), 50))),
     line('p90 wall', (rs) => seconds(percentile(wall(rs), 90))),
     line('mean cost / run', meanCost),

@@ -24,7 +24,7 @@ import { deflateSync } from 'zlib';
  * NODE ONLY. Imported by the agent graph; never import from a client component.
  */
 
-export type ViewName = 'front' | 'right' | 'top' | 'iso';
+export type ViewName = 'front' | 'right' | 'top' | 'iso' | 'back_iso' | 'left';
 
 export type Vec3 = [number, number, number];
 
@@ -109,6 +109,8 @@ const EYE_DIRECTIONS: Record<ViewName, Vec3> = {
   right: [1, 0, 0],
   top: [0, 0, 1],
   iso: [1, -1, 0.75],
+  back_iso: [-1, 1, 0.75],
+  left: [-1, 0, 0],
 };
 
 const DEFAULT_RGB_BACKGROUND: RGB = [BACKGROUND, BACKGROUND, BACKGROUND];

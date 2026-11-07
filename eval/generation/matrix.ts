@@ -71,7 +71,8 @@ export function childArgs(run: PlannedRun, outDir: string, resultFile: string, t
   if (c.thinking) args.push('--thinking', c.thinking);
   if (c.effort) args.push('--effort', c.effort);
   if (c.attempts) args.push('--attempts', String(c.attempts));
-  if (c.judge) args.push('--judge', 'on');
+  if (c.judge === 'v2') args.push('--judge', 'v2');
+  else if (c.judge) args.push('--judge', 'on');
   return args;
 }
 

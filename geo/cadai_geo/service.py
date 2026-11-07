@@ -189,6 +189,8 @@ app = FastAPI(lifespan=_lifespan)
 _MAX_EXPORT_BYTES = 64 * 1024 * 1024
 _MAX_SCRIPT_BYTES = 256 * 1024
 _MAX_RESULT_BYTES = 1024 * 1024
+_MAX_PART_MESH_BYTES = 8 * 1024 * 1024
+_MAX_TOTAL_PART_MESH_BYTES = 32 * 1024 * 1024
 _EXPORTS = (("step", "model.step"), ("stl", "model.stl"))
 
 
@@ -196,6 +198,8 @@ class RunRequest(BaseModel):
     script: str
     timeout_s: float = 60
     interferences: bool = False
+    partMeshes: bool = False
+    part_meshes: bool = False
 
 
 class _TooLarge(Exception):
@@ -344,6 +348,23 @@ def _attach_exports(payload: dict, outdir: str, max_bytes: int) -> dict:
             if raw is None:
                 continue
             payload[key] = base64.b64encode(raw).decode("ascii")
+        part_mesh_files = payload.pop("part_mesh_files", None)
+        if part_mesh_files:
+            part_meshes = {}
+            total_part_bytes = 0
+            for label, fname in part_mesh_files:
+                try:
+                    raw = _read_at(dir_fd, fname, _MAX_PART_MESH_BYTES)
+                except _TooLarge:
+                    return {"ok": False, "error": "output too large"}
+                if raw is None:
+                    continue
+                total_part_bytes += len(raw)
+                if total_part_bytes > _MAX_TOTAL_PART_MESH_BYTES:
+                    return {"ok": False, "error": "output too large"}
+                part_meshes[label] = base64.b64encode(raw).decode("ascii")
+            payload["partMeshes"] = part_meshes
+            payload["part_meshes"] = part_meshes
         return payload
     finally:
         os.close(dir_fd)
@@ -367,7 +388,7 @@ def _remove_tree(path: str) -> None:
         time.sleep(0.05)
 
 
-def _run_cli(script: str, timeout_s: float, interferences: bool = False) -> dict:
+def _run_cli(script: str, timeout_s: float, interferences: bool = False, part_meshes: bool = False) -> dict:
     timeout_s = clamp_timeout(timeout_s)
     deadline = time.monotonic() + timeout_s
     slot = _acquire_slot(deadline)
@@ -405,6 +426,7 @@ def _run_cli(script: str, timeout_s: float, interferences: bool = False) -> dict
             "as_limit": as_limit,
             "home": home,
             "interferences": interferences,
+            "partMeshes": part_meshes,
         }
         path = os.environ.get("PATH")
         if path:
@@ -453,4 +475,4 @@ def run_route(
         raise HTTPException(status_code=401)
     if len(body.script.encode("utf-8")) > _MAX_SCRIPT_BYTES:
         raise HTTPException(status_code=413, detail="script too large")
-    return _run_cli(body.script, body.timeout_s, body.interferences)
+    return _run_cli(body.script, body.timeout_s, body.interferences, body.partMeshes or body.part_meshes)

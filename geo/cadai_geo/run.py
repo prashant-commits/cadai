@@ -214,6 +214,14 @@ def _fixed_if_invalid(shape):
 
 def _part(shape, label: str) -> dict:
     box = shape.bounding_box()
+    try:
+        centroid = _xyz(shape.center())
+    except Exception:
+        centroid = [0.0, 0.0, 0.0]
+    try:
+        area = float(shape.area)
+    except Exception:
+        area = 0.0
     return {
         "label": label or "",
         # An invalid part gets one shape-fix attempt before it is called invalid.
@@ -221,6 +229,8 @@ def _part(shape, label: str) -> dict:
         "volume": float(shape.volume),
         "min": _xyz(box.min),
         "max": _xyz(box.max),
+        "centroid": centroid,
+        "area": area,
     }
 
 
@@ -346,6 +356,47 @@ def compute_interferences(part_shapes: list[tuple[str, object]]) -> list[dict]:
                     "volume": round(vol, 4),
                 })
     return interferences
+
+
+def compute_disconnected(part_shapes: list[tuple[str, object]]) -> list[str]:
+    """Parts that do not touch and are not within 1 mm of any other part in the closed state.
+    A pin inside a bore with clearance counts as connected."""
+    if len(part_shapes) <= 1:
+        return []
+
+    boxes = []
+    for label, shape in part_shapes:
+        try:
+            bb = shape.bounding_box()
+            boxes.append((_xyz(bb.min), _xyz(bb.max)))
+        except Exception:
+            boxes.append((None, None))
+
+    disconnected = []
+    for i, (label_i, shape_i) in enumerate(part_shapes):
+        name_i = label_i or f"part_{i + 1}"
+        box_i = boxes[i]
+        connected = False
+        for j, (label_j, shape_j) in enumerate(part_shapes):
+            if i == j:
+                continue
+            box_j = boxes[j]
+            if box_i[0] is not None and box_j[0] is not None:
+                dx = max(0.0, max(box_i[0][0] - box_j[1][0], box_j[0][0] - box_i[1][0]))
+                dy = max(0.0, max(box_i[0][1] - box_j[1][1], box_j[0][1] - box_i[1][1]))
+                dz = max(0.0, max(box_i[0][2] - box_j[1][2], box_j[0][2] - box_i[1][2]))
+                if (dx * dx + dy * dy + dz * dz) ** 0.5 > 1.0 + 1e-4:
+                    continue
+            try:
+                d = shape_i.distance_to(shape_j)
+                if d <= 1.0 + 1e-4:
+                    connected = True
+                    break
+            except Exception:
+                pass
+        if not connected:
+            disconnected.append(name_i)
+    return disconnected
 
 
 # ---- validity: every exported solid must be valid, before and after the STEP round trip
@@ -740,8 +791,63 @@ def _parts_from_scratch(scratch_fd: int, outdir: str, result, shapes_out: list |
     return [_part(solid, "") for solid in solids]
 
 
+_MAX_PART_MESH_BYTES = 8 * 1024 * 1024
+_MAX_TOTAL_PART_MESH_BYTES = 32 * 1024 * 1024
+
+
+def _export_part_meshes(
+    part_shapes: list[tuple[str, object]],
+    outdir: str | os.PathLike,
+    max_part_bytes: int = _MAX_PART_MESH_BYTES,
+    max_total_bytes: int = _MAX_TOTAL_PART_MESH_BYTES,
+) -> tuple[dict[str, str], list[tuple[str, str]]]:
+    """Export ASCII STL for each labelled part.
+    Returns (part_meshes_base64_dict, part_mesh_files_manifest).
+    Raises ValueError('output too large') if caps are exceeded.
+    """
+    from build123d import export_stl, Compound
+    import base64
+
+    by_label: dict[str, list] = {}
+    for idx, (label, shape) in enumerate(part_shapes):
+        name = label.strip() if (label and isinstance(label, str) and label.strip()) else f"part_{idx + 1}"
+        by_label.setdefault(name, []).append(shape)
+
+    part_meshes: dict[str, str] = {}
+    part_files: list[tuple[str, str]] = []
+    total_bytes = 0
+
+    for idx, (label, shapes) in enumerate(by_label.items()):
+        shape = shapes[0] if len(shapes) == 1 else Compound(shapes)
+        filename = f"part_{idx}.stl"
+        path = os.path.join(os.fspath(outdir), filename)
+        _replace_output(path)
+        if not export_stl(shape, path, ascii_format=True):
+            continue
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            continue
+        if size > max_part_bytes:
+            raise ValueError("output too large")
+        total_bytes += size
+        if total_bytes > max_total_bytes:
+            raise ValueError("output too large")
+        with open(path, "rb") as f:
+            raw = f.read()
+        b64 = base64.b64encode(raw).decode("ascii")
+        part_meshes[label] = b64
+        part_files.append((label, filename))
+
+    return part_meshes, part_files
+
+
 def measure_and_export(
-    scratch: str, outdir: str, fallback_error: str | None = None, interferences: bool = False
+    scratch: str,
+    outdir: str,
+    fallback_error: str | None = None,
+    interferences: bool = False,
+    part_meshes: bool = False,
 ) -> dict:
     """Trusted stage: load BREP from ``scratch``, measure it, write exports into ``outdir``.
 
@@ -791,6 +897,13 @@ def measure_and_export(
             }
             if interferences:
                 payload["interferences"] = compute_interferences(part_shapes)
+            payload["disconnected"] = compute_disconnected(part_shapes)
+            if part_meshes:
+                try:
+                    _, part_files = _export_part_meshes(part_shapes, outdir)
+                    payload["part_mesh_files"] = part_files
+                except ValueError:
+                    return {"ok": False, "error": "output too large"}
             return payload
         except Exception:
             return {"ok": False, "error": "measure"}
@@ -798,7 +911,12 @@ def measure_and_export(
         os.close(scratch_fd)
 
 
-def run(script_path: str | os.PathLike, outdir: str | os.PathLike, interferences: bool = False) -> dict:
+def run(
+    script_path: str | os.PathLike,
+    outdir: str | os.PathLike,
+    interferences: bool = False,
+    part_meshes: bool = False,
+) -> dict:
     """Execute ``script_path`` and write ``model.step`` / ``model.stl`` into ``outdir``."""
     try:
         _remember_compound_sources()
@@ -840,6 +958,14 @@ def run(script_path: str | os.PathLike, outdir: str | os.PathLike, interferences
         }
         if interferences:
             payload["interferences"] = compute_interferences(part_shapes)
+        payload["disconnected"] = compute_disconnected(part_shapes)
+        if part_meshes:
+            try:
+                part_meshes_dict, _ = _export_part_meshes(part_shapes, outdir)
+                payload["partMeshes"] = part_meshes_dict
+                payload["part_meshes"] = part_meshes_dict
+            except ValueError:
+                return {"ok": False, "error": "output too large"}
         return payload
     except Exception as exc:
         return {"ok": False, "error": _last_line(exc)}
@@ -863,13 +989,18 @@ def main(argv: list[str] | None = None) -> None:
     interferences = "--interferences" in args
     if interferences:
         args.remove("--interferences")
+    part_meshes = "--part-meshes" in args or "--partMeshes" in args
+    if "--part-meshes" in args:
+        args.remove("--part-meshes")
+    if "--partMeshes" in args:
+        args.remove("--partMeshes")
     if len(args) != 3:
-        payload = {"ok": False, "error": "usage: python -m cadai_geo <script.py> <outdir> [--interferences]"}
+        payload = {"ok": False, "error": "usage: python -m cadai_geo <script.py> <outdir> [--interferences] [--part-meshes]"}
     else:
         os.makedirs(args[2], exist_ok=True)
         sink = io.StringIO()
         with contextlib.redirect_stdout(sink):
-            payload = run(args[1], args[2], interferences=interferences)
+            payload = run(args[1], args[2], interferences=interferences, part_meshes=part_meshes)
             try:
                 write_result(args[2], payload)
             except OSError:

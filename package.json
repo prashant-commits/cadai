@@ -11,6 +11,7 @@
     "test:watch": "vitest",
     "mcp": "tsx src/mcp-server.ts",
     "eval:generation": "tsx eval/generation/run.ts",
+    "eval:judge-v2:calibrate": "tsx eval/generation/judge-v2/calibrate.ts",
     "eval:compare": "tsx eval/generation/compare.ts",
     "eval:matrix": "tsx eval/generation/matrix.ts",
     "eval:architect": "tsx eval/architect/run.ts",

@@ -54,3 +54,28 @@ result = Compound([a, b])
     assert j['interferences'][0]['a'] == 'a'
     assert j['interferences'][0]['b'] == 'b'
     assert abs(j['interferences'][0]['volume'] - 200.0) < 0.1
+
+
+def test_service_part_meshes_and_measurements():
+    script = """
+from build123d import *
+a = Box(10, 20, 30, align=(Align.MIN, Align.MIN, Align.MIN)); a.label = 'base'
+b = Pos(0, 0, 30) * Box(10, 20, 5, align=(Align.MIN, Align.MIN, Align.MIN)); b.label = 'lid'
+_cadai_parts = [a, b]
+result = Compound([a, b])
+"""
+    r = client.post(
+        '/run',
+        json={'script': script, 'partMeshes': True},
+        headers={'x-cadai-geo-token': 'test-token'},
+    )
+    assert r.status_code == 200
+    j = r.json()
+    assert j['ok'] is True
+    assert 'partMeshes' in j
+    assert set(j['partMeshes'].keys()) == {'base', 'lid'}
+    for p in j['parts']:
+        assert 'centroid' in p and len(p['centroid']) == 3
+        assert 'area' in p and p['area'] > 0
+    assert base64.b64decode(j['partMeshes']['base']).decode('ascii').startswith('solid')
+

@@ -1,0 +1,130 @@
+{
+  "promptId": "dock",
+  "requirements": [
+    {
+      "id": "base_dimensions",
+      "text": "Base plate is 180 mm wide (X), 120 mm deep (Y), and 8 mm thick.",
+      "kind": "dimension"
+    },
+    {
+      "id": "base_placement",
+      "text": "Base plate rests on the build plate (z = 0).",
+      "kind": "constraint"
+    },
+    {
+      "id": "mounting_holes_features",
+      "text": "Four 5 mm through-holes cut for mounting screws.",
+      "kind": "feature"
+    },
+    {
+      "id": "mounting_holes_inset",
+      "text": "Mounting holes are placed 12 mm in from each corner of the base plate.",
+      "kind": "dimension"
+    },
+    {
+      "id": "phone_cradle_placement",
+      "text": "Phone cradle is located on the front-left of the base plate.",
+      "kind": "relation"
+    },
+    {
+      "id": "phone_backrest_dimensions",
+      "text": "Phone backrest is 80 mm wide, 110 mm tall, and 6 mm thick.",
+      "kind": "dimension"
+    },
+    {
+      "id": "phone_lean_angle",
+      "text": "Phone backrest leans back 70 degrees from the base plane.",
+      "kind": "dimension"
+    },
+    {
+      "id": "phone_front_lip",
+      "text": "Front lip at the foot of the backrest is 80 mm wide, 12 mm tall, and 6 mm deep to stop phone sliding.",
+      "kind": "feature"
+    },
+    {
+      "id": "phone_cable_slot",
+      "text": "A 10 mm wide, 15 mm deep slot through the lip and backrest for a charging cable.",
+      "kind": "feature"
+    },
+    {
+      "id": "tablet_slot_placement",
+      "text": "Tablet slot is located on the right half of the base plate.",
+      "kind": "relation"
+    },
+    {
+      "id": "tablet_walls_dimensions",
+      "text": "Two parallel upright tablet walls are 70 mm wide and 60 mm tall.",
+      "kind": "feature"
+    },
+    {
+      "id": "tablet_inner_gap",
+      "text": "Tablet walls are 14 mm apart on their inner faces (12 mm tablet + 1 mm clearance each side).",
+      "kind": "dimension"
+    },
+    {
+      "id": "storage_box_placement",
+      "text": "Open-top storage box is located at the back of the base plate.",
+      "kind": "relation"
+    },
+    {
+      "id": "storage_box_dimensions",
+      "text": "Storage box is 160 mm wide, 40 mm deep, and 30 mm tall with 3 mm walls.",
+      "kind": "dimension"
+    },
+    {
+      "id": "storage_box_compartments",
+      "text": "Storage box is divided into four equal compartments with 2 mm internal divider walls.",
+      "kind": "feature"
+    },
+    {
+      "id": "lid_dimensions",
+      "text": "Separate flat lid 160 mm wide, 40 mm deep, and 4 mm thick that covers the storage box.",
+      "kind": "feature"
+    },
+    {
+      "id": "lid_separate_solid",
+      "text": "The lid must stay a separate solid from the box/base.",
+      "kind": "constraint"
+    },
+    {
+      "id": "lid_hinge_rotation",
+      "text": "Lid rotates on two pin hinges along the storage box's back edge.",
+      "kind": "relation"
+    },
+    {
+      "id": "hinge_pins_dimensions",
+      "text": "Pins are 4 mm in diameter and pass through knuckles on both the box and lid with 0.3 mm clearance.",
+      "kind": "dimension"
+    },
+    {
+      "id": "param_lean_angle",
+      "text": "Adjustable parameter for backrest lean angle.",
+      "kind": "parameter"
+    },
+    {
+      "id": "param_tablet_gap",
+      "text": "Adjustable parameter for tablet gap.",
+      "kind": "parameter"
+    },
+    {
+      "id": "param_box_height",
+      "text": "Adjustable parameter for storage box height.",
+      "kind": "parameter"
+    },
+    {
+      "id": "param_compartment_count",
+      "text": "Adjustable parameter for storage box compartment count.",
+      "kind": "parameter"
+    },
+    {
+      "id": "no_fillets_or_chamfers",
+      "text": "No fillets or chamfers anywhere on the geometry.",
+      "kind": "constraint"
+    },
+    {
+      "id": "nothing_below_base",
+      "text": "Nothing may go below the base (z >= 0).",
+      "kind": "constraint"
+    }
+  ]
+}

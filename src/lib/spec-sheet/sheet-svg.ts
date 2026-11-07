@@ -27,6 +27,8 @@ const CAPTION: Record<ViewName, string> = {
   right: 'RIGHT',
   top: 'TOP',
   iso: 'ISO',
+  back_iso: 'BACK ISO',
+  left: 'LEFT',
 };
 
 const FONT = {
@@ -106,6 +108,11 @@ export function renderVariantSheet(
       { axis: 'y', text: mm(span.y) },
     ],
     iso: [],
+    back_iso: [],
+    left: [
+      { axis: 'y', text: mm(span.y) },
+      { axis: 'z', text: mm(span.z) },
+    ],
   };
 
   const body: string[] = [

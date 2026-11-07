@@ -9,6 +9,8 @@ export type BrepPart = {
   volume: number;
   min: [number, number, number];
   max: [number, number, number];
+  centroid?: [number, number, number];
+  area?: number;
 };
 
 export type BrepFailure = 'script' | 'unreachable' | 'timeout';
@@ -36,6 +38,8 @@ export type BrepResult = {
   step?: string; /* base64 */
   ms: number;
   interferences?: Array<{ a: string; b: string; volume: number }>;
+  partMeshes?: Record<string, string>;
+  disconnected?: string[];
 };
 
 export interface RunBrepOptions {
@@ -44,6 +48,7 @@ export interface RunBrepOptions {
   /** The run's stop signal: aborts the HTTP request or kills the local process group. Result error is 'cancelled'. */
   signal?: AbortSignal;
   interferences?: boolean;
+  partMeshes?: boolean;
 }
 
 const cancelledResult = (t0: number): BrepResult => ({
@@ -101,7 +106,12 @@ async function runBrepHttp(
   }
 
   const timeout_s = Math.max(1, Math.ceil(timeoutMs / 1000));
-  const body = JSON.stringify({ script, timeout_s, interferences: Boolean(opts?.interferences) });
+  const body = JSON.stringify({
+    script,
+    timeout_s,
+    interferences: Boolean(opts?.interferences),
+    partMeshes: Boolean(opts?.partMeshes),
+  });
 
   let res: Response;
   try {
@@ -177,6 +187,10 @@ async function runBrepHttp(
       ms: Math.max(1, Math.round(performance.now() - t0)),
       interferences: Array.isArray((data as { interferences?: unknown }).interferences)
         ? (data as { interferences: Array<{ a: string; b: string; volume: number }> }).interferences
+        : undefined,
+      partMeshes: (data.partMeshes ?? (data as Record<string, unknown>).part_meshes) as Record<string, string> | undefined,
+      disconnected: Array.isArray((data as { disconnected?: unknown }).disconnected)
+        ? ((data as { disconnected: string[] }).disconnected)
         : undefined,
     };
   } catch (err) {
@@ -285,6 +299,9 @@ async function runBrepLocal(
         const args = ['-I', '-m', 'cadai_geo', scriptPath, outDir];
         if (opts?.interferences) {
           args.push('--interferences');
+        }
+        if (opts?.partMeshes) {
+          args.push('--part-meshes');
         }
         child = spawn(pythonPath, args, {
           cwd: geoDir,
@@ -417,6 +434,10 @@ async function runBrepLocal(
         ms: Math.max(1, Math.round(performance.now() - t0)),
         interferences: Array.isArray(parsed.interferences)
           ? (parsed.interferences as Array<{ a: string; b: string; volume: number }>)
+          : undefined,
+        partMeshes: (parsed.partMeshes ?? parsed.part_meshes) as Record<string, string> | undefined,
+        disconnected: Array.isArray(parsed.disconnected)
+          ? (parsed.disconnected as string[])
           : undefined,
       };
     }

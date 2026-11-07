@@ -118,3 +118,36 @@ def test_interferences_overlapping_and_touching(tmp_path):
     ''', flags=['--interferences'])
     assert r_touch['ok'] is True
     assert r_touch.get('interferences') == []
+
+
+def test_part_centroid_and_area(tmp_path):
+    r, _ = run_cli(tmp_path, '''
+        from build123d import *
+        a = Box(10, 20, 30, align=(Align.MIN, Align.MIN, Align.MIN)); a.label = 'base'
+        _cadai_parts = [a]
+        result = a
+    ''')
+    assert r['ok'] is True
+    parts = {p['label']: p for p in r['parts']}
+    assert 'base' in parts
+    assert parts['base']['centroid'] == pytest.approx([5.0, 10.0, 15.0], abs=1e-5)
+    assert parts['base']['area'] == pytest.approx(2200.0, abs=1e-5)
+
+
+def test_part_meshes_flag(tmp_path):
+    import base64
+    r, _ = run_cli(tmp_path, '''
+        from build123d import *
+        a = Box(10, 20, 30, align=(Align.MIN, Align.MIN, Align.MIN)); a.label = 'base'
+        b = Pos(0, 0, 30) * Box(10, 20, 5, align=(Align.MIN, Align.MIN, Align.MIN)); b.label = 'lid'
+        _cadai_parts = [a, b]
+        result = Compound([a, b])
+    ''', flags=['--part-meshes'])
+    assert r['ok'] is True
+    assert 'partMeshes' in r
+    assert set(r['partMeshes'].keys()) == {'base', 'lid'}
+    base_stl = base64.b64decode(r['partMeshes']['base']).decode('ascii')
+    lid_stl = base64.b64decode(r['partMeshes']['lid']).decode('ascii')
+    assert base_stl.startswith('solid')
+    assert lid_stl.startswith('solid')
+

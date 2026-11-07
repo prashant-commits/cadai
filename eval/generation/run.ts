@@ -67,6 +67,9 @@ import { getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor, initLangfuseTracing } from '@/lib/tracing/langfuse';
 import { GenerationMetrics, SpecGateCapture, measureVisualMatch, metricsFromState, scoresFor, summarize } from './metrics';
 import { DEFAULT_JUDGE_MODEL, measureIntent } from './judge';
+import { buildEvidence } from './judge-v2/evidence';
+import { judgeRubric } from './judge-v2/rubric';
+import { getRequirements } from './judge-v2/requirements';
 import { finalizeMetrics, thrownDetail } from './brep-eval';
 import { saveRunArtifacts } from './run-artifacts';
 import { UsageHandler } from './usage';
@@ -91,7 +94,7 @@ interface Args {
   thinking?: 'off' | 'adaptive';
   effort?: 'low' | 'medium' | 'high';
   attempts?: number;
-  judge: boolean;
+  judge: boolean | 'v2';
   judgeModel: string;
   prompts: string;
   outDir?: string;
@@ -143,7 +146,10 @@ function parseArgs(argv: string[]): Args {
       const n = Number(argv[++i]);
       if (Number.isInteger(n) && n >= 1) a.attempts = n;
     }
-    else if (v === '--judge') a.judge = argv[++i] === 'on';
+    else if (v === '--judge') {
+      const nextVal = argv[++i];
+      a.judge = nextVal === 'v2' ? 'v2' : nextVal === 'on';
+    }
     else if (v === '--judge-model') a.judgeModel = argv[++i];
     else if (v === '--prompts') a.prompts = path.resolve(argv[++i]);
     else if (v === '--out-dir') a.outDir = argv[++i];
@@ -246,7 +252,49 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
   });
   const wallMs = Date.now() - t0;
   // The standalone intent judge reads the finished STL after the run's clock stopped; it cannot reach the run.
-  const intent = await measureIntent({ on: args.judge, stl: state.stlContent, request: item.prompt, spec: state.assemblySpec ?? null, model: args.judgeModel });
+  const intent = await measureIntent({ on: args.judge === true, stl: state.stlContent, request: item.prompt, spec: state.assemblySpec ?? null, model: args.judgeModel });
+
+  let v2Metrics: {
+    v2Overall?: number | null;
+    v2Criteria?: GenerationMetrics['v2Criteria'];
+    v2Coverage?: number | null;
+    v2CostUsd?: number | null;
+    v2Findings?: GenerationMetrics['v2Findings'];
+  } = {};
+
+  if (args.judge === 'v2' && (state.stlContent || state.currentCode)) {
+    try {
+      const checklist = await getRequirements(item.id, item.prompt, args.judgeModel);
+      const ev = await buildEvidence({
+        script: state.currentCode,
+        stl: state.stlContent ?? undefined,
+      });
+      const v2Res = await judgeRubric({
+        request: item.prompt,
+        checklist,
+        evidence: ev,
+        model: args.judgeModel,
+      });
+      v2Metrics = {
+        v2Overall: v2Res.overallScore,
+        v2Criteria: {
+          requirementsCoverage: v2Res.verdict.criteria.requirementsCoverage.score,
+          layoutAndClearances: v2Res.verdict.criteria.layoutAndClearances.score,
+          functionAndMotion: v2Res.verdict.criteria.functionAndMotion.score,
+          accessibility: v2Res.verdict.criteria.accessibility.score,
+          manufacturabilityAndRobustness: v2Res.verdict.criteria.manufacturabilityAndRobustness.score,
+          parametricQuality: v2Res.verdict.criteria.parametricQuality.score,
+          formAndAesthetics: v2Res.verdict.criteria.formAndAesthetics.score,
+        },
+        v2Coverage: v2Res.coverage.percent,
+        v2CostUsd: v2Res.costUsd,
+        v2Findings: v2Res.verdict.findings,
+      };
+    } catch (err) {
+      console.warn(`Judge v2 failed for prompt ${item.id}:`, err);
+    }
+  }
+
   const base = metricsFromState(item.id, args.model, state, wallMs, specGate, visual);
   // B-rep: STEP re-import and parameter perturbation (re-runs the script), then the verdict.
   const m = await finalizeMetrics({
@@ -254,7 +302,8 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     costUsd: usage.cost(args.model),
-    ...(args.judge ? intent : {}),
+    ...(args.judge === true ? intent : {}),
+    ...(args.judge === 'v2' ? v2Metrics : {}),
   }, state, undefined, thrown);
   // The final script and spec beside the results, so a failing run can be diagnosed without a re-run.
   saveRunArtifacts(jsonl, item.id, m.kernel, state);
