@@ -608,18 +608,37 @@ export function normalizeClaudeSentinels(raw: unknown): unknown {
   return out;
 }
 
+/** Stop reasons that leave a reply cut off before it was finished. */
+const CUT_OFF_STOPS = new Set(['max_tokens', 'model_context_window_exceeded', 'pause_turn']);
+export type UnusableStop = 'max_tokens' | 'model_context_window_exceeded' | 'pause_turn' | 'refusal';
+
 /**
- * The stop reason of a model reply when it makes the reply unusable: cut off at
- * max_tokens (a tool call's input is then a parseable but partial object, which
- * the 6-optional variant schema could accept as a complete spec), or a refusal.
- * Non-streamed replies carry it in response_metadata, streamed ones in
- * additional_kwargs (from the message_delta event).
+ * The stop reason of a model reply when it makes the reply unusable: cut off
+ * (max_tokens, model_context_window_exceeded, or pause_turn, which only server
+ * tools cause and none are bound), where a tool call's input is a parseable but
+ * partial object the 6-optional variant schema could accept as a complete spec;
+ * or a refusal. Non-streamed replies carry it in response_metadata, streamed
+ * ones in additional_kwargs (from the message_delta event).
  */
-export function unusableStop(msg: unknown): 'max_tokens' | 'refusal' | null {
+export function unusableStop(msg: unknown): UnusableStop | null {
   if (!msg || typeof msg !== 'object') return null;
   const m = msg as { response_metadata?: Record<string, unknown>; additional_kwargs?: Record<string, unknown> };
   const reason = m.response_metadata?.stop_reason ?? m.additional_kwargs?.stop_reason;
-  return reason === 'max_tokens' || reason === 'refusal' ? reason : null;
+  if (reason === 'refusal') return 'refusal';
+  return typeof reason === 'string' && CUT_OFF_STOPS.has(reason) ? (reason as UnusableStop) : null;
+}
+
+/** True for the stop reasons that cut a reply short (as opposed to a refusal). */
+export function isCutOff(stop: UnusableStop | null | undefined): boolean {
+  return !!stop && CUT_OFF_STOPS.has(stop);
+}
+
+/** A structured reply that stopped for an unusable reason; callers retry, and can tell a truncation apart. */
+export class UnusableReplyError extends Error {
+  constructor(readonly stop: UnusableStop) {
+    super(`structured reply unusable: stop_reason ${stop}`);
+    this.name = 'UnusableReplyError';
+  }
 }
 
 /** JsonOutputParser that throws on a reply cut off at max_tokens or refused, so the caller retries. */
@@ -627,7 +646,7 @@ class StopCheckedJsonOutputParser extends JsonOutputParser {
   async parseResult(...args: Parameters<JsonOutputParser['parseResult']>): ReturnType<JsonOutputParser['parseResult']> {
     const message = (args[0][0] as { message?: unknown } | undefined)?.message;
     const stop = unusableStop(message);
-    if (stop) throw new Error(`structured reply unusable: stop_reason ${stop}`);
+    if (stop) throw new UnusableReplyError(stop);
     return super.parseResult(...args);
   }
 }
@@ -696,12 +715,10 @@ export function structuredFor<M extends { withStructuredOutput: (...args: never[
           if (msg && typeof msg === 'object' && !('content' in msg) && !('_getType' in msg)) {
             return msg;
           }
-          // Truncated or refused: undefined is a failed attempt, which the caller retries.
+          // Truncated or refused: a failed attempt, which the caller retries (and, for a
+          // truncation, retries asking for a shorter spec).
           const stop = unusableStop(msg);
-          if (stop) {
-            console.warn(`structuredFor: ${toolName} reply unusable (stop_reason ${stop})`);
-            return undefined;
-          }
+          if (stop) throw new UnusableReplyError(stop);
           const parsedTool = await toolsParser.invoke(msg as never);
           if (parsedTool !== undefined) return parsedTool;
           if (msg && typeof msg === 'object' && 'content' in msg) {
@@ -827,9 +844,19 @@ export function parseSheetReview(raw: unknown): z.infer<typeof SheetReviewSchema
   return parsed.success ? parsed.data : null;
 }
 
-/** A Design Inspector reply validated against VisualCritiqueSchema, or null when it is unusable. */
+/**
+ * A Design Inspector reply validated against VisualCritiqueSchema, or null when it is unusable.
+ * A finding without `view` is kept with view "" (all views), as the graph read it before validation.
+ */
 export function parseVisualCritique(raw: unknown): z.infer<typeof VisualCritiqueSchema> | null {
-  const parsed = VisualCritiqueSchema.safeParse(withNormalizedSeverities(nullsToUndefined(raw)));
+  let value = withNormalizedSeverities(nullsToUndefined(raw));
+  if (isPlainObject(value) && Array.isArray(value.findings)) {
+    value = {
+      ...value,
+      findings: value.findings.map((f) => (isPlainObject(f) && typeof f.view !== 'string' ? { ...f, view: '' } : f)),
+    };
+  }
+  const parsed = VisualCritiqueSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
 }
 

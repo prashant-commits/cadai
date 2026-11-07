@@ -13,6 +13,7 @@ import {
   parseSheetReview,
   parseVisualCritique,
   parseStringifiedFields,
+  UnusableReplyError,
 } from './llm-schemas';
 import { AssemblySpecSchema, variantSpecRequestSchema } from './assembly-spec';
 import { getFunctionalCadModuleTool } from './engineering-tools';
@@ -159,14 +160,16 @@ describe('2. enums in planner, reviewer and critic structured output', () => {
 describe('3. a reply cut off at max_tokens or refused is a failed attempt, never a partial spec', () => {
   const partial = { assemblyName: 'x', components: [{ name: 'a', description: 'part' }] };
 
-  it('variant spec, non-streamed: tool_use with stop_reason max_tokens or refusal yields undefined', async () => {
+  it('variant spec, non-streamed: tool_use with an unusable stop_reason throws UnusableReplyError (a failed attempt)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    for (const stop of ['max_tokens', 'refusal']) {
+    for (const stop of ['max_tokens', 'refusal', 'pause_turn', 'model_context_window_exceeded'] as const) {
       const model = getChatModel('claude-haiku-5.5');
       withFakeClient(model, () => reply([{ type: 'tool_use', id: 'toolu_t', name: 'AssemblySpec', input: partial }], stop));
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const bound = structuredFor(model, 'claude-haiku-5.5', variantSpecRequestSchema(), { name: 'AssemblySpec' }) as any;
-      expect(await bound.invoke([new HumanMessage('x')]), stop).toBeUndefined();
+      const err = await bound.invoke([new HumanMessage('x')]).catch((e: unknown) => e);
+      expect(err, stop).toBeInstanceOf(UnusableReplyError);
+      expect((err as UnusableReplyError).stop).toBe(stop);
     }
     // The same input with a normal stop is returned (control).
     const model = getChatModel('claude-haiku-5.5');
@@ -177,15 +180,24 @@ describe('3. a reply cut off at max_tokens or refused is a failed attempt, never
     warn.mockRestore();
   });
 
-  it('variant spec, streamed (as inside the graph): stop_reason max_tokens yields undefined, also with includeRaw', async () => {
+  it('variant spec, streamed (as inside the graph) or with includeRaw: a max_tokens reply never yields a spec', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const model = getChatModel('claude-haiku-5.5');
-    withFakeClient(model, () => toolUseStream('AssemblySpec', JSON.stringify(partial), 'max_tokens'));
+    const streamed = getChatModel('claude-haiku-5.5');
+    withFakeClient(streamed, () => toolUseStream('AssemblySpec', JSON.stringify(partial), 'max_tokens'));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const bound = structuredFor(model, 'claude-haiku-5.5', variantSpecRequestSchema(), { name: 'AssemblySpec', includeRaw: true }) as any;
-    let last: Body | undefined;
-    for await (const chunk of await bound.stream([new HumanMessage('x')])) last = chunk;
-    expect(last?.parsed).toBeUndefined();
+    const s = structuredFor(streamed, 'claude-haiku-5.5', variantSpecRequestSchema(), { name: 'AssemblySpec' }) as any;
+    const drain = async () => {
+      for await (const chunk of await s.stream([new HumanMessage('x')])) void chunk;
+    };
+    await expect(drain()).rejects.toBeInstanceOf(UnusableReplyError);
+
+    // includeRaw (the eval gateway): LangChain's parser fallback reports parsed: null.
+    const raw = getChatModel('claude-haiku-5.5');
+    withFakeClient(raw, () => reply([{ type: 'tool_use', id: 'toolu_t', name: 'AssemblySpec', input: partial }], 'max_tokens'));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const r = structuredFor(raw, 'claude-haiku-5.5', variantSpecRequestSchema(), { name: 'AssemblySpec', includeRaw: true }) as any;
+    const out = (await r.invoke([new HumanMessage('x')])) as Body;
+    expect(out.parsed ?? null).toBeNull();
     warn.mockRestore();
   });
 

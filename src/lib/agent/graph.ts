@@ -9,8 +9,7 @@ import { composeRunSummary } from './run-summary';
 import type { StreamEvent } from './stream-events';
 import { cachedSystemMessage, systemPromptFor } from './system-prompt';
 import { contentText } from './message-text';
-import { invokeWithToolRound } from './tool-round';
-import { extractOpenScadCode } from './code-extractor';
+import { extractReplyCode, invokeWithToolRound } from './tool-round';
 import { validateOpenScadCode } from './code-validator';
 import { AssemblySpec, AssemblySpecSchema, variantSpecRequestSchema } from './assembly-spec';
 import { ValidationResult, ScadDiagnostic } from '../engine/scad-compiler';
@@ -45,7 +44,7 @@ import { auditSpecShapes, auditSpecGround } from './spec-shape-audit';
 import { checkInterference } from '../engine/assembly-verifier';
 import { nullsToUndefined } from './strict-schema';
 import { getCheckpointer } from './checkpointer';
-import { VisualCritiqueSchema, SheetReviewSchema, ArchitectPlanSchema, structuredFor, parseArchitectPlan, parseSheetReview, parseVisualCritique } from './llm-schemas';
+import { VisualCritiqueSchema, SheetReviewSchema, ArchitectPlanSchema, structuredFor, parseArchitectPlan, parseSheetReview, parseVisualCritique, isCutOff, UnusableReplyError, type UnusableStop } from './llm-schemas';
 import {
   SpecVariant,
   SpecBrief,
@@ -734,6 +733,8 @@ export function createCadAgent(
     let outOfTime = false;
     let unchangedFeedback = false;
     let unchangedFinal = false;
+    // Why the last attempt's reply was unusable, when it stopped short or was refused.
+    let lastStop: UnusableStop | null = null;
     // The parsed candidate with the fewest self-check errors so far. A later attempt that
     // fails schema or provider must not cost the variant a spec that already parsed.
     let best: { candidate: AssemblySpec; errors: SpecViolation[] } | null = null;
@@ -750,7 +751,11 @@ export function createCadAgent(
         outOfTime = true;
         break;
       }
-      const retryPrompt = (unchangedFeedback
+      const retryPrompt = (isCutOff(lastStop)
+        ? 'Your previous reply was cut off at the output limit before the AssemblySpec tool call was complete. ' +
+          'Emit the spec again, more concisely: a short sheet, one-line descriptions and notes, no repeated text, ' +
+          'and only the components, parameters and guides the design needs.'
+        : unchangedFeedback
         ? `Your revision did not change the geometry. You must change it to resolve: ${majorIssues.join('; ') || 'the required changes'}`
         : coherenceFeedback
         ? 'Your previous Assembly Spec was internally inconsistent:\n' +
@@ -763,6 +768,7 @@ export function createCadAgent(
       const attemptMessages =
         attempt === 0 ? variantMessages : [...variantMessages, new HumanMessage(retryPrompt)];
 
+      lastStop = null;
       try {
         const raw = await variantModel.withConfig({ tags: ['nostream'] }).invoke(attemptMessages, withBudget(config, deadline));
 
@@ -824,6 +830,13 @@ export function createCadAgent(
           );
         }
       } catch (e: unknown) {
+        if (e instanceof UnusableReplyError) {
+          // Not a provider error: the reply arrived but stopped short or was refused.
+          lastStop = e.stop;
+          rawLastError = e.message;
+          console.warn(`architectNode: variant ${variant.id} reply unusable (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}): stop_reason ${e.stop}`);
+          continue;
+        }
         hadProviderError = true;
         rawLastError = e instanceof Error ? e.message : String(e);
         // The raw provider error goes to the log ONLY. It was being sliced into
@@ -846,14 +859,18 @@ export function createCadAgent(
       specErrors = best.errors.map((v) => ({ severity: 'major' as const, issue: v.message }));
     }
 
+    // The last attempt's reason, when it was a reply that stopped short or was refused.
+    const stopReason = isCutOff(lastStop) ? 'reply cut off at the output limit' : lastStop === 'refusal' ? 'the model declined' : null;
     const shortErrorLabel = outOfTime
       ? 'No valid spec: the time budget ran out.'
-      : hadProviderError
-        ? 'No valid spec after 3 attempts (provider error).'
-        : 'No valid spec after 3 attempts.';
+      : stopReason
+        ? `No valid spec after 3 attempts (${stopReason}).`
+        : hadProviderError
+          ? 'No valid spec after 3 attempts (provider error).'
+          : 'No valid spec after 3 attempts.';
     // A revision that failed keeps the previous version on the card, so say that.
     const failureLine = previousSpec
-      ? `revision failed${outOfTime ? ' (time budget)' : hadProviderError ? ' (provider error)' : ''}; keeping version ${version}.`
+      ? `revision failed${outOfTime ? ' (time budget)' : stopReason ? ` (${stopReason})` : hadProviderError ? ' (provider error)' : ''}; keeping version ${version}.`
       : shortErrorLabel;
 
     if (spec) {
@@ -1321,11 +1338,16 @@ export function createCadAgent(
         let reviewResult: z.infer<typeof SheetReviewSchema> | null = null;
         try {
           for (let attempt = 0; attempt < 2 && !reviewResult; attempt++) {
-            const raw = await reviewerModel.invoke(
-              [reviewerSystem, new HumanMessage({ content: content as never })],
-              withBudget(config, state.runDeadline)
-            );
-            reviewResult = parseSheetReview(raw);
+            try {
+              const raw = await reviewerModel.invoke(
+                [reviewerSystem, new HumanMessage({ content: content as never })],
+                withBudget(config, state.runDeadline)
+              );
+              reviewResult = parseSheetReview(raw);
+            } catch (e) {
+              // A reply cut off or refused is unusable like an invalid one: it gets the second ask.
+              if (!(e instanceof UnusableReplyError)) throw e;
+            }
             if (!reviewResult) console.warn(`specReviewer: unusable review for variant ${v.id} (attempt ${attempt + 1}/2)`);
           }
           if (!reviewResult) throw new Error('no valid review after 2 attempts');
@@ -1523,7 +1545,7 @@ ${contract}`;
     const response = await invokeWithToolRound(model, messages, config);
 
     const content = contentText(response.content);
-    const extracted = extractOpenScadCode(content);
+    const extracted = extractReplyCode(response, content);
     const placed = await placeAssembly(extracted.code || '', state.assemblySpec);
 
     return {
@@ -1850,7 +1872,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     const response = await invokeWithToolRound(model, fixMessages, config);
     
     const content = contentText(response.content);
-    const extracted = extractOpenScadCode(content);
+    const extracted = extractReplyCode(response, content);
 
     // Patch only the attempt being repaired. The merge-by-n reducer applies it
     // in place; returning the whole array would re-append the entire history.
@@ -1939,14 +1961,18 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     try {
       const critic = structuredFor(criticModel, criticSlug, VisualCritiqueSchema);
       for (let attempt = 0; attempt < 2 && !critique; attempt++) {
-        const raw = await critic.invoke(
-          [
-            cachedSystemMessage(systemPromptFor('critic')),
-            new HumanMessage({ content: content as never }),
-          ],
-          config
-        );
-        critique = parseVisualCritique(raw);
+        try {
+          const raw = await critic.invoke(
+            [
+              cachedSystemMessage(systemPromptFor('critic')),
+              new HumanMessage({ content: content as never }),
+            ],
+            config
+          );
+          critique = parseVisualCritique(raw);
+        } catch (e) {
+          if (!(e instanceof UnusableReplyError)) throw e;
+        }
         if (!critique) console.warn(`Visual critic: unusable critique (attempt ${attempt + 1}/2)`);
       }
     } catch (e) {

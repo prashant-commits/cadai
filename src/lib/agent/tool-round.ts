@@ -1,6 +1,8 @@
 import { ToolMessage, type AIMessage, type AIMessageChunk, type BaseMessage } from '@langchain/core/messages';
 import type { RunnableConfig } from '@langchain/core/runnables';
 import { getFunctionalCadModuleTool } from './engineering-tools';
+import { extractOpenScadCode } from './code-extractor';
+import { isCutOff, unusableStop } from './llm-schemas';
 
 /** The slice of ChatAnthropic the tool round needs; graph tests pass a fake with the same shape. */
 interface ToolBindable {
@@ -66,4 +68,20 @@ export async function invokeWithToolRound(
   const results: ToolMessage[] = [];
   for (const call of calls) results.push(await runToolCall(call, config));
   return model.bindTools(TOOLS, { tool_choice: 'none' }).invoke([...messages, first, ...results], config);
+}
+
+/**
+ * The script in a drafter or repair reply. A reply that stopped short (max_tokens,
+ * context window, pause) counts as truncated even when its fences happen to
+ * balance, and a refusal as no code: both go to the existing truncated / no_code
+ * path instead of compiling a script that was never finished.
+ */
+export function extractReplyCode(response: unknown, content: string): ReturnType<typeof extractOpenScadCode> {
+  const stop = unusableStop(response);
+  if (stop === 'refusal') return { code: null, error: 'no_code' };
+  if (isCutOff(stop)) {
+    console.warn(`script reply cut off (stop_reason ${stop}); treated as truncated`);
+    return { code: null, error: 'truncated' };
+  }
+  return extractOpenScadCode(content);
 }
