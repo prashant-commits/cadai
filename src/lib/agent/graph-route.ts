@@ -27,6 +27,19 @@ export function latestHumanText(messages: unknown): string {
   return '';
 }
 
+/**
+ * The user's original request, from the earliest human message they wrote.
+ */
+export function firstHumanText(messages: unknown): string {
+  if (!Array.isArray(messages)) return '';
+  for (const msg of messages) {
+    if (messageRole(msg) !== 'human') continue;
+    const text = messageText(msg);
+    if (text && !text.startsWith(VALIDATION_REPORT_PREFIX)) return text;
+  }
+  return '';
+}
+
 function messageRole(msg: unknown): string {
   if (!msg || typeof msg !== 'object') return '';
   const rec = msg as {
@@ -133,7 +146,24 @@ export function routeAfterCritic(state: AgentStateType): 'acceptGate' | 'respond
   return 'respondToUser';
 }
 
-export function routeAfterAccept(state: AgentStateType): 'architectBuild' | 'brepBuild' | 'brepAgentBuild' | 'fixCode' | 'respondToUser' {
+export function routeStart(state: AgentStateType): 'designerNode' | 'architectNode' {
+  const pipeline = state.pipeline ?? (process.env.CADAI_PIPELINE === 'designer' ? 'designer' : 'architect');
+  if (pipeline === 'designer') return 'designerNode';
+  return 'architectNode';
+}
+
+export function routeAfterDesignerCheck(state: AgentStateType): 'designerNode' | 'acceptGate' {
+  if (!state.isValid && (state.designerRetryCount ?? 0) === 1 && !state.designerCheckCompleted) {
+    return 'designerNode';
+  }
+  return 'acceptGate';
+}
+
+export function routeAfterAccept(state: AgentStateType): 'architectBuild' | 'brepBuild' | 'brepAgentBuild' | 'fixCode' | 'designerNode' | 'respondToUser' {
+  if (state.pipeline === 'designer') {
+    if (state.gateAction === 'revise' && state.acceptRevisionCount <= MAX_ACCEPT_REVISIONS) return 'designerNode';
+    return 'respondToUser';
+  }
   if (state.gateAction === 'revise' && state.acceptRevisionCount <= MAX_ACCEPT_REVISIONS) return repairTarget(state);
   return 'respondToUser';
 }
@@ -141,6 +171,10 @@ export function routeAfterAccept(state: AgentStateType): 'architectBuild' | 'bre
 /** The node the conditional edge for `node` selects. Fixed edges are not included. */
 export function nextStep(node: string, state: AgentStateType, model = ''): string | null {
   switch (node) {
+    case 'START':
+      return routeStart(state);
+    case 'designerCheck':
+      return routeAfterDesignerCheck(state);
     case 'architectNode':
       return routeAfterArchitectNode(state, model);
     case 'specReviewer':

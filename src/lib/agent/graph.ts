@@ -22,10 +22,16 @@ import {
   routeAfterAccept,
   routeAfterArchitectNode,
   routeAfterCritic,
+  routeAfterDesignerCheck,
   routeAfterReviewerNode,
   routeAfterSpecGate,
   routeAfterValidation,
+  routeStart,
 } from './graph-route';
+import type { DesignerFacts, ReviewFlag } from './designer/types';
+import { createDesignerNode, type DesignerNodeDeps } from './designer/node';
+import { createDesignerCheck, type DesignerCheckDeps } from './designer/check';
+import { formatFlags } from './designer/reviewer';
 import { getChatModel } from './model-provider';
 import { isVisionModel, isOfferedModel, DEFAULT_MODEL } from './models';
 import { renderVariantSheet } from '../spec-sheet/sheet-svg';
@@ -596,10 +602,55 @@ export const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => [],
   }),
-  /** Set once, on the thread's first architectNode entry, from CADAI_PIPELINE (default architect). Never changes afterwards. */
-  pipeline: Annotation<'drafter' | 'architect' | null>({
+  /** Set once, on the thread's first architectNode or designerNode entry, from CADAI_PIPELINE (default architect). Never changes afterwards. */
+  pipeline: Annotation<'drafter' | 'architect' | 'designer' | null>({
     reducer: (_, y) => y,
     default: () => null,
+  }),
+  /** Measured geometric facts from the designer run. */
+  designerFacts: Annotation<DesignerFacts | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  /** Reviewer flags accumulated across designer iterations. */
+  designerFlags: Annotation<Array<ReviewFlag & { round: number; final: boolean }>>({
+    reducer: (_, y) => y,
+    default: () => [],
+  }),
+  /** Cumulative cost in USD of designer model calls. */
+  designerCostUsd: Annotation<number>({
+    reducer: (_, y) => y,
+    default: () => 0,
+  }),
+  /** Number of check retries in designerCheck (capped at 1). */
+  designerRetryCount: Annotation<number>({
+    reducer: (_, y) => y,
+    default: () => 0,
+  }),
+  /** Check failures in plain words when designerCheck fails. */
+  designerCheckFailures: Annotation<string | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  /** True when designerCheck has completed (either successfully or after spending its retry). */
+  designerCheckCompleted: Annotation<boolean>({
+    reducer: (_, y) => y,
+    default: () => false,
+  }),
+  /** Accepted designer script preserved for follow-up turns on this thread. */
+  acceptedDesignerScript: Annotation<string | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  /** Summary markdown produced by the designer loop. */
+  designerSummary: Annotation<string>({
+    reducer: (_, y) => y,
+    default: () => '',
+  }),
+  /** Total designer turns in this run. */
+  designerTurns: Annotation<number>({
+    reducer: (_, y) => y,
+    default: () => 0,
   }),
   /**
    * Geometry kernel, pinned once per run beside `pipeline` from CADAI_KERNEL (default brep).
@@ -666,10 +717,12 @@ function writeRetry(
  */
 /**
  * Default pipeline: the Architect. The Drafter is reachable only with
- * CADAI_PIPELINE=drafter.
+ * CADAI_PIPELINE=drafter; the direct designer with CADAI_PIPELINE=designer.
  */
-export function resolvePipeline(env: Record<string, string | undefined>): 'drafter' | 'architect' {
-  return env.CADAI_PIPELINE === 'drafter' ? 'drafter' : 'architect';
+export function resolvePipeline(env: Record<string, string | undefined>): 'drafter' | 'architect' | 'designer' {
+  if (env.CADAI_PIPELINE === 'designer') return 'designer';
+  if (env.CADAI_PIPELINE === 'drafter') return 'drafter';
+  return 'architect';
 }
 
 /**
@@ -677,18 +730,22 @@ export function resolvePipeline(env: Record<string, string | undefined>): 'draft
  * CADAI_KERNEL=openscad, or on the Drafter, which has no B-rep path
  * (CADAI_KERNEL=brep there keeps OpenSCAD and warns once).
  */
-export function resolveKernel(pipeline: 'drafter' | 'architect', env: Record<string, string | undefined>, warn = true): 'openscad' | 'brep' {
+export function resolveKernel(pipeline: 'drafter' | 'architect' | 'designer', env: Record<string, string | undefined>, warn = true): 'openscad' | 'brep' {
   if (pipeline === 'drafter') {
     if (warn && env.CADAI_KERNEL === 'brep') {
       console.warn('CADAI_KERNEL=brep is ignored with CADAI_PIPELINE=drafter: the Drafter only writes OpenSCAD');
     }
     return 'openscad';
   }
+  if (pipeline === 'designer') {
+    return 'brep';
+  }
   return env.CADAI_KERNEL === 'openscad' ? 'openscad' : 'brep';
 }
 
 export function createCadAgent(
-  modelName?: string
+  modelName?: string,
+  designerDeps?: DesignerNodeDeps & DesignerCheckDeps
 ) {
   let selectedModel: string;
   if (modelName) {
@@ -2101,6 +2158,33 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
 
   // Node 5: respondToUser
   async function respondToUser(state: AgentStateType, config?: LangGraphRunnableConfig): Promise<Partial<AgentStateType>> {
+    if (state.pipeline === 'designer') {
+      let summary = state.designerSummary || state.explanation || '';
+      if (!state.isValid && state.designerCheckFailures) {
+        summary = state.designerCheckFailures;
+      }
+      const finalFlags = (state.designerFlags ?? []).filter((f) => f.final);
+      if (finalFlags.length > 0) {
+        const flagFormatter = designerDeps?.formatFlags ?? formatFlags;
+        const formatted = flagFormatter(finalFlags);
+        if (formatted) {
+          summary = summary ? `${summary}\n\n${formatted}` : formatted;
+        }
+      }
+
+      write(config, 'respondToUser', {
+        t: 'result',
+        summary,
+        code: state.currentCode || undefined,
+        stl: state.stlContent || undefined,
+        step: state.stepContent || undefined,
+        language: 'build123d',
+        designContract: state.designContract ?? undefined,
+      });
+
+      return {};
+    }
+
     const summary = composeRunSummary({
       spec: state.assemblySpec,
       modelInfo: state.modelInfo,
@@ -2397,6 +2481,12 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     return routeAfterAccept(state);
   }
 
+  function checkDesignerRoute(state: AgentStateType) {
+    return routeAfterDesignerCheck(state);
+  }
+
+  const designerNode = createDesignerNode(designerDeps);
+  const designerCheck = createDesignerCheck(designerDeps);
   const architectBuild = makeArchitectBuild(buildModel);
   const brepBuild = makeBrepBuild(buildModel);
   const brepAgentBuild = makeBrepAgentBuild(buildModel);
@@ -2416,8 +2506,18 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     .addNode('fixCode', fixCode)
     .addNode('visualCritic', visualCritic)
     .addNode('acceptGate', acceptGate)
+    .addNode('designerNode', designerNode)
+    .addNode('designerCheck', designerCheck)
     .addNode('respondToUser', respondToUser)
-    .addEdge(START, 'architectNode')
+    .addConditionalEdges(START, routeStart, {
+      architectNode: 'architectNode',
+      designerNode: 'designerNode',
+    })
+    .addEdge('designerNode', 'designerCheck')
+    .addConditionalEdges('designerCheck', checkDesignerRoute, {
+      designerNode: 'designerNode',
+      acceptGate: 'acceptGate',
+    })
     .addConditionalEdges('architectNode', routeAfterArchitect, {
       specIllustrator: 'specIllustrator',
       specGate: 'specGate',
@@ -2473,6 +2573,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       architectBuild: 'architectBuild',
       brepBuild: 'brepBuild',
       brepAgentBuild: 'brepAgentBuild',
+      designerNode: 'designerNode',
       respondToUser: 'respondToUser'
     })
     .addEdge('respondToUser', END);

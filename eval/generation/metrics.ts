@@ -8,7 +8,7 @@ import { classifyParams } from './param-classify';
 export interface GenerationMetrics {
   id: string;
   model: string;
-  pipeline?: 'drafter' | 'architect' | null;
+  pipeline?: 'drafter' | 'architect' | 'designer' | null;
   specOk: boolean;
   composed: boolean;
   compileOk: boolean;
@@ -178,7 +178,7 @@ function variantStats(
 export function metricsFromState(
   id: string,
   model: string,
-  state: Partial<AgentStateType> & { pipeline?: 'drafter' | 'architect' | null },
+  state: Partial<AgentStateType> & { pipeline?: 'drafter' | 'architect' | 'designer' | null },
   wallMs: number,
   capture?: SpecGateCapture | null,
   visual?: VisualScore | null,
