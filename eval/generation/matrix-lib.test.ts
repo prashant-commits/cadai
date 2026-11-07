@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { childArgs } from './matrix';
 import {
-  latestRows, parseJsonl, pendingRuns, percentile, planRuns, renderReport, validateCells, type Cell, type MatrixRow,
+  crashReason, latestRows, parseJsonl, pendingRuns, percentile, planRuns, renderReport, validateCells, type Cell, type MatrixRow,
 } from './matrix-lib';
 import type { GenerationMetrics } from './metrics';
 
@@ -57,13 +57,14 @@ describe('plan and resume', () => {
 describe('child flags', () => {
   it('passes the cell onto run.ts flags', () => {
     const [run] = planRuns([cells[1]], prompts, 1);
-    const args = childArgs(run, '/out', '/out/row.json', 't').join(' ');
+    const args = childArgs(run, '/out', '/out/row.json', 't', '/p/round2.json').join(' ');
     expect(args).toContain('--kernel brep');
     expect(args).toContain('--thinking adaptive');
     expect(args).toContain('--effort low');
     expect(args).toContain('--attempts 3');
     expect(args).toContain('--model claude-haiku-5.5');
     expect(args).toContain('--only a');
+    expect(args).toContain('--prompts /p/round2.json');
     expect(args).toContain('--no-langfuse');
   });
 });
@@ -103,5 +104,13 @@ describe('renderReport', () => {
     expect(md).toContain('## Failed runs (2)');
     expect(md).toContain('| openscad-off | b | 1 | params | 1/4 parameters change the model |');
     expect(md).toContain('| brep-adaptive | b | 1 | crash | exit 1: ANTHROPIC 429 |');
+  });
+});
+
+describe('crashReason', () => {
+  it('names the error, not the stack, and says when a clean exit wrote nothing', () => {
+    const out = 'Error: prompt id(s) not found in x.json: a\n    at main (run.ts:1)\nNode.js v22';
+    expect(crashReason(1, out)).toBe('exit 1: Error: prompt id(s) not found in x.json: a');
+    expect(crashReason(0, 'wrote /tmp/x.json')).toBe('exit 0, wrote no result row: wrote /tmp/x.json');
   });
 });

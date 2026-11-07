@@ -31,6 +31,14 @@ export interface PlannedRun { cell: Cell; promptId: string; prompt: string; samp
 export const runKey = (cell: string, promptId: string, sample: number) => `${cell}|${promptId}|${sample}`;
 const keyOf = (r: { cell: string; promptId: string; sample: number }) => runKey(r.cell, r.promptId, r.sample);
 
+/** Why a child produced no row: its error line if it printed one, else its last non-stack line. */
+export function crashReason(code: number | null, output: string): string {
+  const lines = output.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('at ') && !/^Node\.js v/.test(l));
+  const error = [...lines].reverse().find((l) => /\bError\b|not found|no prompts/i.test(l));
+  const why = error ?? lines[lines.length - 1] ?? 'no output';
+  return `${code === 0 ? 'exit 0, wrote no result row' : `exit ${code}`}: ${why}`.slice(0, 300);
+}
+
 export function validateCells(raw: unknown): Cell[] {
   if (!Array.isArray(raw) || raw.length === 0) throw new Error('cells file must be a non-empty JSON array');
   const seen = new Set<string>();
