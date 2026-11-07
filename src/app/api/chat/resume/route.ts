@@ -1,17 +1,41 @@
 import { NextRequest } from 'next/server';
 import { createCadAgent } from '@/lib/agent/graph';
-import { bridgeGraphStream } from '@/lib/agent/stream-bridge';
-import type { StreamEvent } from '@/lib/agent/stream-events';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/tracing/langfuse';
-import { deleteRunCheckpoint, getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
+import { getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { Command } from '@langchain/langgraph';
 import { GateDecision } from '@/types';
 import { coerceRouteModel } from '@/lib/agent/models';
-import { graphRecursionLimit, describeGraphError } from '@/lib/agent/run-limits';
+import { graphRecursionLimit } from '@/lib/agent/run-limits';
+import { getRunStore, isSafeRunId, type AppendOptions, type RunStore } from '@/lib/runs/run-store';
+import { SSE_HEADERS, sse, streamRun } from '@/lib/runs/stream-run';
+import { errorResponse } from '@/lib/runs/api-error';
+import type { ApiError } from '@/lib/contract/run-contract';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
+
+const EXPIRED_MESSAGE = 'This paused run expired or was not found on this server. Send the request again.';
+
+/**
+ * Stores events for a run that never reaches the graph and returns them as a
+ * one-shot SSE body. The last event carries the terminal status (atomic with
+ * its append).
+ */
+async function staticStream(
+  store: RunStore,
+  runId: string,
+  events: Array<Record<string, unknown>>,
+  final: AppendOptions,
+): Promise<Response> {
+  let body = '';
+  for (let i = 0; i < events.length; i++) {
+    const ts = Date.now();
+    const seq = await store.append(runId, { ...events[i], ts }, i === events.length - 1 ? final : undefined);
+    if (seq > 0) body += sse({ ...events[i], seq, ts });
+  }
+  return new Response(body, { headers: SSE_HEADERS });
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -23,141 +47,145 @@ export async function POST(req: NextRequest) {
       decision: GateDecision;
     };
 
-    if (!threadId) {
-      return new Response(JSON.stringify({ error: 'Thread ID is required.' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
+    if (!threadId) return errorResponse('bad_request', 'Thread ID is required.');
 
     // Without the runId there is no way to name the paused checkpoint, and
     // resuming the wrong one would silently continue a different run.
-    if (!runId) {
-      return new Response(JSON.stringify({ error: 'Run ID is required to resume a gated run.' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
+    if (!runId) return errorResponse('bad_request', 'Run ID is required to resume a gated run.');
+    if (!isSafeRunId(runId)) return errorResponse('bad_request', 'Run ID is not valid.');
 
+    const store = getRunStore();
     const checkpointKey = runCheckpointKey(threadId, runId);
-
-    const encoder = new TextEncoder();
-    const stream = new TransformStream();
-    const writer = stream.writable.getWriter();
-
-    const sendEvent = async (event: StreamEvent) => {
-      try {
-        const payload = `data: ${JSON.stringify(event)}\n\n`;
-        await writer.write(encoder.encode(payload));
-      } catch (e) {
-        console.error('Error writing to stream:', e);
-      }
-    };
-
-    // A cancelled gate never re-enters the graph: there is nothing to
-    // resume toward, so the only correct action is to drop the paused
-    // checkpoint. Invoking the graph here would just make it silently
-    // proceed with generation, which is the one thing "Cancel" must not do.
-    if (decision?.action === 'cancel') {
-      await getCheckpointer().deleteThread(checkpointKey);
-      return new Response(
-        `data: ${JSON.stringify({ t: 'result', summary: 'Generation cancelled by user.' } satisfies StreamEvent)}\n\n`,
-        {
-          headers: {
-            'Content-Type': 'text/event-stream; charset=utf-8',
-            'Cache-Control': 'no-cache, no-transform',
-            Connection: 'keep-alive',
-          },
-        }
-      );
-    }
-
-    // A paused run is deleted after CADAI_CHECKPOINT_TTL_MS. Streaming a resume
-    // into a missing checkpoint yields no steps and no error, so the client would
-    // show an approved gate and a blank result. Say so instead.
     const paused = await getCheckpointer().getTuple({ configurable: { thread_id: checkpointKey } });
-    if (!paused) {
-      return new Response(
-        `data: ${JSON.stringify({
-          t: 'error',
-          message: 'This paused run expired or was not found on this server. Send the request again.',
-        } satisfies StreamEvent)}
+    let info = await store.get(runId);
 
-`,
-        {
-          headers: {
-            'Content-Type': 'text/event-stream; charset=utf-8',
-            'Cache-Control': 'no-cache, no-transform',
-            Connection: 'keep-alive',
-          },
-        }
-      );
+    if (!info) {
+      // No record and no checkpoint: nothing to resume, and nothing is written
+      // for an id the client made up.
+      if (!paused) return errorResponse('run_expired', EXPIRED_MESSAGE);
+      // A paused run from before run records existed has only a checkpoint: adopt it.
+      try {
+        await store.create({ runId, threadId, status: 'paused' });
+      } catch {
+        // created concurrently by another request; the claim below decides
+      }
+      info = await store.get(runId);
+      if (!info) return errorResponse('internal', 'The run record could not be created.');
     }
 
-    // Run the agent graph asynchronously and stream events
-    (async () => {
-      // Hoisted above the try so the finally block can flush it. The factory
-      // swallows its own construction errors and returns null, so this cannot
-      // throw outside the try.
+    if (info.threadId !== threadId) return errorResponse('bad_request', 'threadId does not match this run.');
+    // An abandoned gate is swept to failed/run_expired once its checkpoint TTL
+    // passes; resuming it is an expiry, not a conflict.
+    if (info.status === 'failed' && info.error?.code === 'run_expired') {
+      return errorResponse('run_expired', EXPIRED_MESSAGE);
+    }
+    if (info.status !== 'paused') {
+      return errorResponse('run_conflict', `Run ${runId} is ${info.status}, not paused, so it cannot be resumed.`);
+    }
+
+    // Claim the run: paused -> running is atomic in the store, so of two
+    // concurrent resumes (double click, retry, two instances) exactly one wins.
+    if (!(await store.setStatus(runId, 'running', undefined, { expect: ['paused'] }))) {
+      return errorResponse('run_conflict', `Run ${runId} is already being resumed or was stopped.`);
+    }
+
+    try {
+      return await afterClaim();
+    } catch (err) {
+      // Never leave a claimed run `running` with no owner: if its checkpoint is
+      // still there the gate is still answerable, so put it back to paused;
+      // otherwise it cannot continue, so fail it.
+      const stillPaused = await getCheckpointer()
+        .getTuple({ configurable: { thread_id: checkpointKey } })
+        .then(Boolean, () => false);
+      const message = err instanceof Error ? err.message : String(err);
+      await (stillPaused
+        ? store.setStatus(runId, 'paused', undefined, { expect: ['running'] })
+        : store.setStatus(runId, 'failed', { code: 'internal', message: 'The resume failed before it started.', detail: message }, { expect: ['running'] })
+      ).catch((e) => console.error('Resume rollback failed:', e));
+      throw err;
+    }
+
+    async function afterClaim(): Promise<Response> {
+
+      // A paused run is deleted after CADAI_CHECKPOINT_TTL_MS, or lives on another
+      // server that does not share this one's store. Streaming a resume into a
+      // missing checkpoint yields no steps and no error, so the client would show
+      // an approved gate and a blank result. Say so instead.
+      if (!paused) {
+        const apiError: ApiError = { code: 'run_expired', message: EXPIRED_MESSAGE };
+        return staticStream(
+          store,
+          runId,
+          [
+            { t: 'run', runId, threadId, status: 'failed', resumed: true },
+            { t: 'error', message: apiError.message, apiError },
+          ],
+          { status: 'failed', error: apiError, expect: ['running'] },
+        );
+      }
+
+      // A cancelled gate never re-enters the graph: there is nothing to
+      // resume toward, so the only correct action is to drop the paused
+      // checkpoint. Invoking the graph here would just make it silently
+      // proceed with generation, which is the one thing "Cancel" must not do.
+      // `result` stays for old clients; the contract's `cancelled` ends the stream.
+      if (decision?.action === 'cancel') {
+        await getCheckpointer().deleteThread(checkpointKey);
+        const at = Date.now();
+        return staticStream(
+          store,
+          runId,
+          [
+            { t: 'run', runId, threadId, status: 'cancelled', resumed: true },
+            { t: 'result', summary: 'Generation cancelled by user.' },
+            { t: 'cancelled', at },
+          ],
+          { status: 'cancelled', error: { code: 'cancelled', message: 'Generation cancelled by user.' }, expect: ['running'] },
+        );
+      }
+
+      // Hoisted so onFinally can flush it. The factory swallows its own
+      // construction errors and returns null, so this cannot throw.
       const effectiveModel = coerceRouteModel(model);
       const langfuseHandler = getLangfuseCallbackHandler({
         sessionId: threadId,
         tags: ['cadai', effectiveModel, 'resume'],
-        metadata: {
-          model: effectiveModel,
-        },
+        metadata: { model: effectiveModel },
       });
 
-      try {
-        const agent = createCadAgent(effectiveModel);
-
-        let sawGate = false;
-        const stream = await agent.stream(new Command({ resume: decision }), {
-          configurable: { thread_id: checkpointKey },
-          recursionLimit: graphRecursionLimit(),
-          streamMode: ['updates', 'messages', 'custom'],
-          callbacks: langfuseHandler ? [langfuseHandler] : undefined,
-        });
-
-        // A resumed run can hit ANOTHER gate - the accept gate right after the
-        // spec gate. The bridge surfaces that identically to the first one.
-        await bridgeGraphStream(stream, runId, (event) => {
-          if (event.t === 'gate') sawGate = true;
-          sendEvent(event);
-        });
-
-        if (!sawGate) await deleteRunCheckpoint(checkpointKey);
-      } catch (err: unknown) {
-        await deleteRunCheckpoint(checkpointKey);
-        await sendEvent({ t: 'error', message: describeGraphError(err, 'Agent resume failed') });
-      } finally {
-        // See the matching comment in ../route.ts: the detached IIFE outlives
-        // the returned Response, so the span queue must be drained explicitly
-        // before the stream closes or the tail of every resumed run is lost.
-        // v5 moved that queue off the handler and onto the span processor.
-        try {
-          await getLangfuseSpanProcessor()?.forceFlush();
-        } catch (e) {
-          console.warn('Langfuse flush failed:', e);
-        }
-        await writer.close();
-      }
-    })().catch((err) => {
-      console.error('Chat resume IIFE failed:', err);
-    });
-
-    return new Response(stream.readable, {
-      headers: {
-        'Content-Type': 'text/event-stream; charset=utf-8',
-        'Cache-Control': 'no-cache, no-transform',
-        Connection: 'keep-alive',
-      },
-    });
+      // A resumed run can hit ANOTHER gate - the accept gate right after the
+      // spec gate. streamRun surfaces that identically to the first one.
+      return streamRun({
+        store,
+        runId,
+        threadId,
+        resumed: true,
+        checkpointKey,
+        failLabel: 'Agent resume failed',
+        invoke: async (signal) => {
+          const agent = createCadAgent(effectiveModel);
+          return agent.stream(new Command({ resume: decision }), {
+            configurable: { thread_id: checkpointKey },
+            recursionLimit: graphRecursionLimit(),
+            streamMode: ['updates', 'messages', 'custom'],
+            callbacks: langfuseHandler ? [langfuseHandler] : undefined,
+            signal,
+          });
+        },
+        // See the matching comment in ../route.ts: the run outlives the returned
+        // Response, so the span queue must be drained before the stream closes.
+        onFinally: async () => {
+          try {
+            await getLangfuseSpanProcessor()?.forceFlush();
+          } catch (e) {
+            console.warn('Langfuse flush failed:', e);
+          }
+        },
+      });
+    }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    return new Response(JSON.stringify({ error: message }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return errorResponse('internal', message);
   }
 }
