@@ -1,5 +1,6 @@
 """Zygote: warm runs skip the build123d import, and a dead helper is replaced."""
 
+import json
 import os
 import signal
 import threading
@@ -46,6 +47,36 @@ def test_warm_run_under_two_seconds():
     assert payload["ok"] is True, payload
     assert {part["label"] for part in payload["parts"]} == {"base", "lid"}
     assert elapsed < 2, elapsed
+
+
+def test_three_concurrent_runs_overlap():
+    warm = _post("from build123d import *\nresult = Box(1, 1, 1)\n")
+    assert warm.status_code == 200, warm.text
+    assert warm.json()["ok"] is True, warm.text
+    script = "import time\ntime.sleep(3)\nfrom build123d import *\nresult = Box(1, 1, 1)\n"
+    results: list[tuple[float, int, str]] = []
+
+    def one() -> None:
+        started = time.perf_counter()
+        response = _post(script, timeout_s=30)
+        results.append((time.perf_counter() - started, response.status_code, response.text))
+
+    threads = [threading.Thread(target=one) for _ in range(3)]
+    wall_started = time.perf_counter()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    wall = time.perf_counter() - wall_started
+    print(f"CONCURRENT_WALL_SECONDS={wall:.3f}", flush=True)
+    assert len(results) == 3, results
+    for _elapsed, status, text in results:
+        assert status == 200, text
+        payload = json.loads(text)
+        assert payload.get("ok") is True, text
+    # Three serialized 3 s sleeps would take about 9 s. Overlap lands near 3–4 s
+    # plus the box export.
+    assert wall < 6, (wall, [item[0] for item in results])
 
 
 def test_zygote_restarts_after_kill_mid_run():

@@ -3,20 +3,22 @@
 The service execs this module with an empty environment, so the process
 never sees ``CADAI_GEO_TOKEN`` or ``CADAI_GEO_TOKEN_FILE``. It imports
 build123d once (after pinning numeric libraries to one thread, which keeps
-the process single-threaded and makes ``fork`` safe). Each run is a
-supervisor forked from that process. The supervisor calls ``setsid`` so the
-service can kill the whole run by process group. It then forks two children,
-both with the same rlimits and uid drop:
+the process single-threaded and makes ``fork`` safe). The accept loop forks
+one supervisor per run and reaps it later, so runs overlap.
 
-* untrusted — runs the script and may write only BREP into the scratch dir
-* trusted — reads that scratch dir, measures the shapes, and writes
-  ``result.json``, ``model.step``, and ``model.stl`` into the service outdir
+The supervisor calls ``setsid`` so the service can kill that process group.
+It then forks:
 
-The untrusted child is not given the outdir (not on argv, not in the
-environment, not as its cwd). The outdir stays mode ``0700`` and owned by
-the service uid until the untrusted process group is gone, then it is handed
-to the trusted child. The service enforces the wall-clock timeout by killing
-the supervisor's process group.
+* untrusted — runs the script. Stdout and stderr are pipes owned by the
+  supervisor, capped in memory. The script may write only BREP into scratch.
+* trusted — reads that scratch directory, measures the shapes, and writes
+  ``result.json``, ``model.step``, and ``model.stl`` into the service outdir.
+
+When the service is root the untrusted stage setuids to a per-run uid. The
+supervisor kills every process of that uid before the trusted stage. The
+trusted stage setuids to ``geotrust`` when that account was passed, and the
+outdir is never chowned to the run uid. Without root both stages stay the
+service uid; the process-group kill is the only reaping.
 
 ``python -I -m cadai_geo`` is unchanged and does not use this server. That
 CLI measures in-process; it is the local tool, not this sandbox.
@@ -31,6 +33,7 @@ import select
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -39,8 +42,15 @@ import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-from cadai_geo.isolate import _NUMERIC_THREADS, _kill_group, _limit_and_drop
+from cadai_geo.isolate import (
+    _NUMERIC_THREADS,
+    _disable_core,
+    _kill_group,
+    _limit_and_drop,
+    reap_uid,
+)
 from cadai_geo.run import (
+    _exit_message,
     _remember_compound_sources,
     capture_geometry,
     measure_and_export,
@@ -54,6 +64,8 @@ _ARGV0 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "__main__.py")
 # Written by our exception handler after the script returns. A script that
 # exits first does not know to write this, so its stdout is not an error.
 _ERROR_MARK = b"cadaiexcept\n"
+_STREAM_CAP = 8192
+_ACCEPT_TIMEOUT_S = 0.05
 
 
 @dataclass
@@ -62,16 +74,24 @@ class ZygoteRun:
     failed: bool = False
 
 
+@dataclass
+class _Inflight:
+    sock: socket.socket
+    reader: "_LineReader"
+    pid: int
+
+
 class ZygoteServer:
     """Client side: start the helper, restart it, and dispatch one run."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._active_lock = threading.Lock()
         self._proc: subprocess.Popen | None = None
         self._sock: str | None = None
         self._dir: str | None = None
         self._drain: threading.Thread | None = None
-        self.active_pid: int | None = None
+        self._active: set[int] = set()
         self._atexit = False
 
     @property
@@ -80,6 +100,14 @@ class ZygoteServer:
         if proc is None or proc.poll() is not None:
             return None
         return proc.pid
+
+    @property
+    def active_pid(self) -> int | None:
+        """One in-flight supervisor, if any. The kill test only needs one."""
+        with self._active_lock:
+            if not self._active:
+                return None
+            return next(iter(self._active))
 
     def start_locked(self) -> None:
         """Boot hook. Takes the lock; ``start`` itself assumes the caller holds it."""
@@ -137,16 +165,36 @@ class ZygoteServer:
         with self._lock:
             self._mark_dead()
 
-    def execute(self, request: dict, timeout_s: float) -> ZygoteRun:
-        with self._lock:
-            try:
-                if self.pid is None:
-                    self.start()
-                return self._exchange(request, timeout_s)
-            except Exception as exc:
-                sys.stderr.write(f"zygote: {redact(str(exc))}\n")
+    def execute(self, request: dict, timeout_s: float, deadline: float | None = None) -> ZygoteRun:
+        """Run one request. The lock covers startup and the pid handshake only.
+
+        ``deadline`` is monotonic time. The wait for the run ends then, so a
+        request that sat behind another run still times out on its own clock.
+        """
+        if deadline is None:
+            deadline = time.monotonic() + float(timeout_s)
+        try:
+            begun = self._begin(request, deadline)
+        except Exception as exc:
+            sys.stderr.write(f"zygote: {redact(str(exc))}\n")
+            with self._lock:
                 self._mark_dead()
-                return ZygoteRun(failed=True)
+            return ZygoteRun(failed=True)
+        if isinstance(begun, ZygoteRun):
+            return begun
+        return self._finish(begun, deadline)
+
+    def _note_active(self, pid: int) -> None:
+        with self._active_lock:
+            self._active.add(pid)
+
+    def _drop_active(self, pid: int) -> None:
+        with self._active_lock:
+            self._active.discard(pid)
+
+    def _clear_active(self) -> None:
+        with self._active_lock:
+            self._active.clear()
 
     def _wait_ready(self, proc: subprocess.Popen, timeout_s: float) -> None:
         assert proc.stdout is not None
@@ -186,45 +234,76 @@ class ZygoteServer:
         if not message.get("pong"):
             raise RuntimeError("zygote ping failed")
 
-    def _exchange(self, request: dict, timeout_s: float) -> ZygoteRun:
-        assert self._sock is not None
+    def _begin(self, request: dict, deadline: float) -> ZygoteRun | _Inflight:
+        """Start the helper if needed and read the supervisor pid. Caller is unlocked after return."""
+        sock: socket.socket | None = None
         try:
-            sock = self._connect()
-        except OSError:
-            self._mark_dead()
-            return ZygoteRun(failed=True)
-        try:
-            sock.sendall(json.dumps(request).encode("utf-8") + b"\n")
-            reader = _LineReader(sock)
-            try:
-                first = json.loads(reader.read(30))
-            except (TimeoutError, EOFError, OSError, json.JSONDecodeError):
-                self._mark_dead()
-                return ZygoteRun(failed=True)
-            pid = first.get("pid")
-            if not isinstance(pid, int):
-                self._mark_dead()
-                return ZygoteRun(failed=True)
-            self.active_pid = pid
-            try:
-                try:
-                    reader.read(timeout_s)
-                except TimeoutError:
-                    _kill_group(pid)
-                    try:
-                        reader.read(2)
-                    except (TimeoutError, EOFError, OSError):
-                        pass
+            with self._lock:
+                if time.monotonic() >= deadline:
                     return ZygoteRun(timed_out=True)
-                except (EOFError, OSError):
-                    _kill_group(pid)
+                if self.pid is None:
+                    self.start()
+                if time.monotonic() >= deadline:
+                    return ZygoteRun(timed_out=True)
+                try:
+                    sock = self._connect()
+                except OSError:
                     self._mark_dead()
                     return ZygoteRun(failed=True)
-            finally:
-                self.active_pid = None
+                sock.sendall(json.dumps(request).encode("utf-8") + b"\n")
+                reader = _LineReader(sock)
+                try:
+                    first = json.loads(reader.read(30))
+                except (TimeoutError, EOFError, OSError, json.JSONDecodeError):
+                    self._mark_dead()
+                    sock.close()
+                    sock = None
+                    return ZygoteRun(failed=True)
+                pid = first.get("pid")
+                if not isinstance(pid, int):
+                    self._mark_dead()
+                    sock.close()
+                    sock = None
+                    return ZygoteRun(failed=True)
+                self._note_active(pid)
+                inflight = _Inflight(sock, reader, pid)
+                sock = None
+                return inflight
+        finally:
+            if sock is not None:
+                sock.close()
+
+    def _finish(self, inflight: _Inflight, deadline: float) -> ZygoteRun:
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _kill_group(inflight.pid)
+                try:
+                    inflight.reader.read(2)
+                except (TimeoutError, EOFError, OSError):
+                    pass
+                return ZygoteRun(timed_out=True)
+            try:
+                inflight.reader.read(remaining)
+            except TimeoutError:
+                _kill_group(inflight.pid)
+                try:
+                    inflight.reader.read(2)
+                except (TimeoutError, EOFError, OSError):
+                    pass
+                return ZygoteRun(timed_out=True)
+            except (EOFError, OSError):
+                _kill_group(inflight.pid)
+                with self._lock:
+                    self._mark_dead()
+                return ZygoteRun(failed=True)
             return ZygoteRun()
         finally:
-            sock.close()
+            self._drop_active(inflight.pid)
+            try:
+                inflight.sock.close()
+            except OSError:
+                pass
 
     def _connect(self) -> socket.socket:
         assert self._sock is not None
@@ -241,10 +320,11 @@ class ZygoteServer:
         raise last or OSError("zygote connect failed")
 
     def _mark_dead(self) -> None:
+        """Drop the helper. Caller holds ``_lock``."""
         proc = self._proc
         self._proc = None
         self._sock = None
-        self.active_pid = None
+        self._clear_active()
         if proc is not None and proc.poll() is None:
             proc.kill()
         if proc is not None:
@@ -285,14 +365,29 @@ def _warm() -> None:
     from build123d import export_brep, export_step, export_stl, import_brep  # noqa: F401
 
 
-def _redirect(stderr_path: str) -> None:
+def _redirect_to(write_fd: int) -> None:
+    """Point stdin at ``/dev/null`` and stdout/stderr at an existing pipe fd."""
     null_fd = os.open(os.devnull, os.O_RDONLY)
-    log_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.dup2(null_fd, 0)
-    os.dup2(log_fd, 1)
-    os.dup2(log_fd, 2)
-    os.close(null_fd)
-    os.close(log_fd)
+    try:
+        os.dup2(null_fd, 0)
+        os.dup2(write_fd, 1)
+        os.dup2(write_fd, 2)
+    finally:
+        os.close(null_fd)
+    if write_fd > 2:
+        os.close(write_fd)
+
+
+def _redirect_devnull() -> None:
+    null_in = os.open(os.devnull, os.O_RDONLY)
+    null_out = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(null_in, 0)
+        os.dup2(null_out, 1)
+        os.dup2(null_out, 2)
+    finally:
+        os.close(null_in)
+        os.close(null_out)
 
 
 def _close_extra_fds(keep: set[int] | None = None) -> None:
@@ -306,10 +401,10 @@ def _close_extra_fds(keep: set[int] | None = None) -> None:
                 pass
 
 
-def _apply_child_env(request: dict) -> None:
-    home = request["home"]
+def _apply_child_env(request: dict, home: str, tmpdir: str | None = None) -> None:
     path = request.get("path") or ""
-    tmpdir = request.get("tmpdir") or ""
+    if tmpdir is None:
+        tmpdir = request.get("tmpdir") or ""
     os.environ.clear()
     os.environ["HOME"] = home
     if path:
@@ -325,6 +420,12 @@ def _account(request: dict):
     return None
 
 
+def _trust_account(request: dict):
+    if request.get("trust_uid") is None or request.get("trust_gid") is None:
+        return None
+    return SimpleNamespace(pw_uid=int(request["trust_uid"]), pw_gid=int(request["trust_gid"]))
+
+
 def _emit_error(write_fd: int, message: str) -> None:
     try:
         os.write(write_fd, _ERROR_MARK + redact(message).encode("utf-8") + b"\n")
@@ -332,23 +433,51 @@ def _emit_error(write_fd: int, message: str) -> None:
         pass
 
 
-def _read_marked(fd: int) -> str:
+def _read_pipe(fd: int, cap: int) -> bytes:
     chunks = []
     total = 0
-    while total < 8192:
+    while total < cap:
         try:
-            data = os.read(fd, 4096)
+            data = os.read(fd, min(4096, cap - total))
         except OSError:
             break
         if not data:
             break
         chunks.append(data)
         total += len(data)
-    raw = b"".join(chunks)
+    return b"".join(chunks)
+
+
+def _read_marked(fd: int) -> str:
+    raw = _read_pipe(fd, _STREAM_CAP)
     if _ERROR_MARK not in raw:
         return ""
     text = raw.rsplit(_ERROR_MARK, 1)[1].decode("utf-8", errors="replace")
     return redact(text).strip()[:4096]
+
+
+def _captured_error(data: bytes) -> str:
+    text = data.decode("utf-8", errors="replace").replace("\x00", "")
+    return redact(text).strip()[:4096]
+
+
+def _drain_stream(read_fd: int, write_fd: int, cap: int) -> None:
+    """Copy at most ``cap`` bytes, discarding the rest so the writer cannot block."""
+    kept = bytearray()
+    while True:
+        try:
+            chunk = os.read(read_fd, 65536)
+        except OSError:
+            break
+        if not chunk:
+            break
+        if len(kept) < cap:
+            kept += chunk[: cap - len(kept)]
+    try:
+        if kept:
+            os.write(write_fd, bytes(kept))
+    except OSError:
+        pass
 
 
 def _kill_peers() -> None:
@@ -375,96 +504,156 @@ def _kill_peers() -> None:
             break
 
 
-def _run_untrusted(request: dict, write_fd: int) -> None:
+def _chown_tree(path: str, uid: int, gid: int) -> None:
+    """``lchown`` a tree. Symlinks are not followed, so a planted link is not a chown of the target."""
+    try:
+        os.lchown(path, uid, gid)
+    except OSError:
+        return
+    if os.path.islink(path):
+        return
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return
+    if not stat.S_ISDIR(info.st_mode):
+        return
+    try:
+        names = os.listdir(path)
+    except OSError:
+        return
+    for name in names:
+        _chown_tree(os.path.join(path, name), uid, gid)
+
+
+def _run_untrusted(request: dict, err_fd: int, out_fd: int) -> None:
     """Script stage. argv is ``(program, script, scratch)`` — never the outdir."""
     try:
+        _disable_core()
         _limit_and_drop(float(request["timeout_s"]), int(request["as_limit"]), _account(request))
-        _redirect(request["stderr"])
-        _close_extra_fds({write_fd})
-        _apply_child_env(request)
+        _redirect_to(out_fd)
+        _close_extra_fds({err_fd})
+        _apply_child_env(request, request["home"])
         sys.argv = [request.get("argv0") or _ARGV0, request["script"], request["scratch"]]
         os.chdir(request["home"])
         capture_geometry(
             request["script"],
             request["scratch"],
-            lambda message: _emit_error(write_fd, message),
+            lambda message: _emit_error(err_fd, message),
         )
+    except SystemExit as exc:
+        _emit_error(err_fd, _exit_message(exc))
     except Exception as exc:
-        _emit_error(write_fd, f"{type(exc).__name__}: {exc}")
+        _emit_error(err_fd, f"{type(exc).__name__}: {exc}")
     os._exit(0)
 
 
 def _run_trusted(request: dict) -> None:
-    """Measure stage. Reads scratch, writes the service outdir, never runs the script."""
+    """Measure stage. Reads scratch, writes the service outdir, never runs the script.
+
+    Drops to the trust uid when one was given. It does not drop to the run uid,
+    and its home directory is the outdir rather than the script's home.
+    """
     try:
-        _limit_and_drop(float(request["timeout_s"]), int(request["as_limit"]), _account(request))
-        _redirect(request["stderr"])
+        _limit_and_drop(float(request["timeout_s"]), int(request["as_limit"]), _trust_account(request))
+        _redirect_devnull()
         _close_extra_fds()
-        _apply_child_env(request)
-        os.chdir(request["outdir"])
+        outdir = request["outdir"]
+        _apply_child_env(request, outdir, tmpdir=outdir)
+        os.chdir(outdir)
         payload = measure_and_export(
             request["scratch"],
-            request["outdir"],
+            outdir,
             request.get("fallback_error") or None,
         )
         try:
-            write_result(request["outdir"], payload)
+            write_result(outdir, payload)
         except OSError:
             try:
-                write_result(request["outdir"], {"ok": False, "error": "result file"})
+                write_result(outdir, {"ok": False, "error": "result file"})
             except OSError:
                 pass
-    except Exception as exc:
+    except Exception:
         try:
-            write_result(
-                request["outdir"],
-                {"ok": False, "error": redact(f"{type(exc).__name__}: {exc}")},
-            )
+            write_result(request["outdir"], {"ok": False, "error": "measure"})
         except Exception:
             pass
     os._exit(0)
 
 
-def _run_supervisor(request: dict) -> None:
-    """Session leader for one run. The service killpg's this pid.
+def _supervise(request: dict) -> None:
+    """One run. ``setsid`` is first so a timeout kill hits this group and not the zygote.
 
-    The outdir string is in this process because it was forked from the
-    zygote. The untrusted child is a further fork, so the bytes can remain
-    on its heap; it is not told the path, and when the service is root the
-    directory is mode 0700 and owned by the service uid until this function
-    has reaped that child and killed the rest of the process group.
+    Stdout and stderr of the untrusted stage are pipes. Nothing in the script's
+    directories is opened to recover an error. On a signal, this process (the
+    service uid) writes ``result.json`` itself after the run uid has been reaped.
     """
     os.setsid()
+    _close_extra_fds()
     tmpdir = request.get("tmpdir")
     if tmpdir:
         os.environ["TMPDIR"] = tmpdir
+    request.pop("stderr", None)
     request.pop("fallback_error", None)
-    read_fd, write_fd = os.pipe()
-    pid = os.fork()
-    if pid == 0:
+    err_r, err_w = os.pipe()
+    out_r, out_w = os.pipe()
+    cap_r, cap_w = os.pipe()
+    drain = os.fork()
+    if drain == 0:
         try:
-            os.close(read_fd)
-            _run_untrusted(request, write_fd)
+            os.close(err_r)
+            os.close(err_w)
+            os.close(out_w)
+            os.close(cap_r)
+            _drain_stream(out_r, cap_w, _STREAM_CAP)
         finally:
             os._exit(0)
-    os.close(write_fd)
+    untrusted = os.fork()
+    if untrusted == 0:
+        try:
+            os.close(err_r)
+            os.close(out_r)
+            os.close(cap_r)
+            os.close(cap_w)
+            _run_untrusted(request, err_w, out_w)
+        finally:
+            os._exit(0)
+    os.close(err_w)
+    os.close(out_w)
+    os.close(cap_w)
+    os.close(out_r)
     try:
-        _pid, status = os.waitpid(pid, 0)
+        _pid, status = os.waitpid(untrusted, 0)
     except ChildProcessError:
         status = 0
-    if not os.WIFEXITED(status):
-        os.close(read_fd)
-        os._exit(0)
-    _kill_peers()
-    os.set_blocking(read_fd, False)
-    fallback = _read_marked(read_fd)
-    os.close(read_fd)
-    if fallback:
-        request["fallback_error"] = fallback
+    try:
+        os.waitpid(drain, 0)
+    except ChildProcessError:
+        pass
+    captured = _captured_error(_read_pipe(cap_r, _STREAM_CAP))
+    os.close(cap_r)
+    fallback = _read_marked(err_r)
+    os.close(err_r)
     account = _account(request)
     if account is not None:
+        reap_uid(account.pw_uid, account.pw_gid)
+    _kill_peers()
+    if os.WIFSIGNALED(status):
         try:
-            os.chown(request["outdir"], account.pw_uid, account.pw_gid)
+            write_result(request["outdir"], {"ok": False, "error": "script crashed"})
+        except OSError:
+            pass
+        os._exit(0)
+    if account is not None:
+        reap_uid(account.pw_uid, account.pw_gid)
+    text = fallback or captured
+    if text:
+        request["fallback_error"] = text
+    trust = _trust_account(request)
+    if trust is not None:
+        _chown_tree(request["scratch"], trust.pw_uid, trust.pw_gid)
+        try:
+            os.lchown(request["outdir"], trust.pw_uid, trust.pw_gid)
             os.chmod(request["outdir"], 0o700)
         except OSError:
             pass
@@ -481,10 +670,21 @@ def _run_supervisor(request: dict) -> None:
     os._exit(0)
 
 
+def _run_supervisor(request: dict) -> None:
+    try:
+        _supervise(request)
+    except Exception:
+        try:
+            write_result(request["outdir"], {"ok": False, "error": "no result"})
+        except Exception:
+            pass
+    os._exit(0)
+
+
 def _write_message(conn: socket.socket, payload: dict) -> None:
     try:
         conn.sendall(json.dumps(payload).encode("utf-8") + b"\n")
-    except BrokenPipeError:
+    except OSError:
         pass
 
 
@@ -514,35 +714,64 @@ def _reject_secrets(request: dict) -> bool:
     return False
 
 
-def _handle(conn: socket.socket, listener: socket.socket) -> None:
-    request = _read_request(conn)
-    if request is None:
-        return
-    if request.get("ping") is True:
-        _write_message(conn, {"pong": True})
-        return
-    if (
-        _reject_secrets(request)
-        or "script" not in request
-        or "outdir" not in request
-        or "scratch" not in request
-    ):
-        _write_message(conn, {"error": "bad request"})
-        return
-    pid = os.fork()
-    if pid == 0:
+def _reap(inflight: dict[int, socket.socket]) -> None:
+    while True:
+        try:
+            pid, _status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if pid == 0:
+            return
+        conn = inflight.pop(pid, None)
+        if conn is None:
+            continue
+        _write_message(conn, {"exit": 0})
         try:
             conn.close()
-            listener.close()
+        except OSError:
+            pass
+
+
+def _dispatch(conn: socket.socket, inflight: dict[int, socket.socket]) -> None:
+    try:
+        conn.settimeout(30)
+        try:
+            request = _read_request(conn)
+        except (TimeoutError, OSError):
+            conn.close()
+            return
+        conn.settimeout(None)
+        if request is None:
+            conn.close()
+            return
+        if request.get("ping") is True:
+            _write_message(conn, {"pong": True})
+            conn.close()
+            return
+        if (
+            _reject_secrets(request)
+            or "script" not in request
+            or "outdir" not in request
+            or "scratch" not in request
+        ):
+            _write_message(conn, {"error": "bad request"})
+            conn.close()
+            return
+        _reap(inflight)
+        pid = os.fork()
+    except Exception:
+        try:
+            conn.close()
+        except OSError:
+            pass
+        return
+    if pid == 0:
+        try:
             _run_supervisor(request)
         finally:
             os._exit(0)
+    inflight[pid] = conn
     _write_message(conn, {"pid": pid})
-    try:
-        os.waitpid(pid, 0)
-    except ChildProcessError:
-        pass
-    _write_message(conn, {"exit": 0})
 
 
 def serve(sock_path: str) -> None:
@@ -557,19 +786,23 @@ def serve(sock_path: str) -> None:
     os.close(null_fd)
     # PR_SET_PDEATHSIG fires when the creating thread exits, which is the
     # request worker, not the service process. Watch the parent pid instead.
+    # Reap finished supervisors from this loop. A second thread would make
+    # fork unsafe. TimeoutError is a subclass of OSError; catch it first.
     parent = os.getppid()
-    listener.settimeout(1.0)
+    inflight: dict[int, socket.socket] = {}
+    listener.settimeout(_ACCEPT_TIMEOUT_S)
     while os.getppid() == parent:
+        _reap(inflight)
         try:
             conn, _addr = listener.accept()
         except TimeoutError:
             continue
+        except InterruptedError:
+            continue
         except OSError:
             break
-        try:
-            _handle(conn, listener)
-        finally:
-            conn.close()
+        _dispatch(conn, inflight)
+    _reap(inflight)
 
 
 def main(argv: list[str] | None = None) -> None:

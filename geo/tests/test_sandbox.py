@@ -3,8 +3,11 @@
 import base64
 import json
 import os
+import pathlib
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 
 import pytest
@@ -163,7 +166,7 @@ def test_env_token_refuses_to_start():
 
 @pytest.mark.skipif(
     os.geteuid() != 0,
-    reason="uid separation requires root to setuid to georun; run pytest as root inside the geo Docker image",
+    reason="uid separation requires root to setuid to a pool uid; run pytest as root inside the geo Docker image",
 )
 def test_token_file_and_proc_environ_are_unreadable(tmp_path):
     secret = "file-token-not-in-env-9f3c"
@@ -426,3 +429,266 @@ def test_healthz_needs_no_token():
     response = client.get("/healthz")
     assert response.status_code == 200
     assert response.json() == {"ok": True}
+
+
+def _out_dir_names() -> set[str]:
+    root = pathlib.Path(tempfile.gettempdir())
+    return {path.name for path in root.glob("cadai-geo-out-*")}
+
+
+def test_docs_list_required_capabilities():
+    geo_dir = pathlib.Path(__file__).resolve().parents[1]
+    readme = (geo_dir / "README.md").read_text(encoding="utf-8")
+    docker = (geo_dir / "Dockerfile").read_text(encoding="utf-8")
+    for name in ("SETUID", "SETGID", "KILL", "CHOWN", "DAC_OVERRIDE", "FOWNER"):
+        assert name in readme
+        assert name in docker
+    assert "no isolation: local dev only" in readme
+
+
+def test_local_dev_logs_no_isolation():
+    if os.geteuid() == 0:
+        pytest.skip("this process is root; the isolation log is the non-root path")
+    env = os.environ.copy()
+    env.pop("CADAI_GEO_TOKEN", None)
+    proc = subprocess.run(
+        [sys.executable, "-c", "import cadai_geo.service"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "no isolation: local dev only" in proc.stderr
+
+
+def test_missing_capabilities_are_named():
+    from cadai_geo.service import _missing_cap_names
+
+    # CHOWN is bit 0, KILL is bit 5. The other required bits are present.
+    mask = (1 << 1) | (1 << 3) | (1 << 6) | (1 << 7)
+    assert _missing_cap_names(mask) == ["CAP_CHOWN", "CAP_KILL"]
+
+
+def test_remove_tree_does_not_raise_while_a_writer_runs():
+    from cadai_geo.service import _remove_tree
+
+    path = tempfile.mkdtemp(prefix="cadai-geo-out-")
+    stop = threading.Event()
+
+    def race() -> None:
+        while not stop.is_set():
+            try:
+                with open(os.path.join(path, "result.json"), "w", encoding="utf-8") as handle:
+                    handle.write("x")
+            except OSError:
+                pass
+
+    thread = threading.Thread(target=race)
+    thread.start()
+    time.sleep(0.05)
+    try:
+        _remove_tree(path)
+    finally:
+        stop.set()
+        thread.join(timeout=2)
+    _remove_tree(path)
+    assert not os.path.lexists(path)
+
+
+def test_stderr_symlink_cannot_read_a_secret(tmp_path):
+    secret = "SECRET-TOKEN-LIKE-0400-FILE"
+    target = tmp_path / "secret"
+    target.write_text(secret, encoding="utf-8")
+    os.chmod(target, 0o400)
+    script = f"""
+import os, glob, signal
+for path in glob.glob("/tmp/cadai-geo-*/stderr.txt"):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+    os.symlink({str(target)!r}, path)
+os.kill(os.getpid(), signal.SIGKILL)
+"""
+    before = _out_dir_names()
+    started = time.perf_counter()
+    response = client.post("/run", json={"script": script}, headers=HEADERS)
+    elapsed = time.perf_counter() - started
+    assert response.status_code == 200, response.text
+    assert secret not in response.text
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload.get("error") != secret
+    assert elapsed < 5, elapsed
+    assert _out_dir_names() <= before
+
+
+def test_cleanup_does_not_500_or_leak_outdir():
+    script = """
+import os, glob, time
+if os.fork() == 0:
+    os.setsid()
+    if os.fork() == 0:
+        end = time.time() + 0.3
+        while time.time() < end:
+            for directory in glob.glob("/tmp/cadai-geo-out-*"):
+                try:
+                    with open(directory + "/leak.bin", "w", encoding="utf-8") as handle:
+                        handle.write("x")
+                except OSError:
+                    pass
+            time.sleep(0.01)
+        os._exit(0)
+    os._exit(0)
+from build123d import Box
+result = Box(1, 1, 1)
+"""
+    before = _out_dir_names()
+    response = client.post("/run", json={"script": script}, headers=HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json().get("error") != "sandbox"
+    deadline = time.time() + 3
+    leaked = _out_dir_names() - before
+    while leaked and time.time() < deadline:
+        time.sleep(0.05)
+        leaked = _out_dir_names() - before
+    assert not leaked
+
+
+def test_sys_exit_is_reported():
+    zero = client.post(
+        "/run",
+        json={"script": "import sys\nsys.exit(0)\n"},
+        headers=HEADERS,
+    )
+    assert zero.status_code == 200
+    assert zero.json()["ok"] is False
+    assert zero.json()["error"] == "script exited"
+    three = client.post(
+        "/run",
+        json={"script": "import sys\nsys.exit(3)\n"},
+        headers=HEADERS,
+    )
+    assert three.json()["ok"] is False
+    assert three.json()["error"] == "script exited: 3"
+
+
+def test_sigsegv_returns_within_two_seconds():
+    warm = client.post(
+        "/run",
+        json={"script": "from build123d import Box\nresult = Box(1, 1, 1)\n"},
+        headers=HEADERS,
+    )
+    assert warm.status_code == 200
+    assert warm.json()["ok"] is True
+    started = time.perf_counter()
+    response = client.post(
+        "/run",
+        json={"script": "import os, signal\nos.kill(os.getpid(), signal.SIGSEGV)\n"},
+        headers=HEADERS,
+    )
+    elapsed = time.perf_counter() - started
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error"] == "script crashed"
+    assert elapsed < 2, elapsed
+
+
+def test_symlinked_scratch_is_not_measured(tmp_path):
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    script = f"""
+import os, sys
+from build123d import Box, export_brep
+foreign = {str(foreign)!r}
+export_brep(Box(5, 5, 5), os.path.join(foreign, "result.brep"))
+scratch = sys.argv[-1]
+os.rename(scratch, scratch + "-real")
+os.symlink(foreign, scratch)
+"""
+    response = client.post("/run", json={"script": script}, headers=HEADERS)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["ok"] is False
+    assert "125" not in response.text
+    assert payload.get("error") == "measure"
+
+
+def test_one_thousand_parts_are_measured():
+    script = """
+from build123d import Box, Compound, Align
+parts = []
+for i in range(1000):
+    box = Box(1, 1, 1, align=(Align.MIN, Align.MIN, Align.MIN))
+    box.label = "p%d" % i
+    parts.append(box)
+result = Compound(parts)
+"""
+    response = client.post(
+        "/run",
+        json={"script": script, "timeout_s": 120},
+        headers=HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["ok"] is True, payload.get("error")
+    assert len(payload["parts"]) == 1000
+    assert payload["parts"][0]["label"] == "p0"
+    assert payload["parts"][-1]["label"] == "p999"
+    assert payload["solids"] == 1000
+
+
+_ROOT_SKIP = (
+    "uid separation requires root to setuid to a pool uid; "
+    "run pytest as root inside the geo Docker image"
+)
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason=_ROOT_SKIP)
+def test_setsid_survivor_cannot_forge_result():
+    host = _hostname().decode(errors="replace")
+    script = """
+import os, glob, json, time
+if os.fork() == 0:
+    os.setsid()
+    if os.fork() == 0:
+        end = time.time() + 40
+        while time.time() < end:
+            for directory in glob.glob("/tmp/cadai-geo-out-*"):
+                try:
+                    path = directory + "/result.json"
+                    with open(path + ".x", "w", encoding="utf-8") as handle:
+                        handle.write(json.dumps({
+                            "ok": True, "solids": 7,
+                            "parts": [{"label": "FORGED", "valid": True, "volume": 999.0,
+                                       "min": [0, 0, 0], "max": [1, 1, 1]}],
+                            "bbox": {"min": [0, 0, 0], "max": [1, 1, 1]},
+                        }))
+                    os.replace(path + ".x", path)
+                    with open("/etc/hostname", encoding="utf-8") as handle:
+                        name = handle.read()
+                    with open(directory + "/model.step", "w", encoding="utf-8") as handle:
+                        handle.write("HOSTNAME:" + name)
+                except Exception:
+                    pass
+            time.sleep(0.0005)
+        os._exit(0)
+    os._exit(0)
+from build123d import Box
+result = Box(1, 1, 1)
+"""
+    before = _out_dir_names()
+    started = time.perf_counter()
+    response = client.post("/run", json={"script": script, "timeout_s": 60}, headers=HEADERS)
+    elapsed = time.perf_counter() - started
+    assert response.status_code == 200, response.text
+    assert elapsed < 15, elapsed
+    payload = response.json()
+    assert "FORGED" not in response.text
+    assert host not in response.text
+    assert payload.get("solids") != 7
+    if payload.get("ok") is True:
+        assert payload["parts"][0]["volume"] == pytest.approx(1, rel=1e-6)
+    assert _out_dir_names() <= before
