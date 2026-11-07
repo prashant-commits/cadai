@@ -9,6 +9,7 @@ import { graphRecursionLimit } from '@/lib/agent/run-limits';
 import { getRunStore, isSafeRunId, type AppendOptions, type RunStore } from '@/lib/runs/run-store';
 import { SSE_HEADERS, sse, streamRun } from '@/lib/runs/stream-run';
 import { errorResponse } from '@/lib/runs/api-error';
+import { safeDeleteForRun } from '@/lib/runs/artifact-store';
 import type { ApiError } from '@/lib/contract/run-contract';
 
 export const runtime = 'nodejs';
@@ -132,6 +133,7 @@ export async function POST(req: NextRequest) {
       // `result` stays for old clients; the contract's `cancelled` ends the stream.
       if (decision?.action === 'cancel') {
         await getCheckpointer().deleteThread(checkpointKey);
+        await safeDeleteForRun(runId); // the gate's sheets / stl belonged only to this run
         const at = Date.now();
         return staticStream(
           store,

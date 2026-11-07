@@ -80,6 +80,12 @@ export function isSafeRunId(id: string): boolean {
   return typeof id === 'string' && SAFE_ID.test(id) && !RESERVED.has(id.toLowerCase());
 }
 
+const removedListeners: Array<(runId: string, dir: string) => void> = [];
+/** Calls `fn(runId, storeDir)` whenever the store deletes a run (TTL prune). Used by the artifact store. */
+export function onRunRemoved(fn: (runId: string, dir: string) => void): void {
+  removedListeners.push(fn);
+}
+
 const TERMINAL: ReadonlySet<RunStatus> = new Set(['done', 'failed', 'cancelled']);
 export const isTerminal = (s: RunStatus) => TERMINAL.has(s);
 
@@ -550,6 +556,13 @@ export class LocalRunStore implements RunStore {
   private async remove(runId: string): Promise<void> {
     for (const kind of ['runs', 'events', 'cancel'] as const) {
       await fs.promises.unlink(this.file(kind, runId)).catch(() => undefined);
+    }
+    for (const fn of removedListeners) {
+      try {
+        fn(runId, this.dir);
+      } catch (e) {
+        console.warn('Run removal listener failed:', e);
+      }
     }
   }
 }
