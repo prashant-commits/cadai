@@ -8,6 +8,8 @@ import { auditPlacement } from '../placement-audit';
 import type { AttemptRecord } from '../graph';
 import type { ValidationResult } from '../../engine/scad-compiler';
 import { runBrep } from '../../engine/brep-runner';
+import { repairHint } from '../../brep/repair-hints';
+import { isBuilderModeReason } from '../../brep/body-check';
 import { localOriginViolations, stlToAscii, toModelInfo, toModuleFrames, toPlacementReport } from '../../brep/measurements';
 
 /**
@@ -17,6 +19,22 @@ import { localOriginViolations, stlToAscii, toModelInfo, toModuleFrames, toPlace
  * hole/interference probes, the parameter sweep and the literal lint.
  */
 export async function validateBrep(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
+  // brepBuild got a cut-off or refused reply and emitted nothing: a failed attempt, nothing to run.
+  if (state.failureKind === 'truncated' || state.failureKind === 'no_code') {
+    return {
+      isValid: false,
+      attemptHistory: [{
+        n: state.attemptCount,
+        phase: state.attemptCount === 1 ? 'draft' : 'repair',
+        code: state.currentCode,
+        exitCode: 1,
+        errors: [],
+        warnings: [],
+        violations: [],
+        diagnosis: state.failureKind,
+      }],
+    };
+  }
   if (!state.currentCode) return { isValid: false, failureKind: 'no_code' };
 
   const spec = state.assemblySpec;
@@ -31,14 +49,25 @@ export async function validateBrep(state: AgentStateType, config?: RunnableConfi
   if (!r.ok) {
     const tail = tracebackTail(r.error ?? 'the script failed');
     const names = (spec?.components ?? []).map((c) => c.name);
-    const violation: SpecViolation = {
-      kind: 'compile',
-      field: componentAtLine(state.currentCode, r.line, names) || componentInTraceback(r.error ?? '', names),
-      expected: 'script runs',
-      measured: 'error',
-      severity: 'error',
-      message: `build123d script failed: ${tail}`,
-    };
+    const hint = repairHint(r.error ?? '');
+    const failures: SpecViolation[] = r.invalid?.length
+      // The kernel built a solid it will not export: one error per part it names, so the build step rewrites those parts.
+      ? r.invalid.map((name) => ({
+          kind: 'manifold',
+          field: names.includes(name) ? name : '',
+          expected: true,
+          measured: false,
+          severity: 'error' as const,
+          message: `${name} belongs to a solid that is not valid (${tail}). Check for zero-thickness walls, cutters that stop inside the part, and parts that only graze each other: overlap them by a few tenths of a millimetre or leave a real gap.`,
+        }))
+      : [{
+          kind: 'compile',
+          field: componentAtLine(state.currentCode, r.line, names) || componentInTraceback(r.error ?? '', names),
+          expected: 'script runs',
+          measured: 'error',
+          severity: 'error',
+          message: `build123d script failed: ${tail}${hint ? `\nFix: ${hint}` : ''}`,
+        }];
     const attempt: AttemptRecord = {
       n: state.attemptCount,
       phase: state.attemptCount === 1 ? 'draft' : 'repair',
@@ -46,18 +75,18 @@ export async function validateBrep(state: AgentStateType, config?: RunnableConfi
       exitCode: 1,
       errors: [{ severity: 'error', message: tail, count: 1, raw: tail }],
       warnings: [],
-      violations: [violation],
+      violations: failures,
       diagnosis: 'TBD',
     };
     return {
       isValid: false,
       stlContent: null,
       stepContent: null,
-      specViolations: [violation],
+      specViolations: failures,
       attemptHistory: [attempt],
       failureKind: 'compile',
       compileFailures: state.compileFailures + 1,
-      messages: [new HumanMessage(`[Validation Report]\nValidation Result: Failed\nViolations:\n- ERROR [compile]: ${violation.message}\n`)],
+      messages: [new HumanMessage(`[Validation Report]\nValidation Result: Failed\nViolations:\n${failures.map((v) => `- ERROR [${v.kind}]: ${v.message}`).join('\n')}\n`)],
     };
   }
 
@@ -95,7 +124,9 @@ export async function validateBrep(state: AgentStateType, config?: RunnableConfi
       field: note.name,
       expected: 'used as written',
       measured: note.reason,
-      severity: 'warning',
+      // A with-Build... body is a known mistake with a known fix: it is an error, so the build step
+      // is sent back to that part with the message instead of keeping the blockout silently.
+      severity: isBuilderModeReason(note.reason) ? 'error' : 'warning',
       message: `${note.name}: ${note.reason}`,
     });
   }

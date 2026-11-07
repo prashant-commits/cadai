@@ -1,9 +1,10 @@
-import { HumanMessage, SystemMessage, type AIMessage, type BaseMessage } from '@langchain/core/messages';
+import { HumanMessage, type AIMessage, type BaseMessage } from '@langchain/core/messages';
 import type { RunnableConfig } from '@langchain/core/runnables';
 import type { AssemblySpec } from '../assembly-spec';
 import { parseBuild } from '../build-format';
 import type { AgentStateType } from '../graph';
-import { systemPromptFor } from '../system-prompt';
+import { isCutOff, unusableStop } from '../llm-schemas';
+import { cachedSystemMessage, systemPromptFor } from '../system-prompt';
 import { blockoutBody } from '../../brep/blockout-b123d';
 import { specNames } from '../../brep/py-names';
 import { emitBrepScript } from '../../brep/emit-script';
@@ -14,6 +15,8 @@ import { countFallbacks, messageText, planBuildVisit } from './architect-build';
  * architectBuild (only the components named by an error or a human note are
  * rewritten), but the bodies are build123d function bodies and code emits the
  * whole script. A missing or rejected body falls back to the blockout.
+ * A reply that stopped short (max_tokens, context window) or was refused builds nothing: the
+ * attempt is marked `truncated` / `no_code` and validateBrep takes the failed-attempt path.
  */
 export function makeBrepBuild(model: {
   invoke(messages: BaseMessage[], config?: RunnableConfig): Promise<AIMessage>;
@@ -22,15 +25,30 @@ export function makeBrepBuild(model: {
     const attemptCount = state.attemptCount + 1;
     const spec = state.assemblySpec;
     if (!spec) {
-      return { currentCode: state.currentCode, attemptCount, buildFallbacks: 0, buildNotes: [], gateAction: null, gateFeedback: null };
+      return { currentCode: state.currentCode, attemptCount, buildFallbacks: 0, buildNotes: [], gateAction: null, gateFeedback: null, failureKind: 'none' };
     }
 
     const { componentNames, reserved, changes, ask, keep } = planBuildVisit(state, spec);
 
     const reply = await model.invoke(
-      [new SystemMessage(systemPromptFor('brep-build')), new HumanMessage(humanPrompt(spec, changes, ask, keep))],
+      [cachedSystemMessage(systemPromptFor('brep-build')), new HumanMessage(humanPrompt(spec, changes, ask, keep))],
       config,
     );
+
+    // A cut-off reply holds half a body and a refusal holds none: neither is emitted as a script.
+    const stop = unusableStop(reply);
+    if (stop) {
+      console.warn(`brepBuild: reply unusable (stop_reason ${stop})`);
+      return {
+        currentCode: state.currentCode,
+        attemptCount,
+        buildFallbacks: 0,
+        buildNotes: [],
+        gateAction: null,
+        gateFeedback: null,
+        failureKind: isCutOff(stop) ? 'truncated' : 'no_code',
+      };
+    }
 
     const { names } = specNames(spec, String);
     const parsed = parseBuild(messageText(reply), componentNames, reserved.map((r) => names.map.get(r) ?? r), { language: 'python' });
@@ -50,13 +68,16 @@ export function makeBrepBuild(model: {
     // A body the parser accepted (or kept from the previous build) can still be rejected by the
     // emitter's own check; it is then drawn from the blockout and counted as a fallback too.
     const emitterRejected = skipped.filter((note) => /^body rejected/.test(note.reason) && Object.prototype.hasOwnProperty.call(parsed.bodies, note.name));
+    // Why the parser refused a body, so the user and the next build visit are told it, not just that the blockout was drawn.
+    const refused = parsed.rejections.map((item) => ({ name: item.name, reason: `body rejected (${item.reason}); drawn from the blockout` }));
     return {
       currentCode: script,
       attemptCount,
       buildFallbacks: countFallbacks(componentNames, parsed, (name) => blockoutFor(spec, name) !== null) + emitterRejected.length,
-      buildNotes: skipped,
+      buildNotes: [...refused, ...skipped],
       gateAction: null,
       gateFeedback: null,
+      failureKind: 'none',
     };
   };
 }

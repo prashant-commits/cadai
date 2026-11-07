@@ -119,3 +119,20 @@ describe('blockoutBody', () => {
     expect(blockoutBody(spec, 'nope')).toBeNull();
   });
 });
+
+describe('parseBuild python rejections', () => {
+  it('reports why a body was refused, next to dropping it', () => {
+    const text = '@body base\nwith BuildPart() as p:\n    Box(1, 1, 1)\nreturn p.part\n@end\n@body lid\nreturn Box(2, 2, 2)\n@end\n@body ring\nimport os\nreturn Box(1, 1, 1)\n@end';
+    const r = parseBuild(text, ['base', 'lid', 'ring'], [], { language: 'python' });
+    expect(Object.keys(r.bodies)).toEqual(['lid']);
+    expect(r.dropped).toEqual(['base', 'ring']);
+    expect(r.rejections.map((x) => x.name)).toEqual(['base', 'ring']);
+    expect(r.rejections[0].reason).toContain('algebra mode only');
+    expect(r.rejections[1].reason).toContain('import');
+  });
+
+  it('has none for a clean reply or for OpenSCAD bodies', () => {
+    expect(parseBuild('@body base\nreturn Box(1, 1, 1)\n@end', ['base'], [], { language: 'python' }).rejections).toEqual([]);
+    expect(parseBuild('@body base\ncube([1, 1, 1]);\n@end', ['base']).rejections).toEqual([]);
+  });
+});

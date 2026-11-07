@@ -196,11 +196,28 @@ def _xyz(vector) -> list[float]:
     return [float(vector.X), float(vector.Y), float(vector.Z)]
 
 
+def _fixed_if_invalid(shape):
+    """``(shape, True)`` when valid; else the OCC-fixed shape when that is valid; else ``(shape, False)``."""
+    try:
+        if shape.is_valid:
+            return shape, True
+    except Exception:
+        return shape, False
+    try:
+        fixed = shape.fix()
+        if fixed is not None and fixed.is_valid:
+            return fixed, True
+    except Exception:
+        pass
+    return shape, False
+
+
 def _part(shape, label: str) -> dict:
     box = shape.bounding_box()
     return {
         "label": label or "",
-        "valid": bool(shape.is_valid),
+        # An invalid part gets one shape-fix attempt before it is called invalid.
+        "valid": _fixed_if_invalid(shape)[1],
         "volume": float(shape.volume),
         "min": _xyz(box.min),
         "max": _xyz(box.max),
@@ -265,6 +282,85 @@ def _part_shapes(result, measured=None) -> list[tuple[str, object]]:
     else:
         shapes = list(result.solids())
     return [(getattr(shape, "label", "") or "", shape) for shape in shapes]
+
+
+# ---- validity: every exported solid must be valid, before and after the STEP round trip
+
+def _names_in(shape, parts: list[dict]) -> list[str]:
+    """Labels of the parts that sit inside an invalid solid of ``shape`` (all labels when none is singled out)."""
+    try:
+        solids = [solid for solid in shape.solids() if not solid.is_valid] or [shape]
+    except Exception:
+        solids = [shape]
+    tol = 0.05
+    names: list[str] = []
+    for part in parts:
+        label = part.get("label") or ""
+        if not label or label in names:
+            continue
+        for solid in solids:
+            try:
+                box = solid.bounding_box()
+            except Exception:
+                continue
+            low, high = _xyz(box.min), _xyz(box.max)
+            if all(low[i] - tol <= part["min"][i] and part["max"][i] <= high[i] + tol for i in range(3)):
+                names.append(label)
+                break
+    return names or [p["label"] for p in parts if p.get("label")] or ["result"]
+
+
+def _invalid(names: list[str], what: str, parts: list[dict]) -> dict:
+    listed = ", ".join(names)
+    return {
+        "ok": False,
+        "error": f"invalid solid: {what} ({listed}); the kernel could not repair it",
+        "invalid": names,
+        "parts": parts,
+    }
+
+
+def _discard_exports(*paths: str) -> None:
+    for path in paths:
+        _replace_output(path)
+
+
+def _checked_export(result, parts: list[dict], step_path: str, stl_path: str) -> dict | None:
+    """Validate, try to fix, then export ``result``. None on success; else the failure payload.
+
+    Each part and the fused result must be valid (one OCC shape-fix attempt each). The STEP is
+    then re-imported and checked too: a shape can be valid in memory and invalid after the round
+    trip. A solid that stays invalid is reported with the parts it contains, and no file is kept.
+    """
+    from build123d import export_step, export_stl, import_step
+
+    bad = [part["label"] or "(unlabelled)" for part in parts if not part["valid"]]
+    if bad:
+        return _invalid(bad, "part" if len(bad) == 1 else "parts", parts)
+    result, valid = _fixed_if_invalid(result)
+    if not valid:
+        return _invalid(_names_in(result, parts), "the fused result", parts)
+
+    for attempt in range(2):
+        if not export_step(result, step_path):
+            return {"ok": False, "error": "export_step failed"}
+        reread = import_step(step_path)
+        if reread.is_valid:
+            break
+        if attempt == 0:
+            # Valid in memory, invalid after the STEP round trip: fix what was read back and write it again.
+            repaired, fixed = _fixed_if_invalid(reread)
+            if fixed:
+                result = repaired
+                continue
+        _discard_exports(step_path, stl_path)
+        return _invalid(_names_in(reread, parts), "the fused result after STEP export", parts)
+    # ASCII so consumers that read the file as text (the web compile
+    # route decodes STL as UTF-8) get a mesh that starts with "solid".
+    if not export_stl(result, stl_path, ascii_format=True):
+        _discard_exports(step_path, stl_path)
+        return {"ok": False, "error": "export_stl failed"}
+    return None
 
 
 def _exit_message(exc: SystemExit) -> str:
@@ -536,8 +632,6 @@ def measure_and_export(scratch: str, outdir: str, fallback_error: str | None = N
                 failed["line"] = line
             return failed
         try:
-            from build123d import export_step, export_stl
-
             result = _import_brep_bytes(data, outdir)
             parts = _parts_from_scratch(scratch_fd, outdir, result)
             local = _measured_shapes(scratch_fd, outdir, "local", strict=False) or []
@@ -545,10 +639,9 @@ def measure_and_export(scratch: str, outdir: str, fallback_error: str | None = N
             stl_path = os.path.join(os.fspath(outdir), "model.stl")
             _replace_output(step_path)
             _replace_output(stl_path)
-            if not export_step(result, step_path):
-                return {"ok": False, "error": "export_step failed"}
-            if not export_stl(result, stl_path, ascii_format=True):
-                return {"ok": False, "error": "export_stl failed"}
+            failure = _checked_export(result, parts, step_path, stl_path)
+            if failure is not None:
+                return failure
             box = result.bounding_box()
             return {
                 "ok": True,
@@ -569,7 +662,6 @@ def run(script_path: str | os.PathLike, outdir: str | os.PathLike) -> dict:
     """Execute ``script_path`` and write ``model.step`` / ``model.stl`` into ``outdir``."""
     try:
         _remember_compound_sources()
-        from build123d import export_step, export_stl
 
         try:
             namespace = _run_script(os.fspath(script_path))
@@ -587,16 +679,14 @@ def run(script_path: str | os.PathLike, outdir: str | os.PathLike) -> dict:
         stl_path = os.path.join(os.fspath(outdir), "model.stl")
         _replace_output(step_path)
         _replace_output(stl_path)
-        if not export_step(result, step_path):
-            return {"ok": False, "error": "export_step failed"}
-        # ASCII so consumers that read the file as text (the web compile
-        # route decodes STL as UTF-8) get a mesh that starts with "solid".
-        if not export_stl(result, stl_path, ascii_format=True):
-            return {"ok": False, "error": "export_stl failed"}
+        parts = _parts(result, namespace.get("_cadai_parts"))
+        failure = _checked_export(result, parts, step_path, stl_path)
+        if failure is not None:
+            return failure
         box = result.bounding_box()
         return {
             "ok": True,
-            "parts": _parts(result, namespace.get("_cadai_parts")),
+            "parts": parts,
             "local": _local(namespace),
             "solids": len(list(result.solids())),
             "bbox": {"min": _xyz(box.min), "max": _xyz(box.max)},

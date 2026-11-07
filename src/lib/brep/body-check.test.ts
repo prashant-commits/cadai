@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { sanitizePythonBody } from '../agent/build-format';
-import { checkPythonBody } from './body-check';
+import { BUILDER_MODE_REASON, checkPythonBody, isBuilderModeReason } from './body-check';
 
 const opts = { reserved: ['width', 'depth'], components: ['base', 'lid', 'lid_part'] };
 const ok = (body: string) => checkPythonBody(body, opts).ok;
@@ -96,7 +96,7 @@ describe('checkPythonBody accepts', () => {
     ['keyword arguments named like parameters', 'return Box(5, 5, 5, align=(Align.MIN, Align.MIN, Align.MIN), rotation=(0, 0, width))'],
     ['a local named like the part', 'base = Box(1, 1, 1)\nreturn base'],
     ['subscript assignment reading a parameter', 'd = {}\nd[width] = 1\nreturn Box(1, 1, 1)'],
-    ['builder style', 'with BuildPart() as p:\n    Box(width, 1, 1)\nreturn p.part'],
+    ['algebra style', 'p = Pos(0, 0, 1) * Box(width, 1, 1)\nreturn p'],
     ['words in comments and strings', '# import os, exec(open("x"))\nlabel = "import os"\nreturn Box(1, 1, 1)'],
     ['math from the prelude', 'return Box(10 * sin(radians(30)), sqrt(4), pi)'],
     ['attribute that shares a banned spelling', 'return Box(1, 1, 1).open'],
@@ -107,7 +107,7 @@ describe('checkPythonBody accepts', () => {
     ['a generator over sizes', 'return Box(max(x for x in [1, 2]), 1, 1)'],
     ['a for-header that binds an underscore local', 'for _i in range(2): z = _i\nreturn Box(1, 1, 1)'],
     ['a one-line if with a real binding', 'if width > 1: z = width\nelse: z = 1\nreturn Box(z, 1, 1)'],
-    ['a one-line with-header binding', 'with BuildPart() as p: Box(1, 1, 1)\nreturn p.part'],
+    ['a one-line with-header binding', 'with Locations((0, 0, 0)) as p: q = Box(1, 1, 1)\nreturn q'],
     ['a dict literal of sizes', "d = {'w': 1}\nreturn Box(d['w'], 1, 1)"],
     ['Text with keyword size', 'return extrude(Text("hi", font_size=5), amount=1)'],
   ])('%s', (_label, body) => {
@@ -148,5 +148,41 @@ describe('curated builtins and the guardrail stay in sync (N2)', () => {
       expect(names, n).toContain(n);
     }
     for (const n of ['open', 'exec', 'eval', 'getattr', 'type', 'object', 'id', 'vars', 'globals']) expect(names, n).not.toContain(n);
+  });
+});
+
+describe('builder mode is rejected with a reason that names the fix', () => {
+  const profile = 'with BuildSketch(Plane.YZ):\n    with BuildLine():\n        Polyline((0, 0), (20, 0), (0, 20), close=True)\n    make_face()\nextrude(amount=80)\nreturn Box(1, 1, 1)';
+
+  it.each([
+    ['with BuildPart', 'with BuildPart() as p:\n    Box(10, 10, 10)\nreturn p.part'],
+    ['with BuildSketch', 'with BuildSketch(Plane.XY):\n    Circle(3)\nreturn Box(1, 1, 1)'],
+    ['with BuildLine', 'with BuildLine():\n    Line((0, 0), (1, 1))\nreturn Box(1, 1, 1)'],
+    ['the phone_stand body from the matrix', profile],
+    ['a builder bound to a name', 'p = BuildPart()\nreturn Box(1, 1, 1)'],
+  ])('%s', (_label, body) => {
+    const verdict = checkPythonBody(body, opts);
+    expect(verdict).toEqual({ ok: false, reason: BUILDER_MODE_REASON });
+    expect(isBuilderModeReason(`body rejected (${BUILDER_MODE_REASON}); drawn from the blockout`)).toBe(true);
+  });
+
+  it('the reason spells out both algebra forms', () => {
+    expect(BUILDER_MODE_REASON).toContain('extrude(Plane.YZ * Polygon(*pts, align=None), amount=w)');
+    expect(BUILDER_MODE_REASON).toContain('extrude(make_face(Polyline(*pts, close=True)), amount=w)');
+  });
+
+  it('accepts the algebra forms it recommends', () => {
+    expect(ok('pts = [(0, 0), (20, 0), (0, 20)]\nreturn extrude(Plane.YZ * Polygon(*pts, align=None), amount=80)')).toBe(true);
+    expect(ok('pts = [(0, 0), (20, 0), (0, 20)]\nreturn extrude(make_face(Polyline(*pts, close=True)), amount=80)')).toBe(true);
+  });
+
+  it('does not mistake an unrelated name or an attribute for a builder', () => {
+    expect(ok('BuildPartCount = 3\nreturn Box(BuildPartCount, 1, 1)')).toBe(true);
+    expect(ok('return Box(1, 1, 1).BuildPart')).toBe(true);
+  });
+
+  it('is a rejection of an unrelated body that keeps its own reason', () => {
+    expect(checkPythonBody('import os\nreturn Box(1, 1, 1)', opts)).toMatchObject({ ok: false });
+    expect(isBuilderModeReason('import is not allowed in a body')).toBe(false);
   });
 });
