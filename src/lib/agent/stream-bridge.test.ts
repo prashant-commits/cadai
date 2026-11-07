@@ -198,7 +198,7 @@ describe('bridgeGraphStream', () => {
       id: 'drafterNode',
       state: 'close',
       status: 'failed',
-      summary: 'node exploded',
+      summary: 'Something went wrong on the server.',
       attempt: 1,
     });
   });
@@ -219,7 +219,8 @@ describe('bridgeGraphStream', () => {
         ['updates', { architectBuild: { attemptCount: 2 } }],
       ]);
       const buildClose = out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'architectBuild');
-      expect(buildClose).toMatchObject({ status: 'retrying', summary: 'arm is short', attempt: 1 });
+      expect(buildClose).toMatchObject({ status: 'ok', attempt: 1 });
+      if (buildClose?.t === 'section' && buildClose.state === 'close') expect(buildClose.summary).toBeUndefined();
       const validateClose = out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'validateCode');
       expect(validateClose).toMatchObject({ status: 'failed', summary: 'arm is short', attempt: 1 });
       expect(out.find((e) => e.t === 'retry')).toEqual({
@@ -258,7 +259,8 @@ describe('bridgeGraphStream', () => {
         reason: 'build123d script failed: name missing',
       });
       expect(out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'brepBuild')).toMatchObject({
-        status: 'retrying',
+        status: 'ok',
+        attempt: 1,
       });
     });
   });
@@ -312,7 +314,8 @@ describe('bridgeGraphStream', () => {
       ]);
       expect(out.filter((e) => e.t === 'retry')).toEqual([]);
       expect(out.find((e) => e.t === 'section' && e.id === 'architectBuild' && e.state === 'close')).toMatchObject({
-        status: 'failed',
+        status: 'ok',
+        attempt: 1,
       });
       expect(out.find((e) => e.t === 'section' && e.id === 'validateCode' && e.state === 'close')).toMatchObject({
         status: 'failed',
@@ -338,6 +341,10 @@ describe('bridgeGraphStream', () => {
       ]);
       expect(out.filter((e) => e.t === 'retry')).toEqual([]);
       expect(out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'brepBuild')).toMatchObject({
+        status: 'ok',
+        attempt: 1,
+      });
+      expect(out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'validateBrep')).toMatchObject({
         status: 'failed',
         summary: 'too thin',
       });
@@ -353,7 +360,8 @@ describe('bridgeGraphStream', () => {
         ['updates', { brepBuild: { attemptCount: 2 } }],
       ]);
       expect(out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'brepBuild')).toMatchObject({
-        status: 'retrying',
+        status: 'ok',
+        attempt: 1,
       });
       expect(out.find((e) => e.t === 'retry')).toMatchObject({ step: 'brepBuild', attempt: 2, maxAttempts: 3 });
     });
@@ -395,7 +403,7 @@ describe('bridgeGraphStream', () => {
       await bridgeGraphStream(gen(), 'run-1', (event) => out.push(event));
       const brep = out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'brepBuild');
       const validate = out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'validateBrep');
-      expect(brep).toMatchObject({ status: 'failed', durationMs: expect.any(Number) });
+      expect(brep).toMatchObject({ status: 'ok', attempt: 1, durationMs: expect.any(Number) });
       expect(validate).toMatchObject({ durationMs: expect.any(Number) });
       if (brep?.t === 'section' && brep.state === 'close' && validate?.t === 'section' && validate.state === 'close') {
         expect(brep.durationMs).toBeLessThan(100);
@@ -453,13 +461,13 @@ describe('bridgeGraphStream', () => {
     const opens = out.filter((e) => e.t === 'section' && e.state === 'open');
     expect(opens).toHaveLength(1);
     expect(opens[0]).toMatchObject({ id: 'architectNode', attempt: 1 });
-    expect(out.find((e) => e.t === 'section' && e.state === 'close')).toMatchObject({ id: 'architectNode', attempt: 3 });
+    expect(out.find((e) => e.t === 'section' && e.state === 'close')).toMatchObject({ id: 'architectNode', attempt: 1 });
     const retries = out.filter((e) => e.t === 'retry');
     expect(retries.map((e) => e.t === 'retry' ? e.variantId : '')).toEqual(['A', 'B', 'A']);
     expect(retries.map((e) => e.t === 'retry' ? e.attempt : 0)).toEqual([2, 3, 2]);
   });
 
-  it('closes architectNode as retrying when the reviewer sends it back, before the illustrator opens', async () => {
+  it('closes architectNode ok when it finishes and announces the reviewer loop with a retry', async () => {
     const out = await bridge([
       ['custom', { t: 'delta', text: 'spec', node: 'architectNode' }],
       ['updates', { specIllustrator: { illustrated: true } }],
@@ -472,11 +480,15 @@ describe('bridgeGraphStream', () => {
     ]);
     const closeAt = out.findIndex((e) => e.t === 'section' && e.state === 'close' && e.id === 'architectNode');
     const illustratorAt = out.findIndex((e) => e.t === 'section' && e.state === 'open' && e.id === 'specIllustrator');
-    expect(out[closeAt]).toMatchObject({ status: 'retrying', summary: 'wall thin', attempt: 1 });
+    const reviewerAt = out.findIndex((e) => e.t === 'section' && e.state === 'open' && e.id === 'specReviewer');
+    const retryAt = out.findIndex((e) => e.t === 'retry');
+    expect(out[closeAt]).toMatchObject({ status: 'ok', attempt: 1 });
     expect(closeAt).toBeLessThan(illustratorAt);
+    expect(illustratorAt).toBeLessThan(reviewerAt);
+    expect(reviewerAt).toBeLessThan(retryAt);
     const architectOpens = out.filter((e) => e.t === 'section' && e.state === 'open' && e.id === 'architectNode');
     expect(architectOpens.map((e) => e.t === 'section' && e.state === 'open' ? e.attempt : 0)).toEqual([1, 2]);
-    expect(out.find((e) => e.t === 'retry')).toMatchObject({ step: 'architectNode', attempt: 2 });
+    expect(out[retryAt]).toMatchObject({ t: 'retry', step: 'architectNode', attempt: 2, reason: 'wall thin' });
   });
 
   it('strips absolute paths from a thrown internal summary and keeps the original error', async () => {
@@ -487,8 +499,16 @@ describe('bridgeGraphStream', () => {
     })();
     await expect(bridgeGraphStream(chunks, 'run-1', (event) => out.push(event))).rejects.toThrow(/ENOENT/);
     const close = out.at(-1);
-    expect(close).toMatchObject({ t: 'section', state: 'close', status: 'failed' });
-    if (close?.t === 'section' && close.state === 'close') expect(close.summary).not.toMatch(/\/home\//);
+    expect(close).toMatchObject({
+      t: 'section',
+      state: 'close',
+      status: 'failed',
+      summary: 'Something went wrong on the server.',
+    });
+    if (close?.t === 'section' && close.state === 'close') {
+      expect(close.summary).not.toMatch(/\/home\//);
+      expect(close.summary).not.toMatch(/sqlite/);
+    }
   });
 
   it('keeps the original stream error when emitting the close throws', async () => {
@@ -512,5 +532,180 @@ describe('bridgeGraphStream', () => {
       message: 'overloaded',
       apiError: { code: 'model_unavailable', retryable: true },
     });
+  });
+
+  it('streams the illustrator while the architect is already closed, before the reviewer runs', async () => {
+    const out: StreamEvent[] = [];
+    let illustratorOpenBeforeReviewer = false;
+    let architectClosedOk = false;
+    async function* gen() {
+      yield ['tasks', { name: 'architectNode', input: {} }];
+      yield ['custom', { t: 'delta', text: 'brief', node: 'architectNode' }];
+      yield ['updates', { architectNode: { pipeline: 'architect', kernel: 'brep' } }];
+      yield ['tasks', { name: 'architectNode', result: {} }];
+      yield ['tasks', { name: 'specIllustrator', input: {} }];
+      yield ['custom', { t: 'delta', text: 'Sheet A drawn', node: 'specIllustrator' }];
+      architectClosedOk = out.some((e) => e.t === 'section' && e.state === 'close' && e.id === 'architectNode' && e.status === 'ok');
+      illustratorOpenBeforeReviewer = out.some((e) => e.t === 'section' && e.state === 'open' && e.id === 'specIllustrator');
+      const illustratorDelta = out.some((e) => e.t === 'delta' && e.text === 'Sheet A drawn');
+      if (!illustratorDelta) illustratorOpenBeforeReviewer = false;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      yield ['tasks', { name: 'specReviewer', input: {} }];
+      yield ['updates', { specReviewer: { specVariants: [{ needsRevision: true, review: { findings: [{ severity: 'major', issue: 'overlap' }] } }] } }];
+      yield ['tasks', { name: 'specReviewer', result: {} }];
+      yield ['tasks', { name: 'architectNode', input: {} }];
+    }
+    await bridgeGraphStream(gen(), 'run-1', (event) => out.push(event));
+    expect(architectClosedOk).toBe(true);
+    expect(illustratorOpenBeforeReviewer).toBe(true);
+    const reviewerAt = out.findIndex((e) => e.t === 'section' && e.state === 'open' && e.id === 'specReviewer');
+    const retryAt = out.findIndex((e) => e.t === 'retry');
+    const secondOpen = out.findIndex((e) => e.t === 'section' && e.state === 'open' && e.id === 'architectNode' && e.attempt === 2);
+    expect(reviewerAt).toBeGreaterThanOrEqual(0);
+    expect(retryAt).toBeGreaterThan(reviewerAt);
+    expect(secondOpen).toBe(retryAt + 1);
+    expect(out[retryAt]).toMatchObject({ step: 'architectNode', attempt: 2 });
+  });
+
+  it('opens one architect section per attempt when a reviewer loop and a self-check both retry', async () => {
+    const out = await bridge([
+      ['tasks', { name: 'architectNode', input: {} }],
+      ['updates', { architectNode: { pipeline: 'architect' } }],
+      ['tasks', { name: 'architectNode', result: {} }],
+      ['tasks', { name: 'specReviewer', input: {} }],
+      ['updates', { specReviewer: { specVariants: [{ needsRevision: true, review: { findings: [{ severity: 'major', issue: 'overlap' }] } }] } }],
+      ['tasks', { name: 'specReviewer', result: {} }],
+      ['tasks', { name: 'architectNode', input: {} }],
+      ['custom', { t: 'retry', step: 'architectNode', attempt: 2, maxAttempts: 3, reason: 'self-check', node: 'architectNode' }],
+      ['custom', { t: 'delta', text: 'x', node: 'architectNode' }],
+    ]);
+    const opens = out.filter((e) => e.t === 'section' && e.state === 'open' && e.id === 'architectNode');
+    const attempts = opens.map((e) => e.t === 'section' && e.state === 'open' ? e.attempt : 0);
+    expect(attempts).toEqual([1, 2, 3]);
+    expect(new Set(attempts).size).toBe(attempts.length);
+    const retries = out.filter((e) => e.t === 'retry' && e.step === 'architectNode');
+    expect(retries.map((e) => e.t === 'retry' ? e.attempt : 0)).toEqual([2, 3]);
+    const selfCheckClose = out.filter((e) => e.t === 'section' && e.state === 'close' && e.id === 'architectNode' && e.attempt === 2);
+    expect(selfCheckClose).toHaveLength(1);
+    expect(selfCheckClose[0]).toMatchObject({ status: 'retrying' });
+  });
+
+  it('counts reviewer retries when seeding a resumed architect attempt', async () => {
+    const out = await bridge([
+      ['updates', { specGate: { gateAction: 'revise', gateFeedback: 'taller', specRevisionCount: 1 } }],
+      ['updates', { architectNode: { pipeline: 'architect' } }],
+    ], {
+      state: {
+        pipeline: 'architect',
+        assemblySpec: { components: [] },
+        specRevisionCount: 0,
+        specVariants: [{ id: 'A', retries: 2, needsRevision: false }],
+      },
+    });
+    expect(out.find((e) => e.t === 'retry' && e.step === 'architectNode')).toMatchObject({ attempt: 4 });
+    expect(out.find((e) => e.t === 'section' && e.state === 'open' && e.id === 'architectNode')).toMatchObject({ attempt: 4 });
+    expect(out.filter((e) => e.t === 'retry' && e.step === 'specGate')).toEqual([]);
+  });
+
+  it('does not emit a retry when a gate is shown again', async () => {
+    await withAttempts('2', async () => {
+      const out = await bridge([
+        ['updates', { acceptGate: { gateAction: 'revise', acceptRevisionCount: 1, maxAttempts: 2, pipeline: 'architect', kernel: 'brep', attemptCount: 1, isValid: true, stlContent: 'solid' } }],
+        ['updates', { brepBuild: { attemptCount: 2, pipeline: 'architect', kernel: 'brep', isValid: true, stlContent: 'solid' } }],
+        ['updates', { validateBrep: { isValid: true, failureKind: 'none', stlContent: 'solid', pipeline: 'architect', kernel: 'brep', attemptCount: 2, maxAttempts: 2 } }],
+        ['updates', { visualCritic: { isValid: true, stlContent: 'solid', pipeline: 'architect', kernel: 'brep', attemptCount: 2 } }],
+        ['updates', { acceptGate: { gateAction: null, pipeline: 'architect', kernel: 'brep', attemptCount: 2, isValid: true, stlContent: 'solid' } }],
+      ], { state: { pipeline: 'architect', kernel: 'brep', attemptCount: 1, isValid: true, stlContent: 'solid', maxAttempts: 2 } });
+      expect(out.filter((e) => e.t === 'retry' && e.step === 'acceptGate')).toEqual([]);
+    });
+
+    const variants = [{ id: 'A', spec: { components: [{}, {}] }, needsRevision: false, review: { validated: false, findings: [] }, retries: 0 }];
+    const out = await bridge([
+      ['updates', { specGate: { gateAction: 'revise', gateFeedback: 'taller', specRevisionCount: 1, specVariants: variants } }],
+      ['updates', { architectNode: { pipeline: 'architect', specVariants: variants, specRevisionCount: 1 } }],
+      ['updates', { specReviewer: { specVariants: variants, specRevisionCount: 1 } }],
+      ['updates', { specGate: { gateAction: null, specRevisionCount: 1, specVariants: variants } }],
+    ], {
+      state: {
+        pipeline: 'architect',
+        assemblySpec: { components: [{}, {}] },
+        specVariants: variants,
+        specRevisionCount: 0,
+      },
+    });
+    expect(out.filter((e) => e.t === 'retry' && e.step === 'specGate')).toEqual([]);
+  });
+
+  it('does not fail the architect section when the illustrator throws', async () => {
+    const out: StreamEvent[] = [];
+    const chunks = (async function* () {
+      yield ['tasks', { name: 'architectNode', input: {} }];
+      yield ['custom', { t: 'delta', text: 'brief', node: 'architectNode' }];
+      yield ['updates', { architectNode: { pipeline: 'architect' } }];
+      yield ['tasks', { name: 'architectNode', result: {} }];
+      yield ['tasks', { name: 'specIllustrator', input: {} }];
+      yield ['custom', { t: 'delta', text: 'sheet', node: 'specIllustrator' }];
+      throw new Error('render crashed at /home/claude/work/wt-r2/src/x.ts');
+    })();
+    await expect(bridgeGraphStream(chunks, 'run-1', (event) => out.push(event))).rejects.toThrow(/render crashed/);
+    const architect = out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'architectNode');
+    expect(architect).toMatchObject({ status: 'ok', attempt: 1 });
+    if (architect?.t === 'section' && architect.state === 'close') expect(architect.summary).toBeUndefined();
+    expect(out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'specIllustrator')).toMatchObject({
+      status: 'failed',
+      summary: 'Something went wrong on the server.',
+    });
+    const illustrator = out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'specIllustrator');
+    if (illustrator?.t === 'section' && illustrator.state === 'close') {
+      expect(illustrator.summary).not.toMatch(/render crashed/);
+      expect(illustrator.summary).not.toMatch(/\/home\//);
+    }
+  });
+
+  it('closes an open section as skipped when the user aborts, without the abort text', async () => {
+    const out: StreamEvent[] = [];
+    const chunks = (async function* () {
+      yield ['tasks', { name: 'brepBuild', input: { attemptCount: 0, pipeline: 'architect', kernel: 'brep' } }];
+      yield ['updates', { brepBuild: { attemptCount: 1 } }];
+      yield ['tasks', { name: 'brepBuild', result: { attemptCount: 1 } }];
+      yield ['tasks', { name: 'validateBrep', input: { attemptCount: 1 } }];
+      throw Object.assign(new Error('This operation was aborted'), { name: 'AbortError' });
+    })();
+    await expect(bridgeGraphStream(chunks, 'run-1', (event) => out.push(event))).rejects.toThrow(/aborted/);
+    expect(out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'brepBuild')).toMatchObject({
+      status: 'ok',
+      attempt: 1,
+    });
+    expect(out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'validateBrep')).toMatchObject({
+      status: 'skipped',
+      summary: 'stopped',
+    });
+    for (const event of out) {
+      if (event.t === 'section' && event.state === 'close' && event.summary) {
+        expect(event.summary).not.toMatch(/aborted/i);
+      }
+    }
+  });
+
+  it('keeps model output out of a section summary and in apiError.detail only', async () => {
+    const raw = 'Failed to parse. Text: {"secret model output": 1} /home/claude/work/wt-r2/a.ts';
+    const out = await bridge([
+      ['custom', { t: 'delta', text: 'a', node: 'drafterNode' }],
+      ['custom', { t: 'error', message: raw, node: 'drafterNode' }],
+    ]);
+    const close = out.find((e) => e.t === 'section' && e.state === 'close');
+    expect(close).toMatchObject({ status: 'failed', summary: 'Something went wrong on the server.' });
+    if (close?.t === 'section' && close.state === 'close') expect(close.summary).not.toMatch(/secret model output/);
+    const error = out.find((e) => e.t === 'error');
+    expect(error).toMatchObject({
+      t: 'error',
+      message: raw,
+      apiError: { code: 'internal', message: 'Something went wrong on the server.' },
+    });
+    if (error?.t === 'error') {
+      expect(error.apiError?.detail).toContain('secret model output');
+      expect(error.apiError?.detail).not.toMatch(/\/home\//);
+      expect(error.apiError?.message).not.toMatch(/secret/);
+    }
   });
 });

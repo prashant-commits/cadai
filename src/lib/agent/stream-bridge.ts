@@ -33,20 +33,10 @@ export const NODE_LABELS: Record<string, string> = {
  */
 const STRUCTURED_NODES = new Set(['architectNode', 'specReviewer', 'visualCritic', 'architectBuild', 'brepBuild', 'validateBrep']);
 
-/**
- * A build's close status is the validator's routing decision, which arrives after
- * the build has finished. The close is held so it can be emitted before the
- * validator's open (the old reader applies a close to whatever section is open)
- * while durationMs still uses the build's own task timestamps.
- */
-const WAITS_FOR: Record<string, string> = {
-  architectBuild: 'validateCode',
-  drafterNode: 'validateCode',
-  fixCode: 'validateCode',
-  brepBuild: 'validateBrep',
-};
-
 const DECIDERS = new Set(['specReviewer', 'specGate', 'validateCode', 'validateBrep', 'visualCritic', 'acceptGate']);
+
+/** Re-showing a gate is not a retry. Pending retries are for nodes the graph re-enters. */
+const GATES = new Set(['specGate', 'acceptGate']);
 
 /** attemptCount on these updates is that node's own visit number. fixCode's is the global counter. */
 const BUILD_NODES = new Set(['architectBuild', 'brepBuild', 'drafterNode']);
@@ -63,7 +53,6 @@ interface Section {
   emitted: boolean;
   hadOutput: boolean;
   preferSkipped: boolean;
-  decider: string | null;
 }
 
 interface PendingRetry {
@@ -94,9 +83,6 @@ export async function bridgeGraphStream(
 ): Promise<void> {
   const box = {
     current: null as Section | null,
-    deferred: null as Section | null,
-    holding: false,
-    held: [] as StreamEvent[],
     pending: null as PendingRetry | null,
     state: initialRouteState(),
   };
@@ -105,30 +91,12 @@ export async function bridgeGraphStream(
   seedRuns(options?.state, box.state, runs);
 
   function send(event: StreamEvent) {
-    if (box.holding) box.held.push(event);
-    else emit(event);
+    emit(event);
   }
 
   function emitClose(section: Section, status: CloseStatus, summary?: string) {
     if (!section.emitted) return;
     emit(closeEvent(section, status, summary));
-  }
-
-  function release(status: CloseStatus, summary?: string) {
-    const section = box.deferred;
-    const queued = box.held;
-    box.deferred = null;
-    box.held = [];
-    box.holding = false;
-    if (section) emitClose(section, status, summary);
-    for (const event of queued) emit(event);
-  }
-
-  function hold(section: Section, decider: string) {
-    section.decider = decider;
-    box.deferred = section;
-    box.holding = true;
-    if (box.current === section) box.current = null;
   }
 
   function statusOf(section: Section): CloseStatus {
@@ -143,10 +111,6 @@ export async function bridgeGraphStream(
     box.current = null;
     const chosen = status ?? statusOf(section);
     const line = summary ?? section.summary ?? undefined;
-    if (box.holding) {
-      if (section.emitted) box.held.push(closeEvent(section, chosen, line));
-      return;
-    }
     emitClose(section, chosen, line);
   }
 
@@ -157,10 +121,7 @@ export async function bridgeGraphStream(
       box.current = null;
       return;
     }
-    if (!box.holding && shouldDefer(section.id, next)) {
-      hold(section, section.id === 'architectNode' ? 'specReviewer' : WAITS_FOR[section.id]);
-      return;
-    }
+    // Close now. Nothing later waits on this close: the next section streams live.
     closeCurrent();
   }
 
@@ -181,8 +142,8 @@ export async function bridgeGraphStream(
 
   function enter(node: string, opts?: { partial?: Record<string, unknown>; input?: Record<string, unknown>; attempt?: number }) {
     if (box.current?.id === node && opts?.attempt === undefined) {
+      // The open already announced this attempt. Keep it on the close; only the visit counter moves.
       if (BUILD_NODES.has(node) && typeof opts?.partial?.attemptCount === 'number') {
-        box.current.attempt = Math.max(box.current.attempt, opts.partial.attemptCount);
         runs.set(node, Math.max(runs.get(node) ?? 0, opts.partial.attemptCount));
       }
       return;
@@ -208,43 +169,30 @@ export async function bridgeGraphStream(
       emitted: false,
       hadOutput: false,
       preferSkipped: false,
-      decider: null,
     };
     box.current = section;
     emitOpen(section);
   }
 
   function noteEnd(node: string) {
-    const endedAt = Date.now();
-    if (box.current?.id === node) box.current.endedAt = endedAt;
-    if (box.deferred?.id === node) box.deferred.endedAt = endedAt;
+    if (box.current?.id === node) box.current.endedAt = Date.now();
   }
 
   function finishOpen(summary: string) {
-    if (box.holding && box.deferred) release('failed', box.deferred.summary ?? summary);
-    if (box.current) {
-      box.current.summary = box.current.summary ?? summary;
-      closeCurrent('failed', box.current.summary ?? summary);
-    }
+    if (!box.current) return;
+    box.current.summary = box.current.summary ?? summary;
+    closeCurrent('failed', box.current.summary ?? summary);
+  }
+
+  /** A user abort closes whatever is still open as skipped. The run's own cancelled event carries the code. */
+  function closeCancelled() {
+    closeCurrent('skipped', 'stopped');
   }
 
   function applyRoute(node: string, partial: Record<string, unknown>) {
     const next = nextStep(node, box.state, '');
     const reason = oneLine(sanitizeText(routeReason(node, partial, box.state)));
-    const revisits = Boolean(next && (runs.get(next) ?? 0) > 0 && next !== node);
-    if (box.deferred && box.deferred.decider === node) {
-      const reenters = next === box.deferred.id;
-      if (reenters && next) {
-        release('retrying', reason);
-        box.pending = { step: next, maxAttempts: stepMax(next, box.state), reason };
-        return;
-      }
-      const failed = failureOf(partial);
-      const skipped = box.deferred.preferSkipped && !box.deferred.hadOutput;
-      release(failed ? 'failed' : skipped ? 'skipped' : 'ok', failed ? oneLine(sanitizeText(failed)) : undefined);
-      box.pending = next && revisits ? { step: next, maxAttempts: stepMax(next, box.state), reason } : null;
-      return;
-    }
+    const revisits = Boolean(next && !GATES.has(next) && (runs.get(next) ?? 0) > 0 && next !== node);
     if (next && revisits) {
       box.pending = { step: next, maxAttempts: stepMax(next, box.state), reason };
       return;
@@ -264,8 +212,11 @@ export async function bridgeGraphStream(
           noteEnd(task.name);
           const result = task.result;
           const empty = result == null || (typeof result === 'object' && !Array.isArray(result) && Object.keys(result as object).length === 0);
-          const section = box.current?.id === task.name ? box.current : box.deferred?.id === task.name ? box.deferred : null;
-          if (empty && section && !section.hadOutput && !section.summary) section.preferSkipped = true;
+          if (box.current?.id === task.name) {
+            if (empty && !box.current.hadOutput && !box.current.summary) box.current.preferSkipped = true;
+            // The node is done. Close it before anything that follows, so those events are not queued.
+            closeCurrent();
+          }
           continue;
         }
         starts.set(task.name, Date.now());
@@ -289,8 +240,8 @@ export async function bridgeGraphStream(
         } else if (event.t === 'retry') {
           const reason = oneLine(sanitizeText(event.reason));
           if (event.variantId) {
+            // Parallel variants share one section. Its attempt stays the attempt it opened at.
             if (box.current?.id !== event.step) enter(event.step);
-            if (box.current?.id === event.step) box.current.attempt = Math.max(box.current.attempt, event.attempt);
             send({
               t: 'retry',
               step: event.step,
@@ -300,6 +251,9 @@ export async function bridgeGraphStream(
               variantId: event.variantId,
             });
           } else {
+            // One section per attempt. A reviewer re-entry and an in-node self-check must not reuse a number.
+            const previous = box.current?.id === event.step ? box.current.attempt : (runs.get(event.step) ?? 0);
+            const attempt = Math.max(event.attempt, previous + 1);
             if (box.current?.id === event.step && box.current.emitted) {
               const prev = box.current;
               box.current = null;
@@ -312,38 +266,36 @@ export async function bridgeGraphStream(
             emit({
               t: 'retry',
               step: event.step,
-              attempt: event.attempt,
-              maxAttempts: event.maxAttempts,
+              attempt,
+              maxAttempts: Math.max(event.maxAttempts, attempt),
               reason,
             });
-            runs.set(event.step, Math.max(runs.get(event.step) ?? 0, event.attempt));
+            runs.set(event.step, Math.max(runs.get(event.step) ?? 0, attempt));
             const stamped = starts.get(event.step);
             starts.delete(event.step);
             const section: Section = {
               id: event.step,
-              attempt: event.attempt,
+              attempt,
               startedAt: stamped ?? Date.now(),
               endedAt: null,
               summary: null,
               emitted: false,
               hadOutput: false,
               preferSkipped: false,
-              decider: null,
             };
             box.current = section;
             emitOpen(section);
           }
         } else if (event.t === 'result') {
-          if (box.holding && box.deferred) release(statusOf(box.deferred), box.deferred.summary ?? undefined);
           if (box.current) closeCurrent();
           const { node, ...rest } = event;
           void node;
           emit(rest);
         } else if (event.t === 'error') {
           const apiError = event.apiError ?? toApiError(new Error(event.message));
-          const summary = failureSummary(event.message);
           try {
-            finishOpen(summary);
+            if (apiError.code === 'cancelled') closeCancelled();
+            else finishOpen(apiError.message);
           } catch (emitErr) {
             console.error('bridge close failed:', emitErr);
           }
@@ -372,7 +324,6 @@ export async function bridgeGraphStream(
         const upd = payload as Record<string, unknown>;
         const interrupts = upd.__interrupt__ as Array<{ id: string; value: unknown }> | undefined;
         if (interrupts?.length) {
-          if (box.holding && box.deferred) release(statusOf(box.deferred), box.deferred.summary ?? undefined);
           if (box.current) closeCurrent();
           for (const item of interrupts) {
             emit({
@@ -389,10 +340,8 @@ export async function bridgeGraphStream(
           if (node === '__interrupt__' || !partial || typeof partial !== 'object' || Array.isArray(partial)) continue;
           const record = partial as Record<string, unknown>;
           mergeDefined(box.state, record);
-          if (box.current?.id !== node && box.deferred?.id !== node) enter(node, { partial: record });
+          if (box.current?.id !== node) enter(node, { partial: record });
           else if (BUILD_NODES.has(node) && typeof record.attemptCount === 'number') {
-            const section = box.current?.id === node ? box.current : box.deferred?.id === node ? box.deferred : null;
-            if (section) section.attempt = Math.max(section.attempt, record.attemptCount);
             runs.set(node, Math.max(runs.get(node) ?? 0, record.attemptCount));
           }
           const summary = failureOf(record);
@@ -402,21 +351,21 @@ export async function bridgeGraphStream(
             if (Object.keys(record).length === 0 && !box.current.hadOutput) box.current.preferSkipped = true;
           }
           if (DECIDERS.has(node)) applyRoute(node, record);
-          if (box.current?.id === node && WAITS_FOR[node] && !box.holding) hold(box.current, WAITS_FOR[node]);
         }
       }
     }
   } catch (err) {
-    const summary = failureSummary(err);
     try {
-      finishOpen(summary);
+      const api = toApiError(err instanceof Error ? err : new Error(typeof err === 'string' ? err : 'failed'));
+      // An illustrator throw closes the illustrator. A section that already finished stays as it closed.
+      if (api.code === 'cancelled') closeCancelled();
+      else finishOpen(api.message);
     } catch (emitErr) {
       console.error('bridge close failed:', emitErr);
     }
     throw err;
   }
 
-  if (box.holding && box.deferred) release(statusOf(box.deferred), box.deferred.summary ?? undefined);
   if (box.current) closeCurrent();
 }
 
@@ -477,8 +426,20 @@ function seedRuns(initial: Record<string, unknown> | undefined, state: AgentStat
   const hasSpec = initial.assemblySpec != null || (Array.isArray(initial.specVariants) && initial.specVariants.length > 0);
   if (hasSpec) {
     const revisions = typeof initial.specRevisionCount === 'number' ? initial.specRevisionCount : 0;
-    runs.set('architectNode', revisions + 1);
+    // specRevisionCount is user gate revisions. Reviewer loops live on variant.retries.
+    runs.set('architectNode', revisions + reviewerRetries(initial) + 1);
   }
+}
+
+function reviewerRetries(initial: Record<string, unknown>): number {
+  if (!Array.isArray(initial.specVariants)) return 0;
+  let max = 0;
+  for (const variant of initial.specVariants) {
+    if (!variant || typeof variant !== 'object') continue;
+    const retries = (variant as { retries?: unknown }).retries;
+    if (typeof retries === 'number' && Number.isFinite(retries) && retries > max) max = retries;
+  }
+  return max;
 }
 
 function attemptNumber(
@@ -492,11 +453,6 @@ function attemptNumber(
     if (typeof input?.attemptCount === 'number') return input.attemptCount + 1;
   }
   return (runs.get(node) ?? 0) + 1;
-}
-
-function shouldDefer(sectionId: string, next: string): boolean {
-  if (sectionId === 'architectNode') return next === 'specIllustrator' || next === 'specReviewer';
-  return sectionId in WAITS_FOR;
 }
 
 function stepMax(step: string, state: AgentStateType): number {
@@ -525,12 +481,7 @@ function closeEvent(section: Section, status: CloseStatus, summary?: string): St
   };
 }
 
-function failureSummary(err: unknown): string {
-  const api = toApiError(err instanceof Error ? err : new Error(typeof err === 'string' ? err : 'failed'));
-  if (api.code === 'internal') return oneLine(api.detail || api.message);
-  if (api.code === 'model_unavailable' || api.code === 'model_error' || api.code === 'timeout') return api.message;
-  return oneLine(sanitizeText(api.detail || api.message));
-}
+/** Section summaries are the fixed ApiError sentence. Raw text stays in apiError.detail. */
 
 function failureOf(state: Record<string, unknown>): string | null {
   if (state.isValid === true) return null;

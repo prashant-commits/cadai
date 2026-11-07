@@ -1,5 +1,6 @@
+import { APIConnectionError, APIConnectionTimeoutError, APIUserAbortError } from '@anthropic-ai/sdk';
 import { describe, expect, it } from 'vitest';
-import { badRequest, compileFailed, errorBody, fromBrep, geometryFailed, runExpired, toApiError } from './api-error';
+import { badRequest, compileFailed, errorBody, fromBrep, geometryFailed, runExpired, sanitizeText, toApiError } from './api-error';
 
 describe('toApiError', () => {
   it('maps provider 429, 529, and overloaded to retryable model_unavailable', () => {
@@ -47,7 +48,11 @@ describe('toApiError', () => {
   it('maps a deadline or timeout to timeout', () => {
     expect(toApiError(Object.assign(new Error('The run passed its deadline'), { name: 'DeadlineError' })).code).toBe('timeout');
     expect(toApiError(Object.assign(new Error('request timed out'), { name: 'TimeoutError' })).code).toBe('timeout');
-    expect(toApiError(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' })).code).not.toBe('timeout');
+    expect(toApiError(Object.assign(new Error('The run passed its deadline'), { name: 'AbortError' })).code).toBe('timeout');
+    expect(toApiError(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }))).toMatchObject({
+      code: 'cancelled',
+      message: 'The run was stopped.',
+    });
     expect(toApiError(Object.assign(new Error('Recursion limit of 25 reached'), { name: 'GraphRecursionError' })).code).toBe('internal');
   });
 
@@ -87,11 +92,57 @@ describe('toApiError', () => {
     expect(api.message).not.toBe('Traceback (most recent call last):');
   });
 
-  it('keeps every line of a multi-line OpenSCAD error, with the last line as the message', () => {
+  it('uses the first OpenSCAD ERROR line, not the generic last line', () => {
     const api = toApiError(compileFailed('ERROR: Parser error in line 3\nERROR: second\nERROR: third'));
-    expect(api).toMatchObject({ code: 'compile_failed', message: 'ERROR: third' });
-    expect(api.detail).toContain('ERROR: Parser error in line 3');
+    expect(api).toMatchObject({ code: 'compile_failed', message: 'ERROR: Parser error in line 3' });
     expect(api.detail).toContain('ERROR: second');
+    expect(api.detail).toContain('ERROR: third');
+    const compiler = toApiError(compileFailed("ERROR: Parser error: syntax error in file /in.scad, line 2\nCan't parse file '/in.scad'!"));
+    expect(compiler.message).toBe('ERROR: Parser error: syntax error in file /in.scad, line 2');
+    expect(compiler.message).not.toContain("Can't parse");
+    expect(compiler.detail).toContain("Can't parse file '/in.scad'!");
+  });
+
+  it('classifies provider timeouts, connection errors, and user aborts from class and code', () => {
+    const timedOut = new APIConnectionTimeoutError();
+    expect(timedOut.name).not.toBe('APIConnectionTimeoutError');
+    expect(toApiError(timedOut)).toMatchObject({
+      code: 'timeout',
+      message: 'The run exceeded its time budget.',
+      retryable: true,
+    });
+    expect(toApiError(new APIConnectionError({ message: 'Connection error.' }))).toMatchObject({
+      code: 'model_unavailable',
+      message: 'The model provider is unavailable. Try again.',
+      retryable: true,
+    });
+    expect(toApiError(Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }))).toMatchObject({
+      code: 'model_unavailable',
+      retryable: true,
+    });
+    expect(toApiError(new TypeError('fetch failed'))).toMatchObject({
+      code: 'model_unavailable',
+      retryable: true,
+    });
+    const abort = new APIUserAbortError();
+    expect(abort.name).not.toBe('APIUserAbortError');
+    expect(toApiError(abort)).toEqual({ code: 'cancelled', message: 'The run was stopped.' });
+    expect(toApiError(new Error('Request timed out.')).code).toBe('internal');
+    expect(toApiError(Object.assign(new Error('Request timed out.'), { name: 'Error', code: 'ETIMEDOUT' }))).toMatchObject({
+      code: 'timeout',
+      retryable: true,
+    });
+  });
+
+  it('replaces absolute paths and home directories and leaves slash-separated text', () => {
+    expect(sanitizeText('bad a/b/c')).toBe('bad a/b/c');
+    expect(sanitizeText('on 2026/11/07')).toBe('on 2026/11/07');
+    expect(sanitizeText('see https://api.anthropic.com/v1/messages')).toBe('see https://api.anthropic.com/v1/messages');
+    expect(sanitizeText('File "geo/cadai_geo/runner.py", line 3')).toContain('geo/cadai_geo/runner.py');
+    expect(sanitizeText('Parser error in file /in.scad, line 2')).toContain('/in.scad');
+    expect(sanitizeText("open '/tmp/cadai/model.py'")).toBe("open '[path]'");
+    expect(sanitizeText('at /home/claude/work/wt-r2/src/x.ts')).not.toMatch(/\/home\//);
+    expect(sanitizeText('at /home/claude/work/wt-r2/src/x.ts')).toContain('[home]');
   });
 
   it('maps a runBrep failure to geometry_failed and an unreachable service to geometry_unavailable', () => {

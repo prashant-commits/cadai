@@ -29,6 +29,11 @@ function partInfo(parts: BrepPart[]): PartInfo[] {
   return out;
 }
 
+/** A JSON.parse failure is an internal bug, not the user's script. */
+function isJsonSyntax(message: string): boolean {
+  return /Unexpected token|Unexpected end of JSON|after JSON|is not valid JSON|\bJSON\b/.test(message);
+}
+
 export async function POST(req: NextRequest) {
   let body: { code?: unknown; language?: unknown };
   try {
@@ -38,10 +43,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(errorBody(wrapped), { status: 400 });
   }
 
+  let language: 'openscad' | 'build123d' = 'openscad';
   try {
     const code = body?.code;
     const requestedLanguage = body?.language;
-    const language = requestedLanguage === 'build123d' || requestedLanguage === 'openscad'
+    language = requestedLanguage === 'build123d' || requestedLanguage === 'openscad'
       ? requestedLanguage
       : detectLanguage(typeof code === 'string' ? code : '');
 
@@ -89,8 +95,14 @@ export async function POST(req: NextRequest) {
       language: 'openscad',
     });
   } catch (err: unknown) {
-    // A SyntaxError here is the user's script (req.json() is handled above), never a bad body.
-    const wrapped = err instanceof SyntaxError ? compileFailed(err.message || 'OpenSCAD compilation failed.') : err;
+    // 422 only for a syntax error thrown by the OpenSCAD compiler while compiling
+    // the user's script. A build123d failure, or an internal JSON.parse, is 500.
+    const scriptSyntax = language === 'openscad' && err instanceof SyntaxError && !isJsonSyntax(err.message);
+    const wrapped = scriptSyntax
+      ? compileFailed(err.message || 'OpenSCAD compilation failed.')
+      : err instanceof SyntaxError
+        ? new Error(err.message)
+        : err;
     return NextResponse.json(errorBody(wrapped), { status: compileStatus(wrapped) });
   }
 }

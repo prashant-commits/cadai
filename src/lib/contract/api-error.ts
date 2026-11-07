@@ -84,7 +84,10 @@ export function sanitizeText(text: string): string {
     if (out.includes(value)) out = out.split(value).join('[redacted]');
   }
   out = out.replace(/\/(?:home|Users)\/[^\s'")\]]+/g, '[home]');
-  out = out.replace(/(?:\/(?:[\w.+@=-]+)){2,}/g, '[path]');
+  // Absolute paths only. The slash must start the text or follow whitespace, a
+  // quote, or `(`, so `a/b/c`, dates, and URLs are left alone. One segment
+  // (`/in.scad`) is not a filesystem path and stays.
+  out = out.replace(/(^|[\s"'`(])(?:\/(?:[\w.+@=-]+)){2,}/g, '$1[path]');
   return out;
 }
 
@@ -127,13 +130,64 @@ function lastLine(text: string): string {
   return lines[lines.length - 1] ?? '';
 }
 
+/** OpenSCAD's useful diagnostic is the first `ERROR:` line. The last line is the generic "Can't parse file". */
+function firstErrorLine(text: string): string {
+  const lines = linesOf(text);
+  return lines.find((line) => /^ERROR:/i.test(line)) ?? lines[0] ?? '';
+}
+
 function isJsonSyntax(message: string): boolean {
   return /Unexpected token|Unexpected end of JSON|after JSON|is not valid JSON|\bJSON\b/.test(message);
 }
 
-function isRunBudget(name: string, message: string): boolean {
-  if (name === 'DeadlineError' || name === 'TimeoutError') return true;
-  return name === 'AbortError' && /\bdeadline\b/i.test(message);
+function className(err: unknown): string {
+  if (!err || typeof err !== 'object') return '';
+  const ctor = (err as { constructor?: { name?: unknown } }).constructor?.name;
+  return typeof ctor === 'string' ? ctor : '';
+}
+
+function errorCode(err: unknown): string {
+  if (!err || typeof err !== 'object') return '';
+  const code = (err as { code?: unknown }).code;
+  if (typeof code === 'string' && code) return code;
+  const cause = (err as { cause?: unknown }).cause;
+  if (!cause || typeof cause !== 'object') return '';
+  const nested = (cause as { code?: unknown }).code;
+  return typeof nested === 'string' ? nested : '';
+}
+
+const CONNECTION_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE', 'UND_ERR_SOCKET']);
+
+/**
+ * Provider and client timeouts. Matched on the error class or `code`, never on
+ * `name === 'Error'` (the Anthropic SDK leaves `name` as `'Error'`) and never
+ * on the word "timeout" inside some other message.
+ */
+function isProviderTimeout(err: unknown, name: string): boolean {
+  const cls = className(err);
+  if (cls === 'APIConnectionTimeoutError' || cls === 'TimeoutError' || name === 'TimeoutError') return true;
+  const code = errorCode(err);
+  return code === 'ETIMEDOUT' || code === 'UND_ERR_CONNECT_TIMEOUT';
+}
+
+/** The run's own deadline, as opposed to a provider timeout. */
+function isRunBudget(err: unknown, name: string, message: string): boolean {
+  const cls = className(err);
+  if (name === 'DeadlineError' || cls === 'DeadlineError') return true;
+  return (name === 'AbortError' || cls === 'AbortError') && /\bdeadline\b/i.test(message);
+}
+
+function isProviderConnection(err: unknown): boolean {
+  if (className(err) === 'APIConnectionError') return true;
+  if (CONNECTION_CODES.has(errorCode(err))) return true;
+  return errorMessage(err) === 'fetch failed';
+}
+
+function isUserAbort(err: unknown, name: string): boolean {
+  const cls = className(err);
+  if (cls === 'APIUserAbortError' || name === 'APIUserAbortError') return true;
+  if (name === 'AbortError' || cls === 'AbortError') return true;
+  return errorCode(err) === 'ABORT_ERR';
 }
 
 function providerOverloaded(status: number | undefined, message: string): boolean {
@@ -142,10 +196,15 @@ function providerOverloaded(status: number | undefined, message: string): boolea
   return /overloaded|rate limit|too many requests/i.test(message);
 }
 
-/** Last line in `message`. Multi-line text, or a line whose path was stripped, also fills `detail`. */
+/**
+ * `compile_failed` uses the first `ERROR:` line (OpenSCAD's real diagnostic).
+ * `geometry_failed` keeps the last non-empty traceback line. Multi-line text,
+ * or a line whose path was stripped, also fills `detail`.
+ */
 function scriptError(code: 'compile_failed' | 'geometry_failed', text: string, fallback: string): ApiError {
   const sanitized = sanitizeText(text);
-  const message = clip(sanitizeText(lastLine(text)) || fallback, 300);
+  const picked = code === 'compile_failed' ? firstErrorLine(text) : lastLine(text);
+  const message = clip(sanitizeText(picked) || fallback, 300);
   const many = linesOf(text).length > 1;
   const stripped = sanitizeText(lastLine(text)) !== lastLine(text);
   if (!many && !stripped) return { code, message };
@@ -200,7 +259,12 @@ export function toApiError(err: unknown): ApiError {
         : 'The model reply was cut off before it finished.',
     };
   }
-  if (isRunBudget(name, message)) return { code: 'timeout', message: TIMEOUT };
+  if (isProviderTimeout(err, name)) return { code: 'timeout', message: TIMEOUT, retryable: true };
+  if (isRunBudget(err, name, message)) return { code: 'timeout', message: TIMEOUT };
+  if (isProviderConnection(err)) {
+    return { code: 'model_unavailable', message: MODEL_UNAVAILABLE, retryable: true };
+  }
+  if (isUserAbort(err, name)) return { code: 'cancelled', message: 'The run was stopped.' };
   if (providerOverloaded(status, message)) {
     return { code: 'model_unavailable', message: MODEL_UNAVAILABLE, retryable: true };
   }

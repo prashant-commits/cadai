@@ -128,4 +128,41 @@ describe('/api/compile build123d contract', () => {
     expect(data.apiError.code).not.toBe('bad_request');
     expect(data.error).toBe(data.apiError.message);
   });
+
+  it('reports the first OpenSCAD ERROR line, not the generic last line', async () => {
+    vi.mocked(compileScad).mockResolvedValueOnce({
+      valid: false,
+      error: "ERROR: Parser error: syntax error in file /in.scad, line 2\nCan't parse file '/in.scad'!",
+      exitCode: 1,
+      errors: [],
+      warnings: [],
+      compileTimeMs: 1,
+      rawStderr: [],
+    });
+    const res = await post({ code: 'cube([1,2,3]', language: 'openscad' });
+    expect(res.status).toBe(422);
+    const data = await res.json();
+    expect(data.apiError.code).toBe('compile_failed');
+    expect(data.apiError.message).toBe('ERROR: Parser error: syntax error in file /in.scad, line 2');
+    expect(data.error).toBe(data.apiError.message);
+    expect(data.apiError.detail).toContain("Can't parse file '/in.scad'!");
+  });
+
+  it('returns 500 when a SyntaxError is not the user script', async () => {
+    runBrep.mockRejectedValueOnce(new SyntaxError('Unexpected token < in JSON at position 0'));
+    const brep = await post({ code: B123D, language: 'build123d' });
+    expect(brep.status).toBe(500);
+    const brepBody = await brep.json();
+    expect(brepBody.apiError.code).toBe('internal');
+    expect(brepBody.error).toBe('Something went wrong on the server.');
+    expect(brepBody.error).not.toContain('Unexpected token');
+
+    vi.mocked(compileScad).mockRejectedValueOnce(new SyntaxError('Unexpected token < in JSON at position 0'));
+    const scad = await post({ code: 'cube(1);', language: 'openscad' });
+    expect(scad.status).toBe(500);
+    const scadBody = await scad.json();
+    expect(scadBody.apiError.code).toBe('internal');
+    expect(scadBody.apiError.code).not.toBe('compile_failed');
+    expect(scadBody.apiError.code).not.toBe('bad_request');
+  });
 });
