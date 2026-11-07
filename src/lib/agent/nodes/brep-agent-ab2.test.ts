@@ -3,7 +3,7 @@ import { AIMessage, HumanMessage, ToolMessage } from '@langchain/core/messages';
 import type { AgentStateType } from '../graph';
 import type { AssemblySpec } from '../assembly-spec';
 import { resolveSpec } from '../spec-expr';
-import { makeBrepAgentBuild } from './brep-agent-build';
+import { makeBrepAgentBuild, checkScriptGuardrails, applyParameterOverrides } from './brep-agent-build';
 import { validateBrep } from './validate-brep';
 import { auditNesting } from '../nesting-audit';
 import { getBuildRequirements, clearBuildRequirementsCache } from '../requirements';
@@ -146,8 +146,9 @@ describe('ab2: validateBrep omitted components and connectivity', () => {
     );
     expect(missingErrors).toHaveLength(0);
 
-    // Case 2: lid is NOT omitted in buildNotes -> validateBrep produces an error for missing component
+    // Case 2: lid is NOT omitted in buildNotes -> validateBrep produces an error for missing component in agent mode
     const resWithoutOmitted = await validateBrep({
+      buildMode: 'agent',
       currentCode: 'base = Box(100, 100, 10)\nbase.label = "base"\n_cadai_parts = [base]\nresult = base',
       assemblySpec: twoPartSpec,
       attemptCount: 1,
@@ -162,6 +163,21 @@ describe('ab2: validateBrep omitted components and connectivity', () => {
     expect(missingLid).toBeDefined();
     expect(missingLid?.severity).toBe('error');
     expect(resWithoutOmitted.isValid).toBe(false);
+
+    // Case 3: In oneshot mode, missing component is a warning, not a hard error
+    const resOneshot = await validateBrep({
+      buildMode: 'oneshot',
+      currentCode: 'base = Box(100, 100, 10)\nbase.label = "base"\n_cadai_parts = [base]\nresult = base',
+      assemblySpec: twoPartSpec,
+      attemptCount: 1,
+      compileFailures: 0,
+      failureKind: 'none',
+      buildNotes: [],
+    } as never);
+    const oneshotMissing = (resOneshot.specViolations ?? []).find(
+      (v) => v.field === 'lid' && v.measured === 'missing'
+    );
+    expect(oneshotMissing?.severity).toBe('warning');
   });
 
   it('validateBrep connectivity check flags disconnected parts', async () => {
@@ -179,6 +195,7 @@ describe('ab2: validateBrep omitted components and connectivity', () => {
     });
 
     const res = await validateBrep({
+      buildMode: 'agent',
       currentCode: 'code',
       assemblySpec: {
         assemblyName: 'box',
@@ -200,6 +217,26 @@ describe('ab2: validateBrep omitted components and connectivity', () => {
     expect(disconn?.message).toContain('disconnected part');
     expect(disconn?.message).toContain('floating_lid');
     expect(res.isValid).toBe(false);
+
+    // In oneshot mode, disconnected is a warning
+    const resOneshot = await validateBrep({
+      buildMode: 'oneshot',
+      currentCode: 'code',
+      assemblySpec: {
+        assemblyName: 'box',
+        parameters: [],
+        components: [
+          { name: 'base', localExtents: [100, 100, 10], position: [0, 0, 0], shape: { kind: 'box' } },
+          { name: 'floating_lid', localExtents: [100, 100, 10], position: [0, 0, 50], shape: { kind: 'box' } },
+        ],
+      } as unknown as AssemblySpec,
+      attemptCount: 1,
+      compileFailures: 0,
+      failureKind: 'none',
+      buildNotes: [],
+    } as never);
+    const oneshotDisconn = (resOneshot.specViolations ?? []).find((v) => v.field === 'floating_lid' && v.measured === 'disconnected');
+    expect(oneshotDisconn?.severity).toBe('warning');
   });
 });
 
@@ -526,5 +563,274 @@ result = Compound([base, lid])
     const errB = await runBuildWithTurns(turnsB);
     expect(errB).toContain('Finish rejected');
     expect(errB).toContain('marked unmet without an explanation in evidence');
+  });
+});
+
+const ESCAPE = `from build123d import *
+def g():
+    yield h.gi_frame.f_back.f_back.f_builtins
+h = g()
+b = next(h)
+o = b['op' + 'en']
+result = Box(1, 1, 1)
+`;
+
+describe('ab2 review regression tests (P1-P10)', () => {
+  const probeSpec = resolveSpec({
+    assemblyName: 'box',
+    boundingBox: { width: 100, length: 100, height: 50 },
+    parameters: [{ name: 'lid_open_deg', value: 0, min: 0, max: 90, unit: 'deg', description: 'lid angle' }],
+    components: [
+      { name: 'base', localExtents: [100, 100, 40], position: [0, 0, 0], shape: { kind: 'box' } },
+      { name: 'lid', localExtents: [100, 100, 10], position: [0, 0, 40], shape: { kind: 'box' } },
+    ],
+    jointContracts: [{ type: 'hinge', partA: 'base', partB: 'lid', clearance: 0.5 }],
+  } as never).spec;
+
+  const probeSTL = Buffer.from('solid m\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid m\n').toString('base64');
+
+  function okParts(vols: [number, number]) {
+    return {
+      ok: true,
+      parts: [
+        { label: 'base', valid: true, volume: vols[0], min: [0, 0, 0], max: [100, 100, 40] },
+        { label: 'lid', valid: true, volume: vols[1], min: [0, 0, 40], max: [100, 100, 50] },
+      ],
+      solids: 2,
+      bbox: { min: [0, 0, 0], max: [100, 100, 50] },
+      stl: probeSTL,
+      ms: 5,
+      interferences: [],
+      disconnected: [],
+    };
+  }
+
+  async function driveProbe(turns: AIMessage[], impl: (s: string) => unknown) {
+    const scripts: string[] = [];
+    vi.spyOn(brepRunner, 'runBrep').mockImplementation(async (s: string) => {
+      scripts.push(s);
+      return impl(s) as never;
+    });
+    const tool: string[] = [];
+    let i = 0;
+    const model = {
+      bindTools: vi.fn().mockReturnThis(),
+      invoke: vi.fn(async (msgs: unknown[]) => {
+        const last = msgs[msgs.length - 1];
+        if (last instanceof ToolMessage && typeof last.content === 'string') tool.push(last.content);
+        return i < turns.length ? turns[i++] : new AIMessage({ content: 'stop' });
+      }),
+    };
+    const writes: unknown[] = [];
+    const out = await makeBrepAgentBuild(model as never)(
+      {
+        assemblySpec: probeSpec,
+        currentCode: '',
+        attemptCount: 0,
+        messages: [new HumanMessage('hinged lid box')],
+        failureKind: 'none',
+      } as never,
+      { writer: (e: unknown) => writes.push(e) } as never
+    );
+    return { out, scripts, tool, writes };
+  }
+
+  const callTool = (name: string, args: object, id = Math.random().toString()) =>
+    new AIMessage({ content: '', tool_calls: [{ id, name, args }] });
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    clearBuildRequirementsCache();
+    delete process.env.CADAI_AGENT_MAX_TURNS;
+  });
+
+  it('P1: guardrail rejects frame escape and prelude-prefix bypasses', () => {
+    expect(checkScriptGuardrails(ESCAPE).ok).toBe(false);
+    expect(checkScriptGuardrails('from build123d import *; import os\nresult = Box(1,1,1)').ok).toBe(false);
+    expect(checkScriptGuardrails('fused = (1).__class__.__mro__\nresult = Box(1,1,1)').ok).toBe(false);
+    expect(checkScriptGuardrails('t = type(Box)\nresult = Box(1,1,1)').ok).toBe(false);
+    expect(checkScriptGuardrails("x = f'{1}'\nresult = Box(1,1,1)").ok).toBe(false);
+  });
+
+  it('P2: override injection is rejected for invalid keys and non-numeric values', () => {
+    const s = 'lid_open_deg = 0  # [0:5:90] a\nresult = Box(1,1,1)';
+    const o = applyParameterOverrides(s, { lid_open_deg: '0\nimport os', 'x\nimport sys\ny': 1 });
+    expect(o).not.toContain('import os');
+    expect(o).not.toContain('import sys');
+  });
+
+  it('P3: guardrail-rejected script is never rendered and never becomes currentCode', async () => {
+    const bad = 'from build123d import *\nimport os\nresult = Box(1,1,1)';
+    const r = await driveProbe(
+      [callTool('run_script', { script: bad }), callTool('render', { overrides: { lid_open_deg: 10 } })],
+      () => okParts([1000, 500])
+    );
+    expect(r.scripts.some((s) => s.includes('import os'))).toBe(false);
+    expect(r.out.currentCode).not.toContain('import os');
+  });
+
+  it('P4: render override injection does not leak into runner or deltas', async () => {
+    const good = 'from build123d import *\nlid_open_deg = 0  # [0:5:90] a\nresult = Box(1,1,1)';
+    const r = await driveProbe(
+      [callTool('run_script', { script: good }), callTool('render', { overrides: { lid_open_deg: '0; import os' } })],
+      () => okParts([1000, 500])
+    );
+    expect(r.scripts.some((s) => s.includes('import os'))).toBe(false);
+    const deltas = r.writes.map((w) => (w as { text?: string }).text).join('');
+    expect(deltas).not.toContain('import os');
+  });
+
+  it('P5: refined script v2 finishes without stale baseline volume rejection', async () => {
+    const v1 = 'from build123d import *\nlid_open_deg = 0  # [0:5:90] a\nresult = Box(1,1,1)';
+    const v2 = v1 + '\n# refined';
+    const r = await driveProbe(
+      [
+        callTool('run_script', { script: v1 }),
+        callTool('run_script', { script: v2 }),
+        callTool('render', { overrides: { lid_open_deg: 90 } }),
+        callTool('finish', { script: v2, requirements: [{ id: 'cad_request', status: 'met' }] }),
+      ],
+      (s) => {
+        if (s.includes('lid_open_deg = 90')) {
+          return {
+            ok: true,
+            parts: [
+              { label: 'base', valid: true, volume: 800, min: [0, 0, 0], max: [100, 100, 40] },
+              { label: 'lid', valid: true, volume: 400, min: [0, 0, 40], max: [100, 100, 140] },
+            ],
+            solids: 2,
+            bbox: { min: [0, 0, 0], max: [100, 100, 140] },
+            stl: probeSTL,
+            ms: 5,
+            interferences: [],
+            disconnected: [],
+          };
+        }
+        if (s.includes('refined')) return okParts([800, 400]);
+        return okParts([1000, 500]);
+      }
+    );
+    expect(r.tool.at(-1)).not.toContain('changes the size');
+    expect(r.writes.map((w) => (w as { text?: string }).text).join('')).toContain('finished');
+  });
+
+  it('P6: pose parameter that moves nothing is rejected; tests on older script do not count', async () => {
+    const v1 = 'from build123d import *\nlid_open_deg = 0  # [0:5:90] unused\nresult = Box(1,1,1)';
+    // Case A: pose does not move geometry
+    const rA = await driveProbe(
+      [
+        callTool('run_script', { script: v1 }),
+        callTool('render', { overrides: { lid_open_deg: 90 } }),
+        callTool('finish', { script: v1, requirements: [{ id: 'cad_request', status: 'met' }] }),
+      ],
+      () => okParts([1000, 500])
+    );
+    expect(rA.tool.at(-1)).toContain('does not move any part in the geometry');
+
+    // Case B: testing v1 at max does not let v2 finish without testing v2 at max
+    const v2 = 'from build123d import *\nlid_open_deg = 0  # [0:5:90] unused\nresult = Box(2,2,2) # totally different';
+    const rB = await driveProbe(
+      [
+        callTool('run_script', { script: v1 }),
+        callTool('render', { overrides: { lid_open_deg: 90 } }),
+        callTool('finish', { script: v2, requirements: [{ id: 'cad_request', status: 'met' }] }),
+      ],
+      () => okParts([1000, 500])
+    );
+    expect(rB.tool.at(-1)).toContain("Pose parameter 'lid_open_deg' was not run at its range max (90) on this script version");
+  });
+
+  it('P7: omitted with empty reason or omitting all components is rejected', async () => {
+    const s = 'from build123d import *\nlid_open_deg = 0  # [0:5:90] a\nresult = Box(1,1,1)';
+    const rA = await driveProbe(
+      [
+        callTool('run_script', { script: s }),
+        callTool('finish', {
+          script: s,
+          omitted: [{ component: 'base', reason: '' }, { component: 'lid', reason: '' }],
+          requirements: [{ id: 'cad_request', status: 'met' }],
+        }),
+      ],
+      () => ({ ...okParts([1, 1]), parts: [{ label: 'x', valid: true, volume: 1, min: [0, 0, 0], max: [1, 1, 1] }] })
+    );
+    expect(rA.tool.at(-1)).toContain('empty or insufficient reason');
+
+    const rB = await driveProbe(
+      [
+        callTool('run_script', { script: s }),
+        callTool('finish', {
+          script: s,
+          omitted: [{ component: 'base', reason: 'consolidated' }, { component: 'lid', reason: 'consolidated' }],
+          requirements: [{ id: 'cad_request', status: 'met' }],
+        }),
+      ],
+      () => ({ ...okParts([1, 1]), parts: [{ label: 'x', valid: true, volume: 1, min: [0, 0, 0], max: [1, 1, 1] }] })
+    );
+    expect(rB.tool.at(-1)).toContain('Cannot omit all spec components');
+  });
+
+  it('P8: finish then run_script in same reply ignores trailing calls and retains validated script', async () => {
+    const s = 'from build123d import *\nlid_open_deg = 0  # [0:5:90] a\nresult = Box(1,1,1)';
+    const other = 'from build123d import *\nresult = Box(9,9,9)';
+    const r = await driveProbe(
+      [
+        callTool('run_script', { script: s }),
+        callTool('render', { overrides: { lid_open_deg: 90 } }),
+        new AIMessage({
+          content: '',
+          tool_calls: [
+            { id: 'f', name: 'finish', args: { script: s, requirements: [{ id: 'cad_request', status: 'met' }] } },
+            { id: 'r', name: 'run_script', args: { script: other } },
+          ],
+        }),
+      ],
+      (script) => {
+        if (script.includes('lid_open_deg = 90')) {
+          return {
+            ok: true,
+            parts: [
+              { label: 'base', valid: true, volume: 1000, min: [0, 0, 0], max: [100, 100, 40] },
+              { label: 'lid', valid: true, volume: 500, min: [0, 0, 40], max: [100, 100, 140] },
+            ],
+            solids: 2,
+            bbox: { min: [0, 0, 0], max: [100, 100, 140] },
+            stl: probeSTL,
+            ms: 5,
+            interferences: [],
+            disconnected: [],
+          };
+        }
+        return okParts([1000, 500]);
+      }
+    );
+    expect(r.out.currentCode).toBe(s);
+    expect(r.out.currentCode).not.toBe(other);
+    expect(r.scripts.some((sc) => sc.includes('Box(9,9,9)'))).toBe(false);
+  });
+
+  it('P9: tool calls are capped at 5 per turn', async () => {
+    process.env.CADAI_AGENT_MAX_TURNS = '1';
+    const s = 'from build123d import *\nresult = Box(1,1,1)';
+    const calls = Array.from({ length: 25 }, (_, k) => ({ id: `c${k}`, name: 'run_script', args: { script: s } }));
+    const r = await driveProbe([new AIMessage({ content: '', tool_calls: calls })], () => okParts([1, 1]));
+    expect(r.scripts.length).toBe(5);
+  });
+
+  it('P10: nesting audit does not produce false positives for hinges and handles reversed drawer order', () => {
+    const sp = {
+      assemblyName: 'box',
+      components: [],
+      jointContracts: [{ type: 'hinge', partA: 'base', partB: 'lid', clearance: 0.3 }],
+    } as never;
+    const v = auditNesting(sp, [{ label: 'base', min: [0, 0, 0], max: [100, 60, 40] }, { label: 'lid', min: [0.1, 0, 40], max: [99.9, 60, 45] }], 'hinged box');
+    expect(v.length).toBe(0);
+
+    const sp2 = {
+      assemblyName: 'cab',
+      components: [],
+      jointContracts: [{ type: 'drawer_slide', partA: 'drawer', partB: 'shell', clearance: 0.5 }],
+    } as never;
+    const v2 = auditNesting(sp2, [{ label: 'drawer', min: [2, 0, 2], max: [98, 80, 40] }, { label: 'shell', min: [0, 0, 0], max: [100, 80, 45] }], 'drawer');
+    expect(v2.length).toBe(0);
   });
 });

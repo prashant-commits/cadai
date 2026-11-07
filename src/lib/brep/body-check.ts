@@ -140,6 +140,111 @@ export function checkPythonBody(body: string, options: BodyCheckOptions = {}): B
   return { ok: true };
 }
 
+export const PRELUDE_SENTINEL = '# ---- cadai prelude end ----';
+
+const ALLOWED_MATH_FUNCS = new Set([
+  'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
+  'radians', 'degrees', 'sqrt', 'pi', 'exp', 'log', 'floor', 'ceil',
+]);
+
+const ALLOWED_PRELUDE_EXACT_LINES = new Set([
+  'from build123d import *',
+  'import math as _math',
+  'import math',
+  'from math import sin, cos, tan, radians, sqrt, pi',
+  '# Spec expressions take degrees; model bodies use the math functions above (radians).',
+  'def _sind(deg): return _math.sin(_math.radians(deg))',
+  'def _cosd(deg): return _math.cos(_math.radians(deg))',
+  'def _tand(deg): return _math.tan(_math.radians(deg))',
+  'try:',
+  '    _cadai_notes',
+  'except NameError:',
+  '    _cadai_notes = []',
+]);
+
+function stripPrelude(script: string): string {
+  if (script.includes(PRELUDE_SENTINEL)) {
+    const sentinelIdx = script.indexOf(PRELUDE_SENTINEL);
+    return script.slice(sentinelIdx + PRELUDE_SENTINEL.length);
+  }
+
+  const lines = script.split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      i++;
+      continue;
+    }
+    if (ALLOWED_PRELUDE_EXACT_LINES.has(trimmed)) {
+      i++;
+      continue;
+    }
+    if (trimmed.startsWith('from math import ')) {
+      const items = trimmed.slice('from math import '.length).split(',').map((s) => s.trim());
+      if (items.length > 0 && items.every((fn) => ALLOWED_MATH_FUNCS.has(fn))) {
+        i++;
+        continue;
+      }
+    }
+    break;
+  }
+  return lines.slice(i).join('\n');
+}
+
+const BANNED_ANYWHERE_SCRIPT = new Set([
+  'import', 'from', 'class', 'global', 'nonlocal', 'async', 'await', 'yield', 'format', 'format_map',
+]);
+
+/**
+ * Checks whole-script compliance for agentic and full Python builds.
+ * Relaxes only module-level def and return from checkPythonBody;
+ * strictly enforces attribute, string, keyword, and name bans.
+ */
+export function checkPythonScript(script: string): BodyCheck {
+  if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029]/.test(script)) {
+    return reject('control character in the script');
+  }
+
+  const remainder = stripPrelude(script);
+  let tokens: Tok[];
+  try {
+    tokens = tokenize(remainder);
+  } catch (error) {
+    return reject((error as Error).message);
+  }
+
+  const attribute = (i: number) => isOp(tokens[i - 1], '.');
+
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.k === 'str') {
+      if (/[fFtT]/.test(t.prefix)) return reject('f-string or t-string');
+      if (t.v.includes('__')) return reject('dunder in a string');
+      if (/\\(?:x5[fF]|137|u005[fF]|U0000005[fF]|N\{)/.test(t.v)) return reject('escaped underscore in a string');
+      if (FILE_KEYWORD.test(t.v)) return reject(`string ${t.v} names a file keyword`);
+      continue;
+    }
+    if (t.k !== 'name') continue;
+    if (t.v.includes('__')) return reject(`dunder name ${t.v}`);
+    if (!attribute(i) && BUILDER_NAMES.test(t.v)) return reject(BUILDER_MODE_REASON);
+    if (BANNED_ANYWHERE_SCRIPT.has(t.v)) return reject(`${t.v} is not allowed in a script`);
+    if (attribute(i)) {
+      if (BANNED_ATTRIBUTE.test(t.v)) return reject(`attribute .${t.v} is not allowed in a script`);
+      continue;
+    }
+    if (BANNED_NAMES.has(t.v) || /^(?:export|import)/i.test(t.v)) return reject(`${t.v} is not allowed in a script`);
+    if (isKeywordArgument(tokens, i) && FILE_KEYWORD.test(t.v)) return reject(`keyword ${t.v}= names a file`);
+    if (t.v === 'Text' && isOp(tokens[i + 1], '(')) {
+      if (positionalArguments(tokens, i + 1) > TEXT_MAX_POSITIONAL) return reject('Text with a font or file given by position');
+      if (unpacksArguments(tokens, i + 1)) return reject('Text with * or ** arguments');
+    }
+  }
+
+  return { ok: true };
+}
+
 function isOp(t: Tok | undefined, v: string): boolean {
   return t?.k === 'op' && t.v === v;
 }

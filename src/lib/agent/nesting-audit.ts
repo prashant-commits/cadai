@@ -47,19 +47,25 @@ export function auditNesting(
         openingY = round1(wallBack.min[1] - wallFront.max[1]);
       }
 
-      // Method B: Check floor spec component if present
+      // Method B: Check floor spec component if present and smaller than outer footprint
       if (openingX === null || openingY === null) {
         const floorComp = spec?.components?.find((c) => /floor/i.test(c.name));
         if (floorComp?.localExtents) {
-          openingX = Number(floorComp.localExtents[0]);
-          openingY = Number(floorComp.localExtents[1]);
+          const fx = Number(floorComp.localExtents[0]);
+          const fy = Number(floorComp.localExtents[1]);
+          const maxW = spec?.boundingBox?.width ?? Infinity;
+          const maxL = spec?.boundingBox?.length ?? Infinity;
+          if (fx < maxW - 2 && fy < maxL - 2) {
+            openingX = fx;
+            openingY = fy;
+          }
         }
       }
 
       // Method C: Check boundingBox minus walls
       if (openingX === null || openingY === null) {
         if (spec?.boundingBox) {
-          const wallParam = spec.parameters?.find((p) => /^wall(?:_t)?$/i.test(p.name))?.value ?? 3;
+          const wallParam = spec.parameters?.find((p) => /^(?:wall|wall_t|thickness|t)$/i.test(p.name))?.value ?? 3;
           openingX = round1(spec.boundingBox.width - 2 * wallParam);
           openingY = round1(spec.boundingBox.length - 2 * wallParam);
         }
@@ -82,26 +88,41 @@ export function auditNesting(
 
   // 2. Joint contracts with clearances
   for (const j of spec?.jointContracts ?? []) {
+    // Only check insertion joints (slide, drawer, nest, insert, stack)
+    if (!/slide|drawer|nest|insert|stack/i.test(j.type)) continue;
+
     if (j.clearance && j.partA && j.partB) {
       const pA = parts.find((p) => p.label === j.partA);
       const pB = parts.find((p) => p.label === j.partB);
       if (pA && pB) {
-        const sizeA = [round1(pA.max[0] - pA.min[0]), round1(pA.max[1] - pA.min[1])];
-        const sizeB = [round1(pB.max[0] - pB.min[0]), round1(pB.max[1] - pB.min[1])];
-        // If partB is a drawer or slider inside shell partA
-        if (/slide|drawer|nest/i.test(j.type) || sizeB[0] < sizeA[0]) {
-          const requiredAllowance = j.clearance * 2;
-          // Inner part outline plus required clearance must fit within host dimensions
-          if (sizeB[0] + requiredAllowance > sizeA[0] + 0.1) {
-            violations.push({
-              kind: 'clearance',
-              field: j.partB,
-              expected: `clearance ${j.clearance} mm`,
-              measured: `exceeds host size`,
-              severity: 'error',
-              message: `Fit violation between '${j.partB}' (${sizeB[0]} mm) and host '${j.partA}' (${sizeA[0]} mm): clearance ${j.clearance} mm cannot be achieved.`,
-            });
-          }
+        const volA = (pA.max[0] - pA.min[0]) * (pA.max[1] - pA.min[1]) * (pA.max[2] - pA.min[2]);
+        const volB = (pB.max[0] - pB.min[0]) * (pB.max[1] - pB.min[1]) * (pB.max[2] - pB.min[2]);
+        const [host, inner] = volA >= volB ? [pA, pB] : [pB, pA];
+
+        const hostSizeX = round1(host.max[0] - host.min[0]);
+        const hostSizeY = round1(host.max[1] - host.min[1]);
+        const innerSizeX = round1(inner.max[0] - inner.min[0]);
+        const innerSizeY = round1(inner.max[1] - inner.min[1]);
+
+        const requiredAllowance = j.clearance * 2;
+        const isSlide = /slide|drawer/i.test(j.type);
+        // For slides/drawers, motion is along one axis (slide direction) which may span the host extent,
+        // so clearance is required on the cross-section perpendicular to slide, and inner must not exceed host.
+        // For 2D nested/inserted features, clearance is required on both axes.
+        const fitViolation = isSlide
+          ? (innerSizeX > hostSizeX + 0.1 || innerSizeY > hostSizeY + 0.1 ||
+             (innerSizeX + requiredAllowance > hostSizeX + 0.1 && innerSizeY + requiredAllowance > hostSizeY + 0.1))
+          : (innerSizeX + requiredAllowance > hostSizeX + 0.1 || innerSizeY + requiredAllowance > hostSizeY + 0.1);
+
+        if (fitViolation) {
+          violations.push({
+            kind: 'clearance',
+            field: inner.label,
+            expected: `clearance ${j.clearance} mm`,
+            measured: `${innerSizeX}x${innerSizeY} vs host ${hostSizeX}x${hostSizeY}`,
+            severity: 'error',
+            message: `Fit violation between inner '${inner.label}' (${innerSizeX}x${innerSizeY} mm) and host '${host.label}' (${hostSizeX}x${hostSizeY} mm): clearance ${j.clearance} mm cannot be achieved.`,
+          });
         }
       }
     }

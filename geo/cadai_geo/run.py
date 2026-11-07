@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -446,7 +447,7 @@ def compute_interferences(part_shapes: list[tuple[str, object]]) -> list[dict]:
 
 
 def _is_pin_in_bore(s1: object, s2: object, b1: tuple, b2: tuple, dist: float) -> bool:
-    """True when s1/s2 is a pin inside a bore with radial clearance dist <= 1 mm."""
+    """True when s1/s2 is a cylindrical pin inside a cylindrical bore with radial clearance <= 1 mm."""
     if dist > 1.0 + 1e-4:
         return False
     if b1[0] is None or b2[0] is None:
@@ -456,35 +457,90 @@ def _is_pin_in_bore(s1: object, s2: object, b1: tuple, b2: tuple, dist: float) -
         if b1[1][dim] < b2[0][dim] - 1e-4 or b2[1][dim] < b1[0][dim] - 1e-4:
             return False
     try:
-        has_cyl1 = any("CYLINDER" in str(getattr(f, "geom_type", "")) for f in s1.faces())
-        has_cyl2 = any("CYLINDER" in str(getattr(f, "geom_type", "")) for f in s2.faces())
-        return has_cyl1 and has_cyl2
+        cyls1 = [f for f in s1.faces() if "CYLINDER" in str(getattr(f, "geom_type", ""))]
+        cyls2 = [f for f in s2.faces() if "CYLINDER" in str(getattr(f, "geom_type", ""))]
+        if not cyls1 or not cyls2:
+            return False
+        for f1 in cyls1:
+            for f2 in cyls2:
+                try:
+                    surf1 = f1.geom_adaptor().Cylinder()
+                    surf2 = f2.geom_adaptor().Cylinder()
+                    r1 = surf1.Radius()
+                    r2 = surf2.Radius()
+                    if r1 >= r2:
+                        bore_f, pin_f = f1, f2
+                        bore_surf, pin_surf = surf1, surf2
+                        r_bore, r_pin = r1, r2
+                    else:
+                        bore_f, pin_f = f2, f1
+                        bore_surf, pin_surf = surf2, surf1
+                        r_bore, r_pin = r2, r1
+
+                    radial_clearance = r_bore - r_pin
+                    if radial_clearance < -1e-4 or radial_clearance > 1.0 + 1e-4:
+                        continue
+
+                    u1, u2, _, _ = bore_f._uv_bounds()
+                    angle_span = abs(u2 - u1)
+                    if angle_span < 2.5:
+                        continue
+
+                    d1 = bore_surf.Axis().Direction()
+                    d2 = pin_surf.Axis().Direction()
+                    dot = abs(d1.X() * d2.X() + d1.Y() * d2.Y() + d1.Z() * d2.Z())
+                    if dot < 0.95:
+                        continue
+
+                    p1 = bore_surf.Location()
+                    p2 = pin_surf.Location()
+                    vx = p2.X() - p1.X()
+                    vy = p2.Y() - p1.Y()
+                    vz = p2.Z() - p1.Z()
+                    proj = vx * d1.X() + vy * d1.Y() + vz * d1.Z()
+                    perp_x = vx - proj * d1.X()
+                    perp_y = vy - proj * d1.Y()
+                    perp_z = vz - proj * d1.Z()
+                    axis_dist = math.sqrt(perp_x ** 2 + perp_y ** 2 + perp_z ** 2)
+                    if axis_dist <= 1.0 + 1e-4:
+                        return True
+                except Exception:
+                    pass
+        return False
     except Exception:
         return False
 
 
+_BASE_PART_REGEX = re.compile(r"base|bottom|case|housing|body|frame|chassis|stand|host", re.I)
+
+
 def compute_disconnected(part_shapes: list[tuple[str, object]]) -> list[str]:
-    """Parts that do not touch and are not within 0.5 mm of any other part in the closed state.
-    A pin inside a bore with radial clearance up to 1 mm counts as connected."""
-    if len(part_shapes) <= 1:
+    """Parts that do not connect to the main assembly in the closed state.
+    Builds an adjacency graph across all parts. A pin inside a bore with radial clearance
+    up to 1 mm counts as connected."""
+    if len(part_shapes) <= 1 or len(part_shapes) > 40:
         return []
 
     boxes = []
+    vols = []
     for label, shape in part_shapes:
         try:
             bb = shape.bounding_box()
             boxes.append((_xyz(bb.min), _xyz(bb.max)))
         except Exception:
             boxes.append((None, None))
+        try:
+            vols.append(float(shape.volume))
+        except Exception:
+            vols.append(1.0)
 
-    disconnected = []
-    for i, (label_i, shape_i) in enumerate(part_shapes):
-        name_i = label_i or f"part_{i + 1}"
+    n = len(part_shapes)
+    adj = [[] for _ in range(n)]
+    for i in range(n):
+        shape_i = part_shapes[i][1]
         box_i = boxes[i]
-        connected = False
-        for j, (label_j, shape_j) in enumerate(part_shapes):
-            if i == j:
-                continue
+        for j in range(i + 1, n):
+            shape_j = part_shapes[j][1]
             box_j = boxes[j]
             if box_i[0] is not None and box_j[0] is not None:
                 dx = max(0.0, max(box_i[0][0] - box_j[1][0], box_j[0][0] - box_i[1][0]))
@@ -494,17 +550,56 @@ def compute_disconnected(part_shapes: list[tuple[str, object]]) -> list[str]:
                     continue
             try:
                 d = shape_i.distance_to(shape_j)
-                if d <= 0.5 + 1e-4:
-                    connected = True
-                    break
-                elif d <= 1.0 + 1e-4 and _is_pin_in_bore(shape_i, shape_j, box_i, box_j, d):
-                    connected = True
-                    break
+                if d <= 0.5 + 1e-4 or (d <= 1.0 + 1e-4 and _is_pin_in_bore(shape_i, shape_j, box_i, box_j, d)):
+                    adj[i].append(j)
+                    adj[j].append(i)
             except Exception:
                 pass
-        if not connected:
-            disconnected.append(name_i)
-    return disconnected
+
+    visited = [False] * n
+    components: list[list[int]] = []
+    for i in range(n):
+        if not visited[i]:
+            comp = []
+            queue = [i]
+            visited[i] = True
+            for u in queue:
+                comp.append(u)
+                for v in adj[u]:
+                    if not visited[v]:
+                        visited[v] = True
+                        queue.append(v)
+            components.append(comp)
+
+    if len(components) <= 1:
+        return []
+
+    # If all components are size 1 (every part is completely disconnected/isolated)
+    if all(len(c) == 1 for c in components):
+        return [label or f"part_{idx + 1}" for idx, (label, _) in enumerate(part_shapes)]
+
+    # Score components to identify the main grounded/base component
+    def score_comp(comp: list[int]) -> float:
+        score = 0.0
+        has_base = any(_BASE_PART_REGEX.search(part_shapes[idx][0]) for idx in comp)
+        if has_base:
+            score += 10000.0
+        score += len(comp) * 100.0
+        tot_vol = sum(vols[idx] for idx in comp)
+        score += min(tot_vol, 10000.0) / 100.0
+        # proximity to origin
+        cents = []
+        for idx in comp:
+            b = boxes[idx]
+            if b[0] is not None and b[1] is not None:
+                cents.append(math.sqrt(b[0][0] ** 2 + b[0][1] ** 2 + b[0][2] ** 2))
+        if cents:
+            score -= min(cents) / 100.0
+        return score
+
+    main_comp = max(components, key=score_comp)
+    main_set = set(main_comp)
+    return [part_shapes[i][0] or f"part_{i + 1}" for i in range(n) if i not in main_set]
 
 
 # ---- validity: every exported solid must be valid, before and after the STEP round trip
@@ -965,6 +1060,7 @@ def measure_and_export(
     fallback_error: str | None = None,
     interferences: bool = False,
     part_meshes: bool = False,
+    connectivity: bool = False,
 ) -> dict:
     """Trusted stage: load BREP from ``scratch``, measure it, write exports into ``outdir``.
 
@@ -1023,7 +1119,8 @@ def measure_and_export(
             }
             if interferences:
                 payload["interferences"] = compute_interferences(part_shapes)
-            payload["disconnected"] = compute_disconnected(part_shapes)
+            if connectivity:
+                payload["disconnected"] = compute_disconnected(part_shapes)
             if part_meshes:
                 try:
                     _, part_files = _export_part_meshes(part_shapes, outdir)
@@ -1042,6 +1139,7 @@ def run(
     outdir: str | os.PathLike,
     interferences: bool = False,
     part_meshes: bool = False,
+    connectivity: bool = False,
 ) -> dict:
     """Execute ``script_path`` and write ``model.step`` / ``model.stl`` into ``outdir``."""
     try:
@@ -1089,7 +1187,8 @@ def run(
         }
         if interferences:
             payload["interferences"] = compute_interferences(part_shapes)
-        payload["disconnected"] = compute_disconnected(part_shapes)
+        if connectivity:
+            payload["disconnected"] = compute_disconnected(part_shapes)
         if part_meshes:
             try:
                 part_meshes_dict, _ = _export_part_meshes(part_shapes, outdir)
@@ -1120,18 +1219,21 @@ def main(argv: list[str] | None = None) -> None:
     interferences = "--interferences" in args
     if interferences:
         args.remove("--interferences")
+    connectivity = "--connectivity" in args
+    if connectivity:
+        args.remove("--connectivity")
     part_meshes = "--part-meshes" in args or "--partMeshes" in args
     if "--part-meshes" in args:
         args.remove("--part-meshes")
     if "--partMeshes" in args:
         args.remove("--partMeshes")
     if len(args) != 3:
-        payload = {"ok": False, "error": "usage: python -m cadai_geo <script.py> <outdir> [--interferences] [--part-meshes]"}
+        payload = {"ok": False, "error": "usage: python -m cadai_geo <script.py> <outdir> [--interferences] [--connectivity] [--part-meshes]"}
     else:
         os.makedirs(args[2], exist_ok=True)
         sink = io.StringIO()
         with contextlib.redirect_stdout(sink):
-            payload = run(args[1], args[2], interferences=interferences, part_meshes=part_meshes)
+            payload = run(args[1], args[2], interferences=interferences, part_meshes=part_meshes, connectivity=connectivity)
             try:
                 write_result(args[2], payload)
             except OSError:

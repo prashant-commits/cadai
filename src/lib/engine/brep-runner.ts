@@ -49,6 +49,7 @@ export interface RunBrepOptions {
   signal?: AbortSignal;
   interferences?: boolean;
   partMeshes?: boolean;
+  connectivity?: boolean;
 }
 
 const cancelledResult = (t0: number): BrepResult => ({
@@ -111,6 +112,7 @@ async function runBrepHttp(
     timeout_s,
     interferences: Boolean(opts?.interferences),
     partMeshes: Boolean(opts?.partMeshes),
+    connectivity: Boolean(opts?.connectivity),
   });
 
   let res: Response;
@@ -299,6 +301,9 @@ async function runBrepLocal(
         const args = ['-I', '-m', 'cadai_geo', scriptPath, outDir];
         if (opts?.interferences) {
           args.push('--interferences');
+        }
+        if (opts?.connectivity) {
+          args.push('--connectivity');
         }
         if (opts?.partMeshes) {
           args.push('--part-meshes');

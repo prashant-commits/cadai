@@ -9,7 +9,7 @@ import type { AttemptRecord } from '../graph';
 import type { ValidationResult } from '../../engine/scad-compiler';
 import { runBrep } from '../../engine/brep-runner';
 import { repairHint } from '../../brep/repair-hints';
-import { isBuilderModeReason } from '../../brep/body-check';
+import { isBuilderModeReason, checkPythonScript } from '../../brep/body-check';
 import { localOriginViolations, stlToAscii, toModelInfo, toModuleFrames, toPlacementReport } from '../../brep/measurements';
 import { auditNesting } from '../nesting-audit';
 import { contentText } from '../message-text';
@@ -39,11 +39,49 @@ export async function validateBrep(state: AgentStateType, config?: RunnableConfi
   }
   if (!state.currentCode) return { isValid: false, failureKind: 'no_code' };
 
+  const isAgentMode = (state as { buildMode?: string }).buildMode === 'agent' || process.env.CADAI_BUILD_MODE === 'agent';
+  if (isAgentMode) {
+    const guard = checkPythonScript(state.currentCode);
+    if (!guard.ok) {
+      const failure: SpecViolation = {
+        kind: 'compile',
+        field: '',
+        expected: 'script passes guardrails',
+        measured: 'rejected',
+        severity: 'error',
+        message: `Script guardrail failure: ${guard.reason}`,
+      };
+      const attempt: AttemptRecord = {
+        n: state.attemptCount,
+        phase: state.attemptCount === 1 ? 'draft' : 'repair',
+        code: state.currentCode,
+        exitCode: 1,
+        errors: [{ severity: 'error', message: guard.reason ?? 'guardrail failure', count: 1, raw: guard.reason ?? '' }],
+        warnings: [],
+        violations: [failure],
+        diagnosis: 'guardrail',
+      };
+      return {
+        isValid: false,
+        stlContent: null,
+        stepContent: null,
+        specViolations: [failure],
+        attemptHistory: [attempt],
+        failureKind: 'compile',
+        compileFailures: state.compileFailures + 1,
+        messages: [new HumanMessage(`[Validation Report]\nValidation Result: Failed\nViolations:\n- ERROR [compile]: ${failure.message}\n`)],
+      };
+    }
+  }
+
   const spec = state.assemblySpec;
   // The run's stop signal reaches the geometry process: a stopped run kills it
   // instead of waiting out the runner's own timeout.
   const signal = config?.signal;
-  const r = await runBrep(state.currentCode, { signal });
+  const r = await runBrep(state.currentCode, {
+    signal,
+    ...(isAgentMode ? { connectivity: true } : {}),
+  });
   if (signal?.aborted) {
     throw Object.assign(new Error('The run was stopped during the geometry run.'), { name: 'AbortError' });
   }
@@ -152,7 +190,7 @@ export async function validateBrep(state: AgentStateType, config?: RunnableConfi
             field: comp.name,
             expected: 'present in _cadai_parts',
             measured: 'missing',
-            severity: 'error',
+            severity: isAgentMode ? 'error' : 'warning',
             message: `Spec component '${comp.name}' is missing from _cadai_parts and was not omitted.`,
           });
         }
@@ -172,28 +210,30 @@ export async function validateBrep(state: AgentStateType, config?: RunnableConfi
   const placementViolations = auditPlacement(placementReport, r.bbox?.min ?? modelInfo?.boundingBox.min ?? null, spec);
   // Replace the floating warning for jointed parts with the connectivity check
   for (const pv of placementViolations) {
-    if (pv.kind === 'floating' && (jointedNames.has(pv.field) || /lid|pin|drawer|slide|hinge/i.test(pv.field))) {
+    if (pv.kind === 'floating' && jointedNames.has(pv.field)) {
       continue;
     }
     violations.push(pv);
   }
 
-  // Connectivity check: hard error for any disconnected part in the closed pose
+  // Nesting and fit sanity check
+  const humanMessages = (state.messages ?? []).filter((m) => m._getType() === 'human');
+  const userPrompt = humanMessages.length > 0 ? contentText(humanMessages[0]) : '';
+  const nestingViolations = auditNesting(spec, r.parts, userPrompt);
+  violations.push(...nestingViolations.map((v) => (isAgentMode ? v : { ...v, severity: 'warning' as const })));
+
+  // Connectivity check: error unless parts are allowed islands (placed apart on purpose, e.g. print layout)
+  const isPrintLayout = /print\s+.*beside|print.*layout|coasters|chess|loose|separate/i.test(userPrompt) || /print/i.test((spec as { assemblyMode?: string })?.assemblyMode ?? '');
   for (const name of r.disconnected ?? []) {
     violations.push({
       kind: 'floating',
       field: name,
       expected: 'connected to assembly',
       measured: 'disconnected',
-      severity: 'error',
+      severity: (!isAgentMode || isPrintLayout) ? 'warning' : 'error',
       message: `'${name}' is a disconnected part: it does not touch and is not within 0.5 mm of any other part in the closed pose.`,
     });
   }
-
-  // Nesting and fit sanity check
-  const humanMessages = (state.messages ?? []).filter((m) => m._getType() === 'human');
-  const userPrompt = humanMessages.length > 0 ? contentText(humanMessages[0]) : '';
-  violations.push(...auditNesting(spec, r.parts, userPrompt));
 
   for (const frame of frames) {
     if (frame.valid || !frame.name) continue;

@@ -198,6 +198,7 @@ class RunRequest(BaseModel):
     script: str
     timeout_s: float = 60
     interferences: bool = False
+    connectivity: bool = False
     partMeshes: bool = False
     part_meshes: bool = False
 
@@ -388,7 +389,7 @@ def _remove_tree(path: str) -> None:
         time.sleep(0.05)
 
 
-def _run_cli(script: str, timeout_s: float, interferences: bool = False, part_meshes: bool = False) -> dict:
+def _run_cli(script: str, timeout_s: float, interferences: bool = False, part_meshes: bool = False, connectivity: bool = False) -> dict:
     timeout_s = clamp_timeout(timeout_s)
     deadline = time.monotonic() + timeout_s
     slot = _acquire_slot(deadline)
@@ -427,6 +428,7 @@ def _run_cli(script: str, timeout_s: float, interferences: bool = False, part_me
             "home": home,
             "interferences": interferences,
             "partMeshes": part_meshes,
+            "connectivity": connectivity,
         }
         path = os.environ.get("PATH")
         if path:
@@ -475,4 +477,4 @@ def run_route(
         raise HTTPException(status_code=401)
     if len(body.script.encode("utf-8")) > _MAX_SCRIPT_BYTES:
         raise HTTPException(status_code=413, detail="script too large")
-    return _run_cli(body.script, body.timeout_s, body.interferences, body.partMeshes or body.part_meshes)
+    return _run_cli(body.script, body.timeout_s, body.interferences, body.partMeshes or body.part_meshes, body.connectivity)

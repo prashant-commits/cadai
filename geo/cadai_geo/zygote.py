@@ -575,6 +575,7 @@ def _run_trusted(request: dict) -> None:
             request.get("fallback_error") or None,
             interferences=bool(request.get("interferences")),
             part_meshes=bool(request.get("partMeshes") or request.get("part_meshes")),
+            connectivity=bool(request.get("connectivity")),
         )
         try:
             write_result(outdir, payload)

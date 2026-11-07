@@ -16,7 +16,7 @@ import {
   type Component,
   type Term,
 } from './blockout-b123d';
-import { checkPythonBody } from './body-check';
+import { checkPythonBody, PRELUDE_SENTINEL } from './body-check';
 import { comment, specNames, isReservedName, type TermContext } from './py-names';
 
 /**
@@ -181,6 +181,8 @@ export function emitBrepScript(spec: AssemblySpec, bodies: Record<string, string
     FUSE_HELPER,
     '',
     ROUND_HELPERS,
+    '',
+    PRELUDE_SENTINEL,
     '',
   ];
 
