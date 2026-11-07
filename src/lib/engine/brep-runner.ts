@@ -194,6 +194,8 @@ async function runBrepLocal(
     const outDir = path.join(tmpDir, 'out');
     await fs.writeFile(scriptPath, script, 'utf-8');
     await fs.mkdir(outDir, { recursive: true });
+    // A Stop during the setup above fired no listener yet: check before spawning.
+    if (runSignal?.aborted) return cancelledResult(t0);
 
     const childResult = await new Promise<LocalChildResult>((resolve) => {
       let stdout = '';
@@ -237,6 +239,8 @@ async function runBrepLocal(
       if (runSignal) {
         onAbort = () => killGroup(child);
         runSignal.addEventListener('abort', onAbort, { once: true });
+        // Aborted between the check above and here: the listener will never fire.
+        if (runSignal.aborted) killGroup(child);
       }
 
       child.stdout?.on('data', (chunk) => {

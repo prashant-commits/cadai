@@ -534,6 +534,7 @@ describe('review fixes (routes)', () => {
   });
 
   it('F9: a cancel that lands after the result keeps the run done with exactly one terminal outcome', async () => {
+    process.env.CADAI_CANCEL_ACK_MS = '300'; // the fake graph ignores the abort; the route ends it as done
     let release!: () => void;
     const gateOpen = new Promise<void>((r) => (release = r));
     createAgent.mockReturnValue({
@@ -637,5 +638,133 @@ describe('review fixes (routes)', () => {
     expect(new Set(seqs).size).toBe(seqs.length);
     expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
     expect(seqs.every((s) => s > 0)).toBe(true);
+  });
+});
+
+describe('re-review fixes (routes)', () => {
+  const plantCp = (key: string) =>
+    getCheckpointer().put(
+      { configurable: { thread_id: key } },
+      { v: 1, id: 'cp', ts: new Date().toISOString(), channel_values: {}, channel_versions: {}, versions_seen: {} } as never,
+      { source: 'update', step: 0, parents: {} } as never,
+      {}
+    );
+  const approve = (runId: string, extra: Record<string, unknown> = {}) =>
+    resume(post('/api/chat/resume', { threadId: 't1', runId, decision: { action: 'approve' }, ...extra }));
+  async function pausedRunWithCheckpoint() {
+    createAgent.mockReturnValue(graphOf([delta('spec'), gate]));
+    const runId: string = parse(await (await startChat()).text())[0].runId;
+    await plantCp(runCheckpointKey('t1', runId));
+    return runId;
+  }
+
+  it('N1: resuming a paused run that the sweep expired is 410 run_expired, not 409', async () => {
+    const runId = await pausedRunWithCheckpoint();
+    const file = path.join(dir, 'runs', `${runId}.json`);
+    fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf-8')), expiresAt: Date.now() - 1 }));
+    await (getRunStore() as unknown as { prune(): Promise<string[]> }).prune();
+    expect((await getRunStore().get(runId))?.error?.code).toBe('run_expired');
+    const res = await approve(runId);
+    expect(res.status).toBe(410);
+    const body = await res.json();
+    expect(body.apiError.code).toBe('run_expired');
+    expect(body.error).toBe('This paused run expired or was not found on this server. Send the request again.');
+  });
+
+  it('N2: an owner that was reaped while stalled stores nothing after the terminal event and stops its graph', async () => {
+    process.env.CADAI_RUN_LOST_MS = '100';
+    process.env.CADAI_RUN_HEARTBEAT_MS = '100000'; // the stalled owner does not heartbeat
+    let release!: () => void;
+    const stall = new Promise<void>((r) => (release = r));
+    const seen: { signal?: AbortSignal } = {};
+    createAgent.mockReturnValue({
+      stream: async (_i: unknown, c: { signal?: AbortSignal }) => {
+        seen.signal = c.signal;
+        return (async function* () {
+          yield delta('working');
+          await stall; // e.g. the machine slept
+          yield delta('late');
+          yield result('too late');
+        })();
+      },
+    });
+    const textP = (await startChat()).text();
+    await sleep(60);
+    const runId = inflightRunId();
+    await getRunStore().get(runId); // a reader observes the run
+    await sleep(150);
+    expect((await getRunStore().get(runId))?.status).toBe('failed'); // reaped as lost
+    release();
+    const live = parse(await textP);
+    const stored = await getRunStore().events(runId, 0);
+    const terminal = stored.findIndex((e) => e.t === 'error');
+    expect(terminal).toBe(stored.length - 1); // nothing after the terminal event
+    expect(stored.map((e) => e.t)).not.toContain('result');
+    expect(live.at(-1)).toMatchObject({ t: 'error', apiError: { message: 'run lost: its server instance stopped' } });
+    expect(seen.signal?.aborted).toBe(true);
+    expect((await getRunStore().get(runId))?.status).toBe('failed');
+  });
+
+  it('N3: Stop on a run whose owner is gone ends it as cancelled, not as "run lost"', async () => {
+    process.env.CADAI_CANCEL_ACK_MS = '200';
+    const store = getRunStore();
+    await store.create({ runId: 'orphan2', threadId: 't' });
+    await store.append('orphan2', { t: 'run', runId: 'orphan2', threadId: 't', status: 'running', resumed: false });
+    const res = await cancelRun(post('/c', {}), ctx('orphan2'));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: 'cancelled', error: { code: 'cancelled' } });
+    expect((await store.events('orphan2', 0)).at(-1)).toMatchObject({ t: 'cancelled' });
+  });
+
+  it('N3: Stop on a live run is acknowledged by its owner (the route waits and reports cancelled)', async () => {
+    const seen: { signal?: AbortSignal } = {};
+    createAgent.mockReturnValue(hangingGraph(seen));
+    const textP = (await startChat()).text();
+    await sleep(60);
+    const res = await cancelRun(post('/c', {}), ctx(inflightRunId()));
+    expect((await res.json()).status).toBe('cancelled');
+    expect(parse(await textP).filter((e) => e.t === 'cancelled')).toHaveLength(1);
+  });
+
+  it('N4: a failed append does not stop later events being stored; live seqs equal stored seqs', async () => {
+    createAgent.mockReturnValue(graphOf([delta('a'), delta('b'), result('r')]));
+    const store = getRunStore();
+    const real = store.append.bind(store);
+    let n = 0;
+    const spy = vi.spyOn(store, 'append').mockImplementation(async (...args) => {
+      if (++n === 2) throw new Error('lock timeout'); // one transient failure
+      return real(...args);
+    });
+    const live = parse(await (await startChat()).text());
+    spy.mockRestore();
+    const stored = await store.events(live[0].runId, 0);
+    expect(stored.map((e) => e.t)).toEqual(['run', 'section', 'delta', 'delta', 'section', 'result']);
+    expect(stored.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(live).toEqual(stored);
+    expect((await store.get(live[0].runId))?.status).toBe('done');
+  });
+
+  it('N6: a resume that fails after claiming the run puts it back to paused while its checkpoint exists', async () => {
+    const runId = await pausedRunWithCheckpoint();
+    const cp = getCheckpointer();
+    const spy = vi.spyOn(cp, 'deleteThread').mockRejectedValueOnce(new Error('disk error'));
+    const res = await resume(post('/api/chat/resume', { threadId: 't1', runId, decision: { action: 'cancel' } }));
+    spy.mockRestore();
+    expect(res.status).toBe(500);
+    expect((await getRunStore().get(runId))?.status).toBe('paused');
+    // and the gate is still answerable
+    createAgent.mockReturnValue(graphOf([result('ok after retry')]));
+    const retry = parse(await (await approve(runId)).text());
+    expect(retry.at(-1)).toMatchObject({ t: 'result', summary: 'ok after retry' });
+  });
+
+  it('N6: a resume that fails after its checkpoint is gone fails the run instead of leaving it running', async () => {
+    const runId = await pausedRunWithCheckpoint();
+    const store = getRunStore();
+    const spy = vi.spyOn(store, 'append').mockRejectedValue(new Error('disk full'));
+    const res = await resume(post('/api/chat/resume', { threadId: 't1', runId, decision: { action: 'cancel' } }));
+    spy.mockRestore();
+    expect(res.status).toBe(500);
+    expect(await store.get(runId)).toMatchObject({ status: 'failed', error: { code: 'internal' } });
   });
 });

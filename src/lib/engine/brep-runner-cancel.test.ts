@@ -49,6 +49,26 @@ describe.skipIf(process.platform === 'win32')('runBrep stop signal (local proces
     expect(Date.now() - t0).toBeLessThan(5000);
   });
 
+  it('N5: a Stop in the first moments of a geometry run (during setup) still stops it', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadai-slow-geo-'));
+    dirs.push(dir);
+    const started = path.join(dir, 'started');
+    const fake = path.join(dir, 'slow-python.sh');
+    fs.writeFileSync(fake, `#!/bin/sh\ntouch "${started}"\nexec sleep 30\n`, { mode: 0o755 });
+    process.env.CADAI_GEO_PYTHON = fake;
+    delete process.env.CADAI_GEO_URL;
+    for (const delayMs of [0, 1, 2]) {
+      const ac = new AbortController();
+      const pending = runBrep('result = 1', { signal: ac.signal, timeoutMs: 60_000 });
+      if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
+      ac.abort();
+      const t0 = Date.now();
+      const r = await pending;
+      expect(Date.now() - t0).toBeLessThan(1000);
+      expect(r).toMatchObject({ ok: false, error: 'cancelled' });
+    }
+  });
+
   it('an already-stopped run never starts the process', async () => {
     process.env.CADAI_GEO_PYTHON = '/nonexistent/python';
     delete process.env.CADAI_GEO_URL;

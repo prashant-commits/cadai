@@ -27,6 +27,8 @@ function envMs(name: string, fallback: number): number {
 const cancelPollMs = () => envMs('CADAI_CANCEL_POLL_MS', 500);
 /** Unread bytes queued for a client before it is treated as gone (it can replay). */
 const clientBacklogBytes = () => envMs('CADAI_CLIENT_BACKLOG_BYTES', 64 * 1024 * 1024);
+/** How long appends may keep failing before the live stream stops waiting for the store. */
+const storeOutageMs = () => envMs('CADAI_STORE_OUTAGE_MS', 30_000);
 
 /**
  * The raw failure text for ApiError.detail: one line, capped, with anything
@@ -94,10 +96,23 @@ export function streamRun(o: StreamRunOptions): Response {
     new ByteLengthQueuingStrategy({ highWaterMark: 64 * 1024 }),
   );
 
+  // Registered up front so a detach (below) can stop the graph at any point.
+  const controller = registerRun(runId);
+
   // Appends are strictly ordered so seq follows emission order.
   let appendChain: Promise<unknown> = Promise.resolve();
   let lastSeq = 0;
+  // Events the store has not accepted yet (an append threw). They are retried,
+  // in order, before every later event, so one failed append never stops later
+  // events being stored, and the live client only ever sees stored seqs. Only
+  // an outage longer than CADAI_STORE_OUTAGE_MS degrades to an unstored live
+  // stream with local seqs.
+  const pending: Array<Record<string, unknown>> = [];
+  let failingSince = 0;
   let storeBroken = false;
+  // The store ended this run without its owner (reaped as lost while stalled,
+  // or stopped while paused): nothing more is stored or run.
+  let detached = false;
 
   const writeClient = (payload: Record<string, unknown>) => {
     if (clientGone) return;
@@ -116,43 +131,98 @@ export function streamRun(o: StreamRunOptions): Response {
   /** Seq for an event the store could not take: keeps the live stream monotonic and unique. */
   const localSeq = () => ++lastSeq;
 
+  /** Shows the live client how the store ended the run, and stops the graph. */
+  const detach = async () => {
+    if (detached) return;
+    detached = true;
+    pending.length = 0;
+    controller.abort();
+    try {
+      for (const e of await store.events(runId, lastSeq)) {
+        lastSeq = e.seq;
+        writeClient(e);
+      }
+    } catch {
+      // the client can still replay
+    }
+  };
+
+  const sendUnstored = () => {
+    for (const ev of pending.splice(0)) writeClient({ ...ev, seq: localSeq() });
+  };
+
+  /** Stores and sends pending events in order. False when the store is still failing. */
+  const flushPending = async (): Promise<boolean> => {
+    while (pending.length > 0 && !detached) {
+      const ev = pending[0];
+      const gate = ev.t === 'gate';
+      let seq: number;
+      try {
+        if (gate) {
+          // Durable before visible: the checkpoint is on disk and the status is
+          // `paused` (in the same step as the gate event) before the client can
+          // see the gate and POST a resume.
+          getCheckpointer().flushNow();
+        }
+        // Only while the run is still ours (running): never after a terminal event.
+        seq = await store.append(runId, ev, gate ? { status: 'paused', expect: ['running'] } : { expect: ['running'] });
+      } catch (e) {
+        if (!failingSince) {
+          failingSince = Date.now();
+          console.error('Run store append failed; retrying before the next event:', e);
+        }
+        if (Date.now() - failingSince > storeOutageMs()) {
+          console.error('Run store unavailable; the live stream continues unstored.');
+          storeBroken = true;
+          sendUnstored();
+        }
+        return false;
+      }
+      failingSince = 0;
+      pending.shift();
+      if (seq === 0) {
+        await detach();
+        return true;
+      }
+      lastSeq = seq;
+      writeClient({ ...ev, seq });
+    }
+    return true;
+  };
+
   const emit = (event: RunEvent): void => {
     appendChain = appendChain.then(async () => {
+      if (detached) return;
       const stamped: Record<string, unknown> = { ...event, ts: Date.now() };
       if (stamped.t === 'error' && !stamped.apiError) {
         stamped.apiError = { code: 'internal', message: String(stamped.message ?? 'Run failed') } satisfies ApiError;
       }
-      let seq: number;
-      if (storeBroken) {
-        seq = localSeq();
-      } else {
-        try {
-          if (stamped.t === 'gate') {
-            // Durable before visible: the checkpoint is on disk and the status is
-            // `paused` (in the same step as the gate event) before the client can
-            // see the gate and POST a resume.
-            getCheckpointer().flushNow();
-            seq = await store.append(runId, stamped, { status: 'paused', expect: ['running'] });
-            if (seq === 0) return; // the run was ended by someone else; nothing to pause
-          } else {
-            seq = await store.append(runId, stamped);
-          }
-          lastSeq = seq;
-        } catch (e) {
-          console.error('Run store append failed; the live stream continues unstored:', e);
-          storeBroken = true;
-          seq = localSeq();
-        }
-      }
-      writeClient({ ...stamped, seq });
+      if (storeBroken) return writeClient({ ...stamped, seq: localSeq() });
+      pending.push(stamped);
+      await flushPending();
     });
+  };
+
+  /** Last chance for events the store refused during the run: a few retries, then send them unstored. */
+  const settlePending = async () => {
+    for (let i = 0; i < 3 && pending.length > 0 && !storeBroken && !detached; i++) {
+      if (await flushPending()) break;
+      await new Promise((r) => setTimeout(r, 100 * 4 ** i));
+    }
+    if (pending.length > 0) {
+      storeBroken = true;
+      sendUnstored();
+    }
   };
 
   /** Stores `event` and moves the run to `status` atomically, only if it is still `expect`. */
   const finish = async (event: RunEvent | null, status: RunStatus, error: ApiError | undefined, expect: RunStatus[]) => {
     await appendChain;
+    await settlePending();
+    if (detached) return;
     if (storeBroken) {
       if (event) writeClient({ ...event, ts: Date.now(), seq: localSeq() });
+      await store.setStatus(runId, status, error, { expect }).catch(() => undefined);
       return;
     }
     try {
@@ -162,9 +232,11 @@ export function streamRun(o: StreamRunOptions): Response {
         if (seq > 0) {
           lastSeq = seq;
           writeClient({ ...stamped, seq });
+        } else {
+          await detach();
         }
-      } else {
-        await store.setStatus(runId, status, error, { expect });
+      } else if (!(await store.setStatus(runId, status, error, { expect }))) {
+        await detach();
       }
     } catch (e) {
       console.error('Run finalization write failed:', e);
@@ -172,7 +244,6 @@ export function streamRun(o: StreamRunOptions): Response {
   };
 
   (async () => {
-    const controller = registerRun(runId);
     const poll = setInterval(() => {
       void store.isCancelled(runId).then((c) => {
         if (c) controller.abort();
@@ -211,6 +282,8 @@ export function streamRun(o: StreamRunOptions): Response {
 
     try {
       await appendChain;
+      await settlePending();
+      if (detached) return; // the store already holds this run's ending
       const flagged = controller.signal.aborted || (await store.isCancelled(runId).catch(() => false));
       // A stream that ran to its end keeps its outcome even if a cancel landed
       // during the last drain: the result is already out, so `done` wins.

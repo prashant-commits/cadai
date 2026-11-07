@@ -89,20 +89,33 @@ function envMs(name: string, fallback: number): number {
   const n = Number(process.env[name] ?? fallback);
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
-/** A running run with no heartbeat for this long has lost its owner. */
-export const runLostMs = () => envMs('CADAI_RUN_LOST_MS', 90_000);
+/**
+ * A running run whose owner has not heartbeated for this long has lost its
+ * owner. Generous on purpose (5 min against a 15 s heartbeat): a false
+ * positive fails a healthy run.
+ */
+export const runLostMs = () => envMs('CADAI_RUN_LOST_MS', 5 * 60_000);
 /** How often the owner heartbeats. */
 export const runHeartbeatMs = () => envMs('CADAI_RUN_HEARTBEAT_MS', 15_000);
 /** Finished runs older than this are deleted. */
 export const runTtlMs = () => envMs('CADAI_RUN_TTL_MS', 24 * 60 * 60 * 1000);
 
-const LOCK_STALE_MS = 15_000; // a lock older than this belongs to a crashed writer
-const LOCK_WAIT_MS = 10_000;
+/** A lock older than this belongs to a crashed (or badly stalled) writer and is broken. */
+const lockStaleMs = () => envMs('CADAI_RUN_LOCK_STALE_MS', 15_000);
+/** Longer than the stale age (20 s by default), so a waiter always outlives a dead writer's lock and breaks it. */
+const lockWaitMs = () => Math.ceil((lockStaleMs() * 4) / 3);
 const PRUNE_EVERY_MS = 60_000;
 const PAGE_BYTES = 4 * 1024 * 1024;
 const SCAN_CHUNK = 64 * 1024;
 
-type Meta = Omit<RunInfo, 'lastSeq'>;
+/** The record on disk: RunInfo minus lastSeq (read from the log), plus the owner's heartbeat counter. */
+type Meta = Omit<RunInfo, 'lastSeq'> & { beat?: number };
+
+const toInfo = (meta: Meta, lastSeq: number): RunInfo => {
+  const { beat: _beat, ...info } = meta;
+  void _beat;
+  return { ...info, lastSeq };
+};
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const errCode = (e: unknown) => (e as NodeJS.ErrnoException)?.code;
@@ -159,6 +172,8 @@ export class LocalRunStore implements RunStore {
   readonly dir: string;
   private queues = new Map<string, Promise<unknown>>();
   private lastPrune = 0;
+  /** Heartbeat counter last seen per running run, and when (this process's clock). */
+  private observed = new Map<string, { beat: number; at: number }>();
 
   constructor(dir: string) {
     this.dir = writableRoot(dir);
@@ -187,16 +202,17 @@ export class LocalRunStore implements RunStore {
   private locked<T>(runId: string, fn: () => Promise<T>): Promise<T> {
     return this.serial(runId, async () => {
       const lock = this.file('locks', runId);
-      const deadline = Date.now() + LOCK_WAIT_MS;
+      const token = `${process.pid} ${Date.now()} ${Math.random().toString(36).slice(2)}`;
+      const deadline = Date.now() + lockWaitMs();
       for (;;) {
         try {
-          await fs.promises.writeFile(lock, `${process.pid} ${Date.now()}`, { flag: 'wx' });
+          await fs.promises.writeFile(lock, token, { flag: 'wx' });
           break;
         } catch (e) {
           if (errCode(e) !== 'EEXIST') throw e;
           try {
             const st = await fs.promises.stat(lock);
-            if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+            if (Date.now() - st.mtimeMs > lockStaleMs()) {
               // Rename first: only one breaker can win the rename of a given stale lock.
               const aside = `${lock}.${process.pid}.${Math.random().toString(36).slice(2)}.stale`;
               await fs.promises.rename(lock, aside).then(() => fs.promises.unlink(aside), () => undefined);
@@ -212,7 +228,10 @@ export class LocalRunStore implements RunStore {
       try {
         return await fn();
       } finally {
-        await fs.promises.unlink(lock).catch(() => undefined);
+        // Only release our own lock: if we stalled past the stale age and a
+        // waiter broke it, the file now belongs to that waiter.
+        const held = await fs.promises.readFile(lock, 'utf-8').catch(() => '');
+        if (held === token) await fs.promises.unlink(lock).catch(() => undefined);
       }
     });
   }
@@ -282,7 +301,7 @@ export class LocalRunStore implements RunStore {
       const meta = this.withStatus(base, run.status ?? 'running');
       meta.updatedAt = now;
       await this.writeMeta(meta);
-      return { ...meta, lastSeq: 0 };
+      return toInfo(meta, 0);
     });
   }
 
@@ -290,22 +309,51 @@ export class LocalRunStore implements RunStore {
     this.maybePrune();
     let meta = await this.readMeta(runId);
     if (!meta) return undefined;
-    if (meta.status === 'running' && Date.now() - meta.updatedAt > runLostMs()) {
-      await this.reapLost(runId).catch((e) => console.warn('Run reap failed:', e));
+    if (this.looksLost(meta)) {
+      await this.reapLost(runId, meta.beat ?? 0).catch((e) => console.warn('Run reap failed:', e));
       meta = (await this.readMeta(runId)) ?? meta;
     }
-    return { ...meta, lastSeq: await this.lastSeqOf(runId, false) };
+    return toInfo(meta, await this.lastSeqOf(runId, false));
   }
 
-  /** Ends a run whose owner stopped heartbeating with a stored error event, so tails end too. */
-  private reapLost(runId: string): Promise<void> {
+  /**
+   * Whether a running run's owner stopped heartbeating.
+   *
+   * Preferred (skew-free): this process has watched the owner's heartbeat
+   * counter and it has not moved for runLostMs by THIS process's clock.
+   * Fallback, for a reader that has not watched the run before: the owner's
+   * last `updatedAt` against this process's clock. That compares two
+   * instances' clocks, so it assumes they agree to well within runLostMs
+   * (5 min; NTP-synced hosts are within milliseconds). A shared network store
+   * should use the database's clock instead.
+   */
+  private looksLost(meta: Meta, now = Date.now()): boolean {
+    if (meta.status !== 'running') {
+      this.observed.delete(meta.runId);
+      return false;
+    }
+    const beat = meta.beat ?? 0;
+    const seen = this.observed.get(meta.runId);
+    if (seen && seen.beat === beat) return now - seen.at > runLostMs();
+    this.observed.set(meta.runId, { beat, at: now });
+    if (seen) return false; // the counter moved: the owner is alive
+    return now - meta.updatedAt > runLostMs();
+  }
+
+  /**
+   * Ends a run whose owner stopped heartbeating with a stored error event, so
+   * tails end too. `judgedBeat` is the heartbeat count the verdict was based
+   * on: if the owner heartbeated since, it is alive and nothing happens.
+   */
+  private reapLost(runId: string, judgedBeat: number): Promise<void> {
     return this.locked(runId, async () => {
       const meta = await this.readMeta(runId);
-      if (!meta || meta.status !== 'running' || Date.now() - meta.updatedAt <= runLostMs()) return;
+      if (!meta || meta.status !== 'running' || (meta.beat ?? 0) !== judgedBeat) return;
       const apiError: ApiError = { code: 'internal', message: RUN_LOST_MESSAGE };
       await this.appendLine(runId, { t: 'error', message: RUN_LOST_MESSAGE, apiError });
       await this.writeMeta(this.withStatus(meta, 'failed', apiError));
       await fs.promises.unlink(this.file('cancel', runId)).catch(() => undefined);
+      this.observed.delete(runId);
     });
   }
 
@@ -372,6 +420,9 @@ export class LocalRunStore implements RunStore {
       const events: StoredEvent[] = [];
       for (const line of buf.subarray(0, end).toString('utf-8').split('\n')) {
         if (!line) continue;
+        // Lines start with {"seq":N - skip old ones without parsing their payload.
+        const m = /^\{"seq":(\d+)/.exec(line.slice(0, 32));
+        if (m && Number(m[1]) <= afterSeq) continue;
         try {
           const e = JSON.parse(line) as StoredEvent;
           if (e.seq > afterSeq) events.push(e);
@@ -414,7 +465,7 @@ export class LocalRunStore implements RunStore {
   heartbeat(runId: string): Promise<void> {
     return this.locked(runId, async () => {
       const meta = await this.readMeta(runId);
-      if (meta?.status === 'running') await this.writeMeta({ ...meta, updatedAt: Date.now() });
+      if (meta?.status === 'running') await this.writeMeta({ ...meta, beat: (meta.beat ?? 0) + 1, updatedAt: Date.now() });
     });
   }
 
@@ -450,6 +501,10 @@ export class LocalRunStore implements RunStore {
         }
         continue;
       }
+      if (meta.status === 'running') {
+        if (this.looksLost(meta, now)) await this.reapLost(id, meta.beat ?? 0).catch((e) => console.warn('Run reap failed:', e));
+        continue; // a reaped run is deleted by a later prune, once it is older than the TTL
+      }
       if (meta.status === 'paused' && meta.expiresAt !== undefined && meta.expiresAt < now) {
         await this.setStatus(id, 'failed', { code: 'run_expired', message: 'The paused run expired before it was resumed.' }, { expect: ['paused'] });
         continue;
@@ -464,7 +519,32 @@ export class LocalRunStore implements RunStore {
         });
       }
     }
+    await this.sweepLeftovers(now);
     return removed;
+  }
+
+  /**
+   * Locks older than the stale age (their writer crashed) and the aside /
+   * temp files a crash can leave between rename and unlink.
+   */
+  private async sweepLeftovers(now: number): Promise<void> {
+    for (const kind of ['locks', 'runs'] as const) {
+      const dir = path.join(/*turbopackIgnore: true*/ this.dir, kind);
+      for (const f of await fs.promises.readdir(dir).catch(() => [] as string[])) {
+        const leftover = f.endsWith('.lock') || f.endsWith('.stale') || f.endsWith('.tmp');
+        if (!leftover || (kind === 'runs' && f.endsWith('.lock'))) continue;
+        const file = path.join(/*turbopackIgnore: true*/ dir, f);
+        const st = await fs.promises.stat(file).catch(() => undefined);
+        if (!st || now - st.mtimeMs <= lockStaleMs()) continue;
+        if (f.endsWith('.lock')) {
+          // Same rename-first break as a waiter, so a fresh lock is never removed.
+          const aside = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.stale`;
+          await fs.promises.rename(file, aside).then(() => fs.promises.unlink(aside), () => undefined);
+        } else {
+          await fs.promises.unlink(file).catch(() => undefined);
+        }
+      }
+    }
   }
 
   private async remove(runId: string): Promise<void> {

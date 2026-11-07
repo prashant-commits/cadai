@@ -74,6 +74,11 @@ export async function POST(req: NextRequest) {
     }
 
     if (info.threadId !== threadId) return errorResponse('bad_request', 'threadId does not match this run.');
+    // An abandoned gate is swept to failed/run_expired once its checkpoint TTL
+    // passes; resuming it is an expiry, not a conflict.
+    if (info.status === 'failed' && info.error?.code === 'run_expired') {
+      return errorResponse('run_expired', EXPIRED_MESSAGE);
+    }
     if (info.status !== 'paused') {
       return errorResponse('run_conflict', `Run ${runId} is ${info.status}, not paused, so it cannot be resumed.`);
     }
@@ -84,81 +89,101 @@ export async function POST(req: NextRequest) {
       return errorResponse('run_conflict', `Run ${runId} is already being resumed or was stopped.`);
     }
 
-    // A paused run is deleted after CADAI_CHECKPOINT_TTL_MS, or lives on another
-    // server that does not share this one's store. Streaming a resume into a
-    // missing checkpoint yields no steps and no error, so the client would show
-    // an approved gate and a blank result. Say so instead.
-    if (!paused) {
-      const apiError: ApiError = { code: 'run_expired', message: EXPIRED_MESSAGE };
-      return staticStream(
-        store,
-        runId,
-        [
-          { t: 'run', runId, threadId, status: 'failed', resumed: true },
-          { t: 'error', message: apiError.message, apiError },
-        ],
-        { status: 'failed', error: apiError, expect: ['running'] },
-      );
+    try {
+      return await afterClaim();
+    } catch (err) {
+      // Never leave a claimed run `running` with no owner: if its checkpoint is
+      // still there the gate is still answerable, so put it back to paused;
+      // otherwise it cannot continue, so fail it.
+      const stillPaused = await getCheckpointer()
+        .getTuple({ configurable: { thread_id: checkpointKey } })
+        .then(Boolean, () => false);
+      const message = err instanceof Error ? err.message : String(err);
+      await (stillPaused
+        ? store.setStatus(runId, 'paused', undefined, { expect: ['running'] })
+        : store.setStatus(runId, 'failed', { code: 'internal', message: 'The resume failed before it started.', detail: message }, { expect: ['running'] })
+      ).catch((e) => console.error('Resume rollback failed:', e));
+      throw err;
     }
 
-    // A cancelled gate never re-enters the graph: there is nothing to
-    // resume toward, so the only correct action is to drop the paused
-    // checkpoint. Invoking the graph here would just make it silently
-    // proceed with generation, which is the one thing "Cancel" must not do.
-    // `result` stays for old clients; the contract's `cancelled` ends the stream.
-    if (decision?.action === 'cancel') {
-      await getCheckpointer().deleteThread(checkpointKey);
-      const at = Date.now();
-      return staticStream(
+    async function afterClaim(): Promise<Response> {
+
+      // A paused run is deleted after CADAI_CHECKPOINT_TTL_MS, or lives on another
+      // server that does not share this one's store. Streaming a resume into a
+      // missing checkpoint yields no steps and no error, so the client would show
+      // an approved gate and a blank result. Say so instead.
+      if (!paused) {
+        const apiError: ApiError = { code: 'run_expired', message: EXPIRED_MESSAGE };
+        return staticStream(
+          store,
+          runId,
+          [
+            { t: 'run', runId, threadId, status: 'failed', resumed: true },
+            { t: 'error', message: apiError.message, apiError },
+          ],
+          { status: 'failed', error: apiError, expect: ['running'] },
+        );
+      }
+
+      // A cancelled gate never re-enters the graph: there is nothing to
+      // resume toward, so the only correct action is to drop the paused
+      // checkpoint. Invoking the graph here would just make it silently
+      // proceed with generation, which is the one thing "Cancel" must not do.
+      // `result` stays for old clients; the contract's `cancelled` ends the stream.
+      if (decision?.action === 'cancel') {
+        await getCheckpointer().deleteThread(checkpointKey);
+        const at = Date.now();
+        return staticStream(
+          store,
+          runId,
+          [
+            { t: 'run', runId, threadId, status: 'cancelled', resumed: true },
+            { t: 'result', summary: 'Generation cancelled by user.' },
+            { t: 'cancelled', at },
+          ],
+          { status: 'cancelled', error: { code: 'cancelled', message: 'Generation cancelled by user.' }, expect: ['running'] },
+        );
+      }
+
+      // Hoisted so onFinally can flush it. The factory swallows its own
+      // construction errors and returns null, so this cannot throw.
+      const effectiveModel = coerceRouteModel(model);
+      const langfuseHandler = getLangfuseCallbackHandler({
+        sessionId: threadId,
+        tags: ['cadai', effectiveModel, 'resume'],
+        metadata: { model: effectiveModel },
+      });
+
+      // A resumed run can hit ANOTHER gate - the accept gate right after the
+      // spec gate. streamRun surfaces that identically to the first one.
+      return streamRun({
         store,
         runId,
-        [
-          { t: 'run', runId, threadId, status: 'cancelled', resumed: true },
-          { t: 'result', summary: 'Generation cancelled by user.' },
-          { t: 'cancelled', at },
-        ],
-        { status: 'cancelled', error: { code: 'cancelled', message: 'Generation cancelled by user.' }, expect: ['running'] },
-      );
+        threadId,
+        resumed: true,
+        checkpointKey,
+        failLabel: 'Agent resume failed',
+        invoke: async (signal) => {
+          const agent = createCadAgent(effectiveModel);
+          return agent.stream(new Command({ resume: decision }), {
+            configurable: { thread_id: checkpointKey },
+            recursionLimit: graphRecursionLimit(),
+            streamMode: ['updates', 'messages', 'custom'],
+            callbacks: langfuseHandler ? [langfuseHandler] : undefined,
+            signal,
+          });
+        },
+        // See the matching comment in ../route.ts: the run outlives the returned
+        // Response, so the span queue must be drained before the stream closes.
+        onFinally: async () => {
+          try {
+            await getLangfuseSpanProcessor()?.forceFlush();
+          } catch (e) {
+            console.warn('Langfuse flush failed:', e);
+          }
+        },
+      });
     }
-
-    // Hoisted so onFinally can flush it. The factory swallows its own
-    // construction errors and returns null, so this cannot throw.
-    const effectiveModel = coerceRouteModel(model);
-    const langfuseHandler = getLangfuseCallbackHandler({
-      sessionId: threadId,
-      tags: ['cadai', effectiveModel, 'resume'],
-      metadata: { model: effectiveModel },
-    });
-
-    // A resumed run can hit ANOTHER gate - the accept gate right after the
-    // spec gate. streamRun surfaces that identically to the first one.
-    return streamRun({
-      store,
-      runId,
-      threadId,
-      resumed: true,
-      checkpointKey,
-      failLabel: 'Agent resume failed',
-      invoke: async (signal) => {
-        const agent = createCadAgent(effectiveModel);
-        return agent.stream(new Command({ resume: decision }), {
-          configurable: { thread_id: checkpointKey },
-          recursionLimit: graphRecursionLimit(),
-          streamMode: ['updates', 'messages', 'custom'],
-          callbacks: langfuseHandler ? [langfuseHandler] : undefined,
-          signal,
-        });
-      },
-      // See the matching comment in ../route.ts: the run outlives the returned
-      // Response, so the span queue must be drained before the stream closes.
-      onFinally: async () => {
-        try {
-          await getLangfuseSpanProcessor()?.forceFlush();
-        } catch (e) {
-          console.warn('Langfuse flush failed:', e);
-        }
-      },
-    });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return errorResponse('internal', message);

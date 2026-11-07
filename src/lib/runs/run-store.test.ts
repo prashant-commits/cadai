@@ -314,3 +314,226 @@ describe('review fixes', () => {
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
   });
 });
+
+describe('re-review fixes (store)', () => {
+  afterEach(() => {
+    delete process.env.CADAI_RUN_LOCK_STALE_MS;
+    delete process.env.CADAI_RUN_LOST_MS;
+  });
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  type Lockable = { locked<T>(runId: string, fn: () => Promise<T>): Promise<T> };
+
+  it('N4: a dead writer\'s fresh lock is waited out and broken, not reported as a failure', async () => {
+    process.env.CADAI_RUN_LOCK_STALE_MS = '300';
+    const dir = tmp();
+    const s = new LocalRunStore(dir);
+    await s.create({ runId: 'r', threadId: 't' });
+    fs.writeFileSync(path.join(dir, 'locks', 'r.lock'), 'dead-writer'); // just taken, then the writer crashed
+    const t0 = Date.now();
+    expect(await s.append('r', { t: 'a' })).toBe(1);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(250);
+  });
+
+  it('N4: a writer that stalled past the stale age does not remove the lock of the writer that broke it', async () => {
+    process.env.CADAI_RUN_LOCK_STALE_MS = '150';
+    const dir = tmp();
+    const a = new LocalRunStore(dir) as unknown as Lockable;
+    const b = new LocalRunStore(dir) as unknown as Lockable;
+    const lock = path.join(dir, 'locks', 'r.lock');
+    const aDone = a.locked('r', () => sleep(400)); // stalls past the stale age
+    await sleep(20);
+    let lockDuringB = '';
+    const bDone = b.locked('r', async () => {
+      await aDone; // A wakes up and runs its release while B holds the lock
+      lockDuringB = fs.existsSync(lock) ? fs.readFileSync(lock, 'utf-8') : '';
+    });
+    await bDone;
+    expect(lockDuringB).not.toBe(''); // B's lock survived A's release
+    expect(fs.existsSync(lock)).toBe(false); // and B released it
+  });
+
+  it('N7: prune reaps a lost running run nobody reads, and deletes it after the TTL', async () => {
+    const dir = tmp();
+    const s = new LocalRunStore(dir);
+    await s.create({ runId: 'crashed', threadId: 't' });
+    process.env.CADAI_RUN_LOST_MS = '50';
+    await s.prune(Date.now() + 1_000);
+    const meta = JSON.parse(fs.readFileSync(path.join(dir, 'runs', 'crashed.json'), 'utf-8'));
+    expect(meta).toMatchObject({ status: 'failed', error: { message: 'run lost: its server instance stopped' } });
+    process.env.CADAI_RUN_TTL_MS = '100';
+    expect(await s.prune(Date.now() + 10_000)).toEqual(['crashed']);
+    delete process.env.CADAI_RUN_TTL_MS;
+  });
+
+  it('N7: prune sweeps locks and aside/temp files older than the stale age, and keeps fresh locks', async () => {
+    process.env.CADAI_RUN_LOCK_STALE_MS = '100';
+    const dir = tmp();
+    const s = new LocalRunStore(dir);
+    const old = Date.now() / 1000 - 60;
+    for (const f of ['locks/dead.lock', 'locks/x.lock.1.ab.stale', 'runs/r.json.1.ab.tmp']) {
+      fs.writeFileSync(path.join(dir, f), 'x');
+      fs.utimesSync(path.join(dir, f), old, old);
+    }
+    fs.writeFileSync(path.join(dir, 'locks', 'live.lock'), 'held');
+    await s.prune();
+    expect(fs.readdirSync(path.join(dir, 'locks'))).toEqual(['live.lock']);
+    expect(fs.readdirSync(path.join(dir, 'runs'))).toEqual([]);
+  });
+
+  it('N9: lost-run detection defaults to a generous 5 min', async () => {
+    const { runLostMs } = await import('./run-store');
+    expect(runLostMs()).toBe(5 * 60_000);
+  });
+
+  it('N9: an owner whose clock runs ahead is still reaped once its heartbeat stops (reader clock only)', async () => {
+    const dir = tmp();
+    const s = new LocalRunStore(dir);
+    await s.create({ runId: 'r', threadId: 't' });
+    const file = path.join(dir, 'runs', 'r.json');
+    const meta = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    fs.writeFileSync(file, JSON.stringify({ ...meta, updatedAt: Date.now() + 60 * 60_000, beat: 3 })); // owner clock +1 h
+    process.env.CADAI_RUN_LOST_MS = '100';
+    expect((await s.get('r'))?.status).toBe('running'); // first look: records beat 3
+    await sleep(150);
+    expect((await s.get('r'))?.status).toBe('failed'); // beat unchanged for 150 ms by our clock
+  });
+
+  it('N9: a moving heartbeat keeps a run alive even when its owner\'s clock runs behind', async () => {
+    const dir = tmp();
+    const s = new LocalRunStore(dir);
+    await s.create({ runId: 'r', threadId: 't' });
+    process.env.CADAI_RUN_LOST_MS = '100';
+    expect((await s.get('r'))?.status).toBe('running'); // observed while fresh
+    const file = path.join(dir, 'runs', 'r.json');
+    for (let i = 1; i <= 3; i++) {
+      await sleep(60);
+      const meta = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      fs.writeFileSync(file, JSON.stringify({ ...meta, beat: i, updatedAt: Date.now() - 60 * 60_000 })); // owner clock -1 h
+      expect((await s.get('r'))?.status).toBe('running');
+    }
+  });
+
+  it('N8: replay with `after` near the end does not parse the earlier events', async () => {
+    const s = new LocalRunStore(tmp());
+    await s.create({ runId: 'r', threadId: 't' });
+    for (let i = 0; i < 20; i++) await s.append('r', { t: 'delta', text: 'y'.repeat(1000) });
+    const parse = vi.spyOn(JSON, 'parse');
+    const page = await s.eventsSince('r', 18);
+    const parsedLines = parse.mock.calls.filter((c) => String(c[0]).startsWith('{"seq":')).length;
+    parse.mockRestore();
+    expect(page.events.map((e) => e.seq)).toEqual([19, 20]);
+    expect(parsedLines).toBe(2);
+  });
+});
+
+describe('re-review fixes (store)', () => {
+  afterEach(() => {
+    delete process.env.CADAI_RUN_LOCK_STALE_MS;
+    delete process.env.CADAI_RUN_LOST_MS;
+    delete process.env.CADAI_RUN_TTL_MS;
+  });
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  type Lockable = { locked<T>(runId: string, fn: () => Promise<T>): Promise<T> };
+
+  it('N4: a dead writer\'s fresh lock is waited out and broken, not reported as a failure', async () => {
+    process.env.CADAI_RUN_LOCK_STALE_MS = '300';
+    const dir = tmp();
+    const s = new LocalRunStore(dir);
+    await s.create({ runId: 'r', threadId: 't' });
+    fs.writeFileSync(path.join(dir, 'locks', 'r.lock'), 'dead-writer'); // just taken, then the writer crashed
+    const t0 = Date.now();
+    expect(await s.append('r', { t: 'a' })).toBe(1);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(250);
+  });
+
+  it('N4: a writer that stalled past the stale age does not remove the lock of the writer that broke it', async () => {
+    process.env.CADAI_RUN_LOCK_STALE_MS = '150';
+    const dir = tmp();
+    const a = new LocalRunStore(dir) as unknown as Lockable;
+    const b = new LocalRunStore(dir) as unknown as Lockable;
+    const lock = path.join(dir, 'locks', 'r.lock');
+    const aDone = a.locked('r', () => sleep(400)); // stalls past the stale age
+    await sleep(20);
+    let lockDuringB = '';
+    const bDone = b.locked('r', async () => {
+      await aDone; // A wakes up and runs its release while B holds the lock
+      lockDuringB = fs.existsSync(lock) ? fs.readFileSync(lock, 'utf-8') : '';
+    });
+    await bDone;
+    expect(lockDuringB).not.toBe(''); // B's lock survived A's release
+    expect(fs.existsSync(lock)).toBe(false); // and B released it
+  });
+
+  it('N7: prune reaps a lost running run nobody reads, and deletes it after the TTL', async () => {
+    const dir = tmp();
+    const s = new LocalRunStore(dir);
+    await s.create({ runId: 'crashed', threadId: 't' });
+    process.env.CADAI_RUN_LOST_MS = '50';
+    await s.prune(Date.now() + 1_000);
+    const meta = JSON.parse(fs.readFileSync(path.join(dir, 'runs', 'crashed.json'), 'utf-8'));
+    expect(meta).toMatchObject({ status: 'failed', error: { message: 'run lost: its server instance stopped' } });
+    expect((await s.events('crashed', 0)).at(-1)).toMatchObject({ t: 'error' });
+    process.env.CADAI_RUN_TTL_MS = '100';
+    expect(await s.prune(Date.now() + 10_000)).toEqual(['crashed']);
+  });
+
+  it('N7: prune sweeps locks and aside/temp files older than the stale age, and keeps fresh locks', async () => {
+    process.env.CADAI_RUN_LOCK_STALE_MS = '100';
+    const dir = tmp();
+    const s = new LocalRunStore(dir);
+    const old = Date.now() / 1000 - 60;
+    for (const f of ['locks/dead.lock', 'locks/x.lock.1.ab.stale', 'runs/r.json.1.ab.tmp']) {
+      fs.writeFileSync(path.join(dir, f), 'x');
+      fs.utimesSync(path.join(dir, f), old, old);
+    }
+    fs.writeFileSync(path.join(dir, 'locks', 'live.lock'), 'held');
+    await s.prune();
+    expect(fs.readdirSync(path.join(dir, 'locks'))).toEqual(['live.lock']);
+    expect(fs.readdirSync(path.join(dir, 'runs'))).toEqual([]);
+  });
+
+  it('N9: lost-run detection defaults to a generous 5 min', async () => {
+    const { runLostMs } = await import('./run-store');
+    expect(runLostMs()).toBe(5 * 60_000);
+  });
+
+  it('N9: an owner whose clock runs ahead is still reaped once its heartbeat stops (reader clock only)', async () => {
+    const dir = tmp();
+    const s = new LocalRunStore(dir);
+    await s.create({ runId: 'r', threadId: 't' });
+    const file = path.join(dir, 'runs', 'r.json');
+    const meta = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    fs.writeFileSync(file, JSON.stringify({ ...meta, updatedAt: Date.now() + 60 * 60_000, beat: 3 })); // owner clock +1 h
+    process.env.CADAI_RUN_LOST_MS = '100';
+    expect((await s.get('r'))?.status).toBe('running'); // first look: records beat 3
+    await sleep(150);
+    expect((await s.get('r'))?.status).toBe('failed'); // beat unchanged for 150 ms by our clock
+  });
+
+  it('N9: a moving heartbeat keeps a run alive even when its owner\'s clock runs behind', async () => {
+    const dir = tmp();
+    const s = new LocalRunStore(dir);
+    await s.create({ runId: 'r', threadId: 't' });
+    process.env.CADAI_RUN_LOST_MS = '100';
+    expect((await s.get('r'))?.status).toBe('running'); // observed while fresh
+    const file = path.join(dir, 'runs', 'r.json');
+    for (let i = 1; i <= 3; i++) {
+      await sleep(60);
+      const meta = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      fs.writeFileSync(file, JSON.stringify({ ...meta, beat: i, updatedAt: Date.now() - 60 * 60_000 })); // owner clock -1 h
+      expect((await s.get('r'))?.status).toBe('running');
+    }
+  });
+
+  it('N8: replay with `after` near the end does not parse the earlier events', async () => {
+    const s = new LocalRunStore(tmp());
+    await s.create({ runId: 'r', threadId: 't' });
+    for (let i = 0; i < 20; i++) await s.append('r', { t: 'delta', text: 'y'.repeat(1000) });
+    const parse = vi.spyOn(JSON, 'parse');
+    const page = await s.eventsSince('r', 18);
+    const parsedLines = parse.mock.calls.filter((c) => String(c[0]).startsWith('{"seq":')).length;
+    parse.mockRestore();
+    expect(page.events.map((e) => e.seq)).toEqual([19, 20]);
+    expect(parsedLines).toBe(2);
+  });
+});
