@@ -10,6 +10,8 @@
  * A rejected body falls back to the code-drawn blockout.
  */
 
+import { EXTRUDE_FORMS } from './extrude-forms';
+
 export interface BodyCheckOptions {
   /** Parameter and derived names as the script spells them: a body must not rebind them. */
   reserved?: Iterable<string>;
@@ -18,6 +20,17 @@ export interface BodyCheckOptions {
 }
 
 export type BodyCheck = { ok: true } | { ok: false; reason: string };
+
+/** The builder-mode context managers: a body is algebra mode only. */
+const BUILDER_NAMES = /^Build(?:Part|Sketch|Line)$/;
+
+/**
+ * Why a `with BuildPart/BuildSketch/BuildLine` body is rejected. The reason names the fix, because it
+ * reaches the model on the next build visit (see `isBuilderModeReason`).
+ */
+export const BUILDER_MODE_REASON = `a body must not use with BuildPart, BuildSketch or BuildLine; use algebra mode only, e.g. ${EXTRUDE_FORMS}, and return the part`;
+
+export const isBuilderModeReason = (reason: string): boolean => reason.includes(BUILDER_MODE_REASON);
 
 type Tok =
   | { k: 'name'; v: string }
@@ -85,6 +98,7 @@ export function checkPythonBody(body: string, options: BodyCheckOptions = {}): B
     }
     if (t.k !== 'name') continue;
     if (t.v.includes('__')) return reject(`dunder name ${t.v}`);
+    if (!attribute(i) && BUILDER_NAMES.test(t.v)) return reject(BUILDER_MODE_REASON);
     if (BANNED_ANYWHERE.has(t.v)) return reject(`${t.v} is not allowed in a body`);
     if (attribute(i)) {
       // Every attribute in a chain is checked, not only the first after a name.

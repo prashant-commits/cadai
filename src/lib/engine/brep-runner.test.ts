@@ -60,6 +60,28 @@ describe('runBrep (http backend)', () => {
     expect(r.parts[0].label).toBe('x');
   });
 
+  it('passes the names of parts that stayed invalid through on a failed run, and nothing else', async () => {
+    process.env.CADAI_GEO_URL = 'https://geo.example.test';
+    const reply = (body: unknown): typeof fetch => async () => new Response(JSON.stringify(body), { status: 200 });
+    const failed = await runBrep('result = 1', { fetchImpl: reply({ ok: false, error: 'invalid solid: the fused result (a, b)', invalid: ['a', 'b', 3, ''], parts: [] }) });
+    expect(failed.ok).toBe(false);
+    expect(failed.invalid).toEqual(['a', 'b']);
+    const plain = await runBrep('result = 1', { fetchImpl: reply({ ok: false, error: 'boom', parts: [] }) });
+    expect(plain.invalid).toBeUndefined();
+    const success = await runBrep('result = 1', { fetchImpl: reply({ ok: true, invalid: ['x'], parts: [], solids: 1 }) });
+    expect(success.invalid).toBeUndefined();
+  });
+
+  it('passes runner notes through on success only', async () => {
+    process.env.CADAI_GEO_URL = 'https://geo.example.test';
+    const reply = (body: unknown): typeof fetch => async () => new Response(JSON.stringify(body), { status: 200 });
+    const ok = await runBrep('result = 1', { fetchImpl: reply({ ok: true, notes: ['STEP exported as separate solids', 4, ''], parts: [], solids: 6 }) });
+    expect(ok.notes).toEqual(['STEP exported as separate solids']);
+    expect(ok.solids).toBe(6);
+    const failed = await runBrep('result = 1', { fetchImpl: reply({ ok: false, error: 'x', notes: ['n'], parts: [] }) });
+    expect(failed.notes).toBeUndefined();
+  });
+
   it('reports an unreachable service as ok:false, never throws', async () => {
     process.env.CADAI_GEO_URL = 'https://geo.example.test';
     const r = await runBrep('result = 1', { fetchImpl: async () => { throw new Error('ECONNREFUSED'); } });

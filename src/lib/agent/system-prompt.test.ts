@@ -1,3 +1,4 @@
+import { BREP_CHEATSHEET } from '../brep/cheatsheet';
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -411,5 +412,19 @@ describe('relational spec prompt (Task 3)', () => {
     expect(prompt).not.toMatch(/^\s*(from \S+ )?import /m);
     expect(prompt).toContain('already has these in scope');
     expect(prompt).toContain('## Primitives');
+  });
+
+  it('the brep-build prompt says bodies are algebra mode only, in the preamble and the cheat sheet', () => {
+    const prompt = systemPromptFor('brep-build');
+    expect(prompt.match(/algebra mode only/gi)?.length).toBeGreaterThanOrEqual(2);
+    expect(prompt).toContain('extrude(Plane.YZ * Polygon(*pts, align=None), amount=w)');
+    expect(prompt).toContain('extrude(make_face(Polyline(*pts, close=True)), amount=w)');
+    expect(prompt).toContain('Never write `with BuildPart`, `with BuildSketch` or `with BuildLine`');
+  });
+
+  it('no example in the cheat sheet teaches builder mode', () => {
+    const fences = [...BREP_CHEATSHEET.matchAll(/```python\n([\s\S]*?)```/g)].map((m) => m[1]);
+    expect(fences.length).toBeGreaterThan(3);
+    for (const fence of fences) expect(fence).not.toMatch(/\bBuild(?:Part|Sketch|Line)\b/);
   });
 });

@@ -48,12 +48,19 @@ export function parseBuild(text: string, componentNames: string[], reserved: str
   keepBlockout: string[];
   addressed: string[];
   dropped: string[];
+  /** Bodies the Python check refused, with its reason (a rejected body is also in `dropped`). */
+  rejections: { name: string; reason: string }[];
 } {
   const known = new Set(componentNames);
   const bodies: Record<string, string> = {};
   const keepBlockout: string[] = [];
   const addressed: string[] = [];
   const dropped: string[] = [];
+  const rejections: { name: string; reason: string }[] = [];
+  // Only the body actually used decides: a later accepted body or an explicit blockout clears an earlier rejection.
+  const clearRejection = (name: string) => {
+    for (let k = rejections.length - 1; k >= 0; k--) if (rejections[k].name === name) rejections.splice(k, 1);
+  };
   const lines = text.split(/\r?\n/);
   let i = 0;
 
@@ -86,6 +93,7 @@ export function parseBuild(text: string, componentNames: string[], reserved: str
       if (known.has(directive.name)) {
         delete bodies[directive.name];
         remove(dropped, directive.name);
+        clearRejection(directive.name);
         if (!keepBlockout.includes(directive.name)) keepBlockout.push(directive.name);
       } else {
         drop(directive.name);
@@ -128,14 +136,18 @@ export function parseBuild(text: string, componentNames: string[], reserved: str
 
     const raw = collected.join('\n');
     if (options.language === 'python') {
-      const python = sanitizePythonBody(raw, componentNames, reserved);
+      const why: string[] = [];
+      const python = sanitizePythonBody(raw, componentNames, reserved, (reason) => why.push(reason));
       if (python === null) {
         drop(name);
+        clearRejection(name);
+        if (why.length > 0) rejections.push({ name, reason: why[0] });
         continue;
       }
       bodies[name] = python;
       remove(keepBlockout, name);
       remove(dropped, name);
+      clearRejection(name);
       continue;
     }
     const cleaned = sanitizeBody(raw, reserved);
@@ -148,7 +160,7 @@ export function parseBuild(text: string, componentNames: string[], reserved: str
     remove(dropped, name);
   }
 
-  return { bodies, keepBlockout, addressed, dropped };
+  return { bodies, keepBlockout, addressed, dropped, rejections };
 }
 
 /**
@@ -214,6 +226,7 @@ export function sanitizePythonBody(
   raw: string,
   componentNames: string[],
   reserved: string[] = [],
+  onReject?: (reason: string) => void,
 ): string | null {
   let lines = raw.replace(/\s+$/, '').split('\n');
   while (lines.length > 0 && lines[0].trim() === '') lines.shift();
@@ -246,6 +259,7 @@ export function sanitizePythonBody(
     reserved,
     components: [...componentNames, ...componentNames.map((name) => `${name}_part`)],
   });
+  if (!verdict.ok) onReject?.(verdict.reason);
   return verdict.ok ? body : null;
 }
 

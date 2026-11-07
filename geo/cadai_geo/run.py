@@ -196,11 +196,28 @@ def _xyz(vector) -> list[float]:
     return [float(vector.X), float(vector.Y), float(vector.Z)]
 
 
+def _fixed_if_invalid(shape):
+    """``(shape, True)`` when valid; else the OCC-fixed shape when that is valid; else ``(shape, False)``."""
+    try:
+        if shape.is_valid:
+            return shape, True
+    except Exception:
+        return shape, False
+    try:
+        fixed = shape.fix()
+        if fixed is not None and fixed.is_valid:
+            return fixed, True
+    except Exception:
+        pass
+    return shape, False
+
+
 def _part(shape, label: str) -> dict:
     box = shape.bounding_box()
     return {
         "label": label or "",
-        "valid": bool(shape.is_valid),
+        # An invalid part gets one shape-fix attempt before it is called invalid.
+        "valid": _fixed_if_invalid(shape)[1],
         "volume": float(shape.volume),
         "min": _xyz(box.min),
         "max": _xyz(box.max),
@@ -265,6 +282,146 @@ def _part_shapes(result, measured=None) -> list[tuple[str, object]]:
     else:
         shapes = list(result.solids())
     return [(getattr(shape, "label", "") or "", shape) for shape in shapes]
+
+
+# ---- validity: every exported solid must be valid, before and after the STEP round trip
+
+def _names_in(shape, parts: list[dict]) -> list[str]:
+    """Labels of the parts that sit inside an invalid solid of ``shape`` (all labels when none is singled out)."""
+    try:
+        solids = [solid for solid in shape.solids() if not solid.is_valid] or [shape]
+    except Exception:
+        solids = [shape]
+    tol = 0.05
+    names: list[str] = []
+    for part in parts:
+        label = part.get("label") or ""
+        if not label or label in names:
+            continue
+        for solid in solids:
+            try:
+                box = solid.bounding_box()
+            except Exception:
+                continue
+            low, high = _xyz(box.min), _xyz(box.max)
+            if all(low[i] - tol <= part["min"][i] and part["max"][i] <= high[i] + tol for i in range(3)):
+                names.append(label)
+                break
+    return names or [p["label"] for p in parts if p.get("label")] or ["result"]
+
+
+def _invalid(names: list[str], what: str, parts: list[dict]) -> dict:
+    listed = ", ".join(names)
+    return {
+        "ok": False,
+        "error": f"invalid solid: {what} ({listed}); the kernel could not repair it",
+        "invalid": names,
+        "parts": parts,
+    }
+
+
+def _discard_exports(*paths: str) -> None:
+    for path in paths:
+        _replace_output(path)
+
+
+_LABEL_MAX = 64
+
+
+def _step_label(label: str) -> str:
+    """A label that is safe to write into a STEP file: printable ASCII, no backslash, at most 64 characters."""
+    cleaned = re.sub(r"[^\x20-\x7e]|\\", "_", str(label))
+    return cleaned[:_LABEL_MAX]
+
+
+_FUSED_STEP_NOTE = "STEP exported as separate solids (fused shape did not survive STEP export)"
+
+
+def _export_unfused_step(part_shapes: list[tuple[str, object]], step_path: str):
+    """Write the individually valid parts as one multi-solid STEP, labels kept.
+
+    Returns the re-imported shape when it is valid, else None. The parts are the same shapes
+    that were measured, each after its own shape-fix attempt.
+    """
+    from build123d import Compound, export_step, import_step
+
+    children = []
+    for label, shape in part_shapes:
+        shape, valid = _fixed_if_invalid(shape)
+        if not valid:
+            return None
+        try:
+            shape.label = _step_label(label)
+        except Exception:
+            pass
+        children.append(shape)
+    if not children:
+        return None
+    if not export_step(Compound(children=children, label="parts"), step_path):
+        return None
+    reread = import_step(step_path)
+    return reread if reread.is_valid else None
+
+
+def _checked_export(
+    result,
+    parts: list[dict],
+    step_path: str,
+    stl_path: str,
+    part_shapes: list[tuple[str, object]] | None = None,
+    extras: dict | None = None,
+) -> dict | None:
+    """Validate, try to fix, then export ``result``. None on success; else the failure payload.
+
+    A part that is invalid (after one OCC shape-fix attempt) fails the run and is named: the
+    model can fix its own geometry. The fused result is different: when it is invalid, or valid
+    in memory but invalid after the STEP round trip, and no fix helps, that is a kernel defect
+    the model cannot repair. The STEP is then written as the parts, unfused, in one multi-solid
+    file and re-checked; ``extras`` gets a note and the solid count, and the STL stays the fused
+    shape. Only when that file is invalid too is the run a failure, naming the parts.
+    """
+    from build123d import export_step, export_stl, import_step
+
+    bad = [part["label"] or "(unlabelled)" for part in parts if not part["valid"]]
+    if bad:
+        return _invalid(bad, "part" if len(bad) == 1 else "parts", parts)
+    result, fused_ok = _fixed_if_invalid(result)
+
+    reread = None
+    for attempt in range(2 if fused_ok else 0):
+        if not export_step(result, step_path):
+            return {"ok": False, "error": "export_step failed"}
+        reread = import_step(step_path)
+        if reread.is_valid:
+            break
+        if attempt == 0:
+            # Valid in memory, invalid after the STEP round trip: fix what was read back and write it again.
+            repaired, fixed = _fixed_if_invalid(reread)
+            if fixed:
+                result = repaired
+                continue
+        fused_ok = False
+        break
+
+    if not fused_ok:
+        _discard_exports(step_path, stl_path)
+        separate = _export_unfused_step(part_shapes or [], step_path)
+        if separate is None:
+            _discard_exports(step_path, stl_path)
+            return _invalid(
+                _names_in(reread if reread is not None else result, parts),
+                "the parts do not export as a valid STEP, fused or separate",
+                parts,
+            )
+        if extras is not None:
+            extras["notes"] = [_FUSED_STEP_NOTE]
+            extras["solids"] = len(list(separate.solids()))
+    # ASCII so consumers that read the file as text (the web compile
+    # route decodes STL as UTF-8) get a mesh that starts with "solid".
+    if not export_stl(result, stl_path, ascii_format=True):
+        _discard_exports(step_path, stl_path)
+        return {"ok": False, "error": "export_stl failed"}
+    return None
 
 
 def _exit_message(exc: SystemExit) -> str:
@@ -433,7 +590,9 @@ def _import_brep_bytes(data: bytes, outdir: str):
         _replace_output(dest)
 
 
-def _measured_shapes(scratch_fd: int, outdir: str, name: str, strict: bool) -> list[dict] | None:
+def _measured_shapes(
+    scratch_fd: int, outdir: str, name: str, strict: bool, shapes_out: list | None = None
+) -> list[dict] | None:
     """Measure the BREPs in <scratch>/<name>. Labels come from the index; numbers come from the shapes.
 
     Every read is no-follow and fstat-checked. None means there is no such directory or no
@@ -496,20 +655,25 @@ def _measured_shapes(scratch_fd: int, outdir: str, name: str, strict: bool) -> l
             if not isinstance(label, str):
                 label = ""
             loaded.append(_part(shape, label[:256]))
+            if shapes_out is not None:
+                shapes_out.append((label[:256], shape))
         return loaded
     finally:
         os.close(dir_fd)
 
 
-def _parts_from_scratch(scratch_fd: int, outdir: str, result) -> list[dict]:
+def _parts_from_scratch(scratch_fd: int, outdir: str, result, shapes_out: list | None = None) -> list[dict]:
     """Measure part BREPs. A missing parts directory falls back to unlabeled solids.
 
     A symlinked parts directory or index is a measure failure.
     """
-    loaded = _measured_shapes(scratch_fd, outdir, "parts", strict=True)
+    loaded = _measured_shapes(scratch_fd, outdir, "parts", strict=True, shapes_out=shapes_out)
     if loaded:
         return loaded
-    return [_part(solid, "") for solid in result.solids()]
+    solids = list(result.solids())
+    if shapes_out is not None:
+        shapes_out.extend(("", solid) for solid in solids)
+    return [_part(solid, "") for solid in solids]
 
 
 def measure_and_export(scratch: str, outdir: str, fallback_error: str | None = None) -> dict:
@@ -536,19 +700,18 @@ def measure_and_export(scratch: str, outdir: str, fallback_error: str | None = N
                 failed["line"] = line
             return failed
         try:
-            from build123d import export_step, export_stl
-
             result = _import_brep_bytes(data, outdir)
-            parts = _parts_from_scratch(scratch_fd, outdir, result)
+            part_shapes: list = []
+            parts = _parts_from_scratch(scratch_fd, outdir, result, part_shapes)
             local = _measured_shapes(scratch_fd, outdir, "local", strict=False) or []
             step_path = os.path.join(os.fspath(outdir), "model.step")
             stl_path = os.path.join(os.fspath(outdir), "model.stl")
             _replace_output(step_path)
             _replace_output(stl_path)
-            if not export_step(result, step_path):
-                return {"ok": False, "error": "export_step failed"}
-            if not export_stl(result, stl_path, ascii_format=True):
-                return {"ok": False, "error": "export_stl failed"}
+            extras: dict = {}
+            failure = _checked_export(result, parts, step_path, stl_path, part_shapes, extras)
+            if failure is not None:
+                return failure
             box = result.bounding_box()
             return {
                 "ok": True,
@@ -558,6 +721,7 @@ def measure_and_export(scratch: str, outdir: str, fallback_error: str | None = N
                 "bbox": {"min": _xyz(box.min), "max": _xyz(box.max)},
                 "stl": None,
                 "step": None,
+                **extras,
             }
         except Exception:
             return {"ok": False, "error": "measure"}
@@ -569,7 +733,6 @@ def run(script_path: str | os.PathLike, outdir: str | os.PathLike) -> dict:
     """Execute ``script_path`` and write ``model.step`` / ``model.stl`` into ``outdir``."""
     try:
         _remember_compound_sources()
-        from build123d import export_step, export_stl
 
         try:
             namespace = _run_script(os.fspath(script_path))
@@ -587,21 +750,23 @@ def run(script_path: str | os.PathLike, outdir: str | os.PathLike) -> dict:
         stl_path = os.path.join(os.fspath(outdir), "model.stl")
         _replace_output(step_path)
         _replace_output(stl_path)
-        if not export_step(result, step_path):
-            return {"ok": False, "error": "export_step failed"}
-        # ASCII so consumers that read the file as text (the web compile
-        # route decodes STL as UTF-8) get a mesh that starts with "solid".
-        if not export_stl(result, stl_path, ascii_format=True):
-            return {"ok": False, "error": "export_stl failed"}
+        parts = _parts(result, namespace.get("_cadai_parts"))
+        extras: dict = {}
+        failure = _checked_export(
+            result, parts, step_path, stl_path, _part_shapes(result, namespace.get("_cadai_parts")), extras
+        )
+        if failure is not None:
+            return failure
         box = result.bounding_box()
         return {
             "ok": True,
-            "parts": _parts(result, namespace.get("_cadai_parts")),
+            "parts": parts,
             "local": _local(namespace),
             "solids": len(list(result.solids())),
             "bbox": {"min": _xyz(box.min), "max": _xyz(box.max)},
             "stl": stl_path,
             "step": step_path,
+            **extras,
         }
     except Exception as exc:
         return {"ok": False, "error": _last_line(exc)}

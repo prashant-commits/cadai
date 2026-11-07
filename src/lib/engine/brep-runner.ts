@@ -20,6 +20,10 @@ export type BrepResult = {
   failure?: BrepFailure;
   /** Line of the script that raised (the innermost frame in the script), when the runner knows it. */
   line?: number;
+  /** Parts whose solid stayed invalid after the kernel's repair attempt: the run built a shape it will not export. */
+  invalid?: string[];
+  /** What the runner did that the caller should know, e.g. the STEP was written as separate solids. */
+  notes?: string[];
   parts: BrepPart[];
   /** Each component measured in its own frame before placement, when the script lists `_local`. */
   local?: BrepPart[];
@@ -47,6 +51,20 @@ const cancelledResult = (t0: number): BrepResult => ({
   solids: 0,
   ms: Math.max(1, Math.round(performance.now() - t0)),
 });
+
+/** The part names of an invalid-solid failure, from the runner's untrusted JSON. */
+function invalidNames(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const names = value.filter((v): v is string => typeof v === 'string' && v !== '').map((v) => v.slice(0, 100)).slice(0, 50);
+  return names.length > 0 ? names : undefined;
+}
+
+/** Short runner notes from untrusted JSON: strings only, clipped. */
+function runnerNotes(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const notes = value.filter((v): v is string => typeof v === 'string' && v !== '').map((v) => v.slice(0, 300)).slice(0, 10);
+  return notes.length > 0 ? notes : undefined;
+}
 
 function findProjectRoot(): string {
   let curr = process.cwd();
@@ -145,6 +163,8 @@ async function runBrepHttp(
       error: data.error,
       ...(failure ? { failure } : {}),
       line: typeof data.line === 'number' ? data.line : undefined,
+      ...(ok ? {} : { invalid: invalidNames((data as { invalid?: unknown }).invalid) }),
+      ...(ok ? { notes: runnerNotes((data as { notes?: unknown }).notes) } : {}),
       parts: Array.isArray(data.parts) ? data.parts : [],
       local: Array.isArray(data.local) ? data.local : undefined,
       solids: typeof data.solids === 'number' ? data.solids : 0,
@@ -379,6 +399,7 @@ async function runBrepLocal(
         parts: Array.isArray(parsed.parts) ? (parsed.parts as BrepPart[]) : [],
         local: Array.isArray(parsed.local) ? (parsed.local as BrepPart[]) : undefined,
         solids: typeof parsed.solids === 'number' ? parsed.solids : 0,
+        notes: runnerNotes(parsed.notes),
         bbox: parsed.bbox as BrepResult['bbox'],
         stl: stlBase64,
         step: stepBase64,
@@ -400,6 +421,7 @@ async function runBrepLocal(
     return {
       ...brepFailed(error, 'script', t0),
       line: typeof parsed?.line === 'number' ? parsed.line : undefined,
+      invalid: invalidNames(parsed?.invalid),
     };
   } finally {
     try {
