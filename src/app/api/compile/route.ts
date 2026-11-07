@@ -17,6 +17,8 @@ async function compileArtifacts(code: string, stl: string, stepBase64?: string):
     const artifacts: ResultArtifacts = {};
     if (stl) artifacts.stl = await store.put(runId, 'stl', stl);
     if (stepBase64) artifacts.step = await store.put(runId, 'step', Buffer.from(stepBase64, 'base64'));
+    const cap = Number(process.env.CADAI_COMPILE_ARTIFACT_MAX_BYTES ?? 256 * 1024 * 1024);
+    if (Number.isFinite(cap) && cap >= 0) await store.evictCompile?.(cap).catch(() => undefined);
     return Object.keys(artifacts).length > 0 ? { artifacts } : {};
   } catch (e) {
     console.warn('Compile artifact store failed; returning inline only:', e);

@@ -5,7 +5,7 @@ import { deleteRunCheckpoint, getCheckpointer } from '@/lib/agent/checkpointer';
 import { describeGraphError } from '@/lib/agent/run-limits';
 import { runHeartbeatMs, type RunStore } from './run-store';
 import { registerRun, unregisterRun } from './run-control';
-import { getArtifactStore } from './artifact-store';
+import { safeDeleteForRun } from './artifact-store';
 import { externalizeEvent } from './externalize';
 
 export const SSE_HEADERS = {
@@ -224,7 +224,7 @@ export function streamRun(o: StreamRunOptions): Response {
   const finish = async (event: RunEvent | null, status: RunStatus, error: ApiError | undefined, expect: RunStatus[]) => {
     await finishInner(event, status, error, expect);
     // A stopped run keeps no artifacts that only it referenced.
-    if (status === 'cancelled') await getArtifactStore().deleteForRun(runId).catch((e) => console.warn('Artifact cleanup failed:', e));
+    if (status === 'cancelled') await safeDeleteForRun(runId);
   };
 
   const finishInner = async (event: RunEvent | null, status: RunStatus, error: ApiError | undefined, expect: RunStatus[]) => {

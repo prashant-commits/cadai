@@ -164,4 +164,44 @@ describe('LocalArtifactStore', () => {
     process.env.CADAI_ARTIFACT_STORE = 'local';
     expect(() => getArtifactStore()).not.toThrow();
   });
+
+  it('M2: get refreshes a compile hold (expiry by last use); empty compile dirs are pruned', async () => {
+    process.env.CADAI_RUN_TTL_MS = '1000';
+    const s = new LocalArtifactStore(tmp());
+    const ref = await s.put('compile-a', 'stl', 'bytes');
+    const past = new Date(Date.now() - 120_000);
+    fs.utimesSync(path.join(s.dir, 'runs', 'compile-a', ref.id), past, past);
+    await (await s.get(ref.id))!.stream.destroy();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await s.prune(async () => false)).toEqual([]); // used just now: kept
+    expect(await s.get(ref.id)).toBeDefined();
+    fs.mkdirSync(path.join(s.dir, 'runs', 'compile-empty'));
+    expect(await s.prune(async () => false)).toEqual(['compile-empty']);
+  });
+
+  it('M2: evictCompile drops least-recently-used compile runs to fit the byte cap', async () => {
+    const s = new LocalArtifactStore(tmp());
+    const a = await s.put('compile-a', 'stl', 'a'.repeat(1000));
+    const b = await s.put('compile-b', 'stl', 'b'.repeat(1000));
+    const c = await s.put('compile-c', 'stl', 'c'.repeat(1000));
+    const keep = await s.put('run-1', 'stl', 'd'.repeat(5000)); // non-compile runs are never evicted
+    const at = (run: string, id: string, ms: number) => fs.utimesSync(path.join(s.dir, 'runs', run, id), new Date(ms), new Date(ms));
+    at('compile-a', a.id, 3000); // a is the most recently used
+    at('compile-b', b.id, 1000);
+    at('compile-c', c.id, 2000);
+    await s.evictCompile!(2000);
+    expect(await s.get(b.id)).toBeUndefined();
+    expect(await s.get(c.id)).toBeDefined();
+    expect(await s.get(a.id)).toBeDefined();
+    await s.evictCompile!(0);
+    expect(await s.get(a.id)).toBeUndefined();
+    expect(await s.get(keep.id)).toBeDefined();
+  });
+
+  it('L1: the same bytes under a different kind are refused, not served under the wrong type', async () => {
+    const s = new LocalArtifactStore(tmp());
+    await s.put('r1', 'svg', 'same');
+    await expect(s.put('r2', 'png', 'same')).rejects.toThrow(/already exists as svg/);
+    await expect(s.put('r3', 'svg', 'same')).resolves.toBeDefined();
+  });
 });

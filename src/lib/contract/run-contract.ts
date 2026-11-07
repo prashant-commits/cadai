@@ -69,14 +69,13 @@ export interface ArtifactRef {
 export interface ResultArtifacts {
   stl?: ArtifactRef;
   step?: ArtifactRef; //        B-rep kernel only
-  code?: ArtifactRef; //        /api/compile only; the `result` event keeps `code` inline
 }
 
 /**
  * `artifacts` on the `gate` event. Refs for the payload's large fields, which are
  * inlined in the payload only while CADAI_INLINE_PAYLOADS=1 (when off they are
  * null / absent).
- *  - spec gate: `sheetSvg` is the recommended variant's sheet, `sheets` has every
+ *  - spec gate: `sheetSvg` is the recommended variant's sheet (unset when it has none), `sheets` has every
  *    variant's sheet by variant id.
  *  - accept gate: `stl` is the model under review.
  *  - `images` is reserved for PNG previews and is empty today.

@@ -26,6 +26,17 @@ function etagMatches(header: string | null, etag: string): boolean {
 }
 
 /**
+ * SINGLE-TENANT ONLY. Before multi-user hosting this must change:
+ *  - The id is a bearer capability (128 bits of the content's sha256): anyone who learns it reads the
+ *    bytes, and nothing checks who holds it. Authenticate the route and bind access to a holder
+ *    (look the id up in `holders/<id>` against the caller's runs, serve via /api/runs/:runId/artifacts/:id,
+ *    or issue signed expiring URLs).
+ *  - Content addressing dedupes across users, which is a confirmation oracle (200 vs 404, ETag = sha256).
+ *    Key by owner + hash, and add per-user quotas.
+ *  - The store is local disk (like the run store): on serverless or multi-instance hosts an artifact put on
+ *    one instance is a 404 on another. Implement a bucket-backed ArtifactStore and drop the `.dir` cast in
+ *    getArtifactStore(). Keep `Cache-Control: private` (never shared-cacheable without keying on auth).
+ *
  * GET /api/artifacts/:id - the bytes of an artifact referenced by a stream event.
  * Content-addressed, so the response is immutable and cacheable for a year.
  */

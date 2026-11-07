@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { NextRequest } from 'next/server';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -37,6 +37,24 @@ describe('/api/compile API Route', () => {
       expect(again.artifacts.stl.id).toBe(data.artifacts.stl.id);
     } finally {
       delete process.env.CADAI_RUN_DIR;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('M2: the compile byte cap evicts the least recently used compile run', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadai-compile-cap-'));
+    process.env.CADAI_RUN_DIR = dir;
+    try {
+      const compile = async (code: string) => (await (await POST(new NextRequest('http://localhost:3000/api/compile', { method: 'POST', body: JSON.stringify({ code }) }))).json());
+      const first = await compile('cube([1, 1, 1]);');
+      process.env.CADAI_COMPILE_ARTIFACT_MAX_BYTES = String(first.artifacts.stl.bytes + 10); // room for one
+      const second = await compile('cube([2, 2, 2]);');
+      expect(await getArtifactStore().get(second.artifacts.stl.id)).toBeDefined();
+      expect(await getArtifactStore().get(first.artifacts.stl.id)).toBeUndefined();
+      expect(second.stl).toContain('facet normal'); // inline is unaffected
+    } finally {
+      delete process.env.CADAI_RUN_DIR;
+      delete process.env.CADAI_COMPILE_ARTIFACT_MAX_BYTES;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

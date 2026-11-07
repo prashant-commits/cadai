@@ -25,6 +25,8 @@ export interface ArtifactStore {
   get(id: string): Promise<{ ref: ArtifactRef; stream: Readable } | undefined>;
   /** Drops the run's hold; content nobody else holds is deleted. */
   deleteForRun(runId: string): Promise<void>;
+  /** Evicts least-recently-used `compile-*` runs until their artifacts total at most `maxBytes`. */
+  evictCompile?(maxBytes: number): Promise<void>;
 }
 
 const ID = /^[0-9a-f]{32}$/;
@@ -98,6 +100,10 @@ export class LocalArtifactStore implements ArtifactStore {
     const id = sha256.slice(0, 32);
     const name = `${sha256}.${kind}`;
 
+    // Content addressing has no room for two kinds of the same bytes: serving it under the wrong type would be unsafe.
+    const existing = await this.blobFile(id);
+    if (existing && FILE.exec(existing)![2] !== kind) throw new Error(`Artifact ${id} already exists as ${FILE.exec(existing)![2]}, not ${kind}.`);
+
     // Mark first (so a concurrent delete sees us), then make sure the bytes exist.
     await fs.promises.mkdir(this.p('holders', id), { recursive: true });
     await fs.promises.mkdir(this.p('runs', runId), { recursive: true });
@@ -138,10 +144,46 @@ export class LocalArtifactStore implements ArtifactStore {
       return undefined; // deleted meanwhile
     }
     const { size } = await fh.stat();
+    void this.touchCompileHolds(id); // last use, not put time, drives compile expiry
     return {
       ref: { id, kind: m[2] as ArtifactKind, bytes: size, sha256: m[1], url: urlFor(id) },
       stream: fh.createReadStream({ autoClose: true }),
     };
+  }
+
+  private async touchCompileHolds(id: string): Promise<void> {
+    const now = new Date();
+    for (const runId of await this.holders(id)) {
+      if (runId.startsWith('compile-')) await fs.promises.utimes(this.p('runs', runId, id), now, now).catch(() => undefined);
+    }
+  }
+
+  /** Total stored bytes and newest hold of one run. */
+  private async runUsage(runId: string): Promise<{ bytes: number; newest: number }> {
+    let bytes = 0;
+    let newest = 0;
+    for (const id of await fs.promises.readdir(this.p('runs', runId)).catch(() => [] as string[])) {
+      const st = await fs.promises.stat(this.p('runs', runId, id)).catch(() => undefined);
+      if (st) newest = Math.max(newest, st.mtimeMs);
+      const name = await this.blobFile(id);
+      const blob = name ? await fs.promises.stat(this.p('blobs', id, name)).catch(() => undefined) : undefined;
+      if (blob) bytes += blob.size;
+    }
+    return { bytes, newest };
+  }
+
+  async evictCompile(maxBytes: number): Promise<void> {
+    const runs: Array<{ runId: string; bytes: number; newest: number }> = [];
+    for (const runId of await fs.promises.readdir(this.p('runs')).catch(() => [] as string[])) {
+      if (runId.startsWith('compile-') && isSafeRunId(runId)) runs.push({ runId, ...(await this.runUsage(runId)) });
+    }
+    let total = runs.reduce((n, r) => n + r.bytes, 0);
+    runs.sort((a, b) => a.newest - b.newest); // least recently used first
+    for (const r of runs) {
+      if (total <= maxBytes) break;
+      await this.deleteForRun(r.runId);
+      total -= r.bytes;
+    }
   }
 
   async deleteForRun(runId: string): Promise<void> {
@@ -197,7 +239,7 @@ export class LocalArtifactStore implements ArtifactStore {
       let drop: boolean;
       if (runId.startsWith('compile-')) {
         const newest = await this.newestHold(runId);
-        drop = newest !== undefined && now - newest > ttl;
+        drop = newest === undefined || now - newest > ttl; // an empty dir has nothing to keep
       } else {
         const newest = await this.newestHold(runId);
         // A run record is created before its first artifact, so a missing one means it was pruned.
@@ -262,3 +304,12 @@ export function getArtifactStore(): ArtifactStore {
 onRunRemoved((runId, dir) => {
   void artifactStoreFor(dir).deleteForRun(runId).catch((e) => console.warn('Artifact cleanup failed:', e));
 });
+
+/** deleteForRun that never throws (a bad CADAI_ARTIFACT_STORE included): cleanup must not break a cancel. */
+export async function safeDeleteForRun(runId: string): Promise<void> {
+  try {
+    await getArtifactStore().deleteForRun(runId);
+  } catch (e) {
+    console.warn('Artifact cleanup failed:', e);
+  }
+}

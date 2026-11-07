@@ -27,7 +27,23 @@ async function tryPut(
  * CADAI_INLINE_PAYLOADS=1, or for a payload whose artifact could not be stored.
  * The input event is not mutated (the gate payload also lives in the checkpoint).
  */
-export async function externalizeEvent<E extends Obj>(runId: string, event: E, store: ArtifactStore = getArtifactStore()): Promise<E> {
+export async function externalizeEvent<E extends Obj>(runId: string, event: E, store?: ArtifactStore): Promise<E> {
+  if (event.t !== 'result' && event.t !== 'gate') return event; // nothing to externalize: never touch the store
+  try {
+    return await externalizeInner(runId, event, store ?? getArtifactStore());
+  } catch (e) {
+    // Never kill or stall a run over a storage problem: the event goes out with its inline payload.
+    if (!warned) {
+      warned = true;
+      console.warn('Externalizing a payload failed; sending it inline:', e);
+    }
+    return event;
+  }
+}
+
+let warned = false;
+
+async function externalizeInner<E extends Obj>(runId: string, event: E, store: ArtifactStore): Promise<E> {
   const inline = inlinePayloads();
   if (event.t === 'result') {
     const out: Obj = { ...event };
@@ -39,8 +55,9 @@ export async function externalizeEvent<E extends Obj>(runId: string, event: E, s
         if (!inline) delete out.stl;
       }
     }
-    if (nonEmpty(out.step)) {
-      const ref = await tryPut(store, runId, 'step', Buffer.from(out.step, 'base64')); // `step` is base64
+    const stepBytes = nonEmpty(out.step) ? Buffer.from(out.step, 'base64') : undefined;
+    if (stepBytes && stepBytes.subarray(0, 9).toString('latin1') === 'ISO-10303') {
+      const ref = await tryPut(store, runId, 'step', stepBytes); // `step` is base64
       if (ref) {
         artifacts.step = ref;
         if (!inline) delete out.step;
@@ -68,7 +85,7 @@ export async function externalizeEvent<E extends Obj>(runId: string, event: E, s
       if (ids.length > 0) {
         artifacts.sheets = sheets;
         const rec = typeof payload.recommendedId === 'string' ? payload.recommendedId : undefined;
-        artifacts.sheetSvg = sheets[rec ?? ''] ?? sheets[ids[0]];
+        if (rec && sheets[rec]) artifacts.sheetSvg = sheets[rec]; // only the recommended variant's sheet
       }
     }
     if (nonEmpty(payload.stl)) {
