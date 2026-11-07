@@ -2166,7 +2166,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       const finalFlags = (state.designerFlags ?? []).filter((f) => f.final);
       if (finalFlags.length > 0) {
         const flagFormatter = designerDeps?.formatFlags ?? formatFlags;
-        const formatted = flagFormatter(finalFlags);
+        const formatted = flagFormatter(finalFlags, true);
         if (formatted) {
           summary = summary ? `${summary}\n\n${formatted}` : formatted;
         }

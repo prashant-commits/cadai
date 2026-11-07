@@ -172,7 +172,7 @@ describe('designerNode', () => {
     // Test review event
     const flags: ReviewFlag[] = [{ severity: 'blocking', issue: 'Hole missing', whyItMatters: 'needed for screw' }];
     capturedOnEvent!({ kind: 'review', flags, final: false });
-    expect(formatFlagsMock).toHaveBeenCalledWith(flags);
+    expect(formatFlagsMock).toHaveBeenCalledWith(flags, false);
     expect(writerMock).toHaveBeenCalledWith(expect.objectContaining({
       t: 'delta',
       node: 'designerNode',

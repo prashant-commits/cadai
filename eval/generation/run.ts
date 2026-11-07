@@ -172,7 +172,8 @@ function effectiveRun(): { pipeline: 'drafter' | 'architect' | 'designer'; kerne
 /** Flags override the defaults. Unset flags leave an explicit shell env alone. */
 function applyEvalEnv(args: Args) {
   // The B-rep kernel only exists on the Architect pipeline.
-  if (args.kernel === 'brep') args.pipeline = 'architect';
+  // Designer mode also runs on the B-rep kernel; keep an explicit CADAI_PIPELINE=designer.
+  if (args.kernel === 'brep' && !args.pipeline && process.env.CADAI_PIPELINE !== 'designer') args.pipeline = 'architect';
   if (args.kernel) process.env.CADAI_KERNEL = args.kernel;
   if (args.thinking) process.env.CADAI_THINKING = args.thinking;
   if (args.effort) process.env.CADAI_EFFORT = args.effort;

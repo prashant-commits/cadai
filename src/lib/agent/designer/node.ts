@@ -14,7 +14,7 @@ import { escapeMarkers } from '../transcript';
 export interface DesignerNodeDeps {
   runDesigner?: RunDesignerFn;
   makeReviewer?: () => ReviewFn;
-  formatFlags?: (flags: ReviewFlag[]) => string;
+  formatFlags?: (flags: ReviewFlag[], final: boolean) => string;
   model?: string;
 }
 
@@ -33,7 +33,7 @@ async function getDeps(deps: DesignerNodeDeps) {
     formatFlags = formatFlags ?? reviewerMod.formatFlags;
   }
 
-  return { runDesigner, makeReviewer, formatFlags };
+  return { runDesigner: runDesigner!, makeReviewer: makeReviewer!, formatFlags: formatFlags! };
 }
 
 export function createDesignerNode(deps: DesignerNodeDeps = {}) {
@@ -91,7 +91,7 @@ export function createDesignerNode(deps: DesignerNodeDeps = {}) {
         config?.writer?.({ t: 'delta', node: 'designerNode', text: escapeMarkers(text) });
       } else if (e.kind === 'review') {
         if (e.flags && e.flags.length > 0) {
-          const formatted = resolved.formatFlags(e.flags);
+          const formatted = resolved.formatFlags(e.flags, e.final);
           if (formatted) {
             const text = formatted.endsWith('\n') ? formatted : `${formatted}\n`;
             config?.writer?.({ t: 'delta', node: 'designerNode', text: escapeMarkers(text) });
