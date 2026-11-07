@@ -3,7 +3,7 @@ import { AIMessage, type BaseMessage } from '@langchain/core/messages';
 import type { AgentStateType } from '../graph';
 import type { AssemblySpec } from '../assembly-spec';
 import { resolveSpec } from '../spec-expr';
-import { makeBrepBuild } from './brep-build';
+import { makeBrepBuild, SHORTER_REPLY } from './brep-build';
 import { systemPromptFor } from '../system-prompt';
 
 const spec = resolveSpec({
@@ -69,7 +69,42 @@ describe('brepBuild stop reasons', () => {
   });
 });
 
+const text = (m: BaseMessage) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content));
+
+describe('brepBuild retry after a cut-off reply', () => {
+  it('asks for a shorter answer after a truncated attempt, and only then', async () => {
+    const a = fakeModel(new AIMessage(good));
+    await makeBrepBuild(a.model as never)(state({ failureKind: 'truncated' as never, currentCode: 'result = 1', attemptCount: 1 }));
+    expect(text(a.calls[0][1])).toContain(SHORTER_REPLY);
+    for (const kind of ['no_code', 'compile', 'none']) {
+      const b = fakeModel(new AIMessage(good));
+      await makeBrepBuild(b.model as never)(state({ failureKind: kind as never }));
+      expect(text(b.calls[0][1])).not.toContain(SHORTER_REPLY);
+    }
+  });
+});
+
 describe('brepBuild body rejections', () => {
+  const bad = '@body backplate\nwith BuildPart() as p:\n    Box(120, 6, 160)\nreturn p.part\n@end\n';
+  const ring = '@body cup_ring\npart = Cylinder(50, 30)\nreturn part\n@end';
+
+  it('a corrected body sent after a rejected one leaves no note and no error', async () => {
+    const reply = `${bad}@body backplate\npart = Box(120, 6, 160, align=(Align.MIN, Align.MIN, Align.MIN))\nreturn part\n@end\n${ring}`;
+    const out = await makeBrepBuild(fakeModel(new AIMessage(reply)).model as never)(state());
+    expect(out.buildNotes ?? []).toEqual([]);
+    expect(out.buildFallbacks).toBe(0);
+  });
+
+  it('a refused body for a part that keeps its previous body leaves no stale note', async () => {
+    const first = await makeBrepBuild(fakeModel(new AIMessage(good)).model as never)(state());
+    const out = await makeBrepBuild(fakeModel(new AIMessage(`${bad}`)).model as never)(state({
+      currentCode: first.currentCode, attemptCount: 1,
+      specViolations: [{ kind: 'compile', field: 'cup_ring', expected: 'x', measured: 'y', severity: 'error', message: 'cup_ring: fix' }] as never,
+    }));
+    expect((out.buildNotes ?? []).filter((n) => n.name === 'backplate')).toEqual([]);
+    expect(out.currentCode).toContain('Box(120, 6, 160');
+  });
+
   it('a with BuildPart body is replaced by its blockout and the note carries the reason and the fix', async () => {
     const reply = '@body backplate\nwith BuildPart() as p:\n    Box(120, 6, 160)\npart = p.part\nreturn part\n@end\n@body cup_ring\npart = Cylinder(50, 30)\nreturn part\n@end';
     const { model } = fakeModel(new AIMessage(reply));

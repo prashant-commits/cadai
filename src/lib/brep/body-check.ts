@@ -10,6 +10,8 @@
  * A rejected body falls back to the code-drawn blockout.
  */
 
+import { EXTRUDE_FORMS } from './extrude-forms';
+
 export interface BodyCheckOptions {
   /** Parameter and derived names as the script spells them: a body must not rebind them. */
   reserved?: Iterable<string>;
@@ -26,8 +28,7 @@ const BUILDER_NAMES = /^Build(?:Part|Sketch|Line)$/;
  * Why a `with BuildPart/BuildSketch/BuildLine` body is rejected. The reason names the fix, because it
  * reaches the model on the next build visit (see `isBuilderModeReason`).
  */
-export const BUILDER_MODE_REASON =
-  'a body must not use with BuildPart, BuildSketch or BuildLine; use algebra mode only, e.g. extrude(Plane.YZ * Polygon(*pts, align=None), amount=w) or extrude(make_face(Polyline(*pts, close=True)), amount=w), and return the part';
+export const BUILDER_MODE_REASON = `a body must not use with BuildPart, BuildSketch or BuildLine; use algebra mode only, e.g. ${EXTRUDE_FORMS}, and return the part`;
 
 export const isBuilderModeReason = (reason: string): boolean => reason.includes(BUILDER_MODE_REASON);
 

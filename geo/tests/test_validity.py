@@ -212,3 +212,22 @@ def test_ok_payload_has_no_invalid_key(tmp_path):
     out = tmp_path / "out"
     out.mkdir()
     assert "invalid" not in geo.run(src, out)
+
+
+def test_step_label_is_printable_ascii_without_backslash_and_at_most_64():
+    assert geo._step_label("base_plate") == "base_plate"
+    cleaned = geo._step_label("\\X2\\\u00e9\x01\n'q'")
+    assert cleaned.isascii() and cleaned.isprintable() and "\\" not in cleaned
+    assert len(geo._step_label("x" * 500)) == 64
+    assert geo._step_label("") == ""
+
+
+def test_unfused_step_carries_only_sanitized_labels(tmp_path):
+    from build123d import import_step
+
+    a, b = _boxes()
+    step = str(tmp_path / "m.step")
+    assert geo._export_unfused_step([("ba\\se\u00e9\x01", a), ("l" * 200, b)], step) is not None
+    text = open(step, encoding="utf-8").read()
+    assert "\\X2\\" not in text and "\x01" not in text and "\u00e9" not in text
+    assert [c.label for c in import_step(step).children] == ["ba_se__", "l" * 64]

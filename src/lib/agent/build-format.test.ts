@@ -131,6 +131,22 @@ describe('parseBuild python rejections', () => {
     expect(r.rejections[1].reason).toContain('import');
   });
 
+  it('a later corrected body for the same part clears the earlier rejection', () => {
+    const text = '@body base\nwith BuildPart() as p:\n    Box(1, 1, 1)\nreturn p.part\n@end\n@body base\nreturn Box(2, 2, 2)\n@end';
+    const r = parseBuild(text, ['base'], [], { language: 'python' });
+    expect(r.bodies).toEqual({ base: 'return Box(2, 2, 2)' });
+    expect(r.dropped).toEqual([]);
+    expect(r.rejections).toEqual([]);
+  });
+
+  it('a later explicit blockout clears it too, and a later rejection replaces an earlier one', () => {
+    const rejected = '@body base\nwith BuildPart() as p:\n    Box(1, 1, 1)\nreturn p.part\n@end\n';
+    expect(parseBuild(`${rejected}@body base blockout`, ['base'], [], { language: 'python' }).rejections).toEqual([]);
+    const twice = parseBuild(`${rejected}@body base\nimport os\nreturn Box(1, 1, 1)\n@end`, ['base'], [], { language: 'python' });
+    expect(twice.rejections).toHaveLength(1);
+    expect(twice.rejections[0].reason).toContain('import');
+  });
+
   it('has none for a clean reply or for OpenSCAD bodies', () => {
     expect(parseBuild('@body base\nreturn Box(1, 1, 1)\n@end', ['base'], [], { language: 'python' }).rejections).toEqual([]);
     expect(parseBuild('@body base\ncube([1, 1, 1]);\n@end', ['base']).rejections).toEqual([]);

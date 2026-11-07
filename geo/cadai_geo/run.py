@@ -325,6 +325,15 @@ def _discard_exports(*paths: str) -> None:
         _replace_output(path)
 
 
+_LABEL_MAX = 64
+
+
+def _step_label(label: str) -> str:
+    """A label that is safe to write into a STEP file: printable ASCII, no backslash, at most 64 characters."""
+    cleaned = re.sub(r"[^\x20-\x7e]|\\", "_", str(label))
+    return cleaned[:_LABEL_MAX]
+
+
 _FUSED_STEP_NOTE = "STEP exported as separate solids (fused shape did not survive STEP export)"
 
 
@@ -342,7 +351,7 @@ def _export_unfused_step(part_shapes: list[tuple[str, object]], step_path: str):
         if not valid:
             return None
         try:
-            shape.label = label
+            shape.label = _step_label(label)
         except Exception:
             pass
         children.append(shape)

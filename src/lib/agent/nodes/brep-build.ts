@@ -31,7 +31,7 @@ export function makeBrepBuild(model: {
     const { componentNames, reserved, changes, ask, keep } = planBuildVisit(state, spec);
 
     const reply = await model.invoke(
-      [cachedSystemMessage(systemPromptFor('brep-build')), new HumanMessage(humanPrompt(spec, changes, ask, keep))],
+      [cachedSystemMessage(systemPromptFor('brep-build')), new HumanMessage(humanPrompt(spec, changes, ask, keep, state.failureKind === 'truncated'))],
       config,
     );
 
@@ -69,7 +69,10 @@ export function makeBrepBuild(model: {
     // emitter's own check; it is then drawn from the blockout and counted as a fallback too.
     const emitterRejected = skipped.filter((note) => /^body rejected/.test(note.reason) && Object.prototype.hasOwnProperty.call(parsed.bodies, note.name));
     // Why the parser refused a body, so the user and the next build visit are told it, not just that the blockout was drawn.
-    const refused = parsed.rejections.map((item) => ({ name: item.name, reason: `body rejected (${item.reason}); drawn from the blockout` }));
+    // Only a refusal that is still the outcome counts: a part that ended up with a body (sent again, or kept from the previous build) was not drawn from the blockout.
+    const refused = parsed.rejections
+      .filter((item) => !Object.prototype.hasOwnProperty.call(parsed.bodies, item.name))
+      .map((item) => ({ name: item.name, reason: `body rejected (${item.reason}); drawn from the blockout` }));
     return {
       currentCode: script,
       attemptCount,
@@ -92,7 +95,11 @@ function blockoutFor(spec: AssemblySpec, name: string): string | null {
   }
 }
 
-function humanPrompt(spec: AssemblySpec, changes: string | null, ask: string[], keep: string[]): string {
+/** The retry line after a reply that hit the output limit, as the spec retry does. */
+export const SHORTER_REPLY =
+  'Your previous reply was cut off at the output limit before every @body section was complete. Reply again more concisely: only @body sections, each body as short as the geometry allows, no comments, no repeated code, and `@body <name> blockout` for a part whose blockout already fits.';
+
+function humanPrompt(spec: AssemblySpec, changes: string | null, ask: string[], keep: string[], cutOff = false): string {
   const { sheet, ...skeleton } = spec;
   // The names as the script spells them (a name the script uses itself is prefixed `p_`).
   const { names } = specNames(spec, String);
@@ -103,6 +110,7 @@ function humanPrompt(spec: AssemblySpec, changes: string | null, ask: string[], 
     return body === null ? `# ${component.name}: no blockout` : `@body ${component.name}\n${body}\n@end`;
   });
   const parts = [
+    cutOff ? SHORTER_REPLY : null,
     changes,
     `Spec skeleton (JSON):\n${JSON.stringify(skeleton, null, 2)}`,
     `Sheet:\n${sheet ?? ''}`,
