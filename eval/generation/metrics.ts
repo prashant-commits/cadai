@@ -212,16 +212,17 @@ export function metricsFromState(
   const kernel = state.kernel === 'brep' ? 'brep' : 'openscad';
   const lastAttempt = state.attemptHistory?.[state.attemptHistory.length - 1];
   const brepFields = kernel === 'brep'
-    ? { brepOk: lastAttempt ? lastAttempt.exitCode === 0 : false }
+    ? { brepOk: state.pipeline === 'designer' ? !!state.designerFacts?.ok : lastAttempt ? lastAttempt.exitCode === 0 : false }
     : {};
 
   return {
     id,
     model,
     pipeline: state.pipeline ?? null,
-    specOk: !!state.assemblySpec,
+    // Designer mode has no architect spec; its hard checks live in designerCheck.
+    specOk: state.pipeline === 'designer' ? true : !!state.assemblySpec,
     composed: report?.composed ?? false,
-    compileOk: !!state.validation?.valid,
+    compileOk: state.pipeline === 'designer' ? !!(state.designerFacts?.ok && state.designerCheckCompleted && !state.designerCheckFailures) : !!state.validation?.valid,
     floorOk: hasModel ? !has('floor') : null,
     floatingCount: report?.composed ? errors.filter((v) => v.kind === 'floating').length : null,
     localFrameOk: measured.length ? measured.every((c) => isZeroVec(c.localMin)) : null,
