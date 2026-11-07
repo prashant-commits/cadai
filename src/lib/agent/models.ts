@@ -14,10 +14,13 @@
 /**
  * Multimodal model used for all nodes (architect, builder, reviewer).
  *
- * claude-haiku-5.5 since 2026-11-05: in the Architect eval (24 prompts x 5
- * samples) it was 95-98% audit-clean, at a fraction of Sonnet's and Opus's cost.
+ * claude-sonnet-5.5 since 2026-11-07 (feat/brep, B-rep kernel): on the hard
+ * eval set (12 prompts x 2, intent judge) Sonnet was 22/22 workable with a
+ * mean intent score of 8.2 and a 43 s median run, against Haiku 14/22 (thinking
+ * off) and 20/21 (thinking in the build step), at about 5x Haiku's cost per run.
+ * Haiku 5.5 was the default from 2026-11-05.
  */
-export const DEFAULT_MODEL = 'claude-haiku-5.5';
+export const DEFAULT_MODEL = 'claude-sonnet-5.5';
 
 /**
  * What the model picker offers, and the set a persisted thread's slug is
@@ -27,8 +30,8 @@ export const DEFAULT_MODEL = 'claude-haiku-5.5';
  * CADAI_MODEL may still name another Claude slug for a trial without a code change.
  */
 export const MODELS = [
-  { slug: 'claude-haiku-5.5', label: 'Claude Haiku 5.5 - Recommended' },
-  { slug: 'claude-sonnet-5.5', label: 'Claude Sonnet 5.5 - higher quality' },
+  { slug: 'claude-sonnet-5.5', label: 'Claude Sonnet 5.5 - Recommended' },
+  { slug: 'claude-haiku-5.5', label: 'Claude Haiku 5.5 - faster, lower cost' },
   { slug: 'claude-opus-5.5', label: 'Claude Opus 5.5 - highest quality' },
 ] as const;
 

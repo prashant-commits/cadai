@@ -33,16 +33,16 @@ describe('getChatModel', () => {
     expect(getChatModel('claude-opus-5.5', { temperature: 0.6 }).invocationParams({}).temperature).toBeUndefined();
   });
 
-  it('defaults to Haiku 5.5, and CADAI_MODEL overrides it', () => {
-    expect(getChatModel().model).toBe('claude-haiku-5-5');
-    process.env.CADAI_MODEL = 'claude-sonnet-5.5';
+  it('defaults to Sonnet 5.5, and CADAI_MODEL overrides it', () => {
     expect(getChatModel().model).toBe('claude-sonnet-5-5');
+    process.env.CADAI_MODEL = 'claude-haiku-5.5';
+    expect(getChatModel().model).toBe('claude-haiku-5-5');
   });
 
   it('CADAI_MODEL is ignored with a warning when not an offered model', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     process.env.CADAI_MODEL = 'gpt-6-sol';
-    expect(getChatModel().model).toBe('claude-haiku-5-5');
+    expect(getChatModel().model).toBe('claude-sonnet-5-5');
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('CADAI_MODEL "gpt-6-sol" is not an offered model'));
     warnSpy.mockRestore();
   });
@@ -238,10 +238,10 @@ describe('requests on the wire (fake Anthropic client)', () => {
 });
 
 describe('model catalogue', () => {
-  it('offers Haiku (default), Sonnet and Opus only', () => {
-    expect(MODELS.map((m) => m.slug)).toEqual(['claude-haiku-5.5', 'claude-sonnet-5.5', 'claude-opus-5.5']);
-    expect(MODELS[0].label).toBe('Claude Haiku 5.5 - Recommended');
-    expect(DEFAULT_MODEL).toBe('claude-haiku-5.5');
+  it('offers Sonnet (default), Haiku and Opus only', () => {
+    expect(MODELS.map((m) => m.slug)).toEqual(['claude-sonnet-5.5', 'claude-haiku-5.5', 'claude-opus-5.5']);
+    expect(MODELS[0].label).toBe('Claude Sonnet 5.5 - Recommended');
+    expect(DEFAULT_MODEL).toBe('claude-sonnet-5.5');
     for (const m of MODELS) expect(isVisionModel(m.slug)).toBe(true);
   });
 
