@@ -25,6 +25,8 @@ export interface SpecViolation {
     | 'floating'
     /** A module's min corner is not at its local origin (informational once corrected). */
     | 'local_frame'
+    /** The build replaced or dropped something the model wrote (B-rep emitter notes). Always a warning. */
+    | 'build'
     /** A module's measured size disagrees with the spec's localExtents. */
     | 'extents'
     /** The spec contradicts itself: declared envelope vs the one its placements imply. */

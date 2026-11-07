@@ -14,7 +14,11 @@ export type BrepPart = {
 export type BrepResult = {
   ok: boolean;
   error?: string;
+  /** Line of the script that raised (the innermost frame in the script), when the runner knows it. */
+  line?: number;
   parts: BrepPart[];
+  /** Each component measured in its own frame before placement, when the script lists `_local`. */
+  local?: BrepPart[];
   solids: number;
   bbox?: {
     min: [number, number, number];
@@ -134,7 +138,9 @@ async function runBrepHttp(
     return {
       ok: Boolean(data.ok),
       error: data.error,
+      line: typeof data.line === 'number' ? data.line : undefined,
       parts: Array.isArray(data.parts) ? data.parts : [],
+      local: Array.isArray(data.local) ? data.local : undefined,
       solids: typeof data.solids === 'number' ? data.solids : 0,
       bbox: data.bbox,
       stl: data.stl,
@@ -161,6 +167,41 @@ interface LocalChildResult {
   error?: Error;
 }
 
+let warnedLocal = false;
+
+/**
+ * The local child's environment: what the venv interpreter needs, and the geometry settings.
+ * No API keys, no token: a script that got past the body check sees only these.
+ */
+export function localChildEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value === undefined) continue;
+    const keep =
+      key === 'PATH' || key === 'HOME' || key === 'TMPDIR' || key === 'LANG' || key.startsWith('LC_') ||
+      key.startsWith('PYTHON') ||
+      (key.startsWith('CADAI_GEO_') && key !== 'CADAI_GEO_TOKEN' && key !== 'CADAI_GEO_TOKEN_FILE');
+    if (keep) env[key] = value;
+  }
+  return env;
+}
+
+/**
+ * The local backend runs model-written Python as the app user with no process sandbox
+ * (no uid drop, no rlimits, no network cut). It is for development and evals only: it
+ * refuses to run under NODE_ENV=production unless CADAI_GEO_ALLOW_LOCAL=1.
+ */
+export function localRunnerRefusal(): string | null {
+  if (process.env.NODE_ENV === 'production' && process.env.CADAI_GEO_ALLOW_LOCAL !== '1') {
+    return 'local geometry runner is disabled in production: set CADAI_GEO_URL (or CADAI_GEO_ALLOW_LOCAL=1)';
+  }
+  if (!warnedLocal) {
+    warnedLocal = true;
+    console.warn('local geometry runner has no process sandbox: dev only');
+  }
+  return null;
+}
+
 /** Kills the child and everything it started (it leads its own process group). */
 function killGroup(child: ReturnType<typeof spawn>) {
   try {
@@ -181,6 +222,10 @@ async function runBrepLocal(
   t0: number,
   runSignal?: AbortSignal
 ): Promise<BrepResult> {
+  const refusal = localRunnerRefusal();
+  if (refusal) {
+    return { ok: false, error: refusal, parts: [], solids: 0, ms: Math.max(1, Math.round(performance.now() - t0)) };
+  }
   const root = findProjectRoot();
   const pyEnv = process.env.CADAI_GEO_PYTHON ?? 'geo/.venv/bin/python';
   const pythonPath = pyEnv.includes('/') || pyEnv.includes('\\')
@@ -213,7 +258,7 @@ async function runBrepLocal(
         child = spawn(pythonPath, ['-I', '-m', 'cadai_geo', scriptPath, outDir], {
           cwd: geoDir,
           stdio: ['ignore', 'pipe', 'pipe'],
-          env: process.env,
+          env: localChildEnv() as NodeJS.ProcessEnv,
           // Own process group, so a timeout or a stop kills the python process
           // and anything it spawned, not just the direct child.
           detached: process.platform !== 'win32',
@@ -343,6 +388,7 @@ async function runBrepLocal(
       return {
         ok: true,
         parts: Array.isArray(parsed.parts) ? (parsed.parts as BrepPart[]) : [],
+        local: Array.isArray(parsed.local) ? (parsed.local as BrepPart[]) : undefined,
         solids: typeof parsed.solids === 'number' ? parsed.solids : 0,
         bbox: parsed.bbox as BrepResult['bbox'],
         stl: stlBase64,
@@ -365,6 +411,7 @@ async function runBrepLocal(
     return {
       ok: false,
       error,
+      line: typeof parsed?.line === 'number' ? parsed.line : undefined,
       parts: [],
       solids: 0,
       ms: Math.max(1, Math.round(performance.now() - t0)),

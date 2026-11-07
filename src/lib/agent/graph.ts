@@ -589,6 +589,14 @@ export const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => 0,
   }),
+  /**
+   * What the B-rep emitter dropped or replaced on the latest brepBuild visit: a body it
+   * rejected (drawn from the blockout), a derived value it set to 0. validateBrep reports them.
+   */
+  buildNotes: Annotation<{ name: string; reason: string }[]>({
+    reducer: (_, y) => y,
+    default: () => [],
+  }),
   /** Set once, on the thread's first architectNode entry, from CADAI_PIPELINE. Never changes afterwards. */
   pipeline: Annotation<'drafter' | 'architect' | null>({
     reducer: (_, y) => y,
