@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import { HumanMessage } from '@langchain/core/messages';
 import { isInterrupted } from '@langchain/langgraph';
 import { getCheckpointer, runCheckpointKey } from './checkpointer';
@@ -125,6 +125,10 @@ async function runToGate(): Promise<{ messageTexts: string[]; deltas: string[]; 
 }
 
 describe('no raw model output reaches the UI channels', () => {
+  beforeEach(() => {
+    process.env.CADAI_PIPELINE = 'drafter'; // this suite is about the Drafter; the default is the Architect
+  });
+
   it('planner, variant and reviewer replies never appear as JSON in `messages` or `custom`', async () => {
     flags.dropTag = false;
     const { messageTexts, deltas } = await runToGate();

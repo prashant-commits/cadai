@@ -69,6 +69,7 @@ function queueCleanRun() {
 describe('visual critic', () => {
   beforeEach(() => {
     invokeMock.mockReset();
+    process.env.CADAI_PIPELINE = 'drafter'; // this suite is about the Drafter; the default is the Architect
     // The critic is parked (off unless 'on'); this suite is about the critic.
     process.env.CADAI_VISUAL_CRITIC = 'on';
     process.env.CADAI_MAX_ATTEMPTS = '3';

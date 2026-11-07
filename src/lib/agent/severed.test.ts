@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import { isInterrupted } from '@langchain/langgraph';
 import { HumanMessage } from '@langchain/core/messages';
 import { getCheckpointer, runCheckpointKey } from './checkpointer';
@@ -50,6 +50,10 @@ function kindOf(messages: unknown): string {
 }
 
 describe('severed components', () => {
+  beforeEach(() => {
+    process.env.CADAI_PIPELINE = 'drafter'; // this suite is about the Drafter; the default is the Architect
+  });
+
   it('carries a module shell count onto the placement report', () => {
     const code = 'module plate() { cube([10, 10, 10]); translate([30, 0, 0]) cube([10, 10, 10]); }\n';
     const frames = [{
