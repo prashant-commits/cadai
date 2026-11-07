@@ -3,6 +3,7 @@ import { getRunStore, isTerminal } from '@/lib/runs/run-store';
 import { abortRun } from '@/lib/runs/run-control';
 import { deleteRunCheckpoint, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { errorResponse } from '@/lib/runs/api-error';
+import { getArtifactStore } from '@/lib/runs/artifact-store';
 import type { RunInfo } from '@/lib/contract/run-contract';
 
 export const runtime = 'nodejs';
@@ -63,6 +64,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ ru
       );
       if (seq > 0) {
         await deleteRunCheckpoint(runCheckpointKey(info.threadId, runId));
+        await getArtifactStore().deleteForRun(runId).catch((e) => console.warn('Artifact cleanup failed:', e));
         return Response.json((await store.get(runId)) ?? info);
       }
       continue; // resumed meanwhile: it is running now
@@ -89,7 +91,10 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ ru
           { t: 'cancelled', at: Date.now() },
           { status: 'cancelled', error: { code: 'cancelled', message: 'The run was stopped.' }, expect: ['running'] },
         );
-        if (seq > 0) await deleteRunCheckpoint(runCheckpointKey(now.threadId, runId));
+        if (seq > 0) {
+          await deleteRunCheckpoint(runCheckpointKey(now.threadId, runId));
+          await getArtifactStore().deleteForRun(runId).catch((e) => console.warn('Artifact cleanup failed:', e));
+        }
       }
       now = (await store.get(runId)) ?? now;
     }

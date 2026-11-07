@@ -65,6 +65,29 @@ export interface ArtifactRef {
   url: string; //               relative, e.g. /api/artifacts/abc123
 }
 
+/** `artifacts` on the `result` event (and on the /api/compile response): always present when the payload exists. */
+export interface ResultArtifacts {
+  stl?: ArtifactRef;
+  step?: ArtifactRef; //        B-rep kernel only
+  code?: ArtifactRef; //        /api/compile only; the `result` event keeps `code` inline
+}
+
+/**
+ * `artifacts` on the `gate` event. Refs for the payload's large fields, which are
+ * inlined in the payload only while CADAI_INLINE_PAYLOADS=1 (when off they are
+ * null / absent).
+ *  - spec gate: `sheetSvg` is the recommended variant's sheet, `sheets` has every
+ *    variant's sheet by variant id.
+ *  - accept gate: `stl` is the model under review.
+ *  - `images` is reserved for PNG previews and is empty today.
+ */
+export interface GateArtifacts {
+  sheetSvg?: ArtifactRef;
+  sheets?: Record<string, ArtifactRef>;
+  stl?: ArtifactRef;
+  images?: ArtifactRef[];
+}
+
 /** Measurement of one part (R2): from the geometry service, or measured frames on OpenSCAD. */
 export interface PartInfo {
   label: string;

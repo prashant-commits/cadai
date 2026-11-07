@@ -5,6 +5,8 @@ import { deleteRunCheckpoint, getCheckpointer } from '@/lib/agent/checkpointer';
 import { describeGraphError } from '@/lib/agent/run-limits';
 import { runHeartbeatMs, type RunStore } from './run-store';
 import { registerRun, unregisterRun } from './run-control';
+import { getArtifactStore } from './artifact-store';
+import { externalizeEvent } from './externalize';
 
 export const SSE_HEADERS = {
   'Content-Type': 'text/event-stream; charset=utf-8',
@@ -193,7 +195,10 @@ export function streamRun(o: StreamRunOptions): Response {
   const emit = (event: RunEvent): void => {
     appendChain = appendChain.then(async () => {
       if (detached) return;
-      const stamped: Record<string, unknown> = { ...event, ts: Date.now() };
+      // Large payloads become artifact refs BEFORE the event is stored, so the log holds the event as streamed.
+      const slim = await externalizeEvent(runId, event as Record<string, unknown>);
+      if (detached) return;
+      const stamped: Record<string, unknown> = { ...slim, ts: Date.now() };
       if (stamped.t === 'error' && !stamped.apiError) {
         stamped.apiError = { code: 'internal', message: String(stamped.message ?? 'Run failed') } satisfies ApiError;
       }
@@ -217,6 +222,12 @@ export function streamRun(o: StreamRunOptions): Response {
 
   /** Stores `event` and moves the run to `status` atomically, only if it is still `expect`. */
   const finish = async (event: RunEvent | null, status: RunStatus, error: ApiError | undefined, expect: RunStatus[]) => {
+    await finishInner(event, status, error, expect);
+    // A stopped run keeps no artifacts that only it referenced.
+    if (status === 'cancelled') await getArtifactStore().deleteForRun(runId).catch((e) => console.warn('Artifact cleanup failed:', e));
+  };
+
+  const finishInner = async (event: RunEvent | null, status: RunStatus, error: ApiError | undefined, expect: RunStatus[]) => {
     await appendChain;
     await settlePending();
     if (detached) return;
