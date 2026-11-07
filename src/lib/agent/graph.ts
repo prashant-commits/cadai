@@ -1,6 +1,6 @@
 import { StateGraph, Annotation, END, START, interrupt } from '@langchain/langgraph';
 import type { LangGraphRunnableConfig } from '@langchain/langgraph';
-import { BaseMessage, HumanMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
+import { BaseMessage, HumanMessage, AIMessage } from '@langchain/core/messages';
 import type { RunnableConfig } from '@langchain/core/runnables';
 import { z } from 'zod';
 import { createSpecRenderer } from './spec-markdown';
@@ -9,9 +9,9 @@ import { composeRunSummary } from './run-summary';
 import type { StreamEvent } from './stream-events';
 import { cachedSystemMessage, systemPromptFor } from './system-prompt';
 import { contentText } from './message-text';
+import { invokeWithToolRound } from './tool-round';
 import { extractOpenScadCode } from './code-extractor';
 import { validateOpenScadCode } from './code-validator';
-import { getFunctionalCadModuleTool } from './engineering-tools';
 import { AssemblySpec, AssemblySpecSchema, variantSpecRequestSchema } from './assembly-spec';
 import { ValidationResult, ScadDiagnostic } from '../engine/scad-compiler';
 import { ModelInfo, GatePayload, GateDecision, GateVariant, DesignContract } from '@/types';
@@ -45,7 +45,7 @@ import { auditSpecShapes, auditSpecGround } from './spec-shape-audit';
 import { checkInterference } from '../engine/assembly-verifier';
 import { nullsToUndefined } from './strict-schema';
 import { getCheckpointer } from './checkpointer';
-import { VisualCritiqueSchema, SheetReviewSchema, ArchitectPlanSchema, structuredFor } from './llm-schemas';
+import { VisualCritiqueSchema, SheetReviewSchema, ArchitectPlanSchema, structuredFor, parseArchitectPlan, parseSheetReview, parseVisualCritique } from './llm-schemas';
 import {
   SpecVariant,
   SpecBrief,
@@ -658,8 +658,7 @@ export function createCadAgent(
   // {"type":"number"} lets a constrained decoder emit digits forever and truncate
   // the document. What comes back is validated against the zod schema and normalized.
 
-  // Drafter uses engineering lookup tools
-  const drafterModel = model.bindTools([getFunctionalCadModuleTool]);
+  // The drafter and repair nodes bind the engineering lookup tool in invokeWithToolRound.
 
   // Node 1: architectNode
 
@@ -991,7 +990,7 @@ export function createCadAgent(
           // Not streamed: LangChain buffers a zod-parsed structured reply and yields
           // it once, so the brief is written when the planner returns.
           const chunkObj = await plannerModel.withConfig({ tags: ['nostream'] }).invoke(attemptMessages, withBudget(config, runDeadline));
-          const parsedPlan = ArchitectPlanSchema.safeParse(nullsToUndefined(chunkObj));
+          const parsedPlan = parseArchitectPlan(chunkObj);
           if (parsedPlan.success && parsedPlan.data.variants.length > 0) {
             plan = parsedPlan.data;
             if (plan.brief) write(config, 'architectNode', { t: 'delta', text: `${plan.brief}
@@ -1317,12 +1316,19 @@ export function createCadAgent(
           { type: 'image_url', image_url: { url: pngDataUrl } },
         ];
 
+        // The reply is validated against SheetReviewSchema (an unrecognised severity
+        // counts as major); an unusable one is asked for again once.
         let reviewResult: z.infer<typeof SheetReviewSchema> | null = null;
         try {
-          reviewResult = (await reviewerModel.invoke(
-            [reviewerSystem, new HumanMessage({ content: content as never })],
-            withBudget(config, state.runDeadline)
-          )) as unknown as z.infer<typeof SheetReviewSchema>;
+          for (let attempt = 0; attempt < 2 && !reviewResult; attempt++) {
+            const raw = await reviewerModel.invoke(
+              [reviewerSystem, new HumanMessage({ content: content as never })],
+              withBudget(config, state.runDeadline)
+            );
+            reviewResult = parseSheetReview(raw);
+            if (!reviewResult) console.warn(`specReviewer: unusable review for variant ${v.id} (attempt ${attempt + 1}/2)`);
+          }
+          if (!reviewResult) throw new Error('no valid review after 2 attempts');
         } catch (e) {
           console.error(`specReviewer: model review call failed for variant ${v.id}:`, e);
           const reviewObj: VariantReview = {
@@ -1513,39 +1519,8 @@ ${contract}`;
       drafterHumanMessage,
     ];
 
-    let response = await drafterModel.invoke(messages, config);
-
-    // Handle tool execution loop if the model requests engineering modules
-    if (response.tool_calls && response.tool_calls.length > 0) {
-      const toolCallMessages: BaseMessage[] = [response];
-
-      for (const toolCall of response.tool_calls) {
-        if (toolCall.name === 'get_functional_cad_module') {
-
-
-
-          // Pass `config` so the tool run is parented to this node's span.
-          // Without it the retrieval is invisible to tracing (or shows up as a
-          // detached root trace), which is exactly the step you need to see
-          // when a draft comes back with the wrong hardware module.
-          const toolResult = await getFunctionalCadModuleTool.invoke(
-            toolCall.args as unknown as Parameters<typeof getFunctionalCadModuleTool.invoke>[0],
-            config,
-          );
-          toolCallMessages.push(
-            new ToolMessage({
-              tool_call_id: toolCall.id || `tool-${Date.now()}`,
-              name: toolCall.name,
-              content: typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult),
-            })
-          );
-        }
-      }
-
-
-      // Synthesize final code with tool observations
-      response = await model.invoke([...messages, ...toolCallMessages], config);
-    }
+    // One optional round of engineering-module lookups, then the script.
+    const response = await invokeWithToolRound(model, messages, config);
 
     const content = contentText(response.content);
     const extracted = extractOpenScadCode(content);
@@ -1783,7 +1758,6 @@ ${contract}`;
   // Node 4: fixCode
   async function fixCode(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
     const currentAttempt = state.attemptCount + 1;
-    const fixModel = model.bindTools([getFunctionalCadModuleTool]);
 
 
     const attemptsContext = state.attemptHistory
@@ -1873,37 +1847,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       new HumanMessage(fixPrompt),
     ];
 
-    let response = await fixModel.invoke(fixMessages, config);
-    
-    if (response.tool_calls && response.tool_calls.length > 0) {
-      const toolCallMessages: BaseMessage[] = [response];
-
-      for (const toolCall of response.tool_calls) {
-        if (toolCall.name === 'get_functional_cad_module') {
-
-
-
-          // Pass `config` so the tool run is parented to this node's span.
-          // Without it the retrieval is invisible to tracing (or shows up as a
-          // detached root trace), which is exactly the step you need to see
-          // when a draft comes back with the wrong hardware module.
-          const toolResult = await getFunctionalCadModuleTool.invoke(
-            toolCall.args as unknown as Parameters<typeof getFunctionalCadModuleTool.invoke>[0],
-            config,
-          );
-          toolCallMessages.push(
-            new ToolMessage({
-              tool_call_id: toolCall.id || `tool-${Date.now()}`,
-              name: toolCall.name,
-              content: typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult),
-            })
-          );
-        }
-      }
-
-
-      response = await model.invoke([...fixMessages, ...toolCallMessages], config);
-    }
+    const response = await invokeWithToolRound(model, fixMessages, config);
     
     const content = contentText(response.content);
     const extracted = extractOpenScadCode(content);
@@ -1990,16 +1934,21 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       content.push({ type: 'image_url', image_url: { url: view.dataUrl } });
     }
 
+    // Validated against VisualCritiqueSchema; an unusable reply is asked for again once.
     let critique: VisualCritique | null = null;
     try {
-      critique = (await structuredFor(criticModel, criticSlug, VisualCritiqueSchema)
-        .invoke(
+      const critic = structuredFor(criticModel, criticSlug, VisualCritiqueSchema);
+      for (let attempt = 0; attempt < 2 && !critique; attempt++) {
+        const raw = await critic.invoke(
           [
             cachedSystemMessage(systemPromptFor('critic')),
             new HumanMessage({ content: content as never }),
           ],
           config
-        )) as unknown as VisualCritique;
+        );
+        critique = parseVisualCritique(raw);
+        if (!critique) console.warn(`Visual critic: unusable critique (attempt ${attempt + 1}/2)`);
+      }
     } catch (e) {
       console.warn('Visual critic: model call failed', e);
       return {};

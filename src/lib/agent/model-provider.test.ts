@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ChatAnthropic } from '@langchain/anthropic';
 import { HumanMessage } from '@langchain/core/messages';
-import { anthropicModelId, getChatModel, thinkingFor, type CadChatModel } from './model-provider';
+import { anthropicModelId, getChatModel, thinkingFor } from './model-provider';
 import { DEFAULT_MODEL, MODELS, isOfferedModel, isVisionModel } from './models';
 import { cachedSystemMessage, systemPromptFor } from './system-prompt';
 import { structuredFor, ArchitectPlanSchema } from './llm-schemas';
 import { variantSpecRequestSchema } from './assembly-spec';
 import { getFunctionalCadModuleTool } from './engineering-tools';
+import { reply, textStream, withFakeClient, type Body } from './__fixtures__/fake-anthropic';
 
 const saved = { ...process.env };
 
@@ -18,56 +19,6 @@ beforeEach(() => {
 afterEach(() => {
   process.env = { ...saved };
 });
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Body = Record<string, any>;
-
-/** An Anthropic Messages API reply carrying `content`. */
-function reply(content: unknown[]) {
-  return {
-    id: 'msg_test',
-    type: 'message',
-    role: 'assistant',
-    model: 'claude-haiku-5-5',
-    content,
-    stop_reason: content.some((b) => (b as { type: string }).type === 'tool_use') ? 'tool_use' : 'end_turn',
-    stop_sequence: null,
-    usage: { input_tokens: 10, output_tokens: 20 },
-  };
-}
-
-/** The stream events of a reply whose single text block arrives in `pieces`. */
-function textStream(pieces: string[]) {
-  const events: unknown[] = [
-    { type: 'message_start', message: { ...reply([]), usage: { input_tokens: 10, output_tokens: 0 } } },
-    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
-    ...pieces.map((text) => ({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } })),
-    { type: 'content_block_stop', index: 0 },
-    { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 20 } },
-    { type: 'message_stop' },
-  ];
-  return {
-    controller: new AbortController(),
-    async *[Symbol.asyncIterator]() {
-      yield* events;
-    },
-  };
-}
-
-/**
- * Points a ChatAnthropic at a fake Anthropic client: every request body is
- * recorded, and `respond` answers it. No network.
- */
-function withFakeClient(model: CadChatModel, respond: (body: Body) => unknown): Body[] {
-  const bodies: Body[] = [];
-  const create = async (body: Body) => {
-    bodies.push(body);
-    return respond(body);
-  };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (model as any).createClient = () => ({ messages: { create }, beta: { messages: { create } } });
-  return bodies;
-}
 
 describe('getChatModel', () => {
   it('builds a native ChatAnthropic under the Anthropic model id', () => {

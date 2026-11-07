@@ -145,6 +145,34 @@ describe('spec sheets and reviewer loop', () => {
       expect(payload.variants![1].sheetSvg).toContain('<svg');
     });
 
+    it('a reviewer severity outside the enum ("High") counts as major; an unusable review is asked for again once', async () => {
+      process.env.CADAI_SPEC_REVIEW_RETRIES = '0';
+      const reviewReplies: unknown[] = [
+        { findings: [] }, // A, attempt 1: no matchesRequest -> unusable, asked again
+        { matchesRequest: true, findings: [{ issue: 'Arm missing', severity: 'High' }] }, // A, attempt 2
+      ];
+      invokeMock.mockImplementation((messages: unknown) => {
+        const text = JSON.stringify(messages);
+        if (text.includes('Evaluate whether this concept sheet matches the request')) return Promise.resolve(reviewReplies.shift());
+        if (text.includes('Generate the Assembly Spec for Variant A')) return Promise.resolve(baseSpec({ assemblyName: 'box_a' }));
+        return Promise.resolve({
+          brief: 'Plan',
+          assumptions: [],
+          openQuestions: [],
+          variants: [{ id: 'a', name: 'VarA', idea: 'A' }], // lower-case id, read as "A"
+          recommendedId: 'a',
+        });
+      });
+
+      const agent = createCadAgent('claude-haiku-5.5');
+      const result = await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, { configurable: { thread_id: newKey() } });
+
+      expect(reviewReplies).toHaveLength(0);
+      const varA = gatePayload(result).variants!.find((v) => v.id === 'A')!;
+      expect(varA.review?.validated).toBe(false);
+      expect(varA.review?.findings).toEqual([{ issue: 'Arm missing', severity: 'major' }]);
+    });
+
     it('one variant major -> only it goes back to architect, version bumps, others untouched', async () => {
       let varAReviewCount = 0;
       invokeMock.mockImplementation((messages: unknown) => {

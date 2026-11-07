@@ -108,7 +108,7 @@ export function getChatModel(modelName?: string, _opts?: { temperature?: number 
   const { thinking, effort } = thinkingFor(model);
   const defaultMaxTokens = thinking.type === 'disabled' ? MAX_TOKENS_THINKING_OFF : MAX_TOKENS_THINKING_ON;
 
-  return new ChatAnthropic({
+  const chat = new ChatAnthropic({
     apiKey: anthropicKey(),
     model,
     maxTokens: Number(process.env.CADAI_MAX_TOKENS ?? defaultMaxTokens),
@@ -121,4 +121,38 @@ export function getChatModel(modelName?: string, _opts?: { temperature?: number 
     clientOptions: { timeout: Number(process.env.CADAI_MODEL_TIMEOUT_MS ?? 240_000) },
     maxRetries: 1,
   });
+  noRetryOnAbort(chat);
+  return chat;
+}
+
+const ABORT_NAMES = new Set(['AbortError', 'TimeoutError', 'APIUserAbortError', 'APIConnectionTimeoutError']);
+
+/**
+ * An abort (the run's deadline or a cancelled request) or a client timeout. The
+ * SDK reports them as APIUserAbortError "Request was aborted." and
+ * APIConnectionTimeoutError "Request timed out.".
+ */
+export function isAbortOrTimeout(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const e = error as { name?: unknown; message?: unknown; constructor?: { name?: unknown } };
+  if (typeof e.name === 'string' && ABORT_NAMES.has(e.name)) return true;
+  if (typeof e.constructor?.name === 'string' && ABORT_NAMES.has(e.constructor.name)) return true;
+  return typeof e.message === 'string' && /^(Request was aborted|Request timed out|Aborted|The operation was aborted)/.test(e.message);
+}
+
+/**
+ * LangChain's caller retries a failed call once (maxRetries 1), and its default
+ * handler does not recognise the Anthropic SDK's abort error, so a call cut by
+ * the run deadline was sent again after about a second. The caller's own handler
+ * is wrapped: aborts and timeouts end the call, everything else is decided by
+ * the library default (429 / 5xx / 529 retried, other 4xx not).
+ */
+function noRetryOnAbort(chat: ChatAnthropic): void {
+  const caller = chat.caller as unknown as { onFailedAttempt?: (error: unknown) => unknown } | undefined;
+  if (!caller) return; // a test double without LangChain's caller
+  const libraryDefault = caller.onFailedAttempt;
+  caller.onFailedAttempt = (error: unknown) => {
+    if (isAbortOrTimeout(error)) throw error;
+    return libraryDefault?.(error);
+  };
 }

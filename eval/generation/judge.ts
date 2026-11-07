@@ -1,26 +1,10 @@
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
-import { z } from 'zod';
 import type { AssemblySpec } from '@/lib/agent/assembly-spec';
 import { getChatModel } from '@/lib/agent/model-provider';
+import { coerceRouteModel, isOfferedModel } from '@/lib/agent/models';
+import { structuredFor, parseVisualCritique, VisualCritiqueSchema } from '@/lib/agent/llm-schemas';
 import { JUDGE_SYSTEM_PROMPT } from './judge-prompt';
 import { renderStlViews } from '@/lib/engine/stl-renderer';
-
-/**
- * Same shape as the graph's VisualCritiqueSchema. No `.optional()`: the
- * gateway's strict json_schema rejects a property that is not required.
- */
-const VisualCritiqueSchema = z.object({
-  matchesIntent: z.boolean(),
-  findings: z
-    .array(
-      z.object({
-        issue: z.string().describe('What is visibly wrong, in one sentence.'),
-        severity: z.enum(['minor', 'major']),
-        view: z.string().describe('front | right | top | iso, or "" if it applies to all views'),
-      })
-    )
-    .default([]),
-});
 
 export interface VisualCritique {
   matchesIntent: boolean;
@@ -109,13 +93,20 @@ export async function judgeCompiledModel(input: {
   }
 
   try {
-    const critique = (await getChatModel(process.env.CADAI_CRITIC_MODEL)
-      .withStructuredOutput(VisualCritiqueSchema)
-      .invoke([
-        new SystemMessage(JUDGE_SYSTEM_PROMPT),
-        new HumanMessage({ content: criticUserContent(input.request, input.spec, views) as never }),
-      ])) as VisualCritique;
-    return { matchesIntent: !!critique?.matchesIntent, findings: critique?.findings ?? [] };
+    // The app's path: structuredFor (native structured output, never a forced
+    // tool_choice) and the same validation as the graph's Design Inspector.
+    const envCritic = process.env.CADAI_CRITIC_MODEL;
+    const slug = envCritic && isOfferedModel(envCritic) ? envCritic : coerceRouteModel(undefined);
+    const raw = await structuredFor(getChatModel(slug), slug, VisualCritiqueSchema).invoke([
+      new SystemMessage(JUDGE_SYSTEM_PROMPT),
+      new HumanMessage({ content: criticUserContent(input.request, input.spec, views) as never }),
+    ]);
+    const critique = parseVisualCritique(raw);
+    if (!critique) {
+      console.warn('Visual judge: reply did not match the critique schema');
+      return null;
+    }
+    return { matchesIntent: critique.matchesIntent, findings: critique.findings };
   } catch (e) {
     console.warn('Visual judge: model call failed', e);
     return null;

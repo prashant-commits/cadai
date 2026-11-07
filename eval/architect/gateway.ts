@@ -91,7 +91,8 @@ async function callOnce(route: Route, slug: string, job: GatewayJob, pricing: Pr
       return { value: res?.parsed ?? null, usd: usdFor(pricing, res?.raw?.usage_metadata) };
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      const transient = /\b(503|429)\b/.test(message) && !/insufficient_credits/.test(message);
+      // 529 is Anthropic's overloaded status.
+      const transient = (/\b(503|429|529)\b/.test(message) || /overloaded/i.test(message)) && !/insufficient_credits/.test(message);
       if (!transient || attempt >= RETRY_DELAYS_MS.length) return { error: `provider: ${message}` };
       await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
     }

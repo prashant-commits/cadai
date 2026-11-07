@@ -2,7 +2,9 @@ import { z } from 'zod';
 import { RunnableLambda } from '@langchain/core/runnables';
 import { JsonOutputKeyToolsParser } from '@langchain/core/output_parsers/openai_tools';
 import { assembleStructuredOutputPipeline } from '@langchain/core/language_models/structured_output';
-import { toAnthropicCompatibleSchema } from './strict-schema';
+import { JsonOutputParser } from '@langchain/core/output_parsers';
+import { ChatAnthropic } from '@langchain/anthropic';
+import { nullsToUndefined, toAnthropicCompatibleSchema } from './strict-schema';
 import { AssemblySpecSchema, omitRequestComponentFields } from './assembly-spec';
 
 // Schemas handed to withStructuredOutput. Anthropic's endpoint enforces strict
@@ -522,7 +524,12 @@ function parseBled(field: string, text: string): Record<string, unknown> | null 
   return null;
 }
 
-/** Top-level array fields that sometimes arrive as a JSON string of the array. */
+/**
+ * Top-level array fields that sometimes arrive as a JSON string of the array.
+ * Their string ELEMENTS are parsed too, which is safe only because every one of
+ * these fields has object elements in AssemblySpecSchema (a plain string element
+ * fails it anyway); native-api-review.test.ts pins that.
+ */
 const STRINGIFIED_ARRAY_FIELDS = [
   'components', 'parameters', 'derived', 'relations', 'guides', 'jointContracts', 'assumptions', 'openQuestions',
 ] as const;
@@ -602,6 +609,30 @@ export function normalizeClaudeSentinels(raw: unknown): unknown {
 }
 
 /**
+ * The stop reason of a model reply when it makes the reply unusable: cut off at
+ * max_tokens (a tool call's input is then a parseable but partial object, which
+ * the 6-optional variant schema could accept as a complete spec), or a refusal.
+ * Non-streamed replies carry it in response_metadata, streamed ones in
+ * additional_kwargs (from the message_delta event).
+ */
+export function unusableStop(msg: unknown): 'max_tokens' | 'refusal' | null {
+  if (!msg || typeof msg !== 'object') return null;
+  const m = msg as { response_metadata?: Record<string, unknown>; additional_kwargs?: Record<string, unknown> };
+  const reason = m.response_metadata?.stop_reason ?? m.additional_kwargs?.stop_reason;
+  return reason === 'max_tokens' || reason === 'refusal' ? reason : null;
+}
+
+/** JsonOutputParser that throws on a reply cut off at max_tokens or refused, so the caller retries. */
+class StopCheckedJsonOutputParser extends JsonOutputParser {
+  async parseResult(...args: Parameters<JsonOutputParser['parseResult']>): ReturnType<JsonOutputParser['parseResult']> {
+    const message = (args[0][0] as { message?: unknown } | undefined)?.message;
+    const stop = unusableStop(message);
+    if (stop) throw new Error(`structured reply unusable: stop_reason ${stop}`);
+    return super.parseResult(...args);
+  }
+}
+
+/**
  * `model.withStructuredOutput(schema, opts)`, adapted for Claude models on the Anthropic endpoint.
  *
  * For Claude variant spec requests, strict structured output fails because Anthropic
@@ -664,6 +695,12 @@ export function structuredFor<M extends { withStructuredOutput: (...args: never[
         const parser = RunnableLambda.from(async (msg: unknown) => {
           if (msg && typeof msg === 'object' && !('content' in msg) && !('_getType' in msg)) {
             return msg;
+          }
+          // Truncated or refused: undefined is a failed attempt, which the caller retries.
+          const stop = unusableStop(msg);
+          if (stop) {
+            console.warn(`structuredFor: ${toolName} reply unusable (stop_reason ${stop})`);
+            return undefined;
           }
           const parsedTool = await toolsParser.invoke(msg as never);
           if (parsedTool !== undefined) return parsedTool;
@@ -739,6 +776,22 @@ export function structuredFor<M extends { withStructuredOutput: (...args: never[
 
   const safe = toAnthropicCompatibleSchema(json);
   delete safe.$schema;
+  if (model instanceof ChatAnthropic) {
+    // Sent as output_config.format directly. withStructuredOutput({method: 'jsonSchema'})
+    // would run the schema through the SDK's transformJSONSchema, which moves `enum`
+    // (severity, variant ids) into the description as text, so the decoder no longer
+    // enforces it. `safe` is already Anthropic-compatible.
+    const llm = model.withConfig({
+      outputVersion: 'v0',
+      outputConfig: { format: { type: 'json_schema', schema: safe } },
+      ls_structured_output_format: { kwargs: { method: 'json_schema' }, schema: safe },
+    } as never);
+    return assembleStructuredOutputPipeline(
+      llm as never,
+      new StopCheckedJsonOutputParser() as never,
+      opts.includeRaw
+    ) as unknown as ReturnType<M['withStructuredOutput']>;
+  }
   const jsonOpts: { name: string; method: 'jsonSchema'; includeRaw?: boolean } = {
     name: opts.name ?? 'Reply',
     method: 'jsonSchema',
@@ -747,5 +800,57 @@ export function structuredFor<M extends { withStructuredOutput: (...args: never[
   return call.call(model, safe, jsonOpts);
 }
 
+/**
+ * Severity words outside the enum, read by meaning. The decoder enforces
+ * `minor | major`, but a reply can still arrive another way (a mock, a model
+ * that ignores the schema), and a lost major finding marks a wrong design as
+ * validated. So anything not clearly minor counts as major: fail closed.
+ */
+const MINOR_SEVERITIES = new Set(['minor', 'low', 'trivial', 'cosmetic', 'nit', 'info', 'informational', 'suggestion']);
 
+export function normalizeSeverity(value: unknown): 'minor' | 'major' {
+  const word = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return MINOR_SEVERITIES.has(word) ? 'minor' : 'major';
+}
 
+function withNormalizedSeverities(raw: unknown): unknown {
+  if (!isPlainObject(raw) || !Array.isArray(raw.findings)) return raw;
+  return {
+    ...raw,
+    findings: raw.findings.map((f) => (isPlainObject(f) ? { ...f, severity: normalizeSeverity(f.severity) } : f)),
+  };
+}
+
+/** A Sheet Reviewer reply validated against SheetReviewSchema, or null when it is unusable. */
+export function parseSheetReview(raw: unknown): z.infer<typeof SheetReviewSchema> | null {
+  const parsed = SheetReviewSchema.safeParse(withNormalizedSeverities(nullsToUndefined(raw)));
+  return parsed.success ? parsed.data : null;
+}
+
+/** A Design Inspector reply validated against VisualCritiqueSchema, or null when it is unusable. */
+export function parseVisualCritique(raw: unknown): z.infer<typeof VisualCritiqueSchema> | null {
+  const parsed = VisualCritiqueSchema.safeParse(withNormalizedSeverities(nullsToUndefined(raw)));
+  return parsed.success ? parsed.data : null;
+}
+
+/** A variant id in any case ("a", " B ") as the schema's "A" | "B" | "C"; anything else unchanged. */
+function upperVariantId(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const id = value.trim().toUpperCase();
+  return id === 'A' || id === 'B' || id === 'C' ? id : value;
+}
+
+/** A planner reply validated against ArchitectPlanSchema, variant ids read case-insensitively. */
+export function parseArchitectPlan(raw: unknown): ReturnType<typeof ArchitectPlanSchema.safeParse> {
+  let value = nullsToUndefined(raw);
+  if (isPlainObject(value)) {
+    value = {
+      ...value,
+      recommendedId: upperVariantId(value.recommendedId),
+      variants: Array.isArray(value.variants)
+        ? value.variants.map((v) => (isPlainObject(v) ? { ...v, id: upperVariantId(v.id) } : v))
+        : value.variants,
+    };
+  }
+  return ArchitectPlanSchema.safeParse(value);
+}
