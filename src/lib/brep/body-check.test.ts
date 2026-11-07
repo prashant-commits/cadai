@@ -70,6 +70,20 @@ describe('checkPythonBody rejects', () => {
     ['any *_path keyword', 'return Box(1, 1, 1, label_path="/tmp/x")'],
     ['file keyword', 'return Box(1, 1, 1, filename="/tmp/x")'],
     ['Text with a font by position', 'return extrude(Text("hi", 5, "Arial", "/etc/passwd"), amount=1)'],
+    // Round 3 (N1): a one-line compound header reads its condition, it does not bind it.
+    ['if-header read of a sibling internal', 'if _l_a: z = 1\nreturn _l_a'],
+    ['while-header read of a sibling internal', 'while _l_a: z = 1\nreturn _l_a'],
+    ['for-iterable read of a sibling internal', 'for i in _l_a: z = 1\nreturn _l_a'],
+    ['elif/else one-liners', 'if False: pass\nelif _p_a: z = 1\nelse: z = 2\nreturn _p_a'],
+    ['with-header read of a sibling internal', 'with _l_a: z = 1\nreturn _l_a'],
+    ['if-header read of a sibling component, then a call', 'if lid: z = 1\nreturn lid()'],
+    // Round 3 (N4, N6).
+    ['Text with * arguments', "return extrude(Text(*['a', 10, 'Arial', '/etc/hostname']), amount=1)"],
+    ['Text with ** arguments', "return extrude(Text('a', **{'font_path': '/etc/hostname'}), amount=1)"],
+    ['a font_path key in any dict', "opts = {'font_path': '/etc/hostname'}\nreturn Box(1, 1, 1)"],
+    ['escaped underscores in a string', "x = '\\x5f\\x5fclass\\x5f\\x5f'\nreturn Box(1, 1, 1)"],
+    ['octal-escaped underscore', "x = '\\137\\137'\nreturn Box(1, 1, 1)"],
+    ['named-escape underscore', "x = '\\N{LOW LINE}'\nreturn Box(1, 1, 1)"],
   ])('%s', (_label, body) => {
     expect(ok(body)).toBe(false);
   });
@@ -91,6 +105,11 @@ describe('checkPythonBody accepts', () => {
     ['the throwaway name', 'for _ in range(2):\n    pass\nreturn Box(1, 1, 1)'],
     ['Text with size only', 'return extrude(Text("hi", 5), amount=1)'],
     ['a generator over sizes', 'return Box(max(x for x in [1, 2]), 1, 1)'],
+    ['a for-header that binds an underscore local', 'for _i in range(2): z = _i\nreturn Box(1, 1, 1)'],
+    ['a one-line if with a real binding', 'if width > 1: z = width\nelse: z = 1\nreturn Box(z, 1, 1)'],
+    ['a one-line with-header binding', 'with BuildPart() as p: Box(1, 1, 1)\nreturn p.part'],
+    ['a dict literal of sizes', "d = {'w': 1}\nreturn Box(d['w'], 1, 1)"],
+    ['Text with keyword size', 'return extrude(Text("hi", font_size=5), amount=1)'],
   ])('%s', (_label, body) => {
     expect(checkPythonBody(body, opts)).toEqual({ ok: true });
   });
@@ -113,5 +132,21 @@ describe('sanitizePythonBody uses the token check', () => {
   });
   it('rejects a call to the emitted function name of a part', () => {
     expect(sanitizePythonBody('return lid_part()', ['lid'], [])).toBeNull();
+  });
+});
+
+describe('curated builtins and the guardrail stay in sync (N2)', () => {
+  it('no builtin the runner provides is banned by the body check, and the common helpers are there', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { BANNED_NAMES } = await import('./body-check');
+    const run = readFileSync('geo/cadai_geo/run.py', 'utf-8');
+    const block = /_SAFE_BUILTIN_NAMES = \(([\s\S]*?)\n\)/.exec(run)?.[1] ?? '';
+    const names = [...block.matchAll(/"([A-Za-z_]+)"/g)].map((m) => m[1]);
+    expect(names.length).toBeGreaterThan(30);
+    expect(names.filter((n) => BANNED_NAMES.has(n))).toEqual([]);
+    for (const n of ['next', 'iter', 'hasattr', 'callable', 'chr', 'ord', 'bytes', 'StopIteration', 'slice', 'frozenset', 'hash']) {
+      expect(names, n).toContain(n);
+    }
+    for (const n of ['open', 'exec', 'eval', 'getattr', 'type', 'object', 'id', 'vars', 'globals']) expect(names, n).not.toContain(n);
   });
 });

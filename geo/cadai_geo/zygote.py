@@ -50,6 +50,7 @@ from cadai_geo.isolate import (
     reap_uid,
 )
 from cadai_geo.run import (
+    _test_full_builtins_requested,
     _exit_message,
     _remember_compound_sources,
     capture_geometry,
@@ -130,7 +131,7 @@ class ZygoteServer:
         argv = [sys.executable, "-I", "-m", "cadai_geo.zygote", sock_path]
         # Test-only: the b1 sandbox probes need full builtins in the script (see run._FULL_BUILTINS).
         # It travels as an argument because the zygote's environment is empty on purpose.
-        if os.environ.get("CADAI_GEO_TEST_FULL_BUILTINS") == "1":
+        if _test_full_builtins_requested():
             argv.append("--test-full-builtins")
         proc = subprocess.Popen(
             argv,

@@ -184,8 +184,11 @@ export function holeExpr(
   const along = hole.at[alongIndex];
   const fromMin = Math.abs(along) <= Math.abs(along - extentNum);
   // No depth, or a depth of 0 or less (saved specs write `depth: 0` with the note "through"), is a through hole.
-  const through = hole.depth === undefined || !(hole.depth > 0);
-  const depth: Term = through ? 0 : ctx.term(he?.depth, hole.depth!);
+  // Through: no depth, or a LITERAL depth of 0 or less (saved specs write `depth: 0` meaning
+  // through). A parametric depth stays blind whatever its default value; it is clamped at 0.
+  const through = hole.depth === undefined || (!he?.depth && !(hole.depth > 0));
+  const depthTerm = through ? 0 : ctx.term(he?.depth, hole.depth!);
+  const depth: Term = typeof depthTerm === 'string' ? `max(${depthTerm}, 0)` : Math.max(depthTerm, 0);
   let start: Term = through || fromMin ? -OVERSHOOT : sub(extent, depth);
   if (!through && [at[alongIndex], extent, depth].some((t) => typeof t === 'string')) {
     // The mouth is on the nearer face. With a parameter in play that choice is made when the

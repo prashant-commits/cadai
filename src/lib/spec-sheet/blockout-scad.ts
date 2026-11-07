@@ -349,8 +349,12 @@ function holeLine(
   const along = hole.at[axis === 'x' ? 0 : axis === 'y' ? 1 : 2];
   const fromMin = Math.abs(along) <= Math.abs(along - extentNum);
   // No depth, or a depth of 0 or less (saved specs write `depth: 0` with the note "through"), is a through hole.
-  const through = hole.depth === undefined || !(hole.depth > 0);
-  const depth: Term | undefined = through ? undefined : fieldTerm(he?.depth, hole.depth!);
+  // Through: no depth, or a LITERAL depth of 0 or less (saved specs write `depth: 0` meaning
+  // through). A parametric depth stays blind whatever its default value; it is clamped at 0.
+  const through = hole.depth === undefined || (!he?.depth && !(hole.depth > 0));
+  const depthTerm: Term | undefined = through ? undefined : fieldTerm(he?.depth, hole.depth!);
+  const depth: Term | undefined =
+    depthTerm === undefined ? undefined : typeof depthTerm === 'string' ? `max(${depthTerm}, 0)` : Math.max(depthTerm, 0);
   const start: Term = through || fromMin ? -OVERSHOOT : sub(extent, depth ?? 0);
   const height: Term = through ? add(extent, OVERSHOOT * 2) : add(depth ?? 0, OVERSHOOT);
   const spin = axis === 'x' ? ' rotate([0, 90, 0])' : axis === 'y' ? ' rotate([-90, 0, 0])' : '';

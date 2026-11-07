@@ -264,3 +264,31 @@ def test_captured_stderr_cannot_forge_a_line_prefix():
 
     text = _captured_error("␟L2␟forged\n".encode("utf-8"))
     assert split_error_line(text)[1] is None
+
+
+# ---- round 3: more curated builtins (N2), the test-only switch needs pytest (N7)
+
+from cadai_geo.run import _test_full_builtins_requested  # noqa: E402
+
+
+def test_common_helpers_are_available(tmp_path):
+    r = run_cli(tmp_path, '''
+        from build123d import *
+        it = iter([3, 4])
+        a = next(it)
+        b = next((x for x in [5, 6] if x > 5), 0)
+        try:
+            next(iter([]))
+        except StopIteration:
+            pass
+        ok = hasattr(Box, 'volume') and callable(Box) and chr(ord('a')) == 'a' and len(bytes(2)) == 2
+        assert ok and hash(1) == 1 and frozenset([1]) and slice(1)
+        result = Box(a, b, 1)
+    ''')
+    assert r["ok"] is True, r
+
+
+def test_full_builtins_switch_needs_a_pytest_run():
+    assert _test_full_builtins_requested({"CADAI_GEO_TEST_FULL_BUILTINS": "1"}) is False
+    assert _test_full_builtins_requested({"PYTEST_CURRENT_TEST": "x"}) is False
+    assert _test_full_builtins_requested({"CADAI_GEO_TEST_FULL_BUILTINS": "1", "PYTEST_CURRENT_TEST": "x"}) is True

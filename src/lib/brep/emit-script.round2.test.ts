@@ -7,7 +7,8 @@ import type { AgentStateType } from '@/lib/agent/graph';
 import { makeBrepBuild } from '@/lib/agent/nodes/brep-build';
 import { auditPlacement } from '@/lib/agent/placement-audit';
 import { normalizeSpec } from '@/lib/agent/spec-normalize';
-import { localRunnerRefusal, type BrepResult } from '@/lib/engine/brep-runner';
+import { localChildEnv, localRunnerRefusal, type BrepResult } from '@/lib/engine/brep-runner';
+import { blockoutScad } from '@/lib/spec-sheet/blockout-scad';
 import { emitBrepScript } from './emit-script';
 import { localOriginViolations, toModuleFrames, toPlacementReport } from './measurements';
 import { geoPython, runGeoCliForTest } from './test-run';
@@ -131,5 +132,38 @@ describe('the local runner without a sandbox (H1d)', () => {
     vi.stubEnv('NODE_ENV', 'development');
     expect(localRunnerRefusal()).toBeNull();
     vi.unstubAllEnvs();
+  });
+});
+
+describe('the local runner child env (N3)', () => {
+  it('passes the interpreter and geometry settings, not keys or the token', () => {
+    const env = localChildEnv({
+      PATH: '/usr/bin', HOME: '/home/u', TMPDIR: '/tmp', LANG: 'C.UTF-8', LC_ALL: 'C', PYTHONPATH: '/x',
+      CADAI_GEO_PYTHON: '/venv/bin/python', CADAI_GEO_TOKEN: 'secret', CADAI_GEO_TOKEN_FILE: '/run/token',
+      ANTHROPIC_API_KEY: 'sk-ant', OPENAI_API_KEY: 'sk', DATABASE_URL: 'postgres://', NODE_ENV: 'development',
+    } as NodeJS.ProcessEnv);
+    expect(Object.keys(env).sort()).toEqual(['CADAI_GEO_PYTHON', 'HOME', 'LANG', 'LC_ALL', 'PATH', 'PYTHONPATH', 'TMPDIR']);
+  });
+});
+
+describe('only a literal depth of 0 means through (N5)', () => {
+  const blindAt = (dDefault: number) =>
+    spec({
+      parameters: [param('dd', dDefault)],
+      components: [comp('plate', [40, 30, 10], [0, 0, 0], { holes: [{ d: 6, axis: 'z', at: [20, 15, 0], depth: 'dd' }] })],
+    });
+  run('a parametric depth that is 0 at its default stays blind and follows the parameter', async () => {
+    const { script } = emitBrepScript(blindAt(0));
+    expect(script).toContain('max(dd, 0)');
+    const at0 = await runGeoCliForTest(script);
+    expect(at0.ok, at0.error).toBe(true);
+    expect(at0.parts[0].volume).toBeCloseTo(40 * 30 * 10, 0); // a 0 mm blind hole, not through
+    const at4 = await runGeoCliForTest(script.replace(/^dd = 0\b/m, 'dd = 4'));
+    expect(at4.parts[0].volume).toBeCloseTo(40 * 30 * 10 - Math.PI * 9 * 4, 0);
+  }, 120_000);
+  it('the OpenSCAD blockout keeps a parametric depth blind too', () => {
+    const { code } = blockoutScad(blindAt(0));
+    expect(code).toContain('max(dd, 0)');
+    expect(code).toMatch(/blind hole of plate/);
   });
 });

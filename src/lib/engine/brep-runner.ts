@@ -170,6 +170,23 @@ interface LocalChildResult {
 let warnedLocal = false;
 
 /**
+ * The local child's environment: what the venv interpreter needs, and the geometry settings.
+ * No API keys, no token: a script that got past the body check sees only these.
+ */
+export function localChildEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value === undefined) continue;
+    const keep =
+      key === 'PATH' || key === 'HOME' || key === 'TMPDIR' || key === 'LANG' || key.startsWith('LC_') ||
+      key.startsWith('PYTHON') ||
+      (key.startsWith('CADAI_GEO_') && key !== 'CADAI_GEO_TOKEN' && key !== 'CADAI_GEO_TOKEN_FILE');
+    if (keep) env[key] = value;
+  }
+  return env;
+}
+
+/**
  * The local backend runs model-written Python as the app user with no process sandbox
  * (no uid drop, no rlimits, no network cut). It is for development and evals only: it
  * refuses to run under NODE_ENV=production unless CADAI_GEO_ALLOW_LOCAL=1.
@@ -241,7 +258,7 @@ async function runBrepLocal(
         child = spawn(pythonPath, ['-I', '-m', 'cadai_geo', scriptPath, outDir], {
           cwd: geoDir,
           stdio: ['ignore', 'pipe', 'pipe'],
-          env: process.env,
+          env: localChildEnv() as NodeJS.ProcessEnv,
           // Own process group, so a timeout or a stop kills the python process
           // and anything it spawned, not just the direct child.
           detached: process.platform !== 'win32',

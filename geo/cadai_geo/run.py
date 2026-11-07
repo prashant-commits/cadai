@@ -109,9 +109,11 @@ def _shape_list(value: object, allow_empty: bool = False) -> list | None:
 _SAFE_BUILTIN_NAMES = (
     "abs", "min", "max", "round", "range", "len", "enumerate", "zip", "sum", "list", "tuple",
     "dict", "set", "frozenset", "float", "int", "bool", "str", "sorted", "reversed", "map",
-    "filter", "any", "all", "isinstance", "print", "pow", "divmod", "slice",
+    "filter", "any", "all", "isinstance", "print", "pow", "divmod", "slice", "next", "iter",
+    "hasattr", "callable", "chr", "ord", "bytes", "hash",
     "Exception", "ValueError", "TypeError", "ZeroDivisionError", "ArithmeticError",
     "IndexError", "KeyError", "RuntimeError", "AssertionError", "NotImplementedError",
+    "StopIteration",
     "True", "False", "None",
 )
 # The emitted prelude imports these, and nothing else.
@@ -120,7 +122,12 @@ _IMPORTABLE = ("build123d", "math")
 # Test-only: the b1 sandbox tests run escape probes (import os, fork, sleep) to prove the process
 # sandbox holds against a script that has full Python. Read once at import, from the service's own
 # environment (a script's environment is cleared before it runs). Never set it in a deployment.
-_FULL_BUILTINS = os.environ.get("CADAI_GEO_TEST_FULL_BUILTINS") == "1"
+def _test_full_builtins_requested(environ=os.environ) -> bool:
+    """The switch counts only inside a pytest run (PYTEST_CURRENT_TEST is set by pytest)."""
+    return environ.get("CADAI_GEO_TEST_FULL_BUILTINS") == "1" and bool(environ.get("PYTEST_CURRENT_TEST"))
+
+
+_FULL_BUILTINS = _test_full_builtins_requested()
 if _FULL_BUILTINS:
     print("cadai_geo: CADAI_GEO_TEST_FULL_BUILTINS=1, scripts get full builtins (tests only)", file=sys.stderr)
 

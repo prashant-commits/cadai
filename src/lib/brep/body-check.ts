@@ -31,7 +31,7 @@ const BANNED_ANYWHERE = new Set([
   'import', 'from', 'def', 'class', 'global', 'nonlocal', 'async', 'await', 'yield', 'format', 'format_map',
 ]);
 /** Names a body may not use as a bare name (an attribute of the same spelling is harmless). */
-const BANNED_NAMES = new Set([
+export const BANNED_NAMES = new Set([
   'exec', 'eval', 'compile', 'open', 'globals', 'locals', 'vars', 'dir', 'getattr', 'setattr', 'delattr',
   'input', 'breakpoint', 'help', 'exit', 'quit', 'memoryview', 'type', 'object', 'super', 'classmethod',
   'staticmethod', 'property', 'Mesher', 'ezdxf', 'brep_from_stl', 'FontManager',
@@ -77,6 +77,10 @@ export function checkPythonBody(body: string, options: BodyCheckOptions = {}): B
       // f-strings and (Python 3.14) t-strings evaluate the expressions inside their braces.
       if (/[fFtT]/.test(t.prefix)) return reject('f-string or t-string');
       if (t.v.includes('__')) return reject('dunder in a string');
+      // An underscore spelled as an escape (\x5f, \137, \u005f, \N{LOW LINE}) builds the same dunder.
+      if (/\\(?:x5[fF]|137|u005[fF]|U0000005[fF]|N\{)/.test(t.v)) return reject('escaped underscore in a string');
+      // A file keyword spelled as a string key (`**{'font_path': ...}`).
+      if (FILE_KEYWORD.test(t.v)) return reject(`string ${t.v} names a file keyword`);
       continue;
     }
     if (t.k !== 'name') continue;
@@ -89,8 +93,9 @@ export function checkPythonBody(body: string, options: BodyCheckOptions = {}): B
     }
     if (BANNED_NAMES.has(t.v) || /^(?:export|import)/i.test(t.v)) return reject(`${t.v} is not allowed in a body`);
     if (isKeywordArgument(tokens, i) && FILE_KEYWORD.test(t.v)) return reject(`keyword ${t.v}= names a file`);
-    if (t.v === 'Text' && isOp(tokens[i + 1], '(') && positionalArguments(tokens, i + 1) > TEXT_MAX_POSITIONAL) {
-      return reject('Text with a font or file given by position');
+    if (t.v === 'Text' && isOp(tokens[i + 1], '(')) {
+      if (positionalArguments(tokens, i + 1) > TEXT_MAX_POSITIONAL) return reject('Text with a font or file given by position');
+      if (unpacksArguments(tokens, i + 1)) return reject('Text with * or ** arguments');
     }
   }
 
@@ -124,6 +129,22 @@ function isOp(t: Tok | undefined, v: string): boolean {
 
 function reject(reason: string): BodyCheck {
   return { ok: false, reason };
+}
+
+/** True when the call whose '(' is at `open` passes `*x` or `**x` at its top level. */
+function unpacksArguments(tokens: Tok[], open: number): boolean {
+  let depth = 0;
+  for (let i = open; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.k === 'op' && '([{'.includes(t.v)) depth++;
+    else if (t.k === 'op' && ')]}'.includes(t.v)) {
+      depth--;
+      if (depth === 0) return false;
+    } else if (depth === 1 && (isOp(t, '*') || isOp(t, '**')) && (isOp(tokens[i - 1], '(') || isOp(tokens[i - 1], ','))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Positional arguments of the call whose '(' is at `open` (top level only; `name=` arguments are not counted). */
@@ -177,30 +198,32 @@ function boundNames(tokens: Tok[]): Set<string> {
   }
   if (current.length > 0) lines.push(current);
 
-  for (const line of lines) {
-    // Assignment: everything left of the last top-level '=' (chained a = b = c binds a and b).
-    let depth = 0;
-    let lastEq = -1;
-    let augmented = -1;
-    for (let i = 0; i < line.length; i++) {
-      const t = line[i];
-      if (t.k !== 'op') continue;
-      if ('([{'.includes(t.v)) depth++;
-      else if (')]}'.includes(t.v)) depth--;
-      else if (depth === 0 && t.v === '=') lastEq = i;
-      else if (depth === 0 && AUGMENTED.has(t.v)) augmented = i;
+  for (const { toks: line, header } of lines.flatMap((l) => splitCompound(l))) {
+    if (!header) {
+      // Assignment: everything left of the last top-level '=' (chained a = b = c binds a and b).
+      let depth = 0;
+      let lastEq = -1;
+      let augmented = -1;
+      for (let i = 0; i < line.length; i++) {
+        const t = line[i];
+        if (t.k !== 'op') continue;
+        if ('([{'.includes(t.v)) depth++;
+        else if (')]}'.includes(t.v)) depth--;
+        else if (depth === 0 && t.v === '=') lastEq = i;
+        else if (depth === 0 && AUGMENTED.has(t.v)) augmented = i;
+      }
+      const end = lastEq >= 0 ? lastEq : augmented;
+      if (end >= 0) targets(line.slice(0, end), out);
+      // x: int = 3 binds x.
+      const first = line[0];
+      if (first?.k === 'name' && isOp(line[1], ':') && !isKeyword(first.v)) out.add(first.v);
     }
-    const end = lastEq >= 0 ? lastEq : augmented;
-    if (end >= 0) targets(line.slice(0, end), out);
 
     const first = line[0];
-    if (first?.k === 'name' && first.v === 'for') {
+    if (header && first?.k === 'name' && first.v === 'for') {
       const inAt = line.findIndex((t, i) => i > 0 && t.k === 'name' && t.v === 'in');
       if (inAt > 0) targets(line.slice(1, inAt), out);
     }
-    // x: int = 3 binds x; keywords such as `else:` and `try:` do not.
-    if (first?.k === 'name' && line[1]?.k === 'op' && line[1].v === ':' && !isKeyword(first.v)) out.add(first.v);
-
     for (let i = 0; i < line.length; i++) {
       const t = line[i];
       if (t.k === 'name' && t.v === 'as') targets(line.slice(i + 1, i + 2), out);
@@ -208,6 +231,40 @@ function boundNames(tokens: Tok[]): Set<string> {
     }
   }
   return out;
+}
+
+const COMPOUND = new Set(['if', 'elif', 'else', 'while', 'for', 'with', 'try', 'except', 'finally', 'match', 'case']);
+
+/**
+ * A compound statement's header and the statement after its colon, when they share a line
+ * (`if _l_a: z = 1`). The header binds only `for` and `as` targets and walrus names; a name
+ * it merely reads is never a binding. A header with nothing after the colon is returned alone.
+ */
+function splitCompound(line: Tok[]): { toks: Tok[]; header: boolean }[] {
+  const first = line[0];
+  if (first?.k !== 'name' || !COMPOUND.has(first.v)) return [{ toks: line, header: false }];
+  // `match` and `case` are soft keywords: `match = 3` is an assignment, not a header.
+  if ((first.v === 'match' || first.v === 'case') && (isOp(line[1], '=') || isOp(line[1], '.') || isOp(line[1], '('))) {
+    if (!line.some((t, i) => i > 1 && isOp(t, ':'))) return [{ toks: line, header: false }];
+  }
+  let depth = 0;
+  let lambdas = 0;
+  for (let i = 1; i < line.length; i++) {
+    const t = line[i];
+    if (t.k === 'name' && t.v === 'lambda' && depth === 0) lambdas++;
+    if (t.k !== 'op') continue;
+    if ('([{'.includes(t.v)) depth++;
+    else if (')]}'.includes(t.v)) depth--;
+    else if (depth === 0 && t.v === ':') {
+      if (lambdas > 0) {
+        lambdas--;
+        continue;
+      }
+      const rest = line.slice(i + 1);
+      return [{ toks: line.slice(0, i), header: true }, ...(rest.length > 0 ? splitCompound(rest) : [])];
+    }
+  }
+  return [{ toks: line, header: true }];
 }
 
 /** Plain names in an assignment target; names inside a subscript, call or attribute are reads. */
