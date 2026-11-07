@@ -35,7 +35,7 @@ vi.mock('@langchain/anthropic', () => {
 
 import { createCadAgent } from './graph';
 
-function baseSpec(overrides: Record<string, any> = {}) {
+function baseSpec(overrides: Record<string, unknown> = {}) {
   return {
     assemblyName: 'test_box',
     boundingBox: { width: 40, length: 40, height: 40 },
@@ -73,7 +73,7 @@ function newRunKey(threadId: string) {
 
 // Every message a mocked model invocation was handed, as plain strings.
 function contentsOf(call: number) {
-  return (invokeMock.mock.calls[call][0] as any[]).map((m) => String(m.content));
+  return (invokeMock.mock.calls[call][0] as Array<{ content?: unknown }>).map((m) => String(m.content));
 }
 
 afterAll(async () => {
@@ -90,8 +90,17 @@ afterAll(async () => {
 
 // The compiled graph's own StateType doesn't declare `__interrupt__` - it's
 // bolted on by LangGraph's runtime at invoke() time, not part of AgentState.
-function gatePayload(result: any) {
-  return result[INTERRUPT][0].value;
+function gatePayload(result: unknown): {
+  kind: string;
+  spec: { assumptions: unknown[] };
+  modelInfo?: { isWatertight?: boolean };
+} {
+  const bag = result as Record<string, Array<{ value: {
+    kind: string;
+    spec: { assumptions: unknown[] };
+    modelInfo?: { isWatertight?: boolean };
+  } }>>;
+  return bag[INTERRUPT][0].value;
 }
 
 describe('HIL gating (interrupt/resume)', () => {
@@ -162,7 +171,7 @@ describe('HIL gating (interrupt/resume)', () => {
 
     // Missing required `boundingBox` - fails AssemblySpecSchema.safeParse.
     const resumed = await agent.invoke(
-      new Command({ resume: { action: 'approve', spec: { assemblyName: 'broken' } as any } }),
+      new Command({ resume: { action: 'approve', spec: { assemblyName: 'broken' } as never } }),
       config
     );
 
@@ -198,7 +207,7 @@ describe('HIL gating (interrupt/resume)', () => {
     // The chosen variant was revised (3rd call), then the run proceeded through
     // drafting (4th call) since the revised spec no longer gates.
     expect(invokeMock).toHaveBeenCalledTimes(4);
-    const secondCallMessages = invokeMock.mock.calls[2][0] as any[];
+    const secondCallMessages = invokeMock.mock.calls[2][0] as Array<{ content?: unknown }>;
     const sawFeedback = secondCallMessages.some(
       (m) => typeof m.content === 'string' && m.content.includes('use M4 bolts, not M3')
     );
@@ -263,7 +272,7 @@ describe('HIL gating (interrupt/resume)', () => {
     );
 
     // The revise decision reached fixCode's own prompt.
-    const fixCallMessages = invokeMock.mock.calls[4][0] as any[];
+    const fixCallMessages = invokeMock.mock.calls[4][0] as Array<{ content?: unknown }>;
     const sawFeedback = fixCallMessages.some(
       (m) => typeof m.content === 'string' && m.content.includes('make it 45mm tall')
     );
@@ -407,7 +416,7 @@ describe('HIL gating (interrupt/resume)', () => {
 
       // And no spec is left behind in the accumulated history either.
       const state = (await agent.getState(config)).values;
-      expect(state.messages.some((m: any) => String(m.content).includes('"assemblyName"'))).toBe(false);
+      expect(state.messages.some((m: { content?: unknown }) => String(m.content).includes('"assemblyName"'))).toBe(false);
     });
   });
 

@@ -1,4 +1,4 @@
-import { AgentStateType } from './graph';
+import type { AgentStateType } from './graph';
 
 export function shouldGateSpec(state: AgentStateType, prompt: string): boolean {
   const variants = state.specVariants ?? [];

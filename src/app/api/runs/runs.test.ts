@@ -114,15 +114,17 @@ describe('POST /api/chat: run envelope', () => {
   });
 
   it('the graph stream gets an abort signal', async () => {
-    const seen: { signal?: AbortSignal } = {};
+    const seen: { signal?: AbortSignal; streamMode?: string[] } = {};
     createAgent.mockReturnValue({
-      stream: async (_i: unknown, c: { signal?: AbortSignal }) => {
+      stream: async (_i: unknown, c: { signal?: AbortSignal; streamMode?: string[] }) => {
         seen.signal = c.signal;
+        seen.streamMode = c.streamMode;
         return (async function* () {})();
       },
     });
     await (await startChat()).text();
     expect(seen.signal).toBeInstanceOf(AbortSignal);
+    expect(seen.streamMode).toEqual(['updates', 'messages', 'custom', 'tasks']);
   });
 
   it('a graph failure ends the run as failed with an error event carrying apiError', async () => {
@@ -584,8 +586,15 @@ describe('review fixes (routes)', () => {
   it('F11: a graph error event keeps its message on the failed RunInfo', async () => {
     createAgent.mockReturnValue(graphOf([['custom', { t: 'error', message: 'OpenSCAD failed to compile part X', node: 'validateCode' }]]));
     const events = parse(await (await startChat()).text());
+    const err = events.find((e) => e.t === 'error')!;
+    expect(err.message).toBe('OpenSCAD failed to compile part X');
+    expect(err.apiError).toMatchObject({
+      code: 'internal',
+      message: 'Something went wrong on the server.',
+    });
+    expect(err.apiError.detail).toContain('OpenSCAD failed to compile part X');
     const info = await getRunStore().get(events[0].runId);
-    expect(info).toMatchObject({ status: 'failed', error: { code: 'internal', message: 'OpenSCAD failed to compile part X' } });
+    expect(info).toMatchObject({ status: 'failed', error: err.apiError });
   });
 
   it('F11: a thrown graph error keeps the real (redacted) cause as ApiError.detail', async () => {

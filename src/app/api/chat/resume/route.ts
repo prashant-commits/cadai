@@ -9,8 +9,8 @@ import { graphRecursionLimit } from '@/lib/agent/run-limits';
 import { getRunStore, isSafeRunId, type AppendOptions, type RunStore } from '@/lib/runs/run-store';
 import { SSE_HEADERS, sse, streamRun } from '@/lib/runs/stream-run';
 import { errorResponse } from '@/lib/runs/api-error';
+import { runExpired, toApiError } from '@/lib/contract/api-error';
 import { safeDeleteForRun } from '@/lib/runs/artifact-store';
-import type { ApiError } from '@/lib/contract/run-contract';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -99,22 +99,26 @@ export async function POST(req: NextRequest) {
       const stillPaused = await getCheckpointer()
         .getTuple({ configurable: { thread_id: checkpointKey } })
         .then(Boolean, () => false);
-      const message = err instanceof Error ? err.message : String(err);
+      const detail = toApiError(err).detail;
       await (stillPaused
         ? store.setStatus(runId, 'paused', undefined, { expect: ['running'] })
-        : store.setStatus(runId, 'failed', { code: 'internal', message: 'The resume failed before it started.', detail: message }, { expect: ['running'] })
+        : store.setStatus(
+          runId,
+          'failed',
+          { code: 'internal', message: 'The resume failed before it started.', ...(detail ? { detail } : {}) },
+          { expect: ['running'] },
+        )
       ).catch((e) => console.error('Resume rollback failed:', e));
       throw err;
     }
 
     async function afterClaim(): Promise<Response> {
-
       // A paused run is deleted after CADAI_CHECKPOINT_TTL_MS, or lives on another
       // server that does not share this one's store. Streaming a resume into a
       // missing checkpoint yields no steps and no error, so the client would show
       // an approved gate and a blank result. Say so instead.
       if (!paused) {
-        const apiError: ApiError = { code: 'run_expired', message: EXPIRED_MESSAGE };
+        const apiError = toApiError(runExpired(EXPIRED_MESSAGE));
         return staticStream(
           store,
           runId,
@@ -156,6 +160,9 @@ export async function POST(req: NextRequest) {
         metadata: { model: effectiveModel },
       });
 
+      const values = paused.checkpoint?.channel_values;
+      const seed = values && typeof values === 'object' ? values as Record<string, unknown> : undefined;
+
       // A resumed run can hit ANOTHER gate - the accept gate right after the
       // spec gate. streamRun surfaces that identically to the first one.
       return streamRun({
@@ -165,12 +172,13 @@ export async function POST(req: NextRequest) {
         resumed: true,
         checkpointKey,
         failLabel: 'Agent resume failed',
+        seed,
         invoke: async (signal) => {
           const agent = createCadAgent(effectiveModel);
           return agent.stream(new Command({ resume: decision }), {
             configurable: { thread_id: checkpointKey },
             recursionLimit: graphRecursionLimit(),
-            streamMode: ['updates', 'messages', 'custom'],
+            streamMode: ['updates', 'messages', 'custom', 'tasks'],
             callbacks: langfuseHandler ? [langfuseHandler] : undefined,
             signal,
           });
@@ -187,7 +195,8 @@ export async function POST(req: NextRequest) {
       });
     }
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return errorResponse('internal', message);
+    const api = toApiError(err);
+    const { code, message, ...extra } = api;
+    return errorResponse(code, message, extra);
   }
 }

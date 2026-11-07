@@ -1,9 +1,10 @@
+import { createHash } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { compileScad } from '@/lib/engine/scad-compiler';
-import { runBrep } from '@/lib/engine/brep-runner';
+import { runBrep, type BrepPart } from '@/lib/engine/brep-runner';
 import { detectLanguage } from '@/lib/brep/language';
-import { createHash } from 'crypto';
-import type { ResultArtifacts } from '@/lib/contract/run-contract';
+import type { PartInfo, ResultArtifacts } from '@/lib/contract/run-contract';
+import { badRequest, compileFailed, compileStatus, errorBody, fromBrep } from '@/lib/contract/api-error';
 import { getArtifactStore } from '@/lib/runs/artifact-store';
 
 /**
@@ -29,28 +30,59 @@ async function compileArtifacts(code: string, stl: string, stepBase64?: string):
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+function partInfo(parts: BrepPart[]): PartInfo[] {
+  const out: PartInfo[] = [];
+  let dropped = 0;
+  for (const part of parts) {
+    if (!part || typeof part.label !== 'string' || typeof part.valid !== 'boolean' || typeof part.volume !== 'number'
+      || !Array.isArray(part.min) || part.min.length < 3 || !Array.isArray(part.max) || part.max.length < 3) {
+      dropped += 1;
+      continue;
+    }
+    out.push({
+      label: part.label,
+      valid: part.valid,
+      volume: part.volume,
+      min: [part.min[0], part.min[1], part.min[2]],
+      max: [part.max[0], part.max[1], part.max[2]],
+    });
+  }
+  if (dropped > 0) console.warn(`compile: dropped ${dropped} malformed part measurement(s)`);
+  return out;
+}
+
+/** A JSON.parse failure is an internal bug, not the user's script. */
+function isJsonSyntax(message: string): boolean {
+  return /Unexpected token|Unexpected end of JSON|after JSON|is not valid JSON|\bJSON\b/.test(message);
+}
+
 export async function POST(req: NextRequest) {
+  let body: { code?: unknown; language?: unknown };
   try {
-    const body = await req.json();
+    body = await req.json();
+  } catch (err) {
+    const wrapped = err instanceof SyntaxError ? err : badRequest('The request body is invalid.');
+    return NextResponse.json(errorBody(wrapped), { status: 400 });
+  }
+
+  let language: 'openscad' | 'build123d' = 'openscad';
+  try {
     const code = body?.code;
     const requestedLanguage = body?.language;
+    language = requestedLanguage === 'build123d' || requestedLanguage === 'openscad'
+      ? requestedLanguage
+      : detectLanguage(typeof code === 'string' ? code : '');
 
     if (!code || typeof code !== 'string' || code.trim().length === 0) {
-      return NextResponse.json(
-        { error: 'OpenSCAD code is required.' },
-        { status: 400 }
-      );
+      const message = language === 'build123d' ? 'build123d code is required.' : 'OpenSCAD code is required.';
+      return NextResponse.json(errorBody(badRequest(message)), { status: 400 });
     }
-
-    const language = requestedLanguage || detectLanguage(code);
 
     if (language === 'build123d') {
       const result = await runBrep(code);
       if (!result.ok) {
-        return NextResponse.json(
-          { error: result.error || 'build123d compilation failed.' },
-          { status: 422 }
-        );
+        const err = fromBrep(result.error || 'build123d compilation failed.', result.failure);
+        return NextResponse.json(errorBody(err), { status: compileStatus(err) });
       }
 
       let stlAscii = '';
@@ -64,6 +96,7 @@ export async function POST(req: NextRequest) {
         step: result.step,
         compileTimeMs: result.ms,
         language: 'build123d',
+        parts: partInfo(result.parts ?? []),
         ...(await compileArtifacts(code, stlAscii, result.step)),
       });
     }
@@ -72,11 +105,13 @@ export async function POST(req: NextRequest) {
 
     if (!result.valid) {
       return NextResponse.json(
-        { error: result.error || 'OpenSCAD compilation failed.' },
+        errorBody(compileFailed(result.error || 'OpenSCAD compilation failed.')),
         { status: 422 }
       );
     }
 
+    // OpenSCAD's compile result has no per-part measurements (those come from
+    // runBrep). `parts` is omitted here; build123d responses include it.
     return NextResponse.json({
       success: true,
       stl: result.stl,
@@ -84,21 +119,14 @@ export async function POST(req: NextRequest) {
       ...(await compileArtifacts(code, result.stl ?? '')),
     });
   } catch (err: unknown) {
-    let message = 'Unknown error';
-    if (err instanceof Error) {
-      message = err.message;
-    } else if (typeof err === 'object' && err !== null) {
-      const errObj = err as Record<string, unknown>;
-      message = (typeof errObj.message === 'string' ? errObj.message : '') ||
-        (typeof errObj.stderr === 'string' ? errObj.stderr : '') ||
-        JSON.stringify(err);
-    } else {
-      message = String(err);
-    }
-
-    return NextResponse.json(
-      { error: `Compiler Error: ${message}` },
-      { status: 500 }
-    );
+    // 422 only for a syntax error thrown by the OpenSCAD compiler while compiling
+    // the user's script. A build123d failure, or an internal JSON.parse, is 500.
+    const scriptSyntax = language === 'openscad' && err instanceof SyntaxError && !isJsonSyntax(err.message);
+    const wrapped = scriptSyntax
+      ? compileFailed(err.message || 'OpenSCAD compilation failed.')
+      : err instanceof SyntaxError
+        ? new Error(err.message)
+        : err;
+    return NextResponse.json(errorBody(wrapped), { status: compileStatus(wrapped) });
   }
 }

@@ -11,9 +11,13 @@ export type BrepPart = {
   max: [number, number, number];
 };
 
+export type BrepFailure = 'script' | 'unreachable' | 'timeout';
+
 export type BrepResult = {
   ok: boolean;
   error?: string;
+  /** Why `ok` is false. Set from the runner's status or sentinel, not from traceback text. */
+  failure?: BrepFailure;
   /** Line of the script that raised (the innermost frame in the script), when the runner knows it. */
   line?: number;
   parts: BrepPart[];
@@ -91,16 +95,10 @@ async function runBrepHttp(
     });
   } catch (err: unknown) {
     if (runSignal?.aborted) return cancelledResult(t0);
-    const isTimeout =
-      (err && typeof err === 'object' && 'name' in err && (err.name === 'TimeoutError' || err.name === 'AbortError')) ||
-      (err instanceof Error && /timeout/i.test(err.message));
-    return {
-      ok: false,
-      error: isTimeout ? 'timeout' : (err instanceof Error ? err.message : String(err)),
-      parts: [],
-      solids: 0,
-      ms: Math.max(1, Math.round(performance.now() - t0)),
-    };
+    const name = err && typeof err === 'object' && 'name' in err ? String((err as { name: unknown }).name) : '';
+    const message = err instanceof Error ? err.message : String(err);
+    const isTimeout = name === 'TimeoutError' || name === 'AbortError' || message === 'timeout';
+    return brepFailed(isTimeout ? 'timeout' : message, isTimeout ? 'timeout' : 'unreachable', t0);
   }
 
   if (!res.ok) {
@@ -124,20 +122,28 @@ async function runBrepHttp(
         // ignore
       }
     }
-    return {
-      ok: false,
-      error: errText,
-      parts: [],
-      solids: 0,
-      ms: Math.max(1, Math.round(performance.now() - t0)),
-    };
+    const failure: BrepFailure = res.status === 408 || res.status === 504
+      ? 'timeout'
+      : res.status === 401 || res.status === 403 || res.status >= 500
+        ? 'unreachable'
+        : 'script';
+    return brepFailed(errText, failure, t0);
   }
 
   try {
     const data = (await res.json()) as Partial<BrepResult>;
+    const ok = Boolean(data.ok);
+    const failure = ok
+      ? undefined
+      : data.failure === 'script' || data.failure === 'unreachable' || data.failure === 'timeout'
+        ? data.failure
+        : data.error === 'timeout'
+          ? 'timeout'
+          : 'script';
     return {
-      ok: Boolean(data.ok),
+      ok,
       error: data.error,
+      ...(failure ? { failure } : {}),
       line: typeof data.line === 'number' ? data.line : undefined,
       parts: Array.isArray(data.parts) ? data.parts : [],
       local: Array.isArray(data.local) ? data.local : undefined,
@@ -148,13 +154,7 @@ async function runBrepHttp(
       ms: Math.max(1, Math.round(performance.now() - t0)),
     };
   } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : 'Invalid JSON response from geometry service',
-      parts: [],
-      solids: 0,
-      ms: Math.max(1, Math.round(performance.now() - t0)),
-    };
+    return brepFailed(err instanceof Error ? err.message : 'Invalid JSON response from geometry service', 'unreachable', t0);
   }
 }
 
@@ -321,25 +321,14 @@ async function runBrepLocal(
     });
 
     if (runSignal?.aborted) return cancelledResult(t0);
-
-    if (childResult.timedOut) {
-      return {
-        ok: false,
-        error: 'timeout',
-        parts: [],
-        solids: 0,
-        ms: Math.max(1, Math.round(performance.now() - t0)),
-      };
-    }
+    if (childResult.timedOut) return brepFailed('timeout', 'timeout', t0);
 
     if (childResult.error) {
-      return {
-        ok: false,
-        error: childResult.error.message,
-        parts: [],
-        solids: 0,
-        ms: Math.max(1, Math.round(performance.now() - t0)),
-      };
+      const message = childResult.error.message;
+      const failure: BrepFailure = /ENOENT|EACCES|EPERM/.test(message) || message.startsWith('spawn ')
+        ? 'unreachable'
+        : 'script';
+      return brepFailed(message, failure, t0);
     }
 
     const lines = childResult.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -409,12 +398,8 @@ async function runBrepLocal(
     }
 
     return {
-      ok: false,
-      error,
+      ...brepFailed(error, 'script', t0),
       line: typeof parsed?.line === 'number' ? parsed.line : undefined,
-      parts: [],
-      solids: 0,
-      ms: Math.max(1, Math.round(performance.now() - t0)),
     };
   } finally {
     try {
@@ -439,12 +424,24 @@ export async function runBrep(
     }
     return await runBrepLocal(script, timeoutMs, t0, opts?.signal);
   } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : String(err),
-      parts: [],
-      solids: 0,
-      ms: Math.max(1, Math.round(performance.now() - t0)),
-    };
+    if (opts?.signal?.aborted) return cancelledResult(t0);
+    const message = err instanceof Error ? err.message : String(err);
+    const failure: BrepFailure = message === 'timeout'
+      ? 'timeout'
+      : /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ECONNRESET|ENOENT/.test(message)
+        ? 'unreachable'
+        : 'script';
+    return brepFailed(message, failure, t0);
   }
+}
+
+function brepFailed(error: string, failure: BrepFailure, t0: number): BrepResult {
+  return {
+    ok: false,
+    error,
+    failure,
+    parts: [],
+    solids: 0,
+    ms: Math.max(1, Math.round(performance.now() - t0)),
+  };
 }

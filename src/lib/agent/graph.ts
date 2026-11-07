@@ -17,7 +17,15 @@ import { ModelInfo, GatePayload, GateDecision, GateVariant, DesignContract } fro
 import { SpecViolation, auditSpec } from './spec-audit';
 import { analyzeStl } from '../engine/geometry-utils';
 import { renderStlViews, RenderedView } from '../engine/stl-renderer';
-import { shouldGateSpec, shouldGateAccept } from './gate-policy';
+import {
+  MAX_SPEC_REVISIONS,
+  routeAfterAccept,
+  routeAfterArchitectNode,
+  routeAfterCritic,
+  routeAfterReviewerNode,
+  routeAfterSpecGate,
+  routeAfterValidation,
+} from './graph-route';
 import { getChatModel } from './model-provider';
 import { isVisionModel, isOfferedModel, DEFAULT_MODEL } from './models';
 import { renderVariantSheet } from '../spec-sheet/sheet-svg';
@@ -60,19 +68,6 @@ import {
   ReviewFinding,
   VariantReview,
 } from './spec-variants';
-
-const MAX_SPEC_REVISIONS = 2;
-const MAX_ACCEPT_REVISIONS = 2;
-
-/**
- * Repair passes granted to a semantic (geometry-vs-spec) failure, counted
- * independently of compile failures. Previously the cutoff was
- * `attemptCount >= 2` against the SHARED counter, so a run that burned its
- * early attempts on syntax reached a dimensional error with nothing left and
- * exited without ever trying to fix it. The global `maxAttempts` still caps
- * the run; this only stops one failure class from starving the other.
- */
-const MAX_SEMANTIC_REPAIRS = 1;
 
 type VisualCritique = z.infer<typeof VisualCritiqueSchema>;
 
@@ -633,6 +628,26 @@ function write(
   config?.writer?.({ ...safe, node });
 }
 
+/** Tells the stream bridge a self-check is starting another attempt. The reason is one line and never a raw provider payload. */
+function writeRetry(
+  config: LangGraphRunnableConfig | undefined,
+  step: string,
+  attempt: number,
+  maxAttempts: number,
+  reason: string,
+  variantId?: string,
+): void {
+  const line = reason.split('\n').map((part) => part.trim()).find(Boolean) ?? 'retrying';
+  write(config, step, {
+    t: 'retry',
+    step,
+    attempt,
+    maxAttempts,
+    reason: line.length > 200 ? `${line.slice(0, 197)}...` : line,
+    ...(variantId ? { variantId } : {}),
+  });
+}
+
 /**
  * Creates the CAD AI LangGraph agent graph with tool-calling capabilities.
  */
@@ -761,6 +776,7 @@ export function createCadAgent(
     // The parsed candidate with the fewest self-check errors so far. A later attempt that
     // fails schema or provider must not cost the variant a spec that already parsed.
     let best: { candidate: AssemblySpec; errors: SpecViolation[] } | null = null;
+    let retryReason: string | null = null;
 
     // THREE attempts, not two. Decoder degeneration is per-attempt and
     // independent, so retries compound: at the ~0.8 per-attempt success rate
@@ -774,6 +790,10 @@ export function createCadAgent(
         outOfTime = true;
         break;
       }
+      if (attempt > 0 && retryReason) {
+        writeRetry(config, 'architectNode', attempt + 1, MAX_ARCHITECT_ATTEMPTS, retryReason, variant.id);
+      }
+      retryReason = null;
       const retryPrompt = (isCutOff(lastStop)
         ? 'Your previous reply was cut off at the output limit before the AssemblySpec tool call was complete. ' +
           'Emit the spec again, more concisely: a short sheet, one-line descriptions and notes, no repeated text, ' +
@@ -809,6 +829,7 @@ export function createCadAgent(
             if (attempt < MAX_ARCHITECT_ATTEMPTS - 1) {
               unchangedFeedback = true;
               coherenceFeedback = null;
+              retryReason = 'revision did not change the geometry';
               console.warn(`architectNode: revision of variant ${variant.id} did not change the geometry (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS})`);
               continue;
             }
@@ -830,6 +851,7 @@ export function createCadAgent(
           if (incoherent.length > 0 && attempt < MAX_ARCHITECT_ATTEMPTS - 1) {
             if (best === null || incoherent.length < best.errors.length) best = { candidate, errors: incoherent };
             rawLastError = incoherent.map((v) => v.message).join(' ');
+            retryReason = incoherent[0]?.message || 'spec is self-inconsistent';
             console.warn(
               `architectNode: spec is self-inconsistent (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}):`,
               rawLastError
@@ -851,17 +873,20 @@ export function createCadAgent(
             `architectNode: variant ${variant.id} spec rejected (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}):`,
             rawLastError
           );
+          retryReason = 'Spec failed validation';
         }
       } catch (e: unknown) {
         if (e instanceof UnusableReplyError) {
           // Not a provider error: the reply arrived but stopped short or was refused.
           lastStop = e.stop;
           rawLastError = e.message;
+          retryReason = isCutOff(e.stop) ? 'reply cut off at the output limit' : 'the model declined';
           console.warn(`architectNode: variant ${variant.id} reply unusable (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}): stop_reason ${e.stop}`);
           continue;
         }
         hadProviderError = true;
         rawLastError = e instanceof Error ? e.message : String(e);
+        retryReason = 'provider error';
         // The raw provider error goes to the log ONLY. It was being sliced into
         // the UI, which is how a provider's 400 payload ended up rendered as the
         // agent's own output.
@@ -1012,6 +1037,7 @@ export function createCadAgent(
       // reaching the review gate with no spec at all and three leave under 1%.
       // Two attempts is what let a real run surface an empty approval card.
       let plannerOutOfTime = false;
+      let plannerRetry: string | null = null;
       for (let attempt = 0; attempt < MAX_ARCHITECT_ATTEMPTS && !plan; attempt++) {
         // No billed call that cannot finish: stop when the hard limit has no room left.
         const left = remainingCallMs(runDeadline);
@@ -1019,6 +1045,10 @@ export function createCadAgent(
           plannerOutOfTime = true;
           break;
         }
+        if (attempt > 0 && plannerRetry) {
+          writeRetry(config, 'architectNode', attempt + 1, MAX_ARCHITECT_ATTEMPTS, plannerRetry);
+        }
+        plannerRetry = null;
         const attemptMessages = attempt === 0
           ? plannerMessages
           : [
@@ -1036,16 +1066,23 @@ export function createCadAgent(
             if (plan.brief) write(config, 'architectNode', { t: 'delta', text: `${plan.brief}
 ` });
           } else {
+            plannerRetry = 'plan was not usable';
             console.warn(
               `architectNode: planner attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS} unusable:`,
               parsedPlan.success ? 'response missing variants' : parsedPlan.error.message
             );
           }
         } catch (e: unknown) {
-          // The raw provider error goes to the log ONLY. It was being sliced into
-          // the UI, which is how a provider's 400 payload ended up rendered as the
-          // agent's own output.
-          console.error(`architectNode: planner attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS} failed:`, e instanceof Error ? e.message : String(e));
+          if (e instanceof UnusableReplyError) {
+            plannerRetry = isCutOff(e.stop) ? 'reply cut off at the output limit' : 'the model declined';
+            console.warn(`architectNode: planner attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS} unusable: stop_reason ${e.stop}`);
+          } else {
+            plannerRetry = 'provider error';
+            // The raw provider error goes to the log ONLY. It was being sliced into
+            // the UI, which is how a provider's 400 payload ended up rendered as the
+            // agent's own output.
+            console.error(`architectNode: planner attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS} failed:`, e instanceof Error ? e.message : String(e));
+          }
         }
       }
 
@@ -2292,94 +2329,30 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     return { gateAction: 'approve' };
   }
 
-  // Conditional Edge: route from architectNode
-  function checkSpecRoute(state: AgentStateType) {
-    const prompt = latestHumanText(state.messages);
-
-    // A loop that ended past the soft deadline has no time left to draft in this
-    // request, so a human sees the spec first (and the drafter starts in a new one).
-    if (state.reviewDeadline !== null && Date.now() >= state.reviewDeadline) return 'specGate';
-    if (shouldGateSpec(state, prompt)) return 'specGate';
-    return draftTarget(state);
-  }
-
+  // Conditional edges. The bodies live in graph-route.ts so the stream bridge
+  // closes a section as retrying only when the graph itself will re-enter it.
   function routeAfterArchitect(state: AgentStateType) {
-    const sheetsEnabled = process.env.CADAI_SPEC_SHEETS !== 'off';
-    const hasSpec = (state.specVariants || []).some((v) => v.spec !== null);
-    if (sheetsEnabled && isVisionModel(selectedModel) && hasSpec) {
-      return 'specIllustrator';
-    }
-    return checkSpecRoute(state);
+    return routeAfterArchitectNode(state, selectedModel);
   }
 
   function routeAfterReviewer(state: AgentStateType) {
-    const needsRevision = (state.specVariants || []).some((v) => v.needsRevision);
-    if (needsRevision) {
-      return 'architectNode';
-    }
-    return checkSpecRoute(state);
+    return routeAfterReviewerNode(state);
   }
 
-  // Conditional Edge: route from specGate
   function checkReviseRoute(state: AgentStateType) {
-    if (state.gateAction === 'cancel') return 'respondToUser';
-    if (state.gateAction === 'revise' && state.specRevisionCount <= MAX_SPEC_REVISIONS) {
-      return 'architectNode';
-    }
-    return draftTarget(state);
+    return routeAfterSpecGate(state);
   }
 
-  // Conditional Edge: route from validateCode
   function checkValidationRoute(state: AgentStateType) {
-    const isDone = (state.failureKind === 'none' && state.isValid) ||
-                   // Global ceiling on total LLM passes, unchanged.
-                   (state.attemptCount >= state.maxAttempts) ||
-                   // Per-class cutoff. Was `attemptCount >= 2` against the
-                   // shared counter, which meant compile retries could consume
-                   // the geometric budget before it was ever used.
-                   (state.failureKind === 'semantic' && state.semanticFailures > MAX_SEMANTIC_REPAIRS);
-
-    if (isDone) {
-      // Only geometry that survived every deterministic check is worth looking
-      // at: a compile failure has a better signal than a picture, and the
-      // critic costs a multimodal call, so it runs once at the end of a run
-      // rather than on every repair attempt.
-      if (state.isValid && state.stlContent) return 'visualCritic';
-      if (shouldGateAccept(state)) return 'acceptGate';
-      return 'respondToUser';
-    }
-    return repairTarget(state);
+    return routeAfterValidation(state);
   }
 
-  // Conditional Edge: route from visualCritic. Any finding it added is a
-  // warning, so it cannot invalidate the model - but shouldGateAccept fires on
-  // ANY violation, which is exactly how a critique reaches a human.
   function checkCriticRoute(state: AgentStateType) {
-    if (shouldGateAccept(state)) return 'acceptGate';
-    return 'respondToUser';
+    return routeAfterCritic(state);
   }
 
-  // Conditional Edge: route from acceptGate
   function checkAcceptRoute(state: AgentStateType) {
-    if (state.gateAction === 'revise' && state.acceptRevisionCount <= MAX_ACCEPT_REVISIONS) {
-      return repairTarget(state);
-    }
-    return 'respondToUser';
-  }
-
-  /** Finished spec: the Architect writes bodies, or the Drafter does. A null spec has nothing for the Architect to build. */
-  function draftTarget(state: AgentStateType): 'architectBuild' | 'brepBuild' | 'drafterNode' | 'respondToUser' {
-    if (state.pipeline === 'architect') {
-      if (!state.assemblySpec) return 'respondToUser';
-      return state.kernel === 'brep' ? 'brepBuild' : 'architectBuild';
-    }
-    return 'drafterNode';
-  }
-
-  /** Failed build: the Architect rewrites the named parts, or Repair does. Same attempt caps. */
-  function repairTarget(state: AgentStateType): 'architectBuild' | 'brepBuild' | 'fixCode' {
-    if (state.pipeline !== 'architect') return 'fixCode';
-    return state.kernel === 'brep' ? 'brepBuild' : 'architectBuild';
+    return routeAfterAccept(state);
   }
 
   const architectBuild = makeArchitectBuild(model);

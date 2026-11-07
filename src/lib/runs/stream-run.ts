@@ -1,4 +1,5 @@
 import type { ApiError, RunStatus } from '@/lib/contract/run-contract';
+import { toApiError } from '@/lib/contract/api-error';
 import { bridgeGraphStream } from '@/lib/agent/stream-bridge';
 import type { StreamEvent } from '@/lib/agent/stream-events';
 import { deleteRunCheckpoint, getCheckpointer } from '@/lib/agent/checkpointer';
@@ -32,20 +33,6 @@ const clientBacklogBytes = () => envMs('CADAI_CLIENT_BACKLOG_BYTES', 64 * 1024 *
 /** How long appends may keep failing before the live stream stops waiting for the store. */
 const storeOutageMs = () => envMs('CADAI_STORE_OUTAGE_MS', 30_000);
 
-/**
- * The raw failure text for ApiError.detail: one line, capped, with anything
- * shaped like a credential removed. The `message` stays the generic label.
- */
-export function errorDetail(err: unknown): string {
-  const raw = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-  return raw
-    .replace(/\b(sk|pk|rk)-[A-Za-z0-9_-]{8,}/g, '[redacted]')
-    .replace(/(bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1[redacted]')
-    .replace(/((?:api[_-]?key|token|secret|password)["']?\s*[:=]\s*["']?)[^\s"',}]+/gi, '$1[redacted]')
-    .replace(/\s+/g, ' ')
-    .slice(0, 500);
-}
-
 export interface StreamRunOptions {
   store: RunStore;
   runId: string;
@@ -55,6 +42,8 @@ export interface StreamRunOptions {
   checkpointKey: string;
   /** Prefix for the user-facing failure label, e.g. "Agent execution failed". */
   failLabel: string;
+  /** Checkpoint channel values so section attempts survive a resume. */
+  seed?: Record<string, unknown>;
   /** Starts the graph stream; must pass `signal` to it. */
   invoke: (signal: AbortSignal) => Promise<AsyncIterable<unknown>>;
   /** Runs after the last event, before the stream closes (e.g. tracing flush). */
@@ -200,7 +189,7 @@ export function streamRun(o: StreamRunOptions): Response {
       if (detached) return;
       const stamped: Record<string, unknown> = { ...slim, ts: Date.now() };
       if (stamped.t === 'error' && !stamped.apiError) {
-        stamped.apiError = { code: 'internal', message: String(stamped.message ?? 'Run failed') } satisfies ApiError;
+        stamped.apiError = toApiError(new Error(String(stamped.message ?? 'Run failed')));
       }
       if (storeBroken) return writeClient({ ...stamped, seq: localSeq() });
       pending.push(stamped);
@@ -279,10 +268,10 @@ export function streamRun(o: StreamRunOptions): Response {
         if (event.t === 'result') sawResult = true;
         if (event.t === 'error') {
           const ev = event as { message: string; apiError?: ApiError };
-          graphError = ev.apiError ?? { code: 'internal', message: ev.message };
+          graphError = ev.apiError ?? toApiError(new Error(ev.message));
         }
         emit(event);
-      });
+      }, o.seed ? { state: o.seed } : undefined);
     } catch (err) {
       threw = err;
     }
@@ -314,7 +303,7 @@ export function streamRun(o: StreamRunOptions): Response {
       } else if (threw !== null) {
         await deleteRunCheckpoint(o.checkpointKey);
         const message = describeGraphError(threw, o.failLabel);
-        const apiError: ApiError = { code: 'internal', message, detail: errorDetail(threw) };
+        const apiError = toApiError(threw);
         await finish({ t: 'error', message, apiError }, 'failed', apiError, ['running']);
       } else if (graphError) {
         await deleteRunCheckpoint(o.checkpointKey);

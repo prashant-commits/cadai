@@ -78,7 +78,11 @@ const draft = (code: string) => ({ content: `\`\`\`openscad\n${code}\n\`\`\``, t
  * and every assembly worth placing has more than one component - so any
  * placement test necessarily passes through the gate.
  */
-async function runApproved(agent: any, config: any, prompt: string) {
+async function runApproved(
+  agent: ReturnType<typeof createCadAgent>,
+  config: { configurable: { thread_id: string } },
+  prompt: string,
+) {
   const first = await agent.invoke({ messages: [new HumanMessage(prompt)] }, config);
   if (!isInterrupted(first)) return first;
   return agent.invoke(new Command({ resume: { action: 'approve' } }), config);
@@ -153,7 +157,7 @@ describe('deterministic assembly placement', () => {
     const agent = createCadAgent( 'm');
     await runApproved(agent, { configurable: { thread_id: newKey() } }, 'a 40mm bracket');
 
-    const drafterSystem = contentText((invokeMock.mock.calls[2][0] as any[])[0].content);
+    const drafterSystem = contentText((invokeMock.mock.calls[2][0] as Array<{ content?: unknown }>)[0].content);
     expect(drafterSystem).toContain('PLACEMENT CONTRACT');
   });
 
@@ -193,9 +197,9 @@ module upright() { translate([-2.5, 0, -30]) cube([5, 40, 30]); }
     expect(state.currentCode).toContain('translate([2.5, 0, 30]) upright();');
     expect(state.modelInfo.boundingBox.min[2]).toBeCloseTo(0, 2);
     expect(state.modelInfo.dimensions.z).toBeCloseTo(35, 1);
-    expect(state.specViolations.some((v: any) => v.kind === 'floor')).toBe(false);
-    expect(state.specViolations.some((v: any) => v.kind === 'floating')).toBe(false);
-    expect(state.specViolations.some((v: any) => v.kind === 'local_frame')).toBe(true);
+    expect(state.specViolations.some((v: { kind: string }) => v.kind === 'floor')).toBe(false);
+    expect(state.specViolations.some((v: { kind: string }) => v.kind === 'floating')).toBe(false);
+    expect(state.specViolations.some((v: { kind: string }) => v.kind === 'local_frame')).toBe(true);
   });
 
   it('reports a part the spec leaves hovering', async () => {
@@ -217,7 +221,7 @@ module upright() { translate([-2.5, 0, -30]) cube([5, 40, 30]); }
     await runApproved(agent, config, 'a 40mm bracket');
 
     const state = (await agent.getState(config)).values;
-    const floating = state.specViolations.filter((v: any) => v.kind === 'floating');
+    const floating = state.specViolations.filter((v: { kind: string }) => v.kind === 'floating');
     expect(floating).toHaveLength(1);
     expect(floating[0].message).toContain("'upright'");
     expect(floating[0].deltaMm).toBeCloseTo(10, 1);
@@ -263,7 +267,7 @@ module upright() { translate([-2.5, 0, -30]) cube([5, 40, 30]); }
     await runApproved(agent, config, 'a 40mm bracket');
 
     const state = (await agent.getState(config)).values;
-    expect(state.assemblySpec.components.map((c: any) => c.name)).toEqual(['base_plate', 'upright']);
+    expect(state.assemblySpec.components.map((c: { name: string }) => c.name)).toEqual(['base_plate', 'upright']);
     expect(state.currentCode).toContain('translate([0, 0, upright_pos_z]) upright();');
   });
 
@@ -327,7 +331,7 @@ module peg() {
       await runApproved(agent, config, 'a 40mm stack');
 
       const state = (await agent.getState(config)).values;
-      const hits = state.specViolations.filter((v: any) => v.kind === 'interference');
+      const hits = state.specViolations.filter((v: { kind: string }) => v.kind === 'interference');
       expect(hits.length).toBeGreaterThan(0);
       expect(hits[0].message).toContain('base');
       expect(hits[0].message).toContain('peg');
@@ -348,7 +352,7 @@ module peg() {
       await runApproved(agent, config, 'a 40mm stack');
 
       const state = (await agent.getState(config)).values;
-      expect(state.specViolations.some((v: any) => v.kind === 'interference')).toBe(false);
+      expect(state.specViolations.some((v: { kind: string }) => v.kind === 'interference')).toBe(false);
     });
   });
 
@@ -368,7 +372,7 @@ module peg() {
     await runApproved(agent, config, 'a 40mm bracket');
 
     // Call 2 is the repair.
-    const repairPrompt = (invokeMock.mock.calls[3][0] as any[])
+    const repairPrompt = (invokeMock.mock.calls[3][0] as Array<{ content?: unknown }>)
       .map((m) => String(m.content))
       .join('\n');
 
@@ -402,13 +406,13 @@ translate([0, 0, 5]) upright();
       const state = (await agent.getState(config)).values;
       const report = state.placementReport;
       expect(report).not.toBeNull();
-      const upright = report.components.find((c: any) => c.name === 'upright');
+      const upright = report.components.find((c: { name: string; measured: boolean; localMin: number[] }) => c.name === 'upright');
       expect(upright.measured).toBe(true);
       expect(upright.localMin[2]).toBeCloseTo(-30, 2);
 
       // The model-written placement is stripped and the hanging upright is
       // corrected, so the assembly sits on the floor and measures 35mm.
-      const kinds = state.specViolations.map((v: any) => v.kind);
+      const kinds = state.specViolations.map((v: { kind: string }) => v.kind);
       expect(kinds).not.toContain('floor');
       expect(kinds).toContain('local_frame');
       expect(state.modelInfo.dimensions.z).toBeCloseTo(35, 1);
@@ -440,7 +444,7 @@ union() { base(); translate([10, 10, 15]) peg(); }
       await runApproved(agent, config, 'a 40mm stack');
 
       const state = (await agent.getState(config)).values;
-      expect(state.specViolations.some((v: any) => v.kind === 'interference')).toBe(false);
+      expect(state.specViolations.some((v: { kind: string }) => v.kind === 'interference')).toBe(false);
     });
   });
 });

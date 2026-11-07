@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
 import { isInterrupted, INTERRUPT, Command } from '@langchain/langgraph';
 import { BaseMessage, HumanMessage, AIMessage } from '@langchain/core/messages';
 import { getCheckpointer, runCheckpointKey } from './checkpointer';
@@ -52,16 +55,32 @@ import { graphRecursionLimit } from './run-limits';
 
 const createdKeys: string[] = [];
 let counter = 0;
+// Frozen Date.now() (the Vercel budget tests) must not make thread ids collide
+// with a checkpoint a previous process left behind.
+const keyNonce = `${process.pid}-${Math.random().toString(36).slice(2)}`;
 function newKey() {
-  const key = runCheckpointKey(`review-fixes-${Date.now()}`, `run-${counter++}`);
+  const key = runCheckpointKey(`review-fixes-${keyNonce}`, `run-${counter++}`);
   createdKeys.push(key);
   return key;
 }
+
+// VERCEL redirects the shared checkpointer to os.tmpdir()/cadai. These tests
+// flip that flag, so keep their checkpoints in a private directory instead of
+// the store every other VERCEL test shares.
+const checkpointDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadai-review-fixes-'));
+let prevRunDir: string | undefined;
+beforeAll(() => {
+  prevRunDir = process.env.CADAI_RUN_DIR;
+  process.env.CADAI_RUN_DIR = checkpointDir;
+});
 
 afterAll(async () => {
   const cp = getCheckpointer();
   for (const k of createdKeys) await cp.deleteThread(k);
   await new Promise((r) => setTimeout(r, 200));
+  if (prevRunDir === undefined) delete process.env.CADAI_RUN_DIR;
+  else process.env.CADAI_RUN_DIR = prevRunDir;
+  fs.rmSync(checkpointDir, { recursive: true, force: true });
 });
 
 /** A 40 mm cube. */

@@ -5,6 +5,7 @@ import { runCheckpointKey } from '@/lib/agent/checkpointer';
 import { getRunStore } from '@/lib/runs/run-store';
 import { streamRun } from '@/lib/runs/stream-run';
 import { errorResponse } from '@/lib/runs/api-error';
+import { toApiError } from '@/lib/contract/api-error';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/tracing/langfuse';
 import { DesignContract } from '@/types';
 import { coerceRouteModel } from '@/lib/agent/models';
@@ -32,7 +33,7 @@ export async function POST(req: NextRequest) {
     // Map client messages to LangChain BaseMessage objects
     const lcMessages = messages.map((m: { role: string; content: string; image?: string }) => {
       let content: string | Array<{ type: string; text?: string; image_url?: { url: string } }> = m.content;
-      
+
       if (m.image) {
         content = [
           { type: 'text', text: m.content || 'Please see the attached annotation.' },
@@ -83,7 +84,7 @@ export async function POST(req: NextRequest) {
           {
             configurable: { thread_id: checkpointKey },
             recursionLimit: graphRecursionLimit(),
-            streamMode: ['updates', 'messages', 'custom'],
+            streamMode: ['updates', 'messages', 'custom', 'tasks'],
             callbacks: langfuseHandler ? [langfuseHandler] : undefined,
             signal,
           }
@@ -105,7 +106,8 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return errorResponse('internal', message);
+    const api = toApiError(err);
+    const { code, message, ...extra } = api;
+    return errorResponse(code, message, extra);
   }
 }

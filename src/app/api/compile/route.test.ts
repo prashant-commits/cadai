@@ -68,7 +68,20 @@ describe('/api/compile API Route', () => {
     const res = await POST(req);
     expect(res.status).toBe(400);
     const data = await res.json();
-    expect(data.error).toBeDefined();
+    expect(data.error).toBe('OpenSCAD code is required.');
+    expect(data.apiError).toEqual({ code: 'bad_request', message: 'OpenSCAD code is required.' });
+  });
+
+  it('asks for build123d code when that language is requested and the body is empty', async () => {
+    const req = new NextRequest('http://localhost:3000/api/compile', {
+      method: 'POST',
+      body: JSON.stringify({ code: EMPTY_CODE, language: 'build123d' }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('build123d code is required.');
+    expect(data.apiError.code).toBe('bad_request');
   });
 
   it('compiles valid OpenSCAD code to STL', async () => {
@@ -83,6 +96,21 @@ describe('/api/compile API Route', () => {
     expect(data.success).toBe(true);
     expect(data.stl).toContain('facet normal');
     expect(data.stl).toContain('endsolid');
+    // OpenSCAD has no per-part measurement. `parts` is only on build123d responses.
+    expect(data.parts).toBeUndefined();
+  });
+
+  it('returns 400 for a malformed JSON body', async () => {
+    const req = new NextRequest('http://localhost:3000/api/compile', {
+      method: 'POST',
+      body: '{',
+      headers: { 'content-type': 'application/json' },
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.apiError.code).toBe('bad_request');
+    expect(data.error).toBe(data.apiError.message);
   });
 
   it('returns error for invalid syntax', async () => {
@@ -96,5 +124,7 @@ describe('/api/compile API Route', () => {
     const data = await res.json();
     expect(res.status).toBeGreaterThanOrEqual(400);
     expect(data.error).toBeDefined();
+    expect(data.apiError.message).toBe(data.error);
+    if (res.status === 422) expect(data.apiError.code).toBe('compile_failed');
   });
 });
