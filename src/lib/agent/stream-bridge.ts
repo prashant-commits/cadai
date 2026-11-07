@@ -13,6 +13,7 @@ export const NODE_LABELS: Record<string, string> = {
   architectNode: 'Mechanical Architect',
   architectBuild: 'Mechanical Architect · Build',
   brepBuild: 'Mechanical Architect · Build (build123d)',
+  brepAgentBuild: 'Mechanical Architect · Build (build123d agent)',
   specIllustrator: 'Concept Sheets',
   specReviewer: 'Sheet Reviewer',
   specGate: 'Spec Review',
@@ -31,7 +32,7 @@ export const NODE_LABELS: Record<string, string> = {
  * B-rep validator's `[Validation Report]` message. The structured nodes render
  * their own markdown over `custom`.
  */
-const STRUCTURED_NODES = new Set(['architectNode', 'specReviewer', 'visualCritic', 'architectBuild', 'brepBuild', 'validateBrep']);
+const STRUCTURED_NODES = new Set(['architectNode', 'specReviewer', 'visualCritic', 'architectBuild', 'brepBuild', 'brepAgentBuild', 'validateBrep']);
 
 const DECIDERS = new Set(['specReviewer', 'specGate', 'validateCode', 'validateBrep', 'visualCritic', 'acceptGate']);
 
@@ -39,7 +40,7 @@ const DECIDERS = new Set(['specReviewer', 'specGate', 'validateCode', 'validateB
 const GATES = new Set(['specGate', 'acceptGate']);
 
 /** attemptCount on these updates is that node's own visit number. fixCode's is the global counter. */
-const BUILD_NODES = new Set(['architectBuild', 'brepBuild', 'drafterNode']);
+const BUILD_NODES = new Set(['architectBuild', 'brepBuild', 'brepAgentBuild', 'drafterNode']);
 
 type CustomPayload = StreamEvent & { node?: string };
 type CloseStatus = 'ok' | 'failed' | 'retrying' | 'skipped';

@@ -34,6 +34,7 @@ import { freshVariantPrompt, requiredChanges, variantNamedIn, variantPlanContext
 import { followUpEdit } from './follow-up';
 import { makeArchitectBuild } from './nodes/architect-build';
 import { makeBrepBuild } from './nodes/brep-build';
+import { makeBrepAgentBuild } from './nodes/brep-agent-build';
 import { validateBrep } from './nodes/validate-brep';
 import { svgToPngDataUrl } from '../spec-sheet/rasterize';
 import {
@@ -2383,6 +2384,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
 
   const architectBuild = makeArchitectBuild(buildModel);
   const brepBuild = makeBrepBuild(buildModel);
+  const brepAgentBuild = makeBrepAgentBuild(buildModel);
 
   // Build the graph
   const workflow = new StateGraph(AgentState)
@@ -2393,6 +2395,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
     .addNode('drafterNode', drafterNode)
     .addNode('architectBuild', architectBuild)
     .addNode('brepBuild', brepBuild)
+    .addNode('brepAgentBuild', brepAgentBuild)
     .addNode('validateCode', validateCode)
     .addNode('validateBrep', validateBrep)
     .addNode('fixCode', fixCode)
@@ -2406,6 +2409,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       drafterNode: 'drafterNode',
       architectBuild: 'architectBuild',
       brepBuild: 'brepBuild',
+      brepAgentBuild: 'brepAgentBuild',
       respondToUser: 'respondToUser',
     })
     .addEdge('specIllustrator', 'specReviewer')
@@ -2415,6 +2419,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       drafterNode: 'drafterNode',
       architectBuild: 'architectBuild',
       brepBuild: 'brepBuild',
+      brepAgentBuild: 'brepAgentBuild',
       respondToUser: 'respondToUser',
     })
     .addConditionalEdges('specGate', checkReviseRoute, {
@@ -2422,13 +2427,16 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       drafterNode: 'drafterNode',
       architectBuild: 'architectBuild',
       brepBuild: 'brepBuild',
+      brepAgentBuild: 'brepAgentBuild',
       respondToUser: 'respondToUser'
     })
     .addEdge('drafterNode', 'validateCode')
     .addEdge('architectBuild', 'validateCode')
     .addEdge('brepBuild', 'validateBrep')
+    .addEdge('brepAgentBuild', 'validateBrep')
     .addConditionalEdges('validateBrep', checkValidationRoute, {
       brepBuild: 'brepBuild',
+      brepAgentBuild: 'brepAgentBuild',
       visualCritic: 'visualCritic',
       acceptGate: 'acceptGate',
       respondToUser: 'respondToUser'
@@ -2449,6 +2457,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       fixCode: 'fixCode',
       architectBuild: 'architectBuild',
       brepBuild: 'brepBuild',
+      brepAgentBuild: 'brepAgentBuild',
       respondToUser: 'respondToUser'
     })
     .addEdge('respondToUser', END);

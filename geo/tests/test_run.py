@@ -6,12 +6,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 GEO = os.path.dirname(HERE)
 
 
-def run_cli(tmp_path, script):
+def run_cli(tmp_path, script, flags=None):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     src = tmp_path / 'model.py'
     src.write_text(textwrap.dedent(script))
     out = tmp_path / 'out'
-    out.mkdir()
-    p = subprocess.run([sys.executable, '-I', '-m', 'cadai_geo', str(src), str(out)], cwd=GEO, capture_output=True, text=True, timeout=120)
+    out.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, '-I', '-m', 'cadai_geo', str(src), str(out)]
+    if flags:
+        cmd.extend(flags)
+    p = subprocess.run(cmd, cwd=GEO, capture_output=True, text=True, timeout=120)
     line = [l for l in p.stdout.splitlines() if l.strip().startswith('{')][-1]
     return json.loads(line), out
 
@@ -86,3 +90,31 @@ def test_measures_cadai_parts_before_fusing(tmp_path):
     assert r['ok'] is True
     assert [p['label'] for p in r['parts']] == ['a', 'b']
     assert r['solids'] == 1
+
+
+def test_interferences_overlapping_and_touching(tmp_path):
+    # Two overlapping boxes -> one pair with the right volume
+    r_overlap, _ = run_cli(tmp_path / 'overlap', '''
+        from build123d import *
+        a = Box(10, 10, 10, align=(Align.MIN, Align.MIN, Align.MIN)); a.label = 'box_a'
+        b = Pos(8, 0, 0) * Box(10, 10, 10, align=(Align.MIN, Align.MIN, Align.MIN)); b.label = 'box_b'
+        _cadai_parts = [a, b]
+        result = Compound([a, b])
+    ''', flags=['--interferences'])
+    assert r_overlap['ok'] is True
+    assert 'interferences' in r_overlap
+    assert len(r_overlap['interferences']) == 1
+    assert r_overlap['interferences'][0]['a'] == 'box_a'
+    assert r_overlap['interferences'][0]['b'] == 'box_b'
+    assert r_overlap['interferences'][0]['volume'] == pytest.approx(200.0, rel=1e-3)
+
+    # Touching boxes -> none
+    r_touch, _ = run_cli(tmp_path / 'touch', '''
+        from build123d import *
+        a = Box(10, 10, 10, align=(Align.MIN, Align.MIN, Align.MIN)); a.label = 'box_a'
+        b = Pos(10, 0, 0) * Box(10, 10, 10, align=(Align.MIN, Align.MIN, Align.MIN)); b.label = 'box_b'
+        _cadai_parts = [a, b]
+        result = Compound([a, b])
+    ''', flags=['--interferences'])
+    assert r_touch['ok'] is True
+    assert r_touch.get('interferences') == []

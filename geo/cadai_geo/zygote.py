@@ -573,6 +573,7 @@ def _run_trusted(request: dict) -> None:
             request["scratch"],
             outdir,
             request.get("fallback_error") or None,
+            interferences=bool(request.get("interferences")),
         )
         try:
             write_result(outdir, payload)

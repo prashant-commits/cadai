@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import { Command, isInterrupted } from '@langchain/langgraph';
-import { HumanMessage } from '@langchain/core/messages';
+import { HumanMessage, AIMessage } from '@langchain/core/messages';
 import { getCheckpointer, runCheckpointKey } from './checkpointer';
 import type { AgentStateType } from './graph';
 
@@ -43,16 +43,17 @@ const okRun = {
   step: Buffer.from('ISO-10303-21;\n').toString('base64'), ms: 900,
 };
 
-type Kind = 'planner' | 'variant' | 'reviewer' | 'build' | 'other';
+type Kind = 'planner' | 'variant' | 'reviewer' | 'build' | 'agent-build' | 'other';
 function kindOf(messages: unknown): Kind {
   const text = JSON.stringify(messages);
   if (text.includes('Evaluate whether this concept sheet matches the request')) return 'reviewer';
   if (text.includes('Generate the Assembly Spec for Variant')) return 'variant';
   if (text.includes('@body')) return 'build';
+  if (text.includes('iterative inspect-and-fix workflow')) return 'agent-build';
   if (text.includes('Mechanical Architect Planner')) return 'planner';
   return 'other';
 }
-function script(builds: string[]) {
+function script(builds: string[], agentToolCalls?: unknown[]) {
   let b = 0;
   callMock.mockImplementation(async (messages: unknown) => {
     switch (kindOf(messages)) {
@@ -60,6 +61,8 @@ function script(builds: string[]) {
       case 'variant': return spec;
       case 'reviewer': return { matchesRequest: true, findings: [] };
       case 'build': return { content: builds[Math.min(b++, builds.length - 1)] };
+      case 'agent-build':
+        return agentToolCalls ? agentToolCalls.shift() : new AIMessage({ content: 'done' });
       default: return { matchesRequest: true, findings: [] };
     }
   });
@@ -79,7 +82,7 @@ beforeEach(() => {
   process.env.CADAI_SPEC_SHEETS = 'off'; process.env.CADAI_MAX_VARIANTS = '1'; process.env.CADAI_MAX_ATTEMPTS = '3';
   delete process.env.CADAI_PIPELINE; delete process.env.CADAI_KERNEL; delete process.env.VERCEL;
 });
-afterEach(() => { delete process.env.CADAI_KERNEL; delete process.env.CADAI_PIPELINE; });
+afterEach(() => { delete process.env.CADAI_KERNEL; delete process.env.CADAI_PIPELINE; delete process.env.CADAI_BUILD_MODE; });
 
 describe('CADAI_KERNEL=brep', () => {
   it('ends with the build123d script, an ASCII STL and a STEP file', async () => {
@@ -145,5 +148,29 @@ describe('defaults', () => {
     expect(state.kernel).toBe('openscad');
     expect(state.currentCode).toMatch(/module box\(\)/);
     expect(runBrepMock).not.toHaveBeenCalled();
+  }, 120_000);
+
+  it('CADAI_BUILD_MODE=agent: routes to brepAgentBuild and final script reaches validateBrep', async () => {
+    process.env.CADAI_KERNEL = 'brep';
+    process.env.CADAI_BUILD_MODE = 'agent';
+    const finalScript = 'from build123d import *\nbox = Box(40, 40, 40)\nbox.label = "box"\n_cadai_parts = [box]\nresult = Compound([box])\n';
+    const finishReply = new AIMessage({
+      content: '',
+      tool_calls: [{
+        id: 'finish_1',
+        name: 'finish',
+        args: { script: finalScript, notes: ['agent dock test'] },
+      }],
+    });
+    script([], [finishReply]);
+    runBrepMock.mockResolvedValue(okRun);
+    const { state, calls } = await drive(newKey());
+    expect(state.kernel).toBe('brep');
+    expect(state.currentCode).toBe(finalScript);
+    expect(runBrepMock).toHaveBeenCalled();
+    expect(state.isValid).toBe(true);
+    expect(state.buildNotes).toEqual([{ name: '', reason: 'agent dock test' }]);
+    const agentCall = calls.find((c) => kindOf(c[0]) === 'agent-build');
+    expect(agentCall).toBeDefined();
   }, 120_000);
 });

@@ -58,22 +58,28 @@ function messageText(msg: unknown): string {
 }
 
 /** Failed build: the Architect rewrites the named parts, or Repair does. */
-export function repairTarget(state: AgentStateType): 'architectBuild' | 'brepBuild' | 'fixCode' {
+export function repairTarget(state: AgentStateType): 'architectBuild' | 'brepBuild' | 'brepAgentBuild' | 'fixCode' {
   if (state.pipeline !== 'architect') return 'fixCode';
-  return state.kernel === 'brep' ? 'brepBuild' : 'architectBuild';
+  if (state.kernel === 'brep') {
+    return process.env.CADAI_BUILD_MODE === 'agent' ? 'brepAgentBuild' : 'brepBuild';
+  }
+  return 'architectBuild';
 }
 
 /** Finished spec: the Architect writes bodies, or the Drafter does. A null spec has nothing to build. */
-export function draftTarget(state: AgentStateType): 'architectBuild' | 'brepBuild' | 'drafterNode' | 'respondToUser' {
+export function draftTarget(state: AgentStateType): 'architectBuild' | 'brepBuild' | 'brepAgentBuild' | 'drafterNode' | 'respondToUser' {
   if (state.pipeline === 'architect') {
     if (!state.assemblySpec) return 'respondToUser';
-    return state.kernel === 'brep' ? 'brepBuild' : 'architectBuild';
+    if (state.kernel === 'brep') {
+      return process.env.CADAI_BUILD_MODE === 'agent' ? 'brepAgentBuild' : 'brepBuild';
+    }
+    return 'architectBuild';
   }
   return 'drafterNode';
 }
 
 /** Shared by routeAfterArchitect and routeAfterReviewer. A loop past the soft deadline goes to a human. */
-export function checkSpecRoute(state: AgentStateType): 'specGate' | 'architectBuild' | 'brepBuild' | 'drafterNode' | 'respondToUser' {
+export function checkSpecRoute(state: AgentStateType): 'specGate' | 'architectBuild' | 'brepBuild' | 'brepAgentBuild' | 'drafterNode' | 'respondToUser' {
   const prompt = latestHumanText(state.messages);
   if (state.reviewDeadline !== null && Date.now() >= state.reviewDeadline) return 'specGate';
   if (shouldGateSpec(state, prompt)) return 'specGate';
@@ -83,7 +89,7 @@ export function checkSpecRoute(state: AgentStateType): 'specGate' | 'architectBu
 export function routeAfterArchitectNode(
   state: AgentStateType,
   model: string,
-): 'specIllustrator' | 'specGate' | 'architectBuild' | 'brepBuild' | 'drafterNode' | 'respondToUser' {
+): 'specIllustrator' | 'specGate' | 'architectBuild' | 'brepBuild' | 'brepAgentBuild' | 'drafterNode' | 'respondToUser' {
   const sheetsEnabled = process.env.CADAI_SPEC_SHEETS !== 'off';
   const hasSpec = (state.specVariants || []).some((variant) => variant.spec !== null);
   if (sheetsEnabled && isVisionModel(model) && hasSpec) return 'specIllustrator';
@@ -92,7 +98,7 @@ export function routeAfterArchitectNode(
 
 export function routeAfterReviewerNode(
   state: AgentStateType,
-): 'architectNode' | 'specGate' | 'architectBuild' | 'brepBuild' | 'drafterNode' | 'respondToUser' {
+): 'architectNode' | 'specGate' | 'architectBuild' | 'brepBuild' | 'brepAgentBuild' | 'drafterNode' | 'respondToUser' {
   const needsRevision = (state.specVariants || []).some((variant) => variant.needsRevision);
   if (needsRevision) return 'architectNode';
   return checkSpecRoute(state);
@@ -100,7 +106,7 @@ export function routeAfterReviewerNode(
 
 export function routeAfterSpecGate(
   state: AgentStateType,
-): 'respondToUser' | 'architectNode' | 'architectBuild' | 'brepBuild' | 'drafterNode' {
+): 'respondToUser' | 'architectNode' | 'architectBuild' | 'brepBuild' | 'brepAgentBuild' | 'drafterNode' {
   if (state.gateAction === 'cancel') return 'respondToUser';
   if (state.gateAction === 'revise' && state.specRevisionCount <= MAX_SPEC_REVISIONS) return 'architectNode';
   return draftTarget(state);
@@ -108,7 +114,7 @@ export function routeAfterSpecGate(
 
 export function routeAfterValidation(
   state: AgentStateType,
-): 'visualCritic' | 'acceptGate' | 'respondToUser' | 'architectBuild' | 'brepBuild' | 'fixCode' {
+): 'visualCritic' | 'acceptGate' | 'respondToUser' | 'architectBuild' | 'brepBuild' | 'brepAgentBuild' | 'fixCode' {
   const isDone =
     (state.failureKind === 'none' && state.isValid) ||
     state.attemptCount >= state.maxAttempts ||
@@ -127,7 +133,7 @@ export function routeAfterCritic(state: AgentStateType): 'acceptGate' | 'respond
   return 'respondToUser';
 }
 
-export function routeAfterAccept(state: AgentStateType): 'architectBuild' | 'brepBuild' | 'fixCode' | 'respondToUser' {
+export function routeAfterAccept(state: AgentStateType): 'architectBuild' | 'brepBuild' | 'brepAgentBuild' | 'fixCode' | 'respondToUser' {
   if (state.gateAction === 'revise' && state.acceptRevisionCount <= MAX_ACCEPT_REVISIONS) return repairTarget(state);
   return 'respondToUser';
 }

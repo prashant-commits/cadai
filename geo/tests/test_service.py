@@ -31,3 +31,26 @@ def test_times_out():
 def test_script_cannot_read_the_service_environment():
     r = client.post('/run', json={'script': "import os\nfrom build123d import *\nassert 'CADAI_GEO_TOKEN' not in os.environ, 'leak'\nresult = Box(1,1,1)\n"}, headers={'x-cadai-geo-token': 'test-token'})
     assert r.json()['ok'] is True, r.json()
+
+
+def test_service_interferences():
+    script = """
+from build123d import *
+a = Box(10, 10, 10, align=(Align.MIN, Align.MIN, Align.MIN)); a.label = 'a'
+b = Pos(8, 0, 0) * Box(10, 10, 10, align=(Align.MIN, Align.MIN, Align.MIN)); b.label = 'b'
+_cadai_parts = [a, b]
+result = Compound([a, b])
+"""
+    r = client.post(
+        '/run',
+        json={'script': script, 'interferences': True},
+        headers={'x-cadai-geo-token': 'test-token'},
+    )
+    assert r.status_code == 200
+    j = r.json()
+    assert j['ok'] is True
+    assert 'interferences' in j
+    assert len(j['interferences']) == 1
+    assert j['interferences'][0]['a'] == 'a'
+    assert j['interferences'][0]['b'] == 'b'
+    assert abs(j['interferences'][0]['volume'] - 200.0) < 0.1

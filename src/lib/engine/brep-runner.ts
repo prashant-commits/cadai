@@ -35,6 +35,7 @@ export type BrepResult = {
   stl?: string; /* base64 */
   step?: string; /* base64 */
   ms: number;
+  interferences?: Array<{ a: string; b: string; volume: number }>;
 };
 
 export interface RunBrepOptions {
@@ -42,6 +43,7 @@ export interface RunBrepOptions {
   fetchImpl?: typeof fetch;
   /** The run's stop signal: aborts the HTTP request or kills the local process group. Result error is 'cancelled'. */
   signal?: AbortSignal;
+  interferences?: boolean;
 }
 
 const cancelledResult = (t0: number): BrepResult => ({
@@ -84,7 +86,8 @@ async function runBrepHttp(
   timeoutMs: number,
   fetchImpl: typeof fetch | undefined,
   t0: number,
-  runSignal?: AbortSignal
+  runSignal?: AbortSignal,
+  opts?: RunBrepOptions
 ): Promise<BrepResult> {
   const geoUrl = process.env.CADAI_GEO_URL!.trim();
   const url = `${geoUrl.replace(/\/+$/, '')}/run`;
@@ -98,7 +101,7 @@ async function runBrepHttp(
   }
 
   const timeout_s = Math.max(1, Math.ceil(timeoutMs / 1000));
-  const body = JSON.stringify({ script, timeout_s });
+  const body = JSON.stringify({ script, timeout_s, interferences: Boolean(opts?.interferences) });
 
   let res: Response;
   try {
@@ -172,6 +175,9 @@ async function runBrepHttp(
       stl: data.stl,
       step: data.step,
       ms: Math.max(1, Math.round(performance.now() - t0)),
+      interferences: Array.isArray((data as { interferences?: unknown }).interferences)
+        ? (data as { interferences: Array<{ a: string; b: string; volume: number }> }).interferences
+        : undefined,
     };
   } catch (err) {
     return brepFailed(err instanceof Error ? err.message : 'Invalid JSON response from geometry service', 'unreachable', t0);
@@ -240,7 +246,8 @@ async function runBrepLocal(
   script: string,
   timeoutMs: number,
   t0: number,
-  runSignal?: AbortSignal
+  runSignal?: AbortSignal,
+  opts?: RunBrepOptions
 ): Promise<BrepResult> {
   const refusal = localRunnerRefusal();
   if (refusal) {
@@ -275,7 +282,11 @@ async function runBrepLocal(
 
       let child: ReturnType<typeof spawn>;
       try {
-        child = spawn(pythonPath, ['-I', '-m', 'cadai_geo', scriptPath, outDir], {
+        const args = ['-I', '-m', 'cadai_geo', scriptPath, outDir];
+        if (opts?.interferences) {
+          args.push('--interferences');
+        }
+        child = spawn(pythonPath, args, {
           cwd: geoDir,
           stdio: ['ignore', 'pipe', 'pipe'],
           env: localChildEnv() as NodeJS.ProcessEnv,
@@ -404,6 +415,9 @@ async function runBrepLocal(
         stl: stlBase64,
         step: stepBase64,
         ms: Math.max(1, Math.round(performance.now() - t0)),
+        interferences: Array.isArray(parsed.interferences)
+          ? (parsed.interferences as Array<{ a: string; b: string; volume: number }>)
+          : undefined,
       };
     }
 
@@ -442,9 +456,9 @@ export async function runBrep(
 
   try {
     if (process.env.CADAI_GEO_URL && process.env.CADAI_GEO_URL.trim().length > 0) {
-      return await runBrepHttp(script, timeoutMs, opts?.fetchImpl, t0, opts?.signal);
+      return await runBrepHttp(script, timeoutMs, opts?.fetchImpl, t0, opts?.signal, opts);
     }
-    return await runBrepLocal(script, timeoutMs, t0, opts?.signal);
+    return await runBrepLocal(script, timeoutMs, t0, opts?.signal, opts);
   } catch (err) {
     if (opts?.signal?.aborted) return cancelledResult(t0);
     const message = err instanceof Error ? err.message : String(err);

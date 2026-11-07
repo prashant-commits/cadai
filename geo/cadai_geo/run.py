@@ -284,6 +284,70 @@ def _part_shapes(result, measured=None) -> list[tuple[str, object]]:
     return [(getattr(shape, "label", "") or "", shape) for shape in shapes]
 
 
+def _intersection_volume(shape_a, shape_b) -> float:
+    try:
+        common = shape_a & shape_b
+    except Exception:
+        try:
+            common = shape_a.intersect(shape_b)
+        except Exception:
+            return 0.0
+    if common is None:
+        return 0.0
+    try:
+        if hasattr(common, "solids"):
+            solids = list(common.solids())
+            if solids:
+                return float(sum(s.volume for s in solids))
+            return 0.0
+        return float(getattr(common, "volume", 0.0) or 0.0)
+    except Exception:
+        return 0.0
+
+
+def compute_interferences(part_shapes: list[tuple[str, object]]) -> list[dict]:
+    """Pairwise intersections of labelled parts (cap 40 parts, skip pairs whose bboxes do not overlap)."""
+    labelled = [(label, shape) for label, shape in part_shapes if label][:40]
+    if len(labelled) < 2:
+        return []
+
+    boxes = []
+    for label, shape in labelled:
+        try:
+            bb = shape.bounding_box()
+            boxes.append((_xyz(bb.min), _xyz(bb.max)))
+        except Exception:
+            boxes.append((None, None))
+
+    interferences = []
+    tol = 1e-4
+    for i in range(len(labelled)):
+        label_a, shape_a = labelled[i]
+        box_a = boxes[i]
+        if box_a[0] is None:
+            continue
+        for j in range(i + 1, len(labelled)):
+            label_b, shape_b = labelled[j]
+            box_b = boxes[j]
+            if box_b[0] is None:
+                continue
+            overlap = True
+            for d in range(3):
+                if max(box_a[0][d], box_b[0][d]) >= min(box_a[1][d], box_b[1][d]) - tol:
+                    overlap = False
+                    break
+            if not overlap:
+                continue
+            vol = _intersection_volume(shape_a, shape_b)
+            if vol > tol:
+                interferences.append({
+                    "a": label_a,
+                    "b": label_b,
+                    "volume": round(vol, 4),
+                })
+    return interferences
+
+
 # ---- validity: every exported solid must be valid, before and after the STEP round trip
 
 def _names_in(shape, parts: list[dict]) -> list[str]:
@@ -676,7 +740,9 @@ def _parts_from_scratch(scratch_fd: int, outdir: str, result, shapes_out: list |
     return [_part(solid, "") for solid in solids]
 
 
-def measure_and_export(scratch: str, outdir: str, fallback_error: str | None = None) -> dict:
+def measure_and_export(
+    scratch: str, outdir: str, fallback_error: str | None = None, interferences: bool = False
+) -> dict:
     """Trusted stage: load BREP from ``scratch``, measure it, write exports into ``outdir``.
 
     Bytes that are not a BREP become ``ok: false`` with error ``measure``.
@@ -713,7 +779,7 @@ def measure_and_export(scratch: str, outdir: str, fallback_error: str | None = N
             if failure is not None:
                 return failure
             box = result.bounding_box()
-            return {
+            payload = {
                 "ok": True,
                 "parts": parts,
                 "local": local,
@@ -723,13 +789,16 @@ def measure_and_export(scratch: str, outdir: str, fallback_error: str | None = N
                 "step": None,
                 **extras,
             }
+            if interferences:
+                payload["interferences"] = compute_interferences(part_shapes)
+            return payload
         except Exception:
             return {"ok": False, "error": "measure"}
     finally:
         os.close(scratch_fd)
 
 
-def run(script_path: str | os.PathLike, outdir: str | os.PathLike) -> dict:
+def run(script_path: str | os.PathLike, outdir: str | os.PathLike, interferences: bool = False) -> dict:
     """Execute ``script_path`` and write ``model.step`` / ``model.stl`` into ``outdir``."""
     try:
         _remember_compound_sources()
@@ -751,14 +820,15 @@ def run(script_path: str | os.PathLike, outdir: str | os.PathLike) -> dict:
         _replace_output(step_path)
         _replace_output(stl_path)
         parts = _parts(result, namespace.get("_cadai_parts"))
+        part_shapes = _part_shapes(result, namespace.get("_cadai_parts"))
         extras: dict = {}
         failure = _checked_export(
-            result, parts, step_path, stl_path, _part_shapes(result, namespace.get("_cadai_parts")), extras
+            result, parts, step_path, stl_path, part_shapes, extras
         )
         if failure is not None:
             return failure
         box = result.bounding_box()
-        return {
+        payload = {
             "ok": True,
             "parts": parts,
             "local": _local(namespace),
@@ -768,6 +838,9 @@ def run(script_path: str | os.PathLike, outdir: str | os.PathLike) -> dict:
             "step": step_path,
             **extras,
         }
+        if interferences:
+            payload["interferences"] = compute_interferences(part_shapes)
+        return payload
     except Exception as exc:
         return {"ok": False, "error": _last_line(exc)}
 
@@ -787,13 +860,16 @@ def write_result(outdir: str | os.PathLike, payload: dict) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     args = list(sys.argv if argv is None else argv)
+    interferences = "--interferences" in args
+    if interferences:
+        args.remove("--interferences")
     if len(args) != 3:
-        payload = {"ok": False, "error": "usage: python -m cadai_geo <script.py> <outdir>"}
+        payload = {"ok": False, "error": "usage: python -m cadai_geo <script.py> <outdir> [--interferences]"}
     else:
         os.makedirs(args[2], exist_ok=True)
         sink = io.StringIO()
         with contextlib.redirect_stdout(sink):
-            payload = run(args[1], args[2])
+            payload = run(args[1], args[2], interferences=interferences)
             try:
                 write_result(args[2], payload)
             except OSError:

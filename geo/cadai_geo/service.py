@@ -195,6 +195,7 @@ _EXPORTS = (("step", "model.step"), ("stl", "model.stl"))
 class RunRequest(BaseModel):
     script: str
     timeout_s: float = 60
+    interferences: bool = False
 
 
 class _TooLarge(Exception):
@@ -366,7 +367,7 @@ def _remove_tree(path: str) -> None:
         time.sleep(0.05)
 
 
-def _run_cli(script: str, timeout_s: float) -> dict:
+def _run_cli(script: str, timeout_s: float, interferences: bool = False) -> dict:
     timeout_s = clamp_timeout(timeout_s)
     deadline = time.monotonic() + timeout_s
     slot = _acquire_slot(deadline)
@@ -403,6 +404,7 @@ def _run_cli(script: str, timeout_s: float) -> dict:
             "timeout_s": timeout_s,
             "as_limit": as_limit,
             "home": home,
+            "interferences": interferences,
         }
         path = os.environ.get("PATH")
         if path:
@@ -451,4 +453,4 @@ def run_route(
         raise HTTPException(status_code=401)
     if len(body.script.encode("utf-8")) > _MAX_SCRIPT_BYTES:
         raise HTTPException(status_code=413, detail="script too large")
-    return _run_cli(body.script, body.timeout_s)
+    return _run_cli(body.script, body.timeout_s, body.interferences)
