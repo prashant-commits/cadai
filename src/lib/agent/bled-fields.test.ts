@@ -9,13 +9,8 @@ describe('recoverBledFields', () => {
     const entries = Object.entries(fixtures as Record<string, Record<string, unknown>>);
     expect(entries.length).toBe(6);
     for (const [id, input] of entries) {
+      // bike_hook_wall-s1-A also had a hole `at` with two coordinates; completeHoleAt repairs it.
       const parsed = AssemblySpecSchema.safeParse(nullsToUndefined(normalizeClaudeSentinels(input)));
-      if (id === 'bike_hook_wall-s1-A') {
-        // Recovered, but this spec has its own unrelated error (a hole `at` with two coordinates).
-        expect(parsed.success).toBe(false);
-        if (!parsed.success) expect(parsed.error.issues.every((i) => i.path[0] === 'components' && i.path.includes('holes'))).toBe(true);
-        continue;
-      }
       expect(parsed.success, `${id}: ${parsed.success ? '' : JSON.stringify(parsed.error.issues[0])}`).toBe(true);
       if (parsed.success) expect(parsed.data.components?.length ?? 0, id).toBeGreaterThan(0);
     }

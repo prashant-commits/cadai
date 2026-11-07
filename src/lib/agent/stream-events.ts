@@ -2,7 +2,7 @@
  * The wire protocol between the graph and the chat client.
  *
  * Deliberately client-safe: no provider imports, so a 'use client' component
- * can import these types without dragging ChatOpenAI into the bundle.
+ * can import these types without dragging ChatAnthropic into the bundle.
  */
 import type { GatePayload, DesignContract } from '@/types';
 import type { SectionStatus } from './transcript';

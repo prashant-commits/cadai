@@ -5,11 +5,11 @@ import { getCheckpointer, runCheckpointKey } from './checkpointer';
 
 const invokeMock = vi.fn();
 
-// Every node talks to the Experiential Labs gateway over the OpenAI wire
-// format, so faking ChatOpenAI is enough to keep these suites off the network.
-// Arrow functions have no [[Construct]] slot, so `new ChatOpenAI(...)` needs a
+// Every node talks to the Anthropic Messages API through @langchain/anthropic,
+// so faking ChatAnthropic is enough to keep these suites off the network.
+// Arrow functions have no [[Construct]] slot, so `new ChatAnthropic(...)` needs a
 // real constructible mock, not vi.fn(() => ...).
-vi.mock('@langchain/openai', () => {
+vi.mock('@langchain/anthropic', () => {
   class FakeChatModel {
     invoke = invokeMock;
     // architectNode reads its structured output with .stream() so the spec
@@ -20,7 +20,7 @@ vi.mock('@langchain/openai', () => {
     withConfig() { return this; }
     bindTools() { return this; }
   }
-  return { ChatOpenAI: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
+  return { ChatAnthropic: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
 });
 
 import { createCadAgent } from './graph';

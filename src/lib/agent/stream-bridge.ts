@@ -1,6 +1,7 @@
 import type { GatePayload } from '@/types';
 import type { StreamEvent } from './stream-events';
 import { checkpointTtlMs } from './checkpointer';
+import { contentText } from './message-text';
 
 /** Human labels for graph nodes. An unlisted node falls back to its own id. */
 export const NODE_LABELS: Record<string, string> = {
@@ -75,7 +76,7 @@ export async function bridgeGraphStream(
 
     if (mode === 'messages') {
       const [msg, meta] = payload as [{ content?: unknown }, { langgraph_node?: string }];
-      const text = typeof msg?.content === 'string' ? msg.content : '';
+      const text = contentText(msg?.content);
       if (!text) continue;
       if (STRUCTURED_NODES.has(meta?.langgraph_node ?? '')) continue;
       openFor(meta?.langgraph_node ?? 'agent');

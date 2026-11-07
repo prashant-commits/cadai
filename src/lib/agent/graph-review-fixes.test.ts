@@ -7,7 +7,7 @@ import type { GatePayload } from '@/types';
 const invokeMock = vi.fn();
 const flags = vi.hoisted(() => ({ drawFails: false }));
 
-vi.mock('@langchain/openai', () => {
+vi.mock('@langchain/anthropic', () => {
   class FakeChatModel {
     // Revision replies are widened so they differ from the previous spec (see revision-fixture.ts).
     invoke = async (...args: unknown[]) => {
@@ -29,7 +29,7 @@ vi.mock('@langchain/openai', () => {
     }
   }
   return {
-    ChatOpenAI: vi.fn().mockImplementation(function () {
+    ChatAnthropic: vi.fn().mockImplementation(function () {
       return new FakeChatModel();
     }),
   };

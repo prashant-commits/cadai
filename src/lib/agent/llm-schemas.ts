@@ -381,6 +381,36 @@ function normalizeShape(shape: unknown): unknown {
   }
 }
 
+function axisIndex(axis: unknown): 0 | 1 | 2 | undefined {
+  if (axis === 'x') return 0;
+  if (axis === 'y') return 1;
+  if (axis === 'z') return 2;
+  return undefined;
+}
+
+/**
+ * A hole's `at` with exactly two items is the two in-face coordinates with the
+ * one along `axis` left out (16 of 72 thinking-off specs, Haiku 5.5): e.g.
+ * `{axis: "y", at: ["hole_x1", "hole_z"]}` on a plate with localExtents
+ * `["plate_w", "plate_t", "plate_h"]`. The missing coordinate is inserted at the
+ * axis index as the component's extent along that axis, i.e. the mouth on the +
+ * face, the same convention as a z hole in a 5 mm plate having at[2] = 5
+ * (hole-audit.ts probeOrigin). Without a usable axis or extent the hole is left
+ * as it is and fails validation.
+ */
+function completeHoleAt(hole: Record<string, unknown>, localExtents: unknown): Record<string, unknown> {
+  if (!Array.isArray(hole.at) || hole.at.length !== 2) return hole;
+  const i = axisIndex(hole.axis);
+  if (i === undefined || !Array.isArray(localExtents) || localExtents.length !== 3) return hole;
+  const extent: unknown = localExtents[i];
+  const usable =
+    (typeof extent === 'number' && Number.isFinite(extent)) || (typeof extent === 'string' && extent.trim() !== '');
+  if (!usable) return hole;
+  const at = [...hole.at];
+  at.splice(i, 0, extent);
+  return { ...hole, at };
+}
+
 function normalizeComponent(comp: unknown): unknown {
   if (!comp || typeof comp !== 'object' || Array.isArray(comp)) return comp;
   const c = { ...(comp as Record<string, unknown>) };
@@ -390,7 +420,7 @@ function normalizeComponent(comp: unknown): unknown {
   if (Array.isArray(c.holes)) {
     c.holes = c.holes.map((h) => {
       if (!h || typeof h !== 'object' || Array.isArray(h)) return h;
-      const hole = { ...(h as Record<string, unknown>) };
+      const hole = completeHoleAt({ ...(h as Record<string, unknown>) }, c.localExtents);
       if (hole.note === '') {
         delete hole.note;
       }
@@ -492,14 +522,65 @@ function parseBled(field: string, text: string): Record<string, unknown> | null 
   return null;
 }
 
+/** Top-level array fields that sometimes arrive as a JSON string of the array. */
+const STRINGIFIED_ARRAY_FIELDS = [
+  'components', 'parameters', 'derived', 'relations', 'guides', 'jointContracts', 'assumptions', 'openQuestions',
+] as const;
+/** Top-level object fields that sometimes arrive as a JSON string of the object. */
+const STRINGIFIED_OBJECT_FIELDS = ['boundingBox'] as const;
+
+/** `text` parsed as JSON when it is JSON of the wanted kind; otherwise undefined. */
+function parseJsonOfKind(text: string, kind: 'array' | 'object'): unknown {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (kind === 'array') return Array.isArray(value) ? value : undefined;
+  return isPlainObject(value) ? value : undefined;
+}
+
+/**
+ * With thinking off, Haiku 5.5 sometimes sends a whole field as a JSON string
+ * (`components: "[{\"name\": ...}]"`, 3 of 72 specs) or one array element as
+ * a JSON string of an object (`parameters[1]`, 1 of 72). A string that parses
+ * as JSON of the right kind is replaced by the parsed value; any other string
+ * is left for the schema to reject.
+ */
+export function parseStringifiedFields(input: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...input };
+  for (const field of STRINGIFIED_ARRAY_FIELDS) {
+    const value = out[field];
+    if (typeof value === 'string') {
+      const parsed = parseJsonOfKind(value, 'array');
+      if (parsed !== undefined) out[field] = parsed;
+    }
+    const arr = out[field];
+    if (Array.isArray(arr) && arr.some((el) => typeof el === 'string')) {
+      out[field] = arr.map((el) => (typeof el === 'string' ? (parseJsonOfKind(el, 'object') ?? el) : el));
+    }
+  }
+  for (const field of STRINGIFIED_OBJECT_FIELDS) {
+    const value = out[field];
+    if (typeof value !== 'string') continue;
+    const parsed = parseJsonOfKind(value, 'object');
+    if (parsed !== undefined) out[field] = parsed;
+  }
+  return out;
+}
+
 /**
  * Maps neutral values emitted by Claude back to "absent" so lenient zod schemas
- * parse the result identically to the OpenAI path. Pure; does not mutate input.
+ * parse the result identically to the OpenAI path, and repairs two format slips
+ * first seen with thinking off: fields sent as JSON strings
+ * (parseStringifiedFields) and two-item hole `at` (completeHoleAt). Pure; does
+ * not mutate input.
  */
 export function normalizeClaudeSentinels(raw: unknown): unknown {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
 
-  const out = recoverBledFields(raw as Record<string, unknown>);
+  const out = recoverBledFields(parseStringifiedFields(raw as Record<string, unknown>));
 
   if (Array.isArray(out.jointContracts)) {
     out.jointContracts = out.jointContracts.map(normalizeJointContract);
@@ -532,7 +613,10 @@ export function normalizeClaudeSentinels(raw: unknown): unknown {
  * The 6-optional schema stays because it also keeps the tool schema small and the descriptions tell the model the neutral values.
  * Outputs from the variant spec are piped through normalizeClaudeSentinels.
  *
- * For other Claude routes (planner, reviewer, critic), schemas are small and use strict: true.
+ * For other Claude routes (planner, reviewer, critic) the schemas are small and are sent as native
+ * structured output (`method: 'jsonSchema'`, i.e. `output_config.format`), which constrains the reply
+ * to the schema without a tool call. ChatAnthropic's tool-calling method would force tool_choice
+ * whenever thinking is disabled, and strict is only accepted with that method.
  * For non-Claude slugs, schema and opts are passed untouched.
  * The reply is still validated by the caller against the zod schema.
  */
@@ -655,7 +739,12 @@ export function structuredFor<M extends { withStructuredOutput: (...args: never[
 
   const safe = toAnthropicCompatibleSchema(json);
   delete safe.$schema;
-  return call.call(model, safe, { ...opts, name: opts.name ?? 'Reply', strict: true });
+  const jsonOpts: { name: string; method: 'jsonSchema'; includeRaw?: boolean } = {
+    name: opts.name ?? 'Reply',
+    method: 'jsonSchema',
+  };
+  if (opts.includeRaw !== undefined) jsonOpts.includeRaw = opts.includeRaw;
+  return call.call(model, safe, jsonOpts);
 }
 
 

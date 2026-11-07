@@ -3,18 +3,18 @@ import { isInterrupted, INTERRUPT, Command } from '@langchain/langgraph';
 import { HumanMessage, AIMessage } from '@langchain/core/messages';
 import { getCheckpointer, runCheckpointKey } from './checkpointer';
 
-// createCadAgent talks to the gateway through @langchain/openai. Every
+// createCadAgent talks to the Anthropic API through @langchain/anthropic. Every
 // invoke() call across architect/drafter/fix goes through the SAME mocked
 // instance (withStructuredOutput/bindTools both return `this`), so a test
 // queues canned responses in the exact order the graph is expected to call
 // them - matching the ordering asserted by each scenario below.
 const invokeMock = vi.fn();
 
-// Every node talks to the Experiential Labs gateway over the OpenAI wire
-// format, so faking ChatOpenAI is enough to keep these suites off the network.
-// Arrow functions have no [[Construct]] slot, so `new ChatOpenAI(...)` needs a
+// Every node talks to the Anthropic Messages API through @langchain/anthropic,
+// so faking ChatAnthropic is enough to keep these suites off the network.
+// Arrow functions have no [[Construct]] slot, so `new ChatAnthropic(...)` needs a
 // real constructible mock, not vi.fn(() => ...).
-vi.mock('@langchain/openai', () => {
+vi.mock('@langchain/anthropic', () => {
   class FakeChatModel {
     // Revision replies are widened so they differ from the previous spec (see revision-fixture.ts).
     invoke = async (...args: unknown[]) => {
@@ -30,7 +30,7 @@ vi.mock('@langchain/openai', () => {
     withConfig() { return this; }
     bindTools() { return this; }
   }
-  return { ChatOpenAI: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
+  return { ChatAnthropic: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
 });
 
 import { createCadAgent } from './graph';

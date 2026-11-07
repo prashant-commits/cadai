@@ -1,13 +1,14 @@
 import { StateGraph, Annotation, END, START, interrupt } from '@langchain/langgraph';
 import type { LangGraphRunnableConfig } from '@langchain/langgraph';
-import { BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
+import { BaseMessage, HumanMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
 import type { RunnableConfig } from '@langchain/core/runnables';
 import { z } from 'zod';
 import { createSpecRenderer } from './spec-markdown';
 import { escapeMarkers } from './transcript';
 import { composeRunSummary } from './run-summary';
 import type { StreamEvent } from './stream-events';
-import { systemPromptFor } from './system-prompt';
+import { cachedSystemMessage, systemPromptFor } from './system-prompt';
+import { contentText } from './message-text';
 import { extractOpenScadCode } from './code-extractor';
 import { validateOpenScadCode } from './code-validator';
 import { getFunctionalCadModuleTool } from './engineering-tools';
@@ -634,7 +635,7 @@ export function createCadAgent(
   }
   const model = getChatModel(selectedModel);
   // Revisions previously sampled warmer to avoid re-emitting the previous skeleton,
-  // but temperature cannot be sent on this endpoint (Claude 5.5 models reject temperature).
+  // but temperature cannot be sent (Claude 5.5 models reject non-default temperatures).
   // Revision calls use the model directly.
   const revisionModel = model;
 
@@ -945,7 +946,7 @@ export function createCadAgent(
     const isFresh = variants.length === 0;
 
     if (isFresh) {
-      const plannerSystemMessage = new SystemMessage(systemPromptFor('planner'));
+      const plannerSystemMessage = cachedSystemMessage(systemPromptFor('planner'));
       const plannerMessages: BaseMessage[] = [plannerSystemMessage, ...conversationMessages];
 
       if (state.gateAction === 'revise' && state.gateFeedback) {
@@ -1041,7 +1042,7 @@ export function createCadAgent(
         };
       }
 
-      const variantSystemMessage = new SystemMessage(systemPromptFor('variant'));
+      const variantSystemMessage = cachedSystemMessage(systemPromptFor('variant'));
       const variantBaseMessages: BaseMessage[] = [variantSystemMessage, ...conversationMessages];
       if (state.gateAction === 'revise' && state.gateFeedback) {
         variantBaseMessages.push(new HumanMessage(`The previous Assembly Spec was rejected at human review. Revise it accordingly:\n${state.gateFeedback}`));
@@ -1068,7 +1069,7 @@ export function createCadAgent(
 
     } else {
       // Revision mode
-      const variantSystemMessage = new SystemMessage(systemPromptFor('variant'));
+      const variantSystemMessage = cachedSystemMessage(systemPromptFor('variant'));
       const variantBaseMessages: BaseMessage[] = [variantSystemMessage, ...conversationMessages];
 
       const currentBrief = brief ?? {
@@ -1264,7 +1265,7 @@ export function createCadAgent(
       SheetReviewSchema
     ).withConfig({ tags: ['nostream'] });
 
-    const reviewerSystem = new SystemMessage(systemPromptFor('reviewer'));
+    const reviewerSystem = cachedSystemMessage(systemPromptFor('reviewer'));
 
     // Variants that got a fresh model verdict this pass; the retry decision for
     // them is made AFTER every review has finished, on the fresh round time.
@@ -1321,7 +1322,7 @@ export function createCadAgent(
           reviewResult = (await reviewerModel.invoke(
             [reviewerSystem, new HumanMessage({ content: content as never })],
             withBudget(config, state.runDeadline)
-          )) as z.infer<typeof SheetReviewSchema>;
+          )) as unknown as z.infer<typeof SheetReviewSchema>;
         } catch (e) {
           console.error(`specReviewer: model review call failed for variant ${v.id}:`, e);
           const reviewObj: VariantReview = {
@@ -1507,7 +1508,7 @@ ${contract}`;
     }
 
     const messages: BaseMessage[] = [
-      new SystemMessage(drafterSystem),
+      cachedSystemMessage(drafterSystem),
       ...state.messages,
       drafterHumanMessage,
     ];
@@ -1546,7 +1547,7 @@ ${contract}`;
       response = await model.invoke([...messages, ...toolCallMessages], config);
     }
 
-    const content = typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
+    const content = contentText(response.content);
     const extracted = extractOpenScadCode(content);
     const placed = await placeAssembly(extracted.code || '', state.assemblySpec);
 
@@ -1867,7 +1868,7 @@ ${state.assemblySpec ? `Assembly Spec (every stressPoint mitigation in it is man
 Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`openscad ... \`\`\` block.`;
 
     const fixMessages = [
-      new SystemMessage(systemPromptFor('repair')),
+      cachedSystemMessage(systemPromptFor('repair')),
       ...state.messages,
       new HumanMessage(fixPrompt),
     ];
@@ -1904,7 +1905,7 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       response = await model.invoke([...fixMessages, ...toolCallMessages], config);
     }
     
-    const content = typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
+    const content = contentText(response.content);
     const extracted = extractOpenScadCode(content);
 
     // Patch only the attempt being repaired. The merge-by-n reducer applies it
@@ -1994,11 +1995,11 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       critique = (await structuredFor(criticModel, criticSlug, VisualCritiqueSchema)
         .invoke(
           [
-            new SystemMessage(systemPromptFor('critic')),
+            cachedSystemMessage(systemPromptFor('critic')),
             new HumanMessage({ content: content as never }),
           ],
           config
-        )) as VisualCritique;
+        )) as unknown as VisualCritique;
     } catch (e) {
       console.warn('Visual critic: model call failed', e);
       return {};

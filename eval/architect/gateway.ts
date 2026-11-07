@@ -8,7 +8,7 @@
 
 import { HumanMessage, SystemMessage, type BaseMessage } from '@langchain/core/messages';
 import { ChatOpenAI } from '@langchain/openai';
-import { getChatModel } from '@/lib/agent/model-provider';
+import { getChatModel, type CadChatModel } from '@/lib/agent/model-provider';
 import { structuredFor, ArchitectPlanSchema } from '@/lib/agent/llm-schemas';
 import { variantSpecRequestSchema } from '@/lib/agent/assembly-spec';
 import type { Outcome } from './parse';
@@ -20,7 +20,7 @@ const RETRY_DELAYS_MS = [15_000, 30_000, 60_000, 120_000];
 const GOOGLE_OPENAI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/';
 
 /** The app's client (Anthropic); the same client settings pointed at Google for the 'google' route. */
-function chatModelFor(route: Route, slug: string): ChatOpenAI {
+function chatModelFor(route: Route, slug: string): CadChatModel | ChatOpenAI {
   if (route === 'gateway') return getChatModel(slug);
   const apiKey = process.env.GOOGLE_API_KEY;
   if (!apiKey) throw new Error('GOOGLE_API_KEY is missing: the google route needs an AI Studio key');
