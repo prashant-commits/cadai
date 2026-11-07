@@ -10,6 +10,7 @@ import { getRunStore, isSafeRunId, type AppendOptions, type RunStore } from '@/l
 import { SSE_HEADERS, sse, streamRun } from '@/lib/runs/stream-run';
 import { errorResponse } from '@/lib/runs/api-error';
 import { runExpired, toApiError } from '@/lib/contract/api-error';
+import { safeDeleteForRun } from '@/lib/runs/artifact-store';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -136,6 +137,7 @@ export async function POST(req: NextRequest) {
       // `result` stays for old clients; the contract's `cancelled` ends the stream.
       if (decision?.action === 'cancel') {
         await getCheckpointer().deleteThread(checkpointKey);
+        await safeDeleteForRun(runId); // the gate's sheets / stl belonged only to this run
         const at = Date.now();
         return staticStream(
           store,

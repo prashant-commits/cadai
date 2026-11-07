@@ -10,7 +10,7 @@ export class ExprError extends Error {
   }
 }
 
-type Token =
+export type Token =
   | { t: 'num'; v: number; pos: number }
   | { t: 'name'; v: string; pos: number }
   | { t: 'op'; v: '+' | '-' | '*' | '/' | '(' | ')' | ','; pos: number }
@@ -35,7 +35,7 @@ const OPENSCAD_RESERVED = new Set([
   'lookup', 'str', 'chr', 'search', 'version', 'version_num', 'parent_module',
 ]);
 
-function tokenize(src: string): Token[] {
+export function tokenize(src: string): Token[] {
   const out: Token[] = [];
   let i = 0;
   while (i < src.length) {

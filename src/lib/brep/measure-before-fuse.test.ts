@@ -59,7 +59,9 @@ describe('measure each part before fusing', () => {
     const clean = await validateBrep(stateFor(code));
     expect(clean.specViolations?.filter((v) => v.severity === 'error'), JSON.stringify(clean.specViolations)).toEqual([]);
 
-    override = (r) => ({ ...r, parts: r.parts.map((p) => (p.label === 'tube_back_left' ? { ...p, max: [p.max[0], p.max[1], p.max[2] - 10] as [number, number, number] } : p)) });
+    // A part built 10 mm short is short in its own frame and once placed.
+    const shorten = (p: BrepResult['parts'][number]) => (p.label === 'tube_back_left' ? { ...p, max: [p.max[0], p.max[1], p.max[2] - 10] as [number, number, number] } : p);
+    override = (r) => ({ ...r, parts: r.parts.map(shorten), local: r.local?.map(shorten) });
     const bad = await validateBrep(stateFor(code));
     override = null;
     const extents = bad.specViolations?.filter((v) => v.kind === 'extents' && v.severity === 'error') ?? [];

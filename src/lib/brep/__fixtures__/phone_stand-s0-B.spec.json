@@ -1,0 +1,182 @@
+{
+ "sheet": "## In-use pose\nThe stand rests on the ground plane with the base plate horizontal and its underside at z = 0. Up is +Z. The phone faces the front, toward -X, and leans against the front face of the backrest. The backrest rises toward +X and forms a 65° angle with the horizontal base plane. The backrest is a separate part inserted into a through-slot in the base. The integrated front lip projects toward -X at the lower edge of the backrest to prevent the phone sliding forward.\n\n## Variant B — Slotted backrest with front lip\n\n### Base plate\nPart name: `base_plate`. The base is a sharp-edged rectangular plate, 180 mm long in X, 120 mm wide in Y, and 6 mm thick in Z. Its position is [0, 0, 0].\n\nThe base receives the backrest through a through-slot centered at the backrest insertion location. The slot is 7 mm wide in X, 121 mm long in Y, and passes through the full 6 mm base thickness. The slot dimensions provide 0.5 mm clearance around the 6 mm-thick backrest plate and 0.5 mm side clearance at each Y end. The slot is represented by the joint contract and is not separately added as a component feature.\n\n### Backrest with integrated front lip\nPart name: `backrest_with_lip`. The backrest is a 120 mm-wide extruded profile. Its main backrest plate is 6 mm thick and 140 mm high. The backrest is rotated 25° about Y so that its face is 65° from the horizontal base plane. Its lower insertion edge is positioned at the base slot.\n\nThe integrated front lip is 20 mm deep toward the phone-facing side and 12 mm high. The lip and backrest are one free body, with no separate joint contract. All edges remain sharp.\n\n### Supported phone envelope\nA reference envelope represents an assumed phone measuring 75 mm wide, 150 mm high, and 10 mm thick. It rests against the backrest and on the integrated front lip. The envelope is a guide only and is never built.\n\n## Geometry and placement arithmetic\nThe backrest profile local XZ outline is [(0,0), (20,0), (26,0), (26,140), (20,140), (20,12), (0,12)]. It is extruded over Y = 120 mm. Rotation [0,25,0] produces a 65° backrest angle from the base plane. Position [70,0,11] keeps the rotated assembly at or above z = 0. The resulting union extents are 180 mm X, 120 mm Y, and 129.43 mm Z.\n\nNo chamfers, fillets, counterbores, retention hardware, or additional reinforcement are included.",
+ "assemblyName": "variant_b_slotted_backrest_with_front_lip",
+ "boundingBox": {
+  "width": 180,
+  "length": 120,
+  "height": 129.43
+ },
+ "jointContracts": [
+  {
+   "type": "backrest_through_slot",
+   "clearance": 0.5,
+   "partA": "base_plate",
+   "partB": "backrest_with_lip"
+  }
+ ],
+ "components": [
+  {
+   "name": "base_plate",
+   "description": "Flat rectangular horizontal base plate receiving the backrest through-slot.",
+   "localExtents": [
+    180,
+    120,
+    6
+   ],
+   "position": [
+    0,
+    0,
+    0
+   ],
+   "rotation": [
+    0,
+    0,
+    0
+   ],
+   "positionNote": "The base underside is placed on the ground plane at z = 0; its minimum x and y are also 0.",
+   "shape": {
+    "kind": "box"
+   }
+  },
+  {
+   "name": "backrest_with_lip",
+   "description": "65-degree backrest with an integrated low front retaining lip.",
+   "localExtents": [
+    26,
+    120,
+    140
+   ],
+   "position": [
+    70,
+    0,
+    11
+   ],
+   "rotation": [
+    0,
+    25,
+    0
+   ],
+   "positionNote": "x = 70 mm locates the backrest within the base length; y = 0 aligns its full 120 mm width with the base; z = 11 mm offsets the rotated 26 mm profile depth so no point falls below z = 0.",
+   "shape": {
+    "kind": "profile",
+    "plane": "xz",
+    "points": [
+     [
+      0,
+      0
+     ],
+     [
+      20,
+      0
+     ],
+     [
+      26,
+      0
+     ],
+     [
+      26,
+      140
+     ],
+     [
+      20,
+      140
+     ],
+     [
+      20,
+      12
+     ],
+     [
+      0,
+      12
+     ]
+    ]
+   }
+  },
+  {
+   "name": "phone_envelope",
+   "description": "Reference envelope for the supported phone; guide geometry only.",
+   "localExtents": [
+    10,
+    75,
+    150
+   ],
+   "position": [
+    64,
+    22.5,
+    11
+   ],
+   "rotation": [
+    0,
+    25,
+    0
+   ],
+   "positionNote": "The assumed phone envelope is centered across the 120 mm backrest width and placed against the front backrest face with its lower edge at the integrated lip.",
+   "shape": {
+    "kind": "box"
+   }
+  }
+ ],
+ "guides": [
+  {
+   "label": "supported_phone_envelope",
+   "kind": "envelope",
+   "shape": {
+    "kind": "box"
+   },
+   "localExtents": [
+    10,
+    75,
+    150
+   ],
+   "position": [
+    64,
+    22.5,
+    11
+   ],
+   "rotation": [
+    0,
+    25,
+    0
+   ]
+  }
+ ],
+ "stressPoints": [],
+ "assumptions": [
+  {
+   "field": "base_plate_dimensions",
+   "value": "180 x 120 x 6 mm",
+   "rationale": "No base dimensions were specified; these are variant-specific geometry inputs."
+  },
+  {
+   "field": "backrest_dimensions",
+   "value": "6 mm thick x 120 mm wide x 140 mm high",
+   "rationale": "No backrest dimensions were specified; these dimensions provide the requested separate leaning backrest."
+  },
+  {
+   "field": "backrest_angle",
+   "value": "65 degrees from the horizontal base plane, implemented as rotation [0,25,0]",
+   "rationale": "The requested angle is measured between the backrest and the base plane; the local profile is vertical before rotation."
+  },
+  {
+   "field": "front_lip_dimensions",
+   "value": "20 mm projection toward the phone-facing side and 12 mm height",
+   "rationale": "Variant B requires a visible front lip, but no lip dimensions were specified."
+  },
+  {
+   "field": "slot_geometry",
+   "value": "Through-slot, 7 mm X width x 121 mm Y length x 6 mm Z depth",
+   "rationale": "A through-slot was selected from the planner brief; 7 mm provides 0.5 mm clearance around the 6 mm backrest thickness and 121 mm provides 0.5 mm side clearance per end."
+  },
+  {
+   "field": "backrest_slot_location",
+   "value": "Centered across Y and located at the backrest insertion position around X = 88.13 mm",
+   "rationale": "The slot is aligned with the lower 6 mm-thick backrest plate after its 25° rotation."
+  },
+  {
+   "field": "phone_envelope",
+   "value": "75 mm wide x 150 mm high x 10 mm thick",
+   "rationale": "A supported-object envelope is required for a phone stand, but no phone dimensions were specified."
+  }
+ ],
+ "openQuestions": []
+}

@@ -1,9 +1,31 @@
+import { createHash } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { compileScad } from '@/lib/engine/scad-compiler';
 import { runBrep, type BrepPart } from '@/lib/engine/brep-runner';
 import { detectLanguage } from '@/lib/brep/language';
-import type { PartInfo } from '@/lib/contract/run-contract';
+import type { PartInfo, ResultArtifacts } from '@/lib/contract/run-contract';
 import { badRequest, compileFailed, compileStatus, errorBody, fromBrep } from '@/lib/contract/api-error';
+import { getArtifactStore } from '@/lib/runs/artifact-store';
+
+/**
+ * Refs for a compile's outputs, stored under the synthetic run `compile-<sha of code>` (pruned by
+ * the run TTL). A storage failure only drops the refs: the inline fields are the contract here.
+ */
+async function compileArtifacts(code: string, stl: string, stepBase64?: string): Promise<{ artifacts?: ResultArtifacts }> {
+  try {
+    const store = getArtifactStore();
+    const runId = `compile-${createHash('sha256').update(code).digest('hex').slice(0, 24)}`;
+    const artifacts: ResultArtifacts = {};
+    if (stl) artifacts.stl = await store.put(runId, 'stl', stl);
+    if (stepBase64) artifacts.step = await store.put(runId, 'step', Buffer.from(stepBase64, 'base64'));
+    const cap = Number(process.env.CADAI_COMPILE_ARTIFACT_MAX_BYTES ?? 256 * 1024 * 1024);
+    if (Number.isFinite(cap) && cap >= 0) await store.evictCompile?.(cap).catch(() => undefined);
+    return Object.keys(artifacts).length > 0 ? { artifacts } : {};
+  } catch (e) {
+    console.warn('Compile artifact store failed; returning inline only:', e);
+    return {};
+  }
+}
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -75,6 +97,7 @@ export async function POST(req: NextRequest) {
         compileTimeMs: result.ms,
         language: 'build123d',
         parts: partInfo(result.parts ?? []),
+        ...(await compileArtifacts(code, stlAscii, result.step)),
       });
     }
 
@@ -93,6 +116,7 @@ export async function POST(req: NextRequest) {
       success: true,
       stl: result.stl,
       language: 'openscad',
+      ...(await compileArtifacts(code, result.stl ?? '')),
     });
   } catch (err: unknown) {
     // 422 only for a syntax error thrown by the OpenSCAD compiler while compiling

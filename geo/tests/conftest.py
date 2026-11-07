@@ -15,3 +15,8 @@ if _TOKEN_PATH.exists():
 _TOKEN_PATH.write_text("test-token\n", encoding="utf-8")
 _TOKEN_PATH.chmod(0o400)
 os.environ["CADAI_GEO_TOKEN_FILE"] = str(_TOKEN_PATH)
+
+# The b1 sandbox probes need full Python inside the script (import os, fork, sleep) to show the
+# process sandbox holds against an escaped script. Tests of the curated builtins turn this off
+# explicitly (test_run_lines.py). Read once when cadai_geo.run is imported.
+os.environ["CADAI_GEO_TEST_FULL_BUILTINS"] = "1"

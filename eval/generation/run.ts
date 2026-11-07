@@ -22,6 +22,7 @@
  *   --attempts N                     CADAI_MAX_ATTEMPTS    (default 1)
  *
  * Plumbing for matrix.ts, which runs one prompt per child process:
+ *   --prompts <file>  JSON [{id, prompt}] to draw prompts from (default eval/generation/prompts.json)
  *   --out-dir <dir>   write results (and the final script) there instead of eval/results
  *   --result <file>   also write the single run's metrics row to this file
  *   --no-delay        skip the 5 s abort window
@@ -65,7 +66,7 @@ import { getLangfuseCallbackHandler, getLangfuseSpanProcessor, initLangfuseTraci
 import { GenerationMetrics, SpecGateCapture, measureVisualMatch, metricsFromState, scoresFor, summarize } from './metrics';
 import { finalizeMetrics } from './brep-eval';
 import { UsageHandler } from './usage';
-import { EVAL_DEFAULT_MODEL, recursionLimitFromEnv, sheetsModelError } from './run-config';
+import { DEFAULT_PROMPTS_FILE, EVAL_DEFAULT_MODEL, loadPrompts, recursionLimitFromEnv, selectPrompts, sheetsModelError, type PromptItem } from './run-config';
 
 const DATASET = 'cadai-generation';
 
@@ -86,6 +87,7 @@ interface Args {
   thinking?: 'off' | 'adaptive';
   effort?: 'low' | 'medium' | 'high';
   attempts?: number;
+  prompts: string;
   outDir?: string;
   result?: string;
   noDelay?: boolean;
@@ -96,7 +98,7 @@ function onOff(value: string | undefined): 'on' | 'off' | undefined {
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { model: EVAL_DEFAULT_MODEL, tag: 'run', limit: Infinity, only: [], langfuse: true, seed: false };
+  const a: Args = { model: EVAL_DEFAULT_MODEL, tag: 'run', limit: Infinity, only: [], langfuse: true, seed: false, prompts: DEFAULT_PROMPTS_FILE };
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i];
     if (v === '--model') a.model = argv[++i];
@@ -135,6 +137,7 @@ function parseArgs(argv: string[]): Args {
       const n = Number(argv[++i]);
       if (Number.isInteger(n) && n >= 1) a.attempts = n;
     }
+    else if (v === '--prompts') a.prompts = path.resolve(argv[++i]);
     else if (v === '--out-dir') a.outDir = argv[++i];
     else if (v === '--result') a.result = argv[++i];
     else if (v === '--no-delay') a.noDelay = true;
@@ -176,8 +179,6 @@ function captureSpecGate(result: unknown, previous: SpecGateCapture | null): Spe
 const DEFAULT_RESULTS_DIR = path.join(__dirname, '..', 'results');
 const stamp = (d: Date) => d.toISOString().replace(/[:.]/g, '-');
 
-interface PromptItem { id: string; prompt: string }
-const prompts: PromptItem[] = JSON.parse(fs.readFileSync(path.join(__dirname, 'prompts.json'), 'utf8'));
 
 function gitSha(): string {
   try { return execSync('git rev-parse --short HEAD').toString().trim(); } catch { return 'unknown'; }
@@ -240,7 +241,7 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
   return m;
 }
 
-async function seedDataset(): Promise<void> {
+async function seedDataset(prompts: PromptItem[]): Promise<void> {
   const { LangfuseClient } = await import('@langfuse/client');
   const langfuse = new LangfuseClient();
   try {
@@ -263,7 +264,7 @@ async function main() {
 
   if (args.seed) {
     if (!keysPresent) throw new Error('--seed-dataset needs LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY');
-    await seedDataset();
+    await seedDataset(loadPrompts(args.prompts));
     return;
   }
 
@@ -271,7 +272,8 @@ async function main() {
   const resultsDir = args.outDir ? path.resolve(args.outDir) : DEFAULT_RESULTS_DIR;
   const sheetError = sheetsModelError(args.model, process.env.CADAI_SPEC_SHEETS);
   if (sheetError) throw new Error(sheetError);
-  const items = (args.only.length ? prompts.filter((p) => args.only.includes(p.id)) : prompts).slice(0, args.limit);
+  const prompts = loadPrompts(args.prompts);
+  const items = selectPrompts(prompts, args.only, args.limit, args.prompts);
   console.log(`Eval: ${items.length} prompt(s) on ${args.model}, tag "${args.tag}", ` +
     `pipeline ${process.env.CADAI_PIPELINE ?? 'default'}, ` +
     `sheets ${process.env.CADAI_SPEC_SHEETS}, drafter-start ${process.env.CADAI_DRAFTER_START}, ` +

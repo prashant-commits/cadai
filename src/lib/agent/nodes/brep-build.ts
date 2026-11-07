@@ -5,6 +5,7 @@ import { parseBuild } from '../build-format';
 import type { AgentStateType } from '../graph';
 import { systemPromptFor } from '../system-prompt';
 import { blockoutBody } from '../../brep/blockout-b123d';
+import { specNames } from '../../brep/py-names';
 import { emitBrepScript } from '../../brep/emit-script';
 import { countFallbacks, messageText, planBuildVisit } from './architect-build';
 
@@ -21,7 +22,7 @@ export function makeBrepBuild(model: {
     const attemptCount = state.attemptCount + 1;
     const spec = state.assemblySpec;
     if (!spec) {
-      return { currentCode: state.currentCode, attemptCount, buildFallbacks: 0, gateAction: null, gateFeedback: null };
+      return { currentCode: state.currentCode, attemptCount, buildFallbacks: 0, buildNotes: [], gateAction: null, gateFeedback: null };
     }
 
     const { componentNames, reserved, changes, ask, keep } = planBuildVisit(state, spec);
@@ -31,7 +32,8 @@ export function makeBrepBuild(model: {
       config,
     );
 
-    const parsed = parseBuild(messageText(reply), componentNames, reserved, { language: 'python' });
+    const { names } = specNames(spec, String);
+    const parsed = parseBuild(messageText(reply), componentNames, reserved.map((r) => names.map.get(r) ?? r), { language: 'python' });
     if (keep.length > 0 && state.currentCode) {
       for (const name of keep) {
         if (Object.prototype.hasOwnProperty.call(parsed.bodies, name)) continue;
@@ -44,11 +46,15 @@ export function makeBrepBuild(model: {
       }
     }
 
-    const { script } = emitBrepScript(spec, parsed.bodies);
+    const { script, skipped } = emitBrepScript(spec, parsed.bodies);
+    // A body the parser accepted (or kept from the previous build) can still be rejected by the
+    // emitter's own check; it is then drawn from the blockout and counted as a fallback too.
+    const emitterRejected = skipped.filter((note) => /^body rejected/.test(note.reason) && Object.prototype.hasOwnProperty.call(parsed.bodies, note.name));
     return {
       currentCode: script,
       attemptCount,
-      buildFallbacks: countFallbacks(componentNames, parsed, (name) => blockoutFor(spec, name) !== null),
+      buildFallbacks: countFallbacks(componentNames, parsed, (name) => blockoutFor(spec, name) !== null) + emitterRejected.length,
+      buildNotes: skipped,
       gateAction: null,
       gateFeedback: null,
     };
@@ -59,7 +65,7 @@ function blockoutFor(spec: AssemblySpec, name: string): string | null {
   const component = (spec.components ?? []).find((c) => c.name === name);
   if (!component) return null;
   try {
-    return blockoutBody(component);
+    return blockoutBody(component, specNames(spec, String).names.ctx);
   } catch {
     return null;
   }
@@ -67,8 +73,10 @@ function blockoutFor(spec: AssemblySpec, name: string): string | null {
 
 function humanPrompt(spec: AssemblySpec, changes: string | null, ask: string[], keep: string[]): string {
   const { sheet, ...skeleton } = spec;
-  const parameters = (spec.parameters ?? []).map((parameter) => parameter.name);
-  const derived = (spec.derived ?? []).map((item) => item.name);
+  // The names as the script spells them (a name the script uses itself is prefixed `p_`).
+  const { names } = specNames(spec, String);
+  const parameters = (spec.parameters ?? []).map((parameter) => names.map.get(parameter.name) ?? parameter.name);
+  const derived = (spec.derived ?? []).map((item) => names.map.get(item.name) ?? item.name);
   const blockouts = (spec.components ?? []).map((component) => {
     const body = blockoutFor(spec, component.name);
     return body === null ? `# ${component.name}: no blockout` : `@body ${component.name}\n${body}\n@end`;

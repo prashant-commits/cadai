@@ -27,3 +27,21 @@ export function runStoreDir(): string {
     ? path.join(os.tmpdir(), 'cadai', 'runs')
     : path.join(/*turbopackIgnore: true*/ process.cwd(), '.cadai', 'runs');
 }
+
+export type ArtifactStoreKind = 'local';
+
+export function artifactStoreKind(): ArtifactStoreKind {
+  const raw = (process.env.CADAI_ARTIFACT_STORE ?? 'local').trim().toLowerCase();
+  if (raw === '' || raw === 'local') return 'local';
+  throw new Error(`Unsupported CADAI_ARTIFACT_STORE "${raw}". Only "local" is implemented.`);
+}
+
+/** `<run store dir>/artifacts`. */
+export function artifactStoreDir(): string {
+  return path.join(/*turbopackIgnore: true*/ runStoreDir(), 'artifacts');
+}
+
+/** CADAI_INLINE_PAYLOADS=1 keeps the legacy inline stl / step / sheetSvg fields on events. Default off. */
+export function inlinePayloads(): boolean {
+  return process.env.CADAI_INLINE_PAYLOADS?.trim() === '1';
+}

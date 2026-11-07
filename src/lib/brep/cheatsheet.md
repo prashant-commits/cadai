@@ -2,12 +2,7 @@
 
 Every fenced example below is executed in CI against build123d 0.13.0. Units are mm. z = 0 is the floor. `align=(Align.MIN, Align.MIN, Align.MIN)` puts a primitive's min corner at its location. The default align is CENTER.
 
-```python
-from build123d import *
-from math import sin, cos, tan, radians, sqrt
-```
-
-build123d does not export `sin`, `cos`, `tan`, `radians`, or `sqrt`. Import them from `math`.
+Your code runs inside a script that already has these in scope, so never write an import line: everything from build123d, plus `sin`, `cos`, `tan`, `radians`, `sqrt` and `pi` from `math`. These take radians, as in Python: write `sin(radians(30))` for 30 degrees.
 
 ## Primitives
 

@@ -24,7 +24,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
-  DEFAULT_CELL_MODEL, latestRows, parseJsonl, pendingRuns, planRuns, renderReport, runKey, validateCells,
+  DEFAULT_CELL_MODEL, crashReason, latestRows, parseJsonl, pendingRuns, planRuns, renderReport, runKey, validateCells,
   type Cell, type MatrixRow, type PlannedRun,
 } from './matrix-lib';
 import type { GenerationMetrics } from './metrics';
@@ -47,7 +47,7 @@ function parseArgs(argv: string[]): Args {
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i];
     if (v === '--cells') a.cells = argv[++i];
-    else if (v === '--prompts') a.prompts = argv[++i];
+    else if (v === '--prompts') a.prompts = path.resolve(argv[++i]);
     else if (v === '--samples') a.samples = Number(argv[++i]);
     else if (v === '--concurrency') a.concurrency = Number(argv[++i]);
     else if (v === '--tag') a.tag = argv[++i];
@@ -61,12 +61,12 @@ function parseArgs(argv: string[]): Args {
 }
 
 /** The run.ts flags for one planned run. */
-export function childArgs(run: PlannedRun, outDir: string, resultFile: string, tag: string): string[] {
+export function childArgs(run: PlannedRun, outDir: string, resultFile: string, tag: string, promptsFile: string): string[] {
   const c = run.cell;
   const args = [
     'eval/generation/run.ts', '--no-langfuse', '--no-delay',
     '--tag', `${tag}-${c.name}-s${run.sample}`, '--model', c.model ?? DEFAULT_CELL_MODEL,
-    '--only', run.promptId, '--kernel', c.kernel, '--out-dir', outDir, '--result', resultFile,
+    '--only', run.promptId, '--prompts', promptsFile, '--kernel', c.kernel, '--out-dir', outDir, '--result', resultFile,
   ];
   if (c.thinking) args.push('--thinking', c.thinking);
   if (c.effort) args.push('--effort', c.effort);
@@ -74,12 +74,12 @@ export function childArgs(run: PlannedRun, outDir: string, resultFile: string, t
   return args;
 }
 
-function runChild(run: PlannedRun, outDir: string, tag: string): Promise<MatrixRow> {
+function runChild(run: PlannedRun, outDir: string, tag: string, promptsFile: string): Promise<MatrixRow> {
   const base = { cell: run.cell.name, promptId: run.promptId, sample: run.sample, at: new Date().toISOString() };
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cadai-matrix-'));
   const resultFile = path.join(tmp, 'row.json');
   return new Promise((resolve) => {
-    const child = spawn(path.join(ROOT, 'node_modules', '.bin', 'tsx'), childArgs(run, outDir, resultFile, tag), {
+    const child = spawn(path.join(ROOT, 'node_modules', '.bin', 'tsx'), childArgs(run, outDir, resultFile, tag, promptsFile), {
       cwd: ROOT, env: process.env, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let tail = '';
@@ -92,8 +92,7 @@ function runChild(run: PlannedRun, outDir: string, tag: string): Promise<MatrixR
       let metrics: GenerationMetrics | null = null;
       try { metrics = JSON.parse(fs.readFileSync(resultFile, 'utf8')) as GenerationMetrics; } catch { /* crashed */ }
       fs.rmSync(tmp, { recursive: true, force: true });
-      const lastLine = tail.trim().split('\n').filter(Boolean).pop() ?? '';
-      resolve(metrics ? { ...base, metrics } : { ...base, metrics: null, crashed: `exit ${code}: ${lastLine}`.slice(0, 300) });
+      resolve(metrics ? { ...base, metrics } : { ...base, metrics: null, crashed: crashReason(code, tail) });
     });
   });
 }
@@ -157,7 +156,7 @@ async function main() {
   const queue = [...todo];
   const worker = async () => {
     for (let run = queue.shift(); run; run = queue.shift()) {
-      const row = await runChild(run, outDir, args.tag);
+      const row = await runChild(run, outDir, args.tag, args.prompts);
       fs.appendFileSync(jsonl, JSON.stringify(row) + '\n');
       const m = row.metrics;
       console.log(`${runKey(row.cell, row.promptId, row.sample)}: ${row.crashed ? `CRASH ${row.crashed}` : `workable=${m?.workable} stage=${m?.failureStage} ${m?.wallMs} ms`}`);

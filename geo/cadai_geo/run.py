@@ -53,7 +53,118 @@ def _last_line(exc: BaseException) -> str:
     text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     line = lines[-1] if lines else f"{type(exc).__name__}: {exc}"
-    return redact(line)
+    # The line-number prefix below is ours alone: an exception message cannot carry one.
+    return redact(line).replace("␟", "�")
+
+
+# A failed run reports the innermost line of the script that raised. The untrusted stage can only
+# pass a string to the trusted one, so the line travels as a prefix of the error message.
+_LINE_PREFIX = "\u241fL"
+_LINE_SUFFIX = "\u241f"
+_LINE_PATTERN = re.compile("^\u241fL(\\d{1,7})\u241f(.*)$", re.DOTALL)
+
+
+def _script_line(exc: BaseException, script_path: str) -> int | None:
+    """Innermost line in the script itself that the traceback passes through."""
+    lines = [
+        frame.lineno
+        for frame in traceback.extract_tb(exc.__traceback__)
+        if frame.filename == script_path and frame.lineno
+    ]
+    # A SyntaxError carries its own position and no frame in the script.
+    if isinstance(exc, SyntaxError) and exc.filename == script_path and exc.lineno:
+        lines.append(exc.lineno)
+    return lines[-1] if lines else None
+
+
+def _error_with_line(exc: BaseException, script_path: str) -> str:
+    message = _last_line(exc)
+    line = _script_line(exc, script_path)
+    return f"{_LINE_PREFIX}{line}{_LINE_SUFFIX}{message}" if line else message
+
+
+def split_error_line(text: str) -> tuple[str, int | None]:
+    """Undo ``_error_with_line``: the message, and the line when the prefix is well formed."""
+    match = _LINE_PATTERN.match(text)
+    if not match:
+        return text, None
+    line = int(match.group(1))
+    return match.group(2), (line if line > 0 else None)
+
+
+def _shape_list(value: object, allow_empty: bool = False) -> list | None:
+    """``value`` as a list of shapes when it is a list or tuple of shapes, else None."""
+    if not isinstance(value, (list, tuple)) or (not value and not allow_empty):
+        return None
+    if not all(hasattr(item, "bounding_box") and hasattr(item, "wrapped") for item in value):
+        return None
+    return list(value)
+
+
+# ---- the script's namespace
+
+# Builtins a geometry script needs. Everything else (open, exec, eval, compile, getattr,
+# globals, vars, type, object, __build_class__, ...) is absent. This is defense in depth
+# behind the body check; the process sandbox is the security boundary.
+_SAFE_BUILTIN_NAMES = (
+    "abs", "min", "max", "round", "range", "len", "enumerate", "zip", "sum", "list", "tuple",
+    "dict", "set", "frozenset", "float", "int", "bool", "str", "sorted", "reversed", "map",
+    "filter", "any", "all", "isinstance", "print", "pow", "divmod", "slice", "next", "iter",
+    "hasattr", "callable", "chr", "ord", "bytes", "hash",
+    "Exception", "ValueError", "TypeError", "ZeroDivisionError", "ArithmeticError",
+    "IndexError", "KeyError", "RuntimeError", "AssertionError", "NotImplementedError",
+    "StopIteration",
+    "True", "False", "None",
+)
+# The emitted prelude imports these, and nothing else.
+_IMPORTABLE = ("build123d", "math")
+
+# Test-only: the b1 sandbox tests run escape probes (import os, fork, sleep) to prove the process
+# sandbox holds against a script that has full Python. Read once at import, from the service's own
+# environment (a script's environment is cleared before it runs). Never set it in a deployment.
+def _test_full_builtins_requested(environ=os.environ) -> bool:
+    """The switch counts only inside a pytest run (PYTEST_CURRENT_TEST is set by pytest)."""
+    return environ.get("CADAI_GEO_TEST_FULL_BUILTINS") == "1" and bool(environ.get("PYTEST_CURRENT_TEST"))
+
+
+_FULL_BUILTINS = _test_full_builtins_requested()
+if _FULL_BUILTINS:
+    print("cadai_geo: CADAI_GEO_TEST_FULL_BUILTINS=1, scripts get full builtins (tests only)", file=sys.stderr)
+
+
+def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if level != 0 or name not in _IMPORTABLE:
+        raise ImportError(f"import of {name} is not allowed")
+    import importlib
+
+    return importlib.import_module(name)
+
+
+def script_globals(full: bool | None = None) -> dict:
+    """Initial globals for a geometry script: curated builtins, build123d's names and math."""
+    import builtins
+    import math
+
+    import build123d
+
+    if _FULL_BUILTINS if full is None else full:
+        namespace: dict = {}
+    else:
+        safe = {name: getattr(builtins, name) for name in _SAFE_BUILTIN_NAMES if hasattr(builtins, name)}
+        safe["__import__"] = _safe_import
+        namespace = {"__builtins__": safe}
+    for name in getattr(build123d, "__all__", ()):
+        if hasattr(build123d, name):
+            namespace[name] = getattr(build123d, name)
+    for name in ("sin", "cos", "tan", "radians", "degrees", "sqrt", "pi", "atan2", "hypot"):
+        namespace[name] = getattr(math, name)
+    return namespace
+
+
+def _run_script(script_path: str) -> dict:
+    import runpy
+
+    return runpy.run_path(script_path, init_globals=script_globals(), run_name="__main__")
 
 
 def _shape_sources(obj: object) -> list | None:
@@ -99,10 +210,9 @@ def _part(shape, label: str) -> dict:
 def _parts(result, measured=None) -> list[dict]:
     # The emitter binds the labelled, placed, pre-fusion parts to ``_cadai_parts``;
     # measure those, not the fused result.
-    if isinstance(measured, (list, tuple)) and measured and all(
-        hasattr(item, "bounding_box") and hasattr(item, "wrapped") for item in measured
-    ):
-        return [_part(item, getattr(item, "label", "") or "") for item in measured]
+    listed = _shape_list(measured)
+    if listed is not None:
+        return [_part(item, getattr(item, "label", "") or "") for item in listed]
     children = list(getattr(result, "children", []) or [])
     sources = getattr(result, _RECORDER_FLAG, None)
     if children:
@@ -110,6 +220,12 @@ def _parts(result, measured=None) -> list[dict]:
     if sources is not None:
         return [_part(shape, getattr(shape, "label", "") or "") for shape in sources]
     return [_part(solid, "") for solid in result.solids()]
+
+
+def _local(namespace: dict) -> list[dict]:
+    """Labelled shapes in their own frames, before placement, when the script lists them in ``_local``."""
+    shapes = _shape_list(namespace.get("_local"), allow_empty=True) or []
+    return [_part(shape, getattr(shape, "label", "") or "") for shape in shapes]
 
 
 def regular_file_inside(path: str, root: str) -> bool:
@@ -135,11 +251,14 @@ def _replace_output(path: str) -> None:
         os.unlink(path)
 
 
-def _part_shapes(result) -> list[tuple[str, object]]:
-    """Same part selection as ``_parts``: children, remembered sources, else solids."""
+def _part_shapes(result, measured=None) -> list[tuple[str, object]]:
+    """Same part selection as ``_parts``: the script's ``_cadai_parts``, children, remembered sources, else solids."""
+    listed = _shape_list(measured)
     children = list(getattr(result, "children", []) or [])
     sources = getattr(result, _RECORDER_FLAG, None)
-    if children:
+    if listed is not None:
+        shapes = listed
+    elif children:
         shapes = children
     elif sources is not None:
         shapes = list(sources)
@@ -171,11 +290,29 @@ def _discard_geometry(scratch: str) -> None:
             os.unlink(result_path)
         else:
             shutil.rmtree(result_path)
-    parts = os.path.join(scratch, "parts")
-    if os.path.islink(parts):
-        os.unlink(parts)
-    elif os.path.isdir(parts):
-        shutil.rmtree(parts)
+    for name in ("parts", "local"):
+        directory = os.path.join(scratch, name)
+        if os.path.islink(directory):
+            os.unlink(directory)
+        elif os.path.isdir(directory):
+            shutil.rmtree(directory)
+
+
+def _write_shapes(scratch: str, name: str, shapes: list[tuple[str, object]]) -> bool:
+    """Write ``<scratch>/<name>/NNNN.brep`` and ``index.json``. False when an export fails."""
+    from build123d import export_brep
+
+    directory = os.path.join(scratch, name)
+    os.makedirs(directory, mode=0o700)
+    index = []
+    for number, (label, shape) in enumerate(shapes):
+        file = f"{number:04d}.brep"
+        if not export_brep(shape, os.path.join(directory, file)):
+            return False
+        index.append({"label": label or "", "file": file})
+    with open(os.path.join(directory, "index.json"), "w", encoding="utf-8") as handle:
+        json.dump(index, handle)
+    return True
 
 
 def capture_geometry(script_path: str, scratch: str, on_error) -> None:
@@ -188,18 +325,17 @@ def capture_geometry(script_path: str, scratch: str, on_error) -> None:
     ``scratch``; the trusted stage must treat that as untrusted bytes.
     """
     _remember_compound_sources()
-    import runpy
     from build123d import export_brep
 
     try:
-        namespace = runpy.run_path(os.fspath(script_path), run_name="__main__")
+        namespace = _run_script(os.fspath(script_path))
     except SystemExit as exc:
         _discard_geometry(scratch)
         on_error(_exit_message(exc))
         return
     except Exception as exc:
         _discard_geometry(scratch)
-        on_error(_last_line(exc))
+        on_error(_error_with_line(exc, os.fspath(script_path)))
         return
     if "result" not in namespace:
         _discard_geometry(scratch)
@@ -213,18 +349,19 @@ def capture_geometry(script_path: str, scratch: str, on_error) -> None:
             _discard_geometry(scratch)
             on_error("export_brep failed")
             return
-        parts_dir = os.path.join(scratch, "parts")
-        os.makedirs(parts_dir, mode=0o700)
-        index = []
-        for number, (label, shape) in enumerate(_part_shapes(result)):
-            name = f"{number:04d}.brep"
-            if not export_brep(shape, os.path.join(parts_dir, name)):
-                _discard_geometry(scratch)
-                on_error("export_brep failed")
-                return
-            index.append({"label": label or "", "file": name})
-        with open(os.path.join(parts_dir, "index.json"), "w", encoding="utf-8") as handle:
-            json.dump(index, handle)
+        if not _write_shapes(
+            scratch, "parts", _part_shapes(result, namespace.get("_cadai_parts"))
+        ):
+            _discard_geometry(scratch)
+            on_error("export_brep failed")
+            return
+        # Each component in its own frame, before placement, when the script lists it.
+        listed = _shape_list(namespace.get("_local"))
+        local = [(getattr(shape, "label", "") or "", shape) for shape in listed or []]
+        if local and not _write_shapes(scratch, "local", local):
+            _discard_geometry(scratch)
+            on_error("export_brep failed")
+            return
     except SystemExit as exc:
         _discard_geometry(scratch)
         on_error(_exit_message(exc))
@@ -296,46 +433,83 @@ def _import_brep_bytes(data: bytes, outdir: str):
         _replace_output(dest)
 
 
-def _parts_from_scratch(scratch_fd: int, outdir: str, result) -> list[dict]:
-    """Measure part BREPs. Labels come from the index; numbers come from the shapes.
+def _measured_shapes(scratch_fd: int, outdir: str, name: str, strict: bool) -> list[dict] | None:
+    """Measure the BREPs in <scratch>/<name>. Labels come from the index; numbers come from the shapes.
 
-    A missing parts directory falls back to unlabeled solids. A symlinked
-    parts directory or index is a measure failure.
+    Every read is no-follow and fstat-checked. None means there is no such directory or no
+    entries. strict (parts/): a symlinked directory or index, an oversized file or any bad
+    entry is a measure failure. Otherwise (local/) a bad entry, or the whole directory when it
+    cannot be read safely, is dropped and logged, and the run goes on.
     """
+
+    def bad(reason: str) -> None:
+        if strict:
+            raise ValueError("measure")
+        print(f"cadai_geo: dropped {name}/ entry: {reason}", file=sys.stderr)
+
     try:
-        parts_fd = os.open(
-            "parts",
+        dir_fd = os.open(
+            name,
             os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
             dir_fd=scratch_fd,
         )
     except FileNotFoundError:
-        return [_part(solid, "") for solid in result.solids()]
+        return None
     except OSError as exc:
-        raise ValueError("measure") from exc
+        if strict:
+            raise ValueError("measure") from exc
+        bad("directory is not a real directory")
+        return None
     try:
-        raw = _read_regular_at(parts_fd, "index.json", _MAX_INDEX_BYTES)
-        if not raw:
-            return [_part(solid, "") for solid in result.solids()]
-        entries = json.loads(raw.decode("utf-8"))
+        try:
+            raw = _read_regular_at(dir_fd, "index.json", _MAX_INDEX_BYTES)
+            entries = json.loads(raw.decode("utf-8")) if raw else None
+        except (ValueError, UnicodeDecodeError):
+            bad("index.json is not a readable JSON file")
+            return None
         if not isinstance(entries, list) or not entries:
-            return [_part(solid, "") for solid in result.solids()]
+            return None
         if len(entries) > _MAX_PARTS:
-            raise ValueError("measure")
+            bad(f"more than {_MAX_PARTS} entries")
+            return None
         loaded = []
         for entry in entries:
             if not isinstance(entry, dict):
-                raise ValueError("measure")
-            data = _read_regular_at(parts_fd, entry.get("file"), _MAX_BREP_BYTES)
+                bad("entry is not an object")
+                continue
+            try:
+                data = _read_regular_at(dir_fd, entry.get("file"), _MAX_BREP_BYTES)
+            except ValueError:
+                bad("file is not a plain regular file of allowed size")
+                continue
             if data is None:
-                raise ValueError("measure")
-            shape = _import_brep_bytes(data, outdir)
+                bad("file is missing")
+                continue
+            try:
+                shape = _import_brep_bytes(data, outdir)
+            except Exception:
+                if strict:
+                    raise
+                bad("file is not a BREP shape")
+                continue
             label = entry.get("label")
             if not isinstance(label, str):
                 label = ""
             loaded.append(_part(shape, label[:256]))
         return loaded
     finally:
-        os.close(parts_fd)
+        os.close(dir_fd)
+
+
+def _parts_from_scratch(scratch_fd: int, outdir: str, result) -> list[dict]:
+    """Measure part BREPs. A missing parts directory falls back to unlabeled solids.
+
+    A symlinked parts directory or index is a measure failure.
+    """
+    loaded = _measured_shapes(scratch_fd, outdir, "parts", strict=True)
+    if loaded:
+        return loaded
+    return [_part(solid, "") for solid in result.solids()]
 
 
 def measure_and_export(scratch: str, outdir: str, fallback_error: str | None = None) -> dict:
@@ -356,12 +530,17 @@ def measure_and_export(scratch: str, outdir: str, fallback_error: str | None = N
         except ValueError:
             return {"ok": False, "error": "measure"}
         if data is None:
-            return {"ok": False, "error": fallback_error or "no geometry"}
+            message, line = split_error_line(fallback_error or "no geometry")
+            failed: dict = {"ok": False, "error": message}
+            if line:
+                failed["line"] = line
+            return failed
         try:
             from build123d import export_step, export_stl
 
             result = _import_brep_bytes(data, outdir)
             parts = _parts_from_scratch(scratch_fd, outdir, result)
+            local = _measured_shapes(scratch_fd, outdir, "local", strict=False) or []
             step_path = os.path.join(os.fspath(outdir), "model.step")
             stl_path = os.path.join(os.fspath(outdir), "model.stl")
             _replace_output(step_path)
@@ -374,6 +553,7 @@ def measure_and_export(scratch: str, outdir: str, fallback_error: str | None = N
             return {
                 "ok": True,
                 "parts": parts,
+                "local": local,
                 "solids": len(list(result.solids())),
                 "bbox": {"min": _xyz(box.min), "max": _xyz(box.max)},
                 "stl": None,
@@ -389,13 +569,16 @@ def run(script_path: str | os.PathLike, outdir: str | os.PathLike) -> dict:
     """Execute ``script_path`` and write ``model.step`` / ``model.stl`` into ``outdir``."""
     try:
         _remember_compound_sources()
-        import runpy
         from build123d import export_step, export_stl
 
         try:
-            namespace = runpy.run_path(os.fspath(script_path), run_name="__main__")
+            namespace = _run_script(os.fspath(script_path))
         except Exception as exc:
-            return {"ok": False, "error": _last_line(exc)}
+            failed = {"ok": False, "error": _last_line(exc)}
+            line = _script_line(exc, os.fspath(script_path))
+            if line:
+                failed["line"] = line
+            return failed
         if "result" not in namespace:
             return {"ok": False, "error": "assign result"}
 
@@ -414,6 +597,7 @@ def run(script_path: str | os.PathLike, outdir: str | os.PathLike) -> dict:
         return {
             "ok": True,
             "parts": _parts(result, namespace.get("_cadai_parts")),
+            "local": _local(namespace),
             "solids": len(list(result.solids())),
             "bbox": {"min": _xyz(box.min), "max": _xyz(box.max)},
             "stl": stl_path,
