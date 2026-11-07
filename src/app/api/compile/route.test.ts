@@ -54,6 +54,19 @@ describe('/api/compile API Route', () => {
     expect(data.parts).toBeUndefined();
   });
 
+  it('returns 400 for a malformed JSON body', async () => {
+    const req = new NextRequest('http://localhost:3000/api/compile', {
+      method: 'POST',
+      body: '{',
+      headers: { 'content-type': 'application/json' },
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.apiError.code).toBe('bad_request');
+    expect(data.error).toBe(data.apiError.message);
+  });
+
   it('returns error for invalid syntax', async () => {
     const req = new NextRequest('http://localhost:3000/api/compile', {
       method: 'POST',

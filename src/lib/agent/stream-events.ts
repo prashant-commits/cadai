@@ -7,7 +7,7 @@
  * Contract fields (R2) are additive. A client that ignores `index`, `attempt`,
  * `apiError`, and the `retry` event keeps working. Close `status` stays
  * `SectionStatus` so the existing stream reader can store it. The bridge also
- * writes the contract statuses `failed` and `retrying` on that field.
+ * writes the contract statuses `failed`, `retrying`, and `skipped` on that field.
  */
 import type { GatePayload, DesignContract } from '@/types';
 import type { ApiError, RunStatus } from '@/lib/contract/run-contract';
@@ -41,7 +41,7 @@ export type StreamEvent =
   | { t: 'result'; summary: string; code?: string; stl?: string; /** base64 STEP, B-rep kernel only */ step?: string; /** language of `code`; absent means OpenSCAD */ language?: 'build123d'; designContract?: DesignContract }
   | { t: 'error'; message: string; apiError?: ApiError }
   /** A step is being re-run. `attempt` is the attempt that is starting. */
-  | { t: 'retry'; step: string; attempt: number; maxAttempts: number; reason: string }
+  | { t: 'retry'; step: string; attempt: number; maxAttempts: number; reason: string; /** Set when parallel architect variants retry independently. */ variantId?: string }
   /** R1 emits this. The variant is here so the unions merge. */
   | { t: 'run'; runId: string; threadId: string; status: RunStatus; resumed: boolean }
   | { t: 'cancelled'; at: number };

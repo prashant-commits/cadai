@@ -118,15 +118,18 @@ export async function POST(req: NextRequest) {
         const stream = await agent.stream(new Command({ resume: decision }), {
           configurable: { thread_id: checkpointKey },
           recursionLimit: graphRecursionLimit(),
-          streamMode: ['updates', 'messages', 'custom'],
+          streamMode: ['updates', 'messages', 'custom', 'tasks'],
           callbacks: langfuseHandler ? [langfuseHandler] : undefined,
         });
 
         // A resumed run can hit ANOTHER gate - the accept gate right after the
         // spec gate. The bridge surfaces that identically to the first one.
+        const seed = paused.checkpoint?.channel_values;
         await bridgeGraphStream(stream, runId, (event) => {
           if (event.t === 'gate') sawGate = true;
           sendEvent(event);
+        }, {
+          state: seed && typeof seed === 'object' ? seed as Record<string, unknown> : undefined,
         });
 
         if (!sawGate) await deleteRunCheckpoint(checkpointKey);

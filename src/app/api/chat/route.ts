@@ -95,7 +95,7 @@ export async function POST(req: NextRequest) {
           {
             configurable: { thread_id: checkpointKey },
             recursionLimit: graphRecursionLimit(),
-            streamMode: ['updates', 'messages', 'custom'],
+            streamMode: ['updates', 'messages', 'custom', 'tasks'],
             callbacks: langfuseHandler ? [langfuseHandler] : undefined,
           }
         );

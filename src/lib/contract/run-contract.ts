@@ -93,7 +93,7 @@ export type ContractEvent =
       summary?: string; //    always set when status is failed or retrying
       endedAt: number; durationMs: number; attempt: number;
     }
-  | { t: 'retry'; step: string; attempt: number; maxAttempts: number; reason: string }
+  | { t: 'retry'; step: string; attempt: number; maxAttempts: number; reason: string; variantId?: string }
   | { t: 'error'; message: string; apiError: ApiError }
   | { t: 'cancelled'; at: number };
 

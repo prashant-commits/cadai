@@ -3,16 +3,20 @@ import { compileScad } from '@/lib/engine/scad-compiler';
 import { runBrep, type BrepPart } from '@/lib/engine/brep-runner';
 import { detectLanguage } from '@/lib/brep/language';
 import type { PartInfo } from '@/lib/contract/run-contract';
-import { badRequest, compileFailed, errorBody, fromBrep } from '@/lib/contract/api-error';
+import { badRequest, compileFailed, compileStatus, errorBody, fromBrep } from '@/lib/contract/api-error';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 function partInfo(parts: BrepPart[]): PartInfo[] {
   const out: PartInfo[] = [];
+  let dropped = 0;
   for (const part of parts) {
-    if (!part || typeof part.label !== 'string' || typeof part.valid !== 'boolean' || typeof part.volume !== 'number') continue;
-    if (!Array.isArray(part.min) || part.min.length < 3 || !Array.isArray(part.max) || part.max.length < 3) continue;
+    if (!part || typeof part.label !== 'string' || typeof part.valid !== 'boolean' || typeof part.volume !== 'number'
+      || !Array.isArray(part.min) || part.min.length < 3 || !Array.isArray(part.max) || part.max.length < 3) {
+      dropped += 1;
+      continue;
+    }
     out.push({
       label: part.label,
       valid: part.valid,
@@ -21,12 +25,20 @@ function partInfo(parts: BrepPart[]): PartInfo[] {
       max: [part.max[0], part.max[1], part.max[2]],
     });
   }
+  if (dropped > 0) console.warn(`compile: dropped ${dropped} malformed part measurement(s)`);
   return out;
 }
 
 export async function POST(req: NextRequest) {
+  let body: { code?: unknown; language?: unknown };
   try {
-    const body = await req.json();
+    body = await req.json();
+  } catch (err) {
+    const wrapped = err instanceof SyntaxError ? err : badRequest('The request body is invalid.');
+    return NextResponse.json(errorBody(wrapped), { status: 400 });
+  }
+
+  try {
     const code = body?.code;
     const requestedLanguage = body?.language;
     const language = requestedLanguage === 'build123d' || requestedLanguage === 'openscad'
@@ -41,10 +53,8 @@ export async function POST(req: NextRequest) {
     if (language === 'build123d') {
       const result = await runBrep(code);
       if (!result.ok) {
-        return NextResponse.json(
-          errorBody(fromBrep(result.error || 'build123d compilation failed.')),
-          { status: 422 }
-        );
+        const err = fromBrep(result.error || 'build123d compilation failed.', result.failure);
+        return NextResponse.json(errorBody(err), { status: compileStatus(err) });
       }
 
       let stlAscii = '';
@@ -79,24 +89,8 @@ export async function POST(req: NextRequest) {
       language: 'openscad',
     });
   } catch (err: unknown) {
-    if (err instanceof SyntaxError) {
-      return NextResponse.json(errorBody(err), { status: 400 });
-    }
-    let message = 'Unknown error';
-    if (err instanceof Error) {
-      message = err.message;
-    } else if (typeof err === 'object' && err !== null) {
-      const errObj = err as Record<string, unknown>;
-      message = (typeof errObj.message === 'string' ? errObj.message : '') ||
-        (typeof errObj.stderr === 'string' ? errObj.stderr : '') ||
-        JSON.stringify(err);
-    } else {
-      message = String(err);
-    }
-
-    return NextResponse.json(
-      errorBody(new Error(`Compiler Error: ${message}`)),
-      { status: 500 }
-    );
+    // A SyntaxError here is the user's script (req.json() is handled above), never a bad body.
+    const wrapped = err instanceof SyntaxError ? compileFailed(err.message || 'OpenSCAD compilation failed.') : err;
+    return NextResponse.json(errorBody(wrapped), { status: compileStatus(wrapped) });
   }
 }
