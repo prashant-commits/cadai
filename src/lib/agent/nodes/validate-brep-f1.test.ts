@@ -79,6 +79,17 @@ describe('validateBrep builder-mode notes', () => {
   });
 });
 
+describe('validateBrep runner notes', () => {
+  it('a separate-solids STEP note is a warning, so the run stays valid', async () => {
+    const note = 'STEP exported as separate solids (fused shape did not survive STEP export)';
+    runBrep.mockResolvedValue({ ok: true, notes: [note], parts: [], solids: 6, ms: 1, stl: undefined });
+    const out = await run();
+    const step = out.specViolations!.filter((v) => v.kind === 'build');
+    expect(step).toHaveLength(1);
+    expect(step[0]).toMatchObject({ severity: 'warning', message: note });
+  });
+});
+
 describe('validateBrep after a cut-off or refused build reply', () => {
   it.each(['truncated', 'no_code'])('%s: no geometry run, a failed attempt', async (failureKind) => {
     const out = await run({ failureKind });

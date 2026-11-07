@@ -2,7 +2,8 @@
 
 mug_tree: every geometry step runs and the in-memory result is valid, but the exported STEP
 re-imports with a face whose wires intersect. The runner re-reads its own STEP, tries a shape
-fix, and reports what it cannot repair as an error naming the parts.
+fix, and, when none helps, writes the parts unfused as one multi-solid STEP (a kernel export
+defect the model cannot repair). Only a part that is itself invalid fails the run.
 """
 import os
 import shutil
@@ -43,18 +44,34 @@ def test_mug_tree_fixture_is_valid_in_memory_and_invalid_after_step(tmp_path):
     assert not reread.fix().is_valid  # shape fixing does not repair it
 
 
-def test_mug_tree_run_reports_invalid_parts_and_keeps_no_export(tmp_path):
+NOTE = "STEP exported as separate solids (fused shape did not survive STEP export)"
+
+
+def _assert_separate_valid_step(step_path):
+    from build123d import import_step
+
+    reread = import_step(step_path)
+    assert reread.is_valid
+    assert len(reread.solids()) == len(PARTS)
+    assert [child.label for child in reread.children] == PARTS
+
+
+def test_mug_tree_run_falls_back_to_separate_solids(tmp_path):
     out = tmp_path / "out"
     out.mkdir()
     payload = geo.run(MUG_TREE, out)
-    assert payload["ok"] is False
-    assert payload["error"].startswith("invalid solid: the fused result after STEP export")
-    assert payload["invalid"] == PARTS
-    assert not (out / "model.step").exists()
-    assert not (out / "model.stl").exists()
+    assert payload["ok"] is True
+    assert payload["notes"] == [NOTE]
+    assert payload["solids"] == len(PARTS)
+    assert [part["label"] for part in payload["parts"]] == PARTS
+    assert all(part["valid"] for part in payload["parts"])
+    _assert_separate_valid_step(payload["step"])
+    # The STL is still the fused shape.
+    assert os.path.getsize(payload["stl"]) > 0
+    assert open(payload["stl"]).read(5) == "solid"
 
 
-def test_mug_tree_trusted_stage_reports_the_same(tmp_path):
+def test_mug_tree_trusted_stage_falls_back_the_same_way(tmp_path):
     scratch = tmp_path / "scratch"
     out = tmp_path / "out"
     scratch.mkdir()
@@ -63,9 +80,20 @@ def test_mug_tree_trusted_stage_reports_the_same(tmp_path):
     geo.capture_geometry(MUG_TREE, str(scratch), errors.append)
     assert errors == []
     payload = geo.measure_and_export(str(scratch), str(out))
-    assert payload["ok"] is False
-    assert payload["invalid"] == PARTS
-    assert os.listdir(out) == []
+    assert payload["ok"] is True
+    assert payload["notes"] == [NOTE]
+    assert payload["solids"] == len(PARTS)
+    assert sorted(os.listdir(out)) == ["model.step", "model.stl"]
+    _assert_separate_valid_step(str(out / "model.step"))
+
+
+def test_no_note_when_the_fused_step_survives(tmp_path):
+    src = tmp_path / "model.py"
+    src.write_text("from build123d import *\nresult = Box(5, 5, 5)\n")
+    out = tmp_path / "out"
+    out.mkdir()
+    payload = geo.run(src, out)
+    assert payload["ok"] is True and "notes" not in payload
 
 
 def test_valid_model_still_exports(tmp_path):
@@ -122,14 +150,31 @@ def test_invalid_part_is_named_and_nothing_is_exported(tmp_path):
     assert not os.path.exists(step) and not os.path.exists(stl)
 
 
-def test_invalid_fused_result_names_the_parts_inside_it(tmp_path, monkeypatch):
+def test_invalid_fused_result_in_memory_also_exports_the_parts_separately(tmp_path, monkeypatch):
     a, b = _boxes()
     parts = [_part("base", a), _part("lid", b)]
-    monkeypatch.setattr(geo, "_fixed_if_invalid", lambda shape: (shape, False))
-    failure = geo._checked_export(a + b, parts, str(tmp_path / "m.step"), str(tmp_path / "m.stl"))
+    real = geo._fixed_if_invalid
+    fused = a + b
+    monkeypatch.setattr(geo, "_fixed_if_invalid", lambda shape: (shape, False) if shape is fused else real(shape))
+    extras: dict = {}
+    step, stl = str(tmp_path / "m.step"), str(tmp_path / "m.stl")
+    assert geo._checked_export(fused, parts, step, stl, [("base", a), ("lid", b)], extras) is None
+    assert extras["notes"] == [NOTE] and extras["solids"] == 2
+    assert os.path.getsize(step) > 0 and os.path.getsize(stl) > 0
+
+
+def test_fails_naming_the_parts_when_even_the_separate_step_is_invalid(tmp_path, monkeypatch):
+    a, b = _boxes()
+    parts = [_part("base", a), _part("lid", b)]
+    fused = a + b
+    real = geo._fixed_if_invalid
+    monkeypatch.setattr(geo, "_fixed_if_invalid", lambda shape: (shape, False) if shape is fused else real(shape))
+    monkeypatch.setattr(geo, "_export_unfused_step", lambda shapes, path: None)
+    step, stl = str(tmp_path / "m.step"), str(tmp_path / "m.stl")
+    failure = geo._checked_export(fused, parts, step, stl, [("base", a), ("lid", b)], {})
     assert failure["ok"] is False
     assert failure["invalid"] == ["base", "lid"]
-    assert "the fused result" in failure["error"]
+    assert not os.path.exists(step) and not os.path.exists(stl)
 
 
 def test_step_round_trip_is_repaired_by_a_fix_when_the_fix_works(tmp_path, monkeypatch):

@@ -130,6 +130,10 @@ export async function validateBrep(state: AgentStateType, config?: RunnableConfi
       message: `${note.name}: ${note.reason}`,
     });
   }
+  // What the runner itself did (e.g. the STEP was written as separate solids): a note, never a reason to rebuild.
+  for (const note of r.notes ?? []) {
+    violations.push({ kind: 'build', field: '', expected: 'fused STEP', measured: note, severity: 'warning', message: note });
+  }
   violations.push(...auditSpecShapes(spec));
 
   const frames = toModuleFrames(r);
