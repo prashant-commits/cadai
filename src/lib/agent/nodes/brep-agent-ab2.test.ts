@@ -647,7 +647,20 @@ result = Compound([cabinet, drawer])
       ],
     } as unknown as AssemblySpec).spec;
 
-    const err = await runBuildWithTurns(turns, undefined, drawerSpec);
+    const runBrepDrawer = async () => ({
+      ok: true,
+      parts: [
+        { label: 'cabinet', valid: true, volume: 1000, min: [0, 0, 0], max: [120, 120, 60] },
+        { label: 'drawer', valid: true, volume: 500, min: [0, 0, 0], max: [100, 100, 40] },
+      ],
+      solids: 2,
+      bbox: { min: [0, 0, 0], max: [120, 120, 60] },
+      stl: Buffer.from(ASCII_STL).toString('base64'),
+      ms: 50,
+      interferences: [],
+    });
+
+    const err = await runBuildWithTurns(turns, runBrepDrawer, drawerSpec);
     expect(err).toContain('Finish rejected');
     expect(err).toContain("Pose parameter 'pull_out_travel' defaults to 50");
     expect(err).toContain('must default to its closed/home pose');
