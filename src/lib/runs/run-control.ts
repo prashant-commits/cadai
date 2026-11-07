@@ -11,8 +11,9 @@ export function registerRun(runId: string): AbortController {
   return c;
 }
 
-export function unregisterRun(runId: string): void {
-  controllers.delete(runId);
+/** Removes the handle only if it is still this run's (a newer owner's handle is left alone). */
+export function unregisterRun(runId: string, controller: AbortController): void {
+  if (controllers.get(runId) === controller) controllers.delete(runId);
 }
 
 /** Aborts the run if this instance is streaming it. Returns whether it was. */

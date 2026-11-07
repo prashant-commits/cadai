@@ -22,8 +22,9 @@ export function checkpointStoreDir(): string {
   // CADAI_RUN_DIR (the run store's directory) wins: pointing two server
   // instances at one directory is how a resume reaches a checkpoint another
   // instance wrote. See src/lib/runs/config.ts for the storage choice.
+  // Its own subdirectory: nothing a run id can name (runs/, events/) reaches it.
   const shared = process.env.CADAI_RUN_DIR?.trim();
-  if (shared) return path.resolve(shared);
+  if (shared) return path.join(/*turbopackIgnore: true*/ path.resolve(shared), 'checkpoints');
   return process.env.VERCEL
     ? path.join(os.tmpdir(), 'cadai')
     : path.join(process.cwd(), '.cadai');

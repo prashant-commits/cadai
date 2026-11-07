@@ -31,20 +31,17 @@ const call = (body: unknown) =>
   POST(new NextRequest('http://localhost/api/chat/resume', { method: 'POST', body: JSON.stringify(body) }));
 
 describe('POST /api/chat/resume', () => {
-  it('an expired / missing checkpoint gets a clear error event and never touches the graph', async () => {
+  it('an unknown run with no checkpoint is 410 run_expired, writes nothing and never touches the graph', async () => {
     createAgent.mockClear();
     const res = await call({ threadId: 't-gone', runId: 'r-gone', decision: { action: 'approve' } });
-    const text = await res.text();
-    const events = text.split('\n\n').filter(Boolean).map((l) => JSON.parse(l.replace(/^data: /, '')));
-    // Legacy fields are unchanged; the run envelope and apiError are additive.
-    const err = events.find((e) => e.t === 'error');
-    expect(err).toMatchObject({
-      t: 'error',
-      message: 'This paused run expired or was not found on this server. Send the request again.',
-      apiError: { code: 'run_expired' },
-    });
-    expect(events.every((e) => e.t === 'run' || e.t === 'error')).toBe(true);
+    expect(res.status).toBe(410);
+    const body = await res.json();
+    // `error` stays the same human string old clients already show.
+    expect(body.error).toBe('This paused run expired or was not found on this server. Send the request again.');
+    expect(body.apiError.code).toBe('run_expired');
     expect(createAgent).not.toHaveBeenCalled();
+    expect(fs.readdirSync(path.join(runDir, 'runs'))).toEqual([]);
+    expect(fs.readdirSync(path.join(runDir, 'events'))).toEqual([]);
   });
 
   it('a live checkpoint is resumed with coerced model slug', async () => {

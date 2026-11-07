@@ -44,7 +44,7 @@ const startChat = (extra: Record<string, unknown> = {}) =>
 const ctx = (runId: string) => ({ params: Promise.resolve({ runId }) });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** The one run in the temp store: the route has not returned its runId yet while the body is unread. */
-const inflightRunId = () => fs.readdirSync(dir).find((f) => f.endsWith('.jsonl'))!.replace('.jsonl', '');
+const inflightRunId = () => fs.readdirSync(path.join(dir, 'events')).find((f) => f.endsWith('.jsonl'))!.replace('.jsonl', '');
 
 /** Graph stream that emits `chunks` then ends. */
 const graphOf = (chunks: unknown[]) => ({
@@ -402,7 +402,7 @@ describe('POST /api/chat/resume: run control', () => {
   it('resume reads a checkpoint written by ANOTHER instance sharing the store', async () => {
     const runId = await pausedRun();
     getCheckpointer(); // this instance is already running and has loaded the (empty) store
-    const other = new FileCheckpointSaver(dir); // another server process on the same disk
+    const other = new FileCheckpointSaver(path.join(dir, 'checkpoints')); // another server process on the same disk
     await plant(other, runCheckpointKey('t1', runId));
     other.flushNow();
     createAgent.mockReturnValue(graphOf([result('continued')]));
@@ -418,7 +418,9 @@ describe('POST /api/chat/resume: run control', () => {
     createAgent.mockClear();
     const events = parse(await (await resume(post('/api/chat/resume', { threadId: 't1', runId, decision: { action: 'cancel' } }))).text());
     expect(events[0]).toMatchObject({ t: 'run', status: 'cancelled', resumed: true });
-    expect(events[events.length - 1]).toMatchObject({ t: 'result', summary: 'Generation cancelled by user.' });
+    // `result` for old clients, then the contract's terminal `cancelled`.
+    expect(events.map((e) => e.t)).toEqual(['run', 'result', 'cancelled']);
+    expect(events[1]).toMatchObject({ summary: 'Generation cancelled by user.' });
     expect(createAgent).not.toHaveBeenCalled();
     expect((await getRunStore().get(runId))?.status).toBe('cancelled');
   });
@@ -438,5 +440,202 @@ describe('POST /api/chat/resume: run control', () => {
     const events = parse(await (await resume(post('/api/chat/resume', { threadId: 't-old', runId: 'r-old', decision: { action: 'approve' } }))).text());
     expect(events[0]).toMatchObject({ t: 'run', runId: 'r-old', resumed: true });
     expect(events[events.length - 1]).toMatchObject({ t: 'result' });
+  });
+});
+
+describe('review fixes (routes)', () => {
+  const plantCp = (key: string) =>
+    getCheckpointer().put(
+      { configurable: { thread_id: key } },
+      { v: 1, id: 'cp', ts: new Date().toISOString(), channel_values: {}, channel_versions: {}, versions_seen: {} } as never,
+      { source: 'update', step: 0, parents: {} } as never,
+      {}
+    );
+
+  it('F1: GET /api/runs/checkpoints is 404 and exposes nothing, even with a paused checkpoint on disk', async () => {
+    await plantCp(runCheckpointKey('t-secret', 'r-secret'));
+    getCheckpointer().flushNow();
+    for (const id of ['checkpoints', 'runs', 'events', 'locks']) {
+      const res = await getRun(new NextRequest(`http://localhost/api/runs/${id}`), ctx(id));
+      expect(res.status).toBe(404);
+      const text = await res.text();
+      expect(text).not.toContain('t-secret');
+      expect(text).not.toContain('storage');
+      const ev = await getEvents(new NextRequest(`http://localhost/api/runs/${id}/events`), ctx(id));
+      expect(ev.status).toBe(404);
+    }
+    const r = await resume(post('/api/chat/resume', { threadId: 't', runId: 'checkpoints', decision: { action: 'approve' } }));
+    expect(r.status).toBe(400);
+    expect(fs.existsSync(path.join(dir, 'checkpoints', 'checkpoints.json'))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'checkpoints', 'checkpoints.json'), 'utf-8')).storage).toHaveProperty(
+      runCheckpointKey('t-secret', 'r-secret'),
+    );
+  });
+
+  it('F3: two concurrent resumes of one paused run: one runs the graph, the other gets 409 run_conflict', async () => {
+    createAgent.mockReturnValue(graphOf([gate]));
+    const runId = parse(await (await startChat()).text())[0].runId;
+    await plantCp(runCheckpointKey('t1', runId));
+    createAgent.mockReset();
+    createAgent.mockReturnValue(graphOf([result('once')]));
+    const body = { threadId: 't1', runId, decision: { action: 'approve' } };
+    const [a, b] = await Promise.all([resume(post('/api/chat/resume', body)), resume(post('/api/chat/resume', body))]);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([200, 409]);
+    const loser = a.status === 409 ? a : b;
+    expect((await loser.json()).apiError.code).toBe('run_conflict');
+    const winner = a.status === 200 ? a : b;
+    await winner.text();
+    expect(createAgent).toHaveBeenCalledTimes(1);
+    const stored = await getRunStore().events(runId, 0);
+    expect(stored.filter((e) => e.t === 'run')).toHaveLength(2); // the first run + exactly one resume
+  });
+
+  it('F5: resume with an unknown runId creates no files', async () => {
+    for (let i = 0; i < 5; i++) {
+      const res = await resume(post('/api/chat/resume', { threadId: 't', runId: `made-up-${i}`, decision: { action: 'approve' } }));
+      expect(res.status).toBe(410);
+    }
+    expect(fs.readdirSync(path.join(dir, 'runs'))).toEqual([]);
+    expect(fs.readdirSync(path.join(dir, 'events'))).toEqual([]);
+  });
+
+  it('F7: a run whose owner died is failed by the tail (which then ends) and cancel answers 409', async () => {
+    const store = getRunStore();
+    await store.create({ runId: 'orphan', threadId: 't' });
+    await store.append('orphan', { t: 'run', runId: 'orphan', threadId: 't', status: 'running', resumed: false });
+    process.env.CADAI_RUN_LOST_MS = '100';
+    const t0 = Date.now();
+    const tail = parse(await (await getEvents(new NextRequest('http://localhost/api/runs/orphan/events'), ctx('orphan'))).text());
+    expect(Date.now() - t0).toBeLessThan(3000);
+    expect(tail.at(-1)).toMatchObject({ t: 'error', apiError: { message: 'run lost: its server instance stopped' } });
+    expect((await store.get('orphan'))?.status).toBe('failed');
+    const c = await cancelRun(post('/c', {}), ctx('orphan'));
+    expect(c.status).toBe(409);
+  });
+
+  it('F7: the owner heartbeats, so a long quiet step is not mistaken for a lost run', async () => {
+    process.env.CADAI_RUN_HEARTBEAT_MS = '30';
+    process.env.CADAI_RUN_LOST_MS = '150';
+    createAgent.mockReturnValue({
+      stream: async () =>
+        (async function* () {
+          await sleep(500); // a long model call with no events
+          yield result('slow but alive');
+        })(),
+    });
+    const textP = (await startChat()).text();
+    await sleep(350);
+    const info = await getRunStore().get(inflightRunId());
+    expect(info?.status).toBe('running');
+    const events = parse(await textP);
+    expect(events.at(-1)).toMatchObject({ t: 'result' });
+    expect((await getRunStore().get(events[0].runId))?.status).toBe('done');
+  });
+
+  it('F9: a cancel that lands after the result keeps the run done with exactly one terminal outcome', async () => {
+    let release!: () => void;
+    const gateOpen = new Promise<void>((r) => (release = r));
+    createAgent.mockReturnValue({
+      stream: async () =>
+        (async function* () {
+          yield result('finished');
+          await gateOpen; // the graph is wrapping up after its result
+        })(),
+    });
+    const textP = (await startChat()).text();
+    await sleep(60);
+    const runId = inflightRunId();
+    const c = await cancelRun(post('/c', {}), ctx(runId));
+    expect(c.status).toBe(200);
+    release();
+    const events = parse(await textP);
+    expect(events.map((e) => e.t)).not.toContain('cancelled');
+    expect((await getRunStore().get(runId))?.status).toBe('done');
+    expect(await getRunStore().isCancelled(runId)).toBe(false); // flag cleared with the terminal status
+    const again = await cancelRun(post('/c', {}), ctx(runId));
+    expect(again.status).toBe(409);
+  });
+
+  it('F9: stop pressed while the run reaches its gate cancels it there (one cancelled event, checkpoint dropped)', async () => {
+    let release!: () => void;
+    const hold = new Promise<void>((r) => (release = r));
+    createAgent.mockReturnValue({
+      stream: async () =>
+        (async function* () {
+          yield delta('spec');
+          await hold;
+          yield gate;
+        })(),
+    });
+    const textP = (await startChat()).text();
+    await sleep(60);
+    const runId = inflightRunId();
+    await plantCp(runCheckpointKey('t1', runId));
+    await getRunStore().requestCancel(runId); // flag only: the graph does not see the abort before the gate
+    release();
+    const events = parse(await textP);
+    expect(events.filter((e) => e.t === 'cancelled')).toHaveLength(1);
+    expect((await getRunStore().get(runId))?.status).toBe('cancelled');
+    expect(await getCheckpointer().getTuple({ configurable: { thread_id: runCheckpointKey('t1', runId) } })).toBeUndefined();
+  });
+
+  it('F11: a graph error event keeps its message on the failed RunInfo', async () => {
+    createAgent.mockReturnValue(graphOf([['custom', { t: 'error', message: 'OpenSCAD failed to compile part X', node: 'validateCode' }]]));
+    const events = parse(await (await startChat()).text());
+    const info = await getRunStore().get(events[0].runId);
+    expect(info).toMatchObject({ status: 'failed', error: { code: 'internal', message: 'OpenSCAD failed to compile part X' } });
+  });
+
+  it('F11: a thrown graph error keeps the real (redacted) cause as ApiError.detail', async () => {
+    createAgent.mockReturnValue({
+      stream: async () => {
+        throw new Error('401 from provider: invalid x-api-key sk-ant-abcdefghijklmnop');
+      },
+    });
+    const events = parse(await (await startChat()).text());
+    const err = events.find((e) => e.t === 'error')!;
+    expect(err.message).toMatch(/Agent execution failed/);
+    expect(err.apiError.detail).toContain('401 from provider');
+    expect(err.apiError.detail).not.toContain('sk-ant-abcdefghijklmnop');
+    expect((await getRunStore().get(events[0].runId))?.error?.detail).toBe(err.apiError.detail);
+  });
+
+  it('F13: a client that never reads does not hold the run open; past the backlog cap it is cut off', async () => {
+    process.env.CADAI_CLIENT_BACKLOG_BYTES = String(256 * 1024);
+    const big = 'x'.repeat(200 * 1024);
+    createAgent.mockReturnValue(graphOf([delta(big), delta(big), delta(big), result('done')]));
+    const res = await startChat();
+    await sleep(300); // nobody reads
+    const runId = inflightRunId();
+    expect((await getRunStore().get(runId))?.status).toBe('done');
+    // everything is stored for replay, but the unread live stream was dropped instead of buffered without limit
+    expect((await getRunStore().events(runId, 0)).at(-1)).toMatchObject({ t: 'result' });
+    await expect(res.text()).rejects.toThrow(/too far behind/);
+  });
+
+  it('F13: a client that reads late still gets every event (closing never drops queued data)', async () => {
+    createAgent.mockReturnValue(graphOf([delta('a'), delta('b'), result('done')]));
+    const res = await startChat();
+    await sleep(200);
+    const events = parse(await res.text());
+    expect(events.map((e) => e.t)).toEqual(['run', 'section', 'delta', 'delta', 'section', 'result']);
+  });
+
+  it('F13: if the store fails mid-run the live stream keeps unique, increasing seqs', async () => {
+    createAgent.mockReturnValue(graphOf([delta('a'), delta('b'), result('r')]));
+    const store = getRunStore();
+    const real = store.append.bind(store);
+    let n = 0;
+    const spy = vi.spyOn(store, 'append').mockImplementation(async (...args) => {
+      if (++n > 2) throw new Error('disk full');
+      return real(...args);
+    });
+    const events = parse(await (await startChat()).text());
+    spy.mockRestore();
+    const seqs = events.map((e) => e.seq);
+    expect(new Set(seqs).size).toBe(seqs.length);
+    expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+    expect(seqs.every((s) => s > 0)).toBe(true);
   });
 });

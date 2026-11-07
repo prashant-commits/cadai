@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import type { ApiError, RunInfo, RunStatus } from '@/lib/contract/run-contract';
 import { checkpointTtlMs } from '@/lib/agent/checkpointer';
@@ -17,55 +18,160 @@ export interface NewRun {
   startedAt?: number; // default now
 }
 
+/** Only apply the change when the run's current status is one of these. */
+export interface Transition {
+  expect?: RunStatus[];
+}
+
+export interface AppendOptions extends Transition {
+  /** Move the run to this status in the same atomic step as the append. */
+  status?: RunStatus;
+  error?: ApiError;
+}
+
+export interface EventPage {
+  events: StoredEvent[];
+  /** Opaque; pass back to read only what was appended since. */
+  cursor: string;
+  /** More stored events are ready right now (the page was size-capped). */
+  more: boolean;
+}
+
 /**
  * Persistent run state. Deliberately small so a Postgres / Redis implementation
  * can follow: one record per run, an append-only ordered event log per run, and
- * one cancel flag per run.
+ * one cancel flag per run. Every write that checks a status is atomic per run
+ * (a row lock / transaction in a database).
  */
 export interface RunStore {
   /** Creates the record. Throws if the runId exists or is not a safe id. */
   create(run: NewRun): Promise<RunInfo>;
+  /** Also reaps a `running` run whose owner stopped heartbeating (-> failed). */
   get(runId: string): Promise<RunInfo | undefined>;
-  /** `paused` also sets expiresAt (now + checkpoint TTL); every other status clears it. */
-  setStatus(runId: string, status: RunStatus, error?: ApiError): Promise<void>;
-  /** Appends and returns the event's seq (1, 2, 3 ... per run, gap-free, in append order). */
-  append(runId: string, event: RunEventInput): Promise<number>;
+  /**
+   * `paused` also sets expiresAt (now + checkpoint TTL); every other status
+   * clears it. Returns false (and changes nothing) when `expect` does not match.
+   */
+  setStatus(runId: string, status: RunStatus, error?: ApiError, opts?: Transition): Promise<boolean>;
+  /**
+   * Appends and returns the event's seq (1, 2, 3 ... per run, gap-free, in
+   * append order, across every instance sharing the store). With
+   * `opts.status`, the status changes in the same atomic step, so a terminal
+   * event and a terminal status are never seen apart. Returns 0 (and writes
+   * nothing) when `opts.expect` does not match.
+   */
+  append(runId: string, event: RunEventInput, opts?: AppendOptions): Promise<number>;
   /** Stored events with seq > afterSeq, in order. */
   events(runId: string, afterSeq: number): Promise<StoredEvent[]>;
-  /** Raises the cancel flag. Visible to every instance that shares the store. */
-  requestCancel(runId: string): Promise<void>;
+  /** Like events(), but resumable: pass the returned cursor to read only new events. */
+  eventsSince(runId: string, afterSeq: number, cursor?: string): Promise<EventPage>;
+  /** Raises the cancel flag if the run is running or paused; false when it already ended. */
+  requestCancel(runId: string): Promise<boolean>;
   isCancelled(runId: string): Promise<boolean>;
+  /** The owner's liveness signal: bumps updatedAt of a running run. */
+  heartbeat(runId: string): Promise<void>;
 }
 
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+/** Names that are store files or directories. Never valid run ids, whatever the layout. */
+const RESERVED = new Set(['checkpoints', 'runs', 'events', 'cancel', 'locks', 'tmp']);
+
 export function isSafeRunId(id: string): boolean {
-  return SAFE_ID.test(id);
+  return typeof id === 'string' && SAFE_ID.test(id) && !RESERVED.has(id.toLowerCase());
 }
+
+const TERMINAL: ReadonlySet<RunStatus> = new Set(['done', 'failed', 'cancelled']);
+export const isTerminal = (s: RunStatus) => TERMINAL.has(s);
+
+export const RUN_LOST_MESSAGE = 'run lost: its server instance stopped';
+
+function envMs(name: string, fallback: number): number {
+  const n = Number(process.env[name] ?? fallback);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+/** A running run with no heartbeat for this long has lost its owner. */
+export const runLostMs = () => envMs('CADAI_RUN_LOST_MS', 90_000);
+/** How often the owner heartbeats. */
+export const runHeartbeatMs = () => envMs('CADAI_RUN_HEARTBEAT_MS', 15_000);
+/** Finished runs older than this are deleted. */
+export const runTtlMs = () => envMs('CADAI_RUN_TTL_MS', 24 * 60 * 60 * 1000);
+
+const LOCK_STALE_MS = 15_000; // a lock older than this belongs to a crashed writer
+const LOCK_WAIT_MS = 10_000;
+const PRUNE_EVERY_MS = 60_000;
+const PAGE_BYTES = 4 * 1024 * 1024;
+const SCAN_CHUNK = 64 * 1024;
 
 type Meta = Omit<RunInfo, 'lastSeq'>;
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const errCode = (e: unknown) => (e as NodeJS.ErrnoException)?.code;
+
+let warnedFallback = false;
+
+/** `preferred` if its subdirectories can be created and written, else os.tmpdir()/cadai-runs (warns once). */
+function writableRoot(preferred: string): string {
+  const prepare = (root: string) => {
+    for (const sub of ['runs', 'events', 'cancel', 'locks']) fs.mkdirSync(path.join(/*turbopackIgnore: true*/ root, sub), { recursive: true });
+    fs.accessSync(root, fs.constants.W_OK);
+    return root;
+  };
+  try {
+    return prepare(preferred);
+  } catch (e) {
+    const fallback = path.join(os.tmpdir(), 'cadai-runs');
+    if (!warnedFallback) {
+      warnedFallback = true;
+      console.warn(`Run store directory ${preferred} is not writable (${errCode(e) ?? e}); using ${fallback}.`);
+    }
+    return prepare(fallback);
+  }
+}
+
+/** Byte offset of the last '\n' strictly before `end`, or -1. Scans backwards in chunks. */
+async function lastNewlineBefore(fh: fs.promises.FileHandle, end: number): Promise<number> {
+  let pos = end;
+  const buf = Buffer.alloc(SCAN_CHUNK);
+  while (pos > 0) {
+    const len = Math.min(SCAN_CHUNK, pos);
+    const start = pos - len;
+    const { bytesRead } = await fh.read(buf, 0, len, start);
+    const i = buf.subarray(0, bytesRead).lastIndexOf(0x0a);
+    if (i >= 0) return start + i;
+    pos = start;
+  }
+  return -1;
+}
+
 /**
- * JSON-lines files under `dir`:
- *   <runId>.json    run record (atomic tmp+rename writes)
- *   <runId>.jsonl   event log, one JSON object per line
- *   <runId>.cancel  exists once cancel was requested
- * Appends to one run are serialized through an in-process queue, so concurrent
- * appends from this process never interleave or reuse a seq. One run has one
- * writer process at a time (the instance streaming it).
+ * Files under `dir`, one subdirectory per kind so a run id can never name
+ * another kind of file:
+ *   runs/<runId>.json     run record (atomic tmp+rename writes)
+ *   events/<runId>.jsonl  event log, one `{"seq":N,"ts":..,...}` object per line
+ *   cancel/<runId>        exists once cancel was requested
+ *   locks/<runId>.lock    O_EXCL lock held around every write to the run
+ *
+ * The lock makes writes safe across processes sharing the directory: seq is
+ * read from the log's last line under the lock, never from a process cache.
+ * A lock left by a crashed writer is broken after 15 s.
  */
 export class LocalRunStore implements RunStore {
+  readonly dir: string;
   private queues = new Map<string, Promise<unknown>>();
-  private counters = new Map<string, number>();
+  private lastPrune = 0;
 
-  constructor(readonly dir: string) {
-    fs.mkdirSync(dir, { recursive: true });
+  constructor(dir: string) {
+    this.dir = writableRoot(dir);
+    this.maybePrune();
   }
 
-  private p(runId: string, ext: string): string {
+  private file(kind: 'runs' | 'events' | 'cancel' | 'locks', runId: string): string {
     if (!isSafeRunId(runId)) throw new Error(`Invalid runId "${runId}".`);
-    return path.join(/*turbopackIgnore: true*/ this.dir, `${runId}.${ext}`);
+    const ext = kind === 'runs' ? '.json' : kind === 'events' ? '.jsonl' : kind === 'locks' ? '.lock' : '';
+    return path.join(/*turbopackIgnore: true*/ this.dir, kind, `${runId}${ext}`);
   }
 
+  /** In-process FIFO per run, so this process never spins on its own lock. */
   private serial<T>(runId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.queues.get(runId) ?? Promise.resolve();
     const next = prev.then(fn, fn);
@@ -77,121 +183,304 @@ export class LocalRunStore implements RunStore {
     return next;
   }
 
+  /** Cross-process exclusive section for one run. */
+  private locked<T>(runId: string, fn: () => Promise<T>): Promise<T> {
+    return this.serial(runId, async () => {
+      const lock = this.file('locks', runId);
+      const deadline = Date.now() + LOCK_WAIT_MS;
+      for (;;) {
+        try {
+          await fs.promises.writeFile(lock, `${process.pid} ${Date.now()}`, { flag: 'wx' });
+          break;
+        } catch (e) {
+          if (errCode(e) !== 'EEXIST') throw e;
+          try {
+            const st = await fs.promises.stat(lock);
+            if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+              // Rename first: only one breaker can win the rename of a given stale lock.
+              const aside = `${lock}.${process.pid}.${Math.random().toString(36).slice(2)}.stale`;
+              await fs.promises.rename(lock, aside).then(() => fs.promises.unlink(aside), () => undefined);
+              continue;
+            }
+          } catch {
+            continue; // released between our attempt and the stat
+          }
+          if (Date.now() > deadline) throw new Error(`Run ${runId} is locked by another writer.`);
+          await sleep(3 + Math.random() * 7);
+        }
+      }
+      try {
+        return await fn();
+      } finally {
+        await fs.promises.unlink(lock).catch(() => undefined);
+      }
+    });
+  }
+
   private async readMeta(runId: string): Promise<Meta | undefined> {
     if (!isSafeRunId(runId)) return undefined;
     try {
-      return JSON.parse(await fs.promises.readFile(this.p(runId, 'json'), 'utf-8')) as Meta;
+      return JSON.parse(await fs.promises.readFile(this.file('runs', runId), 'utf-8')) as Meta;
     } catch {
       return undefined;
     }
   }
 
   private async writeMeta(meta: Meta): Promise<void> {
-    const file = this.p(meta.runId, 'json');
+    const file = this.file('runs', meta.runId);
     const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
     await fs.promises.writeFile(tmp, JSON.stringify(meta), 'utf-8');
     await fs.promises.rename(tmp, file);
   }
 
-  private async readLog(runId: string): Promise<StoredEvent[]> {
-    let raw: string;
-    try {
-      raw = await fs.promises.readFile(this.p(runId, 'jsonl'), 'utf-8');
-    } catch {
-      return [];
-    }
-    const out: StoredEvent[] = [];
-    for (const line of raw.split('\n')) {
-      if (!line) continue;
-      try {
-        out.push(JSON.parse(line) as StoredEvent);
-      } catch {
-        // A torn final line from a concurrent append: it is not stored yet.
-      }
-    }
-    return out;
+  private withStatus(meta: Meta, status: RunStatus, error?: ApiError): Meta {
+    const now = Date.now();
+    const next: Meta = { ...meta, status, updatedAt: now };
+    delete next.expiresAt;
+    delete next.error;
+    if (status === 'paused') next.expiresAt = now + checkpointTtlMs();
+    if (error) next.error = error;
+    return next;
   }
 
-  private async lastSeq(runId: string): Promise<number> {
-    const cached = this.counters.get(runId);
-    if (cached !== undefined) return cached;
-    const log = await this.readLog(runId);
-    return log.length ? log[log.length - 1].seq : 0;
+  /**
+   * The last stored seq, read from the log's final complete line. A torn final
+   * line (a writer crashed mid-append) is ignored, and cut off when `repair`
+   * is set (only under the lock), so the next append starts on a clean line.
+   */
+  private async lastSeqOf(runId: string, repair: boolean): Promise<number> {
+    let fh: fs.promises.FileHandle;
+    try {
+      fh = await fs.promises.open(this.file('events', runId), repair ? 'r+' : 'r');
+    } catch {
+      return 0;
+    }
+    try {
+      const { size } = await fh.stat();
+      if (size === 0) return 0;
+      const endNl = await lastNewlineBefore(fh, size);
+      if (endNl < size - 1 && repair) await fh.truncate(endNl + 1);
+      if (endNl < 0) return 0;
+      const lineStart = (await lastNewlineBefore(fh, endNl)) + 1;
+      const head = Buffer.alloc(Math.min(64, endNl - lineStart));
+      await fh.read(head, 0, head.length, lineStart);
+      const m = /^\{"seq":(\d+)/.exec(head.toString('utf-8'));
+      if (m) return Number(m[1]);
+      const line = Buffer.alloc(endNl - lineStart);
+      await fh.read(line, 0, line.length, lineStart);
+      return Number((JSON.parse(line.toString('utf-8')) as StoredEvent).seq) || 0;
+    } finally {
+      await fh.close();
+    }
   }
 
   async create(run: NewRun): Promise<RunInfo> {
-    const file = this.p(run.runId, 'json');
-    if (fs.existsSync(file)) throw new Error(`Run ${run.runId} already exists.`);
-    const now = Date.now();
-    const status = run.status ?? 'running';
-    const meta: Meta = {
-      runId: run.runId,
-      threadId: run.threadId,
-      status,
-      startedAt: run.startedAt ?? now,
-      updatedAt: now,
-      ...(status === 'paused' ? { expiresAt: now + checkpointTtlMs() } : {}),
-    };
-    await this.writeMeta(meta);
-    return { ...meta, lastSeq: 0 };
-  }
-
-  async get(runId: string): Promise<RunInfo | undefined> {
-    const meta = await this.readMeta(runId);
-    if (!meta) return undefined;
-    return { ...meta, lastSeq: await this.lastSeq(runId) };
-  }
-
-  async setStatus(runId: string, status: RunStatus, error?: ApiError): Promise<void> {
-    await this.serial(runId, async () => {
-      const meta = await this.readMeta(runId);
-      if (!meta) throw new Error(`Unknown run ${runId}.`);
+    return this.locked(run.runId, async () => {
+      if (await this.readMeta(run.runId)) throw new Error(`Run ${run.runId} already exists.`);
       const now = Date.now();
-      const rest: Meta = { ...meta };
-      delete rest.expiresAt;
-      delete rest.error;
-      await this.writeMeta({
-        ...rest,
-        status,
-        updatedAt: now,
-        ...(status === 'paused' ? { expiresAt: now + checkpointTtlMs() } : {}),
-        ...(error ? { error } : {}),
-      });
+      const base: Meta = { runId: run.runId, threadId: run.threadId, status: 'running', startedAt: run.startedAt ?? now, updatedAt: now };
+      const meta = this.withStatus(base, run.status ?? 'running');
+      meta.updatedAt = now;
+      await this.writeMeta(meta);
+      return { ...meta, lastSeq: 0 };
     });
   }
 
-  append(runId: string, event: RunEventInput): Promise<number> {
-    return this.serial(runId, async () => {
-      if (!fs.existsSync(this.p(runId, 'json'))) throw new Error(`Unknown run ${runId}.`);
-      const seq = (await this.lastSeq(runId)) + 1;
-      const ts = typeof event.ts === 'number' ? event.ts : Date.now();
-      await fs.promises.appendFile(this.p(runId, 'jsonl'), `${JSON.stringify({ ...event, seq, ts })}\n`, 'utf-8');
-      this.counters.set(runId, seq);
+  async get(runId: string): Promise<RunInfo | undefined> {
+    this.maybePrune();
+    let meta = await this.readMeta(runId);
+    if (!meta) return undefined;
+    if (meta.status === 'running' && Date.now() - meta.updatedAt > runLostMs()) {
+      await this.reapLost(runId).catch((e) => console.warn('Run reap failed:', e));
+      meta = (await this.readMeta(runId)) ?? meta;
+    }
+    return { ...meta, lastSeq: await this.lastSeqOf(runId, false) };
+  }
+
+  /** Ends a run whose owner stopped heartbeating with a stored error event, so tails end too. */
+  private reapLost(runId: string): Promise<void> {
+    return this.locked(runId, async () => {
+      const meta = await this.readMeta(runId);
+      if (!meta || meta.status !== 'running' || Date.now() - meta.updatedAt <= runLostMs()) return;
+      const apiError: ApiError = { code: 'internal', message: RUN_LOST_MESSAGE };
+      await this.appendLine(runId, { t: 'error', message: RUN_LOST_MESSAGE, apiError });
+      await this.writeMeta(this.withStatus(meta, 'failed', apiError));
+      await fs.promises.unlink(this.file('cancel', runId)).catch(() => undefined);
+    });
+  }
+
+  async setStatus(runId: string, status: RunStatus, error?: ApiError, opts?: Transition): Promise<boolean> {
+    return this.locked(runId, async () => {
+      const meta = await this.readMeta(runId);
+      if (!meta) throw new Error(`Unknown run ${runId}.`);
+      if (opts?.expect && !opts.expect.includes(meta.status)) return false;
+      await this.writeMeta(this.withStatus(meta, status, error));
+      if (isTerminal(status)) await fs.promises.unlink(this.file('cancel', runId)).catch(() => undefined);
+      return true;
+    });
+  }
+
+  /** Under the lock only. */
+  private async appendLine(runId: string, event: RunEventInput): Promise<number> {
+    const seq = (await this.lastSeqOf(runId, true)) + 1;
+    const { seq: _s, ts, ...rest } = event as RunEventInput & { seq?: unknown };
+    void _s;
+    const line = JSON.stringify({ seq, ts: typeof ts === 'number' ? ts : Date.now(), ...rest });
+    await fs.promises.appendFile(this.file('events', runId), `${line}\n`, 'utf-8');
+    return seq;
+  }
+
+  append(runId: string, event: RunEventInput, opts?: AppendOptions): Promise<number> {
+    return this.locked(runId, async () => {
+      const meta = await this.readMeta(runId);
+      if (!meta) throw new Error(`Unknown run ${runId}.`);
+      if (opts?.expect && !opts.expect.includes(meta.status)) return 0;
+      const seq = await this.appendLine(runId, event);
+      if (opts?.status) {
+        await this.writeMeta(this.withStatus(meta, opts.status, opts.error));
+        if (isTerminal(opts.status)) await fs.promises.unlink(this.file('cancel', runId)).catch(() => undefined);
+      }
       return seq;
     });
   }
 
-  async events(runId: string, afterSeq: number): Promise<StoredEvent[]> {
-    if (!isSafeRunId(runId)) return [];
-    return (await this.readLog(runId)).filter((e) => e.seq > afterSeq);
+  async eventsSince(runId: string, afterSeq: number, cursor?: string): Promise<EventPage> {
+    const from = Math.max(0, Number(cursor ?? 0) || 0);
+    const empty: EventPage = { events: [], cursor: String(from), more: false };
+    if (!isSafeRunId(runId)) return empty;
+    let fh: fs.promises.FileHandle;
+    try {
+      fh = await fs.promises.open(this.file('events', runId), 'r');
+    } catch {
+      return empty;
+    }
+    try {
+      const { size } = await fh.stat();
+      if (size <= from) return empty;
+      // Read up to PAGE_BYTES, growing only to finish one oversized line.
+      let len = Math.min(size - from, PAGE_BYTES);
+      let buf = Buffer.alloc(len);
+      await fh.read(buf, 0, len, from);
+      let end = buf.lastIndexOf(0x0a);
+      while (end < 0 && from + len < size) {
+        len = Math.min(size - from, len * 2);
+        buf = Buffer.alloc(len);
+        await fh.read(buf, 0, len, from);
+        end = buf.lastIndexOf(0x0a);
+      }
+      if (end < 0) return empty; // only an in-progress (or torn) line so far
+      const events: StoredEvent[] = [];
+      for (const line of buf.subarray(0, end).toString('utf-8').split('\n')) {
+        if (!line) continue;
+        try {
+          const e = JSON.parse(line) as StoredEvent;
+          if (e.seq > afterSeq) events.push(e);
+        } catch {
+          // a torn line from a crashed writer, cut off by the next append
+        }
+      }
+      const next = from + end + 1;
+      return { events, cursor: String(next), more: next < size };
+    } finally {
+      await fh.close();
+    }
   }
 
-  async requestCancel(runId: string): Promise<void> {
-    await fs.promises.writeFile(this.p(runId, 'cancel'), String(Date.now()), 'utf-8');
+  async events(runId: string, afterSeq: number): Promise<StoredEvent[]> {
+    const out: StoredEvent[] = [];
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await this.eventsSince(runId, afterSeq, cursor);
+      out.push(...page.events);
+      cursor = page.cursor;
+      if (!page.more) return out;
+    }
+  }
+
+  requestCancel(runId: string): Promise<boolean> {
+    return this.locked(runId, async () => {
+      const meta = await this.readMeta(runId);
+      if (!meta || isTerminal(meta.status)) return false;
+      await fs.promises.writeFile(this.file('cancel', runId), String(Date.now()), 'utf-8');
+      return true;
+    });
   }
 
   async isCancelled(runId: string): Promise<boolean> {
     if (!isSafeRunId(runId)) return false;
-    return fs.existsSync(this.p(runId, 'cancel'));
+    return fs.existsSync(this.file('cancel', runId));
+  }
+
+  heartbeat(runId: string): Promise<void> {
+    return this.locked(runId, async () => {
+      const meta = await this.readMeta(runId);
+      if (meta?.status === 'running') await this.writeMeta({ ...meta, updatedAt: Date.now() });
+    });
+  }
+
+  /** Lazily, at most once a minute: see prune(). */
+  maybePrune(now = Date.now()): void {
+    if (now - this.lastPrune < PRUNE_EVERY_MS) return;
+    this.lastPrune = now;
+    void this.prune(now).catch((e) => console.warn('Run prune failed:', e));
+  }
+
+  /**
+   * Deletes finished runs (and orphan logs) not updated for CADAI_RUN_TTL_MS,
+   * and fails paused runs whose checkpoint expired (run_expired). Returns the
+   * deleted run ids.
+   */
+  async prune(now = Date.now()): Promise<string[]> {
+    const ttl = runTtlMs();
+    const removed: string[] = [];
+    const ids = new Set<string>();
+    for (const kind of ['runs', 'events'] as const) {
+      for (const f of await fs.promises.readdir(path.join(/*turbopackIgnore: true*/ this.dir, kind)).catch(() => [] as string[])) {
+        const id = f.replace(/\.jsonl?$/, '');
+        if (id !== f && isSafeRunId(id)) ids.add(id);
+      }
+    }
+    for (const id of ids) {
+      const meta = await this.readMeta(id);
+      if (!meta) {
+        const st = await fs.promises.stat(this.file('events', id)).catch(() => undefined);
+        if (st && now - st.mtimeMs > ttl) {
+          await this.remove(id);
+          removed.push(id);
+        }
+        continue;
+      }
+      if (meta.status === 'paused' && meta.expiresAt !== undefined && meta.expiresAt < now) {
+        await this.setStatus(id, 'failed', { code: 'run_expired', message: 'The paused run expired before it was resumed.' }, { expect: ['paused'] });
+        continue;
+      }
+      if (isTerminal(meta.status) && now - meta.updatedAt > ttl) {
+        await this.locked(id, async () => {
+          const again = await this.readMeta(id);
+          if (again && isTerminal(again.status) && now - again.updatedAt > ttl) {
+            await this.remove(id);
+            removed.push(id);
+          }
+        });
+      }
+    }
+    return removed;
+  }
+
+  private async remove(runId: string): Promise<void> {
+    for (const kind of ['runs', 'events', 'cancel'] as const) {
+      await fs.promises.unlink(this.file(kind, runId)).catch(() => undefined);
+    }
   }
 }
 
-let singleton: { key: string; store: RunStore } | null = null;
+let singleton: { key: string; store: LocalRunStore } | null = null;
 
 /** The process-wide store, chosen by CADAI_RUN_STORE; re-created if CADAI_RUN_DIR changes. */
 export function getRunStore(): RunStore {
   runStoreKind(); // validates CADAI_RUN_STORE
   const dir = runStoreDir();
   if (!singleton || singleton.key !== dir) singleton = { key: dir, store: new LocalRunStore(dir) };
+  else singleton.store.maybePrune();
   return singleton.store;
 }

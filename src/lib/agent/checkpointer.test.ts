@@ -231,10 +231,10 @@ describe('shared store (cross-instance)', () => {
     }
   });
 
-  it('CADAI_RUN_DIR points the checkpoint store at the shared directory', () => {
+  it('CADAI_RUN_DIR puts the checkpoint store in its own checkpoints/ subdirectory of the shared directory', () => {
     process.env.CADAI_RUN_DIR = '/some/shared/dir';
     try {
-      expect(checkpointStoreDir()).toBe(path.resolve('/some/shared/dir'));
+      expect(checkpointStoreDir()).toBe(path.join(path.resolve('/some/shared/dir'), 'checkpoints'));
     } finally {
       delete process.env.CADAI_RUN_DIR;
     }
