@@ -22,6 +22,8 @@
  *   --attempts N                     CADAI_MAX_ATTEMPTS    (default 1)
  *
  * Plumbing for matrix.ts, which runs one prompt per child process:
+ *   --judge on|off    standalone intent judge on the final STL (default off; never turns on the graph critic)
+ *   --judge-model <slug>  its model (default claude-sonnet-5.5)
  *   --prompts <file>  JSON [{id, prompt}] to draw prompts from (default eval/generation/prompts.json)
  *   --out-dir <dir>   write results (and the final script) there instead of eval/results
  *   --result <file>   also write the single run's metrics row to this file
@@ -64,6 +66,7 @@ import { gateVariants } from '@/lib/agent/spec-variants';
 import { getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor, initLangfuseTracing } from '@/lib/tracing/langfuse';
 import { GenerationMetrics, SpecGateCapture, measureVisualMatch, metricsFromState, scoresFor, summarize } from './metrics';
+import { DEFAULT_JUDGE_MODEL, measureIntent } from './judge';
 import { finalizeMetrics, thrownDetail } from './brep-eval';
 import { saveRunArtifacts } from './run-artifacts';
 import { UsageHandler } from './usage';
@@ -88,6 +91,8 @@ interface Args {
   thinking?: 'off' | 'adaptive';
   effort?: 'low' | 'medium' | 'high';
   attempts?: number;
+  judge: boolean;
+  judgeModel: string;
   prompts: string;
   outDir?: string;
   result?: string;
@@ -99,7 +104,7 @@ function onOff(value: string | undefined): 'on' | 'off' | undefined {
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { model: EVAL_DEFAULT_MODEL, tag: 'run', limit: Infinity, only: [], langfuse: true, seed: false, prompts: DEFAULT_PROMPTS_FILE };
+  const a: Args = { model: EVAL_DEFAULT_MODEL, tag: 'run', limit: Infinity, only: [], langfuse: true, seed: false, prompts: DEFAULT_PROMPTS_FILE, judge: false, judgeModel: DEFAULT_JUDGE_MODEL };
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i];
     if (v === '--model') a.model = argv[++i];
@@ -138,6 +143,8 @@ function parseArgs(argv: string[]): Args {
       const n = Number(argv[++i]);
       if (Number.isInteger(n) && n >= 1) a.attempts = n;
     }
+    else if (v === '--judge') a.judge = argv[++i] === 'on';
+    else if (v === '--judge-model') a.judgeModel = argv[++i];
     else if (v === '--prompts') a.prompts = path.resolve(argv[++i]);
     else if (v === '--out-dir') a.outDir = argv[++i];
     else if (v === '--result') a.result = argv[++i];
@@ -232,6 +239,8 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
     spec: state.assemblySpec ?? null,
   });
   const wallMs = Date.now() - t0;
+  // The standalone intent judge reads the finished STL after the run's clock stopped; it cannot reach the run.
+  const intent = await measureIntent({ on: args.judge, stl: state.stlContent, request: item.prompt, spec: state.assemblySpec ?? null, model: args.judgeModel });
   const base = metricsFromState(item.id, args.model, state, wallMs, specGate, visual);
   // B-rep: STEP re-import and parameter perturbation (re-runs the script), then the verdict.
   const m = await finalizeMetrics({
@@ -239,6 +248,7 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     costUsd: usage.cost(args.model),
+    ...(args.judge ? intent : {}),
   }, state, undefined, thrown);
   // The final script and spec beside the results, so a failing run can be diagnosed without a re-run.
   saveRunArtifacts(jsonl, item.id, m.kernel, state);

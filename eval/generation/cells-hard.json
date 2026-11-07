@@ -1,0 +1,8 @@
+[
+  { "name": "haiku-off", "kernel": "brep", "model": "claude-haiku-5.5", "thinking": "off", "attempts": 3, "judge": true },
+  {
+    "name": "haiku-buildthink", "kernel": "brep", "model": "claude-haiku-5.5", "thinking": "off", "attempts": 3, "judge": true,
+    "env": { "CADAI_BUILD_THINKING": "adaptive", "CADAI_BUILD_EFFORT": "medium" }
+  },
+  { "name": "sonnet", "kernel": "brep", "model": "claude-sonnet-5.5", "thinking": "off", "attempts": 3, "judge": true }
+]
