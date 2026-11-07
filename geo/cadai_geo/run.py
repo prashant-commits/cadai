@@ -12,12 +12,23 @@ import io
 import json
 import os
 import re
+import shutil
+import stat
 import sys
 import traceback
 from collections.abc import Sequence
 
 # Temp script paths and /tmp directories must not leak back to the caller.
-_PATH_LEAK = re.compile(r"/tmp/\S+|\S*[/\\]model\.py")
+# ``redact`` also strips the live ``TMPDIR`` prefix. Popping an environment
+# variable does not rewrite ``/proc/<pid>/environ``, so this is only a
+# display filter.
+_MODEL_PY = re.compile(r"\S*[/\\]model\.py")
+_TMP_LEAK = re.compile(r"/tmp/\S+")
+# 512 used to reject a 600-part model as "geometry". 4096 covers 1000 parts
+# with room; the index cap scales with that (about 2 KB per entry).
+_MAX_PARTS = 4096
+_MAX_INDEX_BYTES = 8 * 1024 * 1024
+_MAX_BREP_BYTES = 256 * 1024 * 1024
 
 # build123d's Compound([shapes]) keeps only the OCC topology, so labels set on
 # the Python shapes are dropped. Remember the shapes that were passed in.
@@ -25,8 +36,17 @@ _RECORDER_FLAG = "_cadai_sources"
 
 
 def redact(text: str) -> str:
-    """Drop temp-file paths from an error string."""
-    return _PATH_LEAK.sub("[redacted]", text)
+    """Drop temp-file paths from an error string.
+
+    ``/tmp/...`` and ``.../model.py`` are always removed. When ``TMPDIR`` is
+    an absolute path other than ``/tmp``, that prefix is removed too.
+    """
+    text = _TMP_LEAK.sub("[redacted]", text)
+    text = _MODEL_PY.sub("[redacted]", text)
+    prefix = os.environ.get("TMPDIR", "").strip().rstrip("/\\")
+    if prefix.startswith("/") and len(prefix) > 1 and prefix != "/tmp":
+        text = re.sub(re.escape(prefix) + r"/\S*", "[redacted]", text)
+    return text
 
 
 def _last_line(exc: BaseException) -> str:
@@ -92,10 +112,277 @@ def _parts(result, measured=None) -> list[dict]:
     return [_part(solid, "") for solid in result.solids()]
 
 
+def regular_file_inside(path: str, root: str) -> bool:
+    """True when ``path`` is a regular file whose real path stays inside ``root``."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        return False
+    root_real = os.path.realpath(root)
+    real = os.path.realpath(path)
+    try:
+        inside = os.path.commonpath([real, root_real]) == root_real
+    except ValueError:
+        return False
+    return inside and os.path.basename(real) == os.path.basename(path)
+
+
 def _replace_output(path: str) -> None:
     """Remove anything already at ``path`` so export cannot follow a symlink."""
     if os.path.lexists(path):
         os.unlink(path)
+
+
+def _part_shapes(result) -> list[tuple[str, object]]:
+    """Same part selection as ``_parts``: children, remembered sources, else solids."""
+    children = list(getattr(result, "children", []) or [])
+    sources = getattr(result, _RECORDER_FLAG, None)
+    if children:
+        shapes = children
+    elif sources is not None:
+        shapes = list(sources)
+    else:
+        shapes = list(result.solids())
+    return [(getattr(shape, "label", "") or "", shape) for shape in shapes]
+
+
+def _exit_message(exc: SystemExit) -> str:
+    code = exc.code
+    if isinstance(code, int) and code != 0:
+        return f"script exited: {code}"
+    return "script exited"
+
+
+def _discard_geometry(scratch: str) -> None:
+    """Remove BREP outputs in ``scratch``. Symlinks are unlinked, not followed."""
+    try:
+        info = os.lstat(scratch)
+    except OSError:
+        return
+    # A scratch path the script replaced with a symlink is not a directory
+    # we created. Do not walk it.
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        return
+    result_path = os.path.join(scratch, "result.brep")
+    if os.path.lexists(result_path):
+        if os.path.islink(result_path) or not os.path.isdir(result_path):
+            os.unlink(result_path)
+        else:
+            shutil.rmtree(result_path)
+    parts = os.path.join(scratch, "parts")
+    if os.path.islink(parts):
+        os.unlink(parts)
+    elif os.path.isdir(parts):
+        shutil.rmtree(parts)
+
+
+def capture_geometry(script_path: str, scratch: str, on_error) -> None:
+    """Run the script and write BREP only.
+
+    This is the untrusted stage. It does not write ``result.json``, STEP, or
+    STL, and it does not receive the service outdir. ``on_error`` is called
+    with a redacted message when the script fails and our code is still
+    running. A script that ``os._exit``s leaves whatever it planted in
+    ``scratch``; the trusted stage must treat that as untrusted bytes.
+    """
+    _remember_compound_sources()
+    import runpy
+    from build123d import export_brep
+
+    try:
+        namespace = runpy.run_path(os.fspath(script_path), run_name="__main__")
+    except SystemExit as exc:
+        _discard_geometry(scratch)
+        on_error(_exit_message(exc))
+        return
+    except Exception as exc:
+        _discard_geometry(scratch)
+        on_error(_last_line(exc))
+        return
+    if "result" not in namespace:
+        _discard_geometry(scratch)
+        on_error("assign result")
+        return
+    try:
+        _discard_geometry(scratch)
+        result = namespace["result"]
+        result_path = os.path.join(scratch, "result.brep")
+        if not export_brep(result, result_path):
+            _discard_geometry(scratch)
+            on_error("export_brep failed")
+            return
+        parts_dir = os.path.join(scratch, "parts")
+        os.makedirs(parts_dir, mode=0o700)
+        index = []
+        for number, (label, shape) in enumerate(_part_shapes(result)):
+            name = f"{number:04d}.brep"
+            if not export_brep(shape, os.path.join(parts_dir, name)):
+                _discard_geometry(scratch)
+                on_error("export_brep failed")
+                return
+            index.append({"label": label or "", "file": name})
+        with open(os.path.join(parts_dir, "index.json"), "w", encoding="utf-8") as handle:
+            json.dump(index, handle)
+    except SystemExit as exc:
+        _discard_geometry(scratch)
+        on_error(_exit_message(exc))
+    except Exception as exc:
+        _discard_geometry(scratch)
+        on_error(_last_line(exc))
+
+
+def _open_directory(path: str) -> int:
+    """Open a real directory. A symlink raises ``OSError`` and is not followed."""
+    return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+
+
+def _read_regular_at(dir_fd: int, name: str, max_bytes: int) -> bytes | None:
+    """Read one regular file under ``dir_fd``.
+
+    ``None`` means the name does not exist. A symlink, a non-regular file, or
+    an oversized file raises ``ValueError`` so the caller reports ``measure``
+    and does not follow the link.
+    """
+    if (
+        not isinstance(name, str)
+        or name != os.path.basename(name)
+        or "/" in name
+        or "\\" in name
+        or name in ("", ".", "..")
+    ):
+        raise ValueError("measure")
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValueError("measure") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("measure")
+        if info.st_size > max_bytes:
+            raise ValueError("measure")
+        return os.read(fd, info.st_size)
+    finally:
+        os.close(fd)
+
+
+def _import_brep_bytes(data: bytes, outdir: str):
+    """Import BREP bytes that were read from an already-open, no-follow fd.
+
+    OCC wants a filesystem path. The copy lives in the trusted outdir, which
+    the run uid cannot write, and it is removed after the import.
+    """
+    from build123d import import_brep
+
+    dest = os.path.join(os.fspath(outdir), ".cadai-load.brep")
+    _replace_output(dest)
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+    try:
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError("short write")
+            view = view[written:]
+    finally:
+        os.close(fd)
+    try:
+        return import_brep(dest)
+    finally:
+        _replace_output(dest)
+
+
+def _parts_from_scratch(scratch_fd: int, outdir: str, result) -> list[dict]:
+    """Measure part BREPs. Labels come from the index; numbers come from the shapes.
+
+    A missing parts directory falls back to unlabeled solids. A symlinked
+    parts directory or index is a measure failure.
+    """
+    try:
+        parts_fd = os.open(
+            "parts",
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=scratch_fd,
+        )
+    except FileNotFoundError:
+        return [_part(solid, "") for solid in result.solids()]
+    except OSError as exc:
+        raise ValueError("measure") from exc
+    try:
+        raw = _read_regular_at(parts_fd, "index.json", _MAX_INDEX_BYTES)
+        if not raw:
+            return [_part(solid, "") for solid in result.solids()]
+        entries = json.loads(raw.decode("utf-8"))
+        if not isinstance(entries, list) or not entries:
+            return [_part(solid, "") for solid in result.solids()]
+        if len(entries) > _MAX_PARTS:
+            raise ValueError("measure")
+        loaded = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ValueError("measure")
+            data = _read_regular_at(parts_fd, entry.get("file"), _MAX_BREP_BYTES)
+            if data is None:
+                raise ValueError("measure")
+            shape = _import_brep_bytes(data, outdir)
+            label = entry.get("label")
+            if not isinstance(label, str):
+                label = ""
+            loaded.append(_part(shape, label[:256]))
+        return loaded
+    finally:
+        os.close(parts_fd)
+
+
+def measure_and_export(scratch: str, outdir: str, fallback_error: str | None = None) -> dict:
+    """Trusted stage: load BREP from ``scratch``, measure it, write exports into ``outdir``.
+
+    Bytes that are not a BREP become ``ok: false`` with error ``measure``.
+    A parsed shape is measured here; a ``result.json`` sitting in the scratch
+    directory is never read. ``scratch`` itself is opened with ``O_NOFOLLOW``,
+    so a symlink planted in place of that directory is not followed.
+    """
+    try:
+        scratch_fd = _open_directory(scratch)
+    except OSError:
+        return {"ok": False, "error": "measure"}
+    try:
+        try:
+            data = _read_regular_at(scratch_fd, "result.brep", _MAX_BREP_BYTES)
+        except ValueError:
+            return {"ok": False, "error": "measure"}
+        if data is None:
+            return {"ok": False, "error": fallback_error or "no geometry"}
+        try:
+            from build123d import export_step, export_stl
+
+            result = _import_brep_bytes(data, outdir)
+            parts = _parts_from_scratch(scratch_fd, outdir, result)
+            step_path = os.path.join(os.fspath(outdir), "model.step")
+            stl_path = os.path.join(os.fspath(outdir), "model.stl")
+            _replace_output(step_path)
+            _replace_output(stl_path)
+            if not export_step(result, step_path):
+                return {"ok": False, "error": "export_step failed"}
+            if not export_stl(result, stl_path, ascii_format=True):
+                return {"ok": False, "error": "export_stl failed"}
+            box = result.bounding_box()
+            return {
+                "ok": True,
+                "parts": parts,
+                "solids": len(list(result.solids())),
+                "bbox": {"min": _xyz(box.min), "max": _xyz(box.max)},
+                "stl": None,
+                "step": None,
+            }
+        except Exception:
+            return {"ok": False, "error": "measure"}
+    finally:
+        os.close(scratch_fd)
 
 
 def run(script_path: str | os.PathLike, outdir: str | os.PathLike) -> dict:

@@ -15,7 +15,8 @@
     "eval:architect": "tsx eval/architect/run.ts",
     "eval:architect:render": "tsx eval/architect/render.ts",
     "eval:architect:rescore": "tsx eval/architect/rescore.ts",
-    "geo:setup": "python3 -m venv geo/.venv && geo/.venv/bin/pip install -r geo/requirements-dev.txt && geo/.venv/bin/pip install --no-deps -e geo"
+    "geo:setup": "python3 -m venv geo/.venv && geo/.venv/bin/pip install -r geo/requirements-dev.txt && geo/.venv/bin/pip install --no-deps -e geo",
+    "geo:serve": "f=\"${TMPDIR:-/tmp}/cadai-geo-dev-token\"; if [ -e \"$f\" ]; then chmod 0600 \"$f\"; fi; umask 077; printf '%s\\n' dev > \"$f\"; chmod 0400 \"$f\"; CADAI_GEO_TOKEN_FILE=\"$f\" geo/.venv/bin/python -m uvicorn cadai_geo.service:app --host 127.0.0.1 --port 8765"
   },
   "dependencies": {
     "@langchain/core": "^1.2.9",
