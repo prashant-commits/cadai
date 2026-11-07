@@ -18,6 +18,25 @@ describe('toApiError', () => {
     expect(toApiError(Object.assign(new Error('slow down'), { status: 429 })).message).not.toMatch(/slow down/);
   });
 
+  it('maps a cut-off or refused model reply to model_error', () => {
+    const cutOff = Object.assign(new Error('structured reply unusable: stop_reason max_tokens'), {
+      name: 'UnusableReplyError',
+      stop: 'max_tokens',
+    });
+    expect(toApiError(cutOff)).toEqual({
+      code: 'model_error',
+      message: 'The model reply was cut off before it finished.',
+    });
+    const refused = Object.assign(new Error('structured reply unusable: stop_reason refusal'), {
+      name: 'UnusableReplyError',
+      stop: 'refusal',
+    });
+    expect(toApiError(refused)).toEqual({
+      code: 'model_error',
+      message: 'The model refused the reply.',
+    });
+  });
+
   it('maps any other provider failure to model_error', () => {
     const api = toApiError(Object.assign(new Error('400 {"error":{"message":"giant provider payload"}}'), { status: 400, name: 'APIError' }));
     expect(api.code).toBe('model_error');

@@ -2,7 +2,7 @@
  * The wire protocol between the graph and the chat client.
  *
  * Deliberately client-safe: no provider imports, so a 'use client' component
- * can import these types without dragging ChatOpenAI into the bundle.
+ * can import these types without dragging ChatAnthropic into the bundle.
  *
  * Contract fields (R2) are additive. A client that ignores `index`, `attempt`,
  * `apiError`, and the `retry` event keeps working. Close `status` stays

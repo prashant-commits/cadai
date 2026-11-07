@@ -7,7 +7,7 @@ import { GatePayload, VariantId } from '@/types';
 const invokeMock = vi.fn();
 let lastConfig: { tags?: string[] } | null = null;
 
-vi.mock('@langchain/openai', () => {
+vi.mock('@langchain/anthropic', () => {
   class FakeChatModel {
     // Revision replies are widened so they differ from the previous spec (see revision-fixture.ts).
     invoke = async (...args: unknown[]) => {
@@ -30,13 +30,14 @@ vi.mock('@langchain/openai', () => {
     }
   }
   return {
-    ChatOpenAI: vi.fn().mockImplementation(function () {
+    ChatAnthropic: vi.fn().mockImplementation(function () {
       return new FakeChatModel();
     }),
   };
 });
 
 import { createCadAgent } from './graph';
+import { UnusableReplyError } from './llm-schemas';
 
 const createdKeys: string[] = [];
 let counter = 0;
@@ -78,6 +79,17 @@ function baseSpec(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+const TWO_VARIANT_PLAN = {
+  brief: 'Plan',
+  assumptions: [],
+  openQuestions: [],
+  variants: [
+    { id: 'A', name: 'VarA', idea: 'A' },
+    { id: 'B', name: 'VarB', idea: 'B' },
+  ],
+  recommendedId: 'A',
+};
 
 const draftResponse = (code: string) => ({
   content: `\`\`\`openscad\n${code}\n\`\`\``,
@@ -143,6 +155,107 @@ describe('spec sheets and reviewer loop', () => {
       expect(payload.variants![1].review?.validated).toBe(true);
       expect(payload.variants![0].sheetSvg).toContain('<svg');
       expect(payload.variants![1].sheetSvg).toContain('<svg');
+    });
+
+    it('a reviewer severity outside the enum ("High") counts as major; an unusable review is asked for again once', async () => {
+      process.env.CADAI_SPEC_REVIEW_RETRIES = '0';
+      const reviewReplies: unknown[] = [
+        { findings: [] }, // A, attempt 1: no matchesRequest -> unusable, asked again
+        { matchesRequest: true, findings: [{ issue: 'Arm missing', severity: 'High' }] }, // A, attempt 2
+      ];
+      invokeMock.mockImplementation((messages: unknown) => {
+        const text = JSON.stringify(messages);
+        if (text.includes('Evaluate whether this concept sheet matches the request')) return Promise.resolve(reviewReplies.shift());
+        if (text.includes('Generate the Assembly Spec for Variant A')) return Promise.resolve(baseSpec({ assemblyName: 'box_a' }));
+        return Promise.resolve({
+          brief: 'Plan',
+          assumptions: [],
+          openQuestions: [],
+          variants: [{ id: 'a', name: 'VarA', idea: 'A' }], // lower-case id, read as "A"
+          recommendedId: 'a',
+        });
+      });
+
+      const agent = createCadAgent('claude-haiku-5.5');
+      const result = await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, { configurable: { thread_id: newKey() } });
+
+      expect(reviewReplies).toHaveLength(0);
+      const varA = gatePayload(result).variants!.find((v) => v.id === 'A')!;
+      expect(varA.review?.validated).toBe(false);
+      expect(varA.review?.findings).toEqual([{ issue: 'Arm missing', severity: 'major' }]);
+    });
+
+    it('a variant spec cut off at max_tokens is retried with a "be concise" ask, and the last failure says it was cut off', async () => {
+      const variantPrompts: string[] = [];
+      invokeMock.mockImplementation((messages: unknown) => {
+        const text = JSON.stringify(messages);
+        if (text.includes('Generate the Assembly Spec for Variant A')) {
+          variantPrompts.push(text);
+          return Promise.reject(new UnusableReplyError('max_tokens'));
+        }
+        return Promise.resolve({ brief: 'Plan', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'VarA', idea: 'A' }], recommendedId: 'A' });
+      });
+
+      const agent = createCadAgent('claude-haiku-5.5');
+      const deltas: string[] = [];
+      const stream = await agent.stream(
+        { messages: [new HumanMessage('a 40mm box')] },
+        { configurable: { thread_id: newKey() }, streamMode: 'custom' }
+      );
+      for await (const ev of stream) {
+        const e = ev as { t?: string; text?: string };
+        if (e.t === 'delta' && e.text) deltas.push(e.text);
+      }
+
+      expect(variantPrompts).toHaveLength(3);
+      expect(variantPrompts[0]).not.toContain('cut off at the output limit');
+      expect(variantPrompts[1]).toContain('cut off at the output limit');
+      expect(variantPrompts[1]).toContain('more concisely');
+      expect(variantPrompts[2]).toContain('more concisely');
+      expect(deltas.join('')).toContain('No valid spec after 3 attempts (reply cut off at the output limit).');
+    });
+
+    it('a variant spec cut off once is accepted on the concise retry', async () => {
+      let variantACalls = 0;
+      invokeMock.mockImplementation((messages: unknown) => {
+        const text = JSON.stringify(messages);
+        if (text.includes('Evaluate whether this concept sheet matches the request')) return Promise.resolve({ matchesRequest: true, findings: [] });
+        if (text.includes('Generate the Assembly Spec for Variant A')) {
+          variantACalls++;
+          return variantACalls === 1 ? Promise.reject(new UnusableReplyError('max_tokens')) : Promise.resolve(baseSpec({ assemblyName: 'box_a' }));
+        }
+        if (text.includes('Generate the Assembly Spec for Variant B')) return Promise.resolve(baseSpec({ assemblyName: 'box_b' }));
+        return Promise.resolve(TWO_VARIANT_PLAN);
+      });
+
+      const agent = createCadAgent('claude-haiku-5.5');
+      const result = await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, { configurable: { thread_id: newKey() } });
+
+      expect(variantACalls).toBe(2);
+      expect(gatePayload(result).variants!.find((v) => v.id === 'A')!.spec?.assemblyName).toBe('box_a');
+    });
+
+    it('a reviewer reply cut off at max_tokens gets the same second ask before falling back', async () => {
+      let reviewACalls = 0;
+      invokeMock.mockImplementation((messages: unknown) => {
+        const text = JSON.stringify(messages);
+        if (text.includes('Evaluate whether this concept sheet matches the request')) {
+          if (!text.includes('Variant A')) return Promise.resolve({ matchesRequest: true, findings: [] });
+          reviewACalls++;
+          return reviewACalls === 1 ? Promise.reject(new UnusableReplyError('max_tokens')) : Promise.resolve({ matchesRequest: true, findings: [] });
+        }
+        if (text.includes('Generate the Assembly Spec for Variant A')) return Promise.resolve(baseSpec({ assemblyName: 'box_a' }));
+        if (text.includes('Generate the Assembly Spec for Variant B')) return Promise.resolve(baseSpec({ assemblyName: 'box_b' }));
+        return Promise.resolve(TWO_VARIANT_PLAN);
+      });
+
+      const agent = createCadAgent('claude-haiku-5.5');
+      const result = await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, { configurable: { thread_id: newKey() } });
+
+      expect(reviewACalls).toBe(2);
+      const review = gatePayload(result).variants!.find((v) => v.id === 'A')!.review;
+      expect(review?.validated).toBe(true);
+      expect(review?.note).toBeUndefined();
     });
 
     it('one variant major -> only it goes back to architect, version bumps, others untouched', async () => {

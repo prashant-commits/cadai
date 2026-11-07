@@ -5,11 +5,11 @@ import { getCheckpointer, runCheckpointKey } from './checkpointer';
 
 const invokeMock = vi.fn();
 
-// Every node talks to the Experiential Labs gateway over the OpenAI wire
-// format, so faking ChatOpenAI is enough to keep these suites off the network.
-// Arrow functions have no [[Construct]] slot, so `new ChatOpenAI(...)` needs a
+// Every node talks to the Anthropic Messages API through @langchain/anthropic,
+// so faking ChatAnthropic is enough to keep these suites off the network.
+// Arrow functions have no [[Construct]] slot, so `new ChatAnthropic(...)` needs a
 // real constructible mock, not vi.fn(() => ...).
-vi.mock('@langchain/openai', () => {
+vi.mock('@langchain/anthropic', () => {
   class FakeChatModel {
     invoke = invokeMock;
     // architectNode reads its structured output with .stream() so the spec
@@ -20,7 +20,7 @@ vi.mock('@langchain/openai', () => {
     withConfig() { return this; }
     bindTools() { return this; }
   }
-  return { ChatOpenAI: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
+  return { ChatAnthropic: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
 });
 
 import { createCadAgent } from './graph';
@@ -41,7 +41,7 @@ afterAll(async () => {
   delete process.env.CADAI_MAX_ATTEMPTS;
 });
 
-function baseSpec(overrides: Record<string, any> = {}) {
+function baseSpec(overrides: Record<string, unknown> = {}) {
   return {
     assemblyName: 'test_box',
     boundingBox: { width: 40, length: 40, height: 40 },
@@ -54,8 +54,9 @@ function baseSpec(overrides: Record<string, any> = {}) {
 const draftResponse = (code: string) => ({ content: `\`\`\`openscad\n${code}\n\`\`\``, tool_calls: [] });
 
 // `__interrupt__` is bolted on by LangGraph's runtime, not part of AgentState.
-function gatePayload(result: any) {
-  return result[INTERRUPT][0].value;
+function gatePayload(result: unknown): { kind: string } {
+  const bag = result as Record<string, Array<{ value: { kind: string } }>>;
+  return bag[INTERRUPT][0].value;
 }
 
 /** A clean run: architect, then a drafter whose code compiles and matches. */
@@ -81,17 +82,17 @@ describe('visual critic', () => {
     await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, { configurable: { thread_id: newKey() } });
 
     // Call 2 is the critic.
-    const criticMessages = invokeMock.mock.calls[3][0] as any[];
+    const criticMessages = invokeMock.mock.calls[3][0] as Array<{ content?: unknown }>;
     const human = criticMessages[criticMessages.length - 1];
-    const parts = human.content as Array<Record<string, any>>;
+    const parts = human.content as Array<{ type?: string; image_url?: { url: string } }>;
 
     // Four views, each preceded by a label, plus the leading text block.
     const images = parts.filter((p) => p.type === 'image_url');
     expect(images).toHaveLength(4);
     for (const img of images) {
-      expect(img.image_url.url.startsWith('data:image/png;base64,')).toBe(true);
+      expect(img.image_url?.url.startsWith('data:image/png;base64,')).toBe(true);
       // A real render, not a stub.
-      expect(img.image_url.url.length).toBeGreaterThan(500);
+      expect(img.image_url?.url.length ?? 0).toBeGreaterThan(500);
     }
 
     // The request itself must reach the critic, or it has no intent to judge.
@@ -112,7 +113,7 @@ describe('visual critic', () => {
     const result = await agent.invoke({ messages: [new HumanMessage('a 40mm box')] }, config);
 
     const state = (await agent.getState(config)).values;
-    const visual = state.specViolations.filter((v: any) => v.kind === 'visual');
+    const visual = state.specViolations.filter((v: { kind: string; message: string }) => v.kind === 'visual');
     expect(visual).toHaveLength(1);
     expect(visual[0].message).toContain('points down instead of up');
     expect(visual[0].message).toContain('front');
@@ -155,7 +156,7 @@ describe('visual critic', () => {
 
     const state = (await agent.getState(config)).values;
     expect(state.isValid).toBe(false);
-    expect(state.specViolations.some((v: any) => v.kind === 'visual')).toBe(false);
+    expect(state.specViolations.some((v: { kind: string; message: string }) => v.kind === 'visual')).toBe(false);
   });
 
   it('survives a critic that throws', async () => {

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 
 const invokeMock = vi.fn();
 const streamMock = vi.fn();
-vi.mock('@langchain/openai', () => {
+vi.mock('@langchain/anthropic', () => {
   class F {
     invoke = invokeMock;
     stream = streamMock;
@@ -10,7 +10,7 @@ vi.mock('@langchain/openai', () => {
     withConfig() { return this; }
     bindTools() { return this; }
   }
-  return { ChatOpenAI: vi.fn().mockImplementation(function () { return new F(); }) };
+  return { ChatAnthropic: vi.fn().mockImplementation(function () { return new F(); }) };
 });
 
 import { createCadAgent } from './graph';

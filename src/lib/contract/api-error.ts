@@ -191,6 +191,15 @@ export function toApiError(err: unknown): ApiError {
   if (name === 'RunExpiredError') {
     return { code: 'run_expired', message: clip(message, 300) || 'This paused run expired or was not found on this server.' };
   }
+  if (name === 'UnusableReplyError') {
+    const stop = err && typeof err === 'object' && 'stop' in err ? String((err as { stop: unknown }).stop) : '';
+    return {
+      code: 'model_error',
+      message: stop === 'refusal'
+        ? 'The model refused the reply.'
+        : 'The model reply was cut off before it finished.',
+    };
+  }
   if (isRunBudget(name, message)) return { code: 'timeout', message: TIMEOUT };
   if (providerOverloaded(status, message)) {
     return { code: 'model_unavailable', message: MODEL_UNAVAILABLE, retryable: true };

@@ -13,7 +13,7 @@ import { getCheckpointer, runCheckpointKey } from './checkpointer';
 const replyMock = vi.fn();
 const flags = vi.hoisted(() => ({ dropTag: false }));
 
-vi.mock('@langchain/openai', async () => {
+vi.mock('@langchain/anthropic', async () => {
   const { BaseChatModel } = await import('@langchain/core/language_models/chat_models');
   const { AIMessage } = await import('@langchain/core/messages');
   const { RunnableLambda } = await import('@langchain/core/runnables');
@@ -43,7 +43,7 @@ vi.mock('@langchain/openai', async () => {
       return this;
     }
   }
-  return { ChatOpenAI: vi.fn().mockImplementation(function () { return new FakeChat({}); }) };
+  return { ChatAnthropic: vi.fn().mockImplementation(function () { return new FakeChat({}); }) };
 });
 
 import { createCadAgent } from './graph';

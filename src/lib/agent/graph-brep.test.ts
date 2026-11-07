@@ -11,7 +11,7 @@ import type { AgentStateType } from './graph';
 const callMock = vi.fn();
 const runBrepMock = vi.fn();
 
-vi.mock('@langchain/openai', () => {
+vi.mock('@langchain/anthropic', () => {
   class FakeChatModel {
     invoke = (messages: unknown) => callMock(messages);
     async *stream(messages: unknown) { yield await callMock(messages); }
@@ -19,7 +19,7 @@ vi.mock('@langchain/openai', () => {
     withConfig() { return this; }
     bindTools() { return this; }
   }
-  return { ChatOpenAI: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
+  return { ChatAnthropic: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
 });
 vi.mock('../engine/brep-runner', () => ({ runBrep: (script: string) => runBrepMock(script) }));
 

@@ -8,7 +8,7 @@ import { skeletonSignature } from './spec-variants';
 /** Records the temperature of the model instance each call was made on. */
 const callMock = vi.fn();
 
-vi.mock('@langchain/openai', () => {
+vi.mock('@langchain/anthropic', () => {
   class FakeChatModel {
     temperature: number | undefined;
     model: string | undefined;
@@ -31,7 +31,7 @@ vi.mock('@langchain/openai', () => {
     }
   }
   return {
-    ChatOpenAI: vi.fn().mockImplementation(function (params: { temperature?: number; model?: string }) {
+    ChatAnthropic: vi.fn().mockImplementation(function (params: { temperature?: number; model?: string }) {
       return new FakeChatModel(params);
     }),
   };

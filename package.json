@@ -12,6 +12,7 @@
     "mcp": "tsx src/mcp-server.ts",
     "eval:generation": "tsx eval/generation/run.ts",
     "eval:compare": "tsx eval/generation/compare.ts",
+    "eval:matrix": "tsx eval/generation/matrix.ts",
     "eval:architect": "tsx eval/architect/run.ts",
     "eval:architect:render": "tsx eval/architect/render.ts",
     "eval:architect:rescore": "tsx eval/architect/rescore.ts",
@@ -19,6 +20,7 @@
     "geo:serve": "f=\"${TMPDIR:-/tmp}/cadai-geo-dev-token\"; if [ -e \"$f\" ]; then chmod 0600 \"$f\"; fi; umask 077; printf '%s\\n' dev > \"$f\"; chmod 0400 \"$f\"; CADAI_GEO_TOKEN_FILE=\"$f\" geo/.venv/bin/python -m uvicorn cadai_geo.service:app --host 127.0.0.1 --port 8765"
   },
   "dependencies": {
+    "@langchain/anthropic": "1.5.9",
     "@langchain/core": "^1.2.9",
     "@langchain/langgraph": "^1.4.12",
     "@langchain/openai": "^1.5.11",

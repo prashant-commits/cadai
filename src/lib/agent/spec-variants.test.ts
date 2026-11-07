@@ -14,7 +14,7 @@ import { HumanMessage } from '@langchain/core/messages';
 const invokeMock = vi.fn();
 const configCalls: unknown[] = [];
 
-vi.mock('@langchain/openai', () => {
+vi.mock('@langchain/anthropic', () => {
   class FakeChatModel {
     // Revision replies are widened so they differ from the previous spec (see revision-fixture.ts).
     invoke = async (...args: unknown[]) => {
@@ -37,13 +37,14 @@ vi.mock('@langchain/openai', () => {
     }
   }
   return {
-    ChatOpenAI: vi.fn().mockImplementation(function () {
+    ChatAnthropic: vi.fn().mockImplementation(function () {
       return new FakeChatModel();
     }),
   };
 });
 
 import { createCadAgent } from './graph';
+import { contentText } from './message-text';
 
 function baseSpec(overrides: Record<string, unknown> = {}): AssemblySpec {
   return {
@@ -391,10 +392,10 @@ describe('architect variants graph execution', () => {
       // 1. Planner and variant calls use DIFFERENT system messages
       const plannerSysMsg = plannerCallMessages[0];
       const variantSysMsg = variantACallMessages[0];
-      expect(plannerSysMsg.content).toContain('Mechanical Architect Planner');
-      expect(plannerSysMsg.content).not.toContain('Mechanical Architect Specifier');
-      expect(variantSysMsg.content).toContain('Mechanical Architect Specifier');
-      expect(variantSysMsg.content).not.toContain('Mechanical Architect Planner');
+      expect(contentText(plannerSysMsg.content)).toContain('Mechanical Architect Planner');
+      expect(contentText(plannerSysMsg.content)).not.toContain('Mechanical Architect Specifier');
+      expect(contentText(variantSysMsg.content)).toContain('Mechanical Architect Specifier');
+      expect(contentText(variantSysMsg.content)).not.toContain('Mechanical Architect Planner');
 
       // 2. Variant prompt contains planner brief
       const varAHumanMsg = variantACallMessages[variantACallMessages.length - 1];

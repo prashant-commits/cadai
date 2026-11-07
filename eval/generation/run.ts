@@ -16,6 +16,15 @@
  *   --critic on|off                  CADAI_VISUAL_CRITIC   (default off)
  *   --critic-model <slug>            CADAI_CRITIC_MODEL    (default claude-haiku-5.5)
  *   --reviewer-model <slug>          CADAI_REVIEWER_MODEL  (default: the run model)
+ *   --kernel openscad|brep           CADAI_KERNEL          (brep forces --pipeline architect)
+ *   --thinking off|adaptive          CADAI_THINKING
+ *   --effort low|medium|high         CADAI_EFFORT
+ *   --attempts N                     CADAI_MAX_ATTEMPTS    (default 1)
+ *
+ * Plumbing for matrix.ts, which runs one prompt per child process:
+ *   --out-dir <dir>   write results (and the final script) there instead of eval/results
+ *   --result <file>   also write the single run's metrics row to this file
+ *   --no-delay        skip the 5 s abort window
  *
  * runOne auto-approves up to 12 gates. Each resume is { action: 'approve' },
  * which selects the recommended variant. A run can pause at the spec gate
@@ -54,6 +63,8 @@ import { gateVariants } from '@/lib/agent/spec-variants';
 import { getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor, initLangfuseTracing } from '@/lib/tracing/langfuse';
 import { GenerationMetrics, SpecGateCapture, measureVisualMatch, metricsFromState, scoresFor, summarize } from './metrics';
+import { finalizeMetrics } from './brep-eval';
+import { UsageHandler } from './usage';
 import { EVAL_DEFAULT_MODEL, recursionLimitFromEnv, sheetsModelError } from './run-config';
 
 const DATASET = 'cadai-generation';
@@ -71,6 +82,13 @@ interface Args {
   critic?: 'on' | 'off';
   criticModel?: string;
   reviewerModel?: string;
+  kernel?: 'openscad' | 'brep';
+  thinking?: 'off' | 'adaptive';
+  effort?: 'low' | 'medium' | 'high';
+  attempts?: number;
+  outDir?: string;
+  result?: string;
+  noDelay?: boolean;
 }
 
 function onOff(value: string | undefined): 'on' | 'off' | undefined {
@@ -101,6 +119,25 @@ function parseArgs(argv: string[]): Args {
       const slug = argv[++i];
       if (slug) a.criticModel = slug;
     }
+    else if (v === '--kernel') {
+      const k = argv[++i];
+      if (k === 'openscad' || k === 'brep') a.kernel = k;
+    }
+    else if (v === '--thinking') {
+      const t = argv[++i];
+      if (t === 'off' || t === 'adaptive') a.thinking = t;
+    }
+    else if (v === '--effort') {
+      const e = argv[++i];
+      if (e === 'low' || e === 'medium' || e === 'high') a.effort = e;
+    }
+    else if (v === '--attempts') {
+      const n = Number(argv[++i]);
+      if (Number.isInteger(n) && n >= 1) a.attempts = n;
+    }
+    else if (v === '--out-dir') a.outDir = argv[++i];
+    else if (v === '--result') a.result = argv[++i];
+    else if (v === '--no-delay') a.noDelay = true;
     else if (v === '--reviewer-model') {
       const slug = argv[++i];
       if (slug) a.reviewerModel = slug;
@@ -111,6 +148,12 @@ function parseArgs(argv: string[]): Args {
 
 /** Flags override the defaults. Unset flags leave an explicit shell env alone. */
 function applyEvalEnv(args: Args) {
+  // The B-rep kernel only exists on the Architect pipeline.
+  if (args.kernel === 'brep') args.pipeline = 'architect';
+  if (args.kernel) process.env.CADAI_KERNEL = args.kernel;
+  if (args.thinking) process.env.CADAI_THINKING = args.thinking;
+  if (args.effort) process.env.CADAI_EFFORT = args.effort;
+  if (args.attempts) process.env.CADAI_MAX_ATTEMPTS = String(args.attempts);
   if (args.pipeline) process.env.CADAI_PIPELINE = args.pipeline;
   if (args.sheets) process.env.CADAI_SPEC_SHEETS = args.sheets;
   if (args.drafterStart) process.env.CADAI_DRAFTER_START = args.drafterStart;
@@ -130,7 +173,7 @@ function captureSpecGate(result: unknown, previous: SpecGateCapture | null): Spe
   };
 }
 
-const RESULTS_DIR = path.join(__dirname, '..', 'results');
+const DEFAULT_RESULTS_DIR = path.join(__dirname, '..', 'results');
 const stamp = (d: Date) => d.toISOString().replace(/[:.]/g, '-');
 
 interface PromptItem { id: string; prompt: string }
@@ -152,9 +195,10 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
   applyEvalEnv(args);
   const agent = createCadAgent(args.model);
   const key = runCheckpointKey(`eval-${args.tag}`, `${item.id}-${Date.now()}`);
+  const usage = new UsageHandler();
   const config = {
     configurable: { thread_id: key },
-    callbacks: handler ? [handler] : undefined,
+    callbacks: handler ? [handler, usage] : [usage],
     recursionLimit: recursionLimitFromEnv(),
   };
 
@@ -177,12 +221,22 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
     request: item.prompt,
     spec: state.assemblySpec ?? null,
   });
-  const m = metricsFromState(item.id, args.model, state, Date.now() - t0, specGate, visual);
+  const wallMs = Date.now() - t0;
+  const base = metricsFromState(item.id, args.model, state, wallMs, specGate, visual);
+  // B-rep: STEP re-import and parameter perturbation (re-runs the script), then the verdict.
+  const m = await finalizeMetrics({
+    ...base,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    costUsd: usage.cost(args.model),
+  }, state);
   // The final script beside the results, so a failing audit can be diagnosed without a re-run.
-  if (state.currentCode) fs.writeFileSync(jsonl.replace(/\.jsonl$/, `-${item.id}.scad`), state.currentCode);
-  console.log(`${item.id}: composed=${m.composed} floor=${m.floorOk} floating=${m.floatingCount} localFrame=${m.localFrameOk} errors=[${m.errorKinds.join(',')}] visual=${m.visualMatch} findings=${m.visualFindings} ${m.wallMs} ms`);
+  const ext = m.kernel === 'brep' ? 'py' : 'scad';
+  if (state.currentCode) fs.writeFileSync(jsonl.replace(/\.jsonl$/, `-${item.id}.${ext}`), state.currentCode);
+  console.log(`${item.id}: kernel=${m.kernel} workable=${m.workable} stage=${m.failureStage} composed=${m.composed} floor=${m.floorOk} floating=${m.floatingCount} localFrame=${m.localFrameOk} errors=[${m.errorKinds.join(',')}] visual=${m.visualMatch} findings=${m.visualFindings} ${m.wallMs} ms`);
   // Written per prompt so a killed run keeps what it finished.
   fs.appendFileSync(jsonl, JSON.stringify(m) + '\n');
+  if (args.result) fs.writeFileSync(args.result, JSON.stringify(m));
   return m;
 }
 
@@ -214,6 +268,7 @@ async function main() {
   }
 
   applyEvalEnv(args);
+  const resultsDir = args.outDir ? path.resolve(args.outDir) : DEFAULT_RESULTS_DIR;
   const sheetError = sheetsModelError(args.model, process.env.CADAI_SPEC_SHEETS);
   if (sheetError) throw new Error(sheetError);
   const items = (args.only.length ? prompts.filter((p) => args.only.includes(p.id)) : prompts).slice(0, args.limit);
@@ -221,14 +276,16 @@ async function main() {
     `pipeline ${process.env.CADAI_PIPELINE ?? 'default'}, ` +
     `sheets ${process.env.CADAI_SPEC_SHEETS}, drafter-start ${process.env.CADAI_DRAFTER_START}, ` +
     `critic ${process.env.CADAI_VISUAL_CRITIC} (${process.env.CADAI_CRITIC_MODEL}), ` +
-    `reviewer ${process.env.CADAI_REVIEWER_MODEL ?? `${args.model} (the run model)`}. ` +
+    `reviewer ${process.env.CADAI_REVIEWER_MODEL ?? `${args.model} (the run model)`}, ` +
+    `kernel ${process.env.CADAI_KERNEL ?? 'openscad'}, thinking ${process.env.CADAI_THINKING ?? 'default'}, ` +
+    `effort ${process.env.CADAI_EFFORT ?? 'default'}, attempts ${process.env.CADAI_MAX_ATTEMPTS}. ` +
     `Expect roughly ${items.length * 4}-${items.length * 24} model calls ` +
     `(planner, per-variant review rounds, drafter tool round, optional critic). ` +
     `Starting in 5 s, Ctrl+C to abort.`);
-  await new Promise((r) => setTimeout(r, 5000));
+  if (!args.noDelay) await new Promise((r) => setTimeout(r, 5000));
 
-  fs.mkdirSync(RESULTS_DIR, { recursive: true });
-  const base = path.join(RESULTS_DIR, `${args.tag}-${args.model}-${stamp(new Date())}`);
+  fs.mkdirSync(resultsDir, { recursive: true });
+  const base = path.join(resultsDir, `${args.tag}-${args.model}-${stamp(new Date())}`);
   const jsonl = `${base}.jsonl`;
   console.log(`per-prompt results: ${jsonl}`);
 

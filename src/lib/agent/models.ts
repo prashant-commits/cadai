@@ -3,9 +3,9 @@
  *
  * This is deliberately separate from model-provider.ts: the browser needs the
  * slug list for the picker and for coercing stale persisted slugs, and
- * importing model-provider would drag ChatOpenAI into the client bundle.
+ * importing model-provider would drag ChatAnthropic into the client bundle.
  *
- * Every model runs on the Anthropic API (its OpenAI-compatible endpoint) and
+ * Every model runs on the Anthropic Messages API and
  * authenticates server-side with ANTHROPIC_API_KEY, which is never sent to the
  * browser. Slugs use dots ("claude-haiku-5.5"); model-provider.ts maps them to
  * Anthropic model ids ("claude-haiku-5-5").
