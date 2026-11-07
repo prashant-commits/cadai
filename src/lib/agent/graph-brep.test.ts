@@ -77,7 +77,7 @@ const BODY = '@body box\nreturn Box(40, 40, 40, align=(Align.MIN, Align.MIN, Ali
 beforeEach(() => {
   callMock.mockReset(); runBrepMock.mockReset();
   process.env.CADAI_SPEC_SHEETS = 'off'; process.env.CADAI_MAX_VARIANTS = '1'; process.env.CADAI_MAX_ATTEMPTS = '3';
-  process.env.CADAI_PIPELINE = 'architect'; delete process.env.VERCEL;
+  delete process.env.CADAI_PIPELINE; delete process.env.CADAI_KERNEL; delete process.env.VERCEL;
 });
 afterEach(() => { delete process.env.CADAI_KERNEL; delete process.env.CADAI_PIPELINE; });
 
@@ -126,11 +126,23 @@ describe('CADAI_KERNEL=brep', () => {
   }, 120_000);
 });
 
-describe('default kernel is unchanged', () => {
-  it('without CADAI_KERNEL the Architect still writes OpenSCAD and runBrep is never called', async () => {
+describe('defaults', () => {
+  it('with no env the run is the Architect on the B-rep kernel', async () => {
+    script([BODY]);
+    runBrepMock.mockResolvedValue(okRun);
+    const { state } = await drive(newKey());
+    expect(state.pipeline).toBe('architect');
+    expect(state.kernel).toBe('brep');
+    expect(state.currentCode).toMatch(/^from build123d import \*/m);
+    expect(runBrepMock).toHaveBeenCalled();
+  }, 120_000);
+
+  it('CADAI_KERNEL=openscad: the Architect writes OpenSCAD and runBrep is never called', async () => {
+    process.env.CADAI_KERNEL = 'openscad';
     script(['@body box\ncube([40, 40, 40]);\n@end']);
     const { state } = await drive(newKey());
-    expect(state.kernel ?? 'openscad').toBe('openscad');
+    expect(state.pipeline).toBe('architect');
+    expect(state.kernel).toBe('openscad');
     expect(state.currentCode).toMatch(/module box\(\)/);
     expect(runBrepMock).not.toHaveBeenCalled();
   }, 120_000);

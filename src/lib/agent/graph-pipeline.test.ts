@@ -17,7 +17,7 @@ vi.mock('@langchain/anthropic', () => {
   return { ChatAnthropic: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
 });
 
-import { createCadAgent } from './graph';
+import { createCadAgent, resolveKernel, resolvePipeline } from './graph';
 
 const keys: string[] = [];
 let counter = 0;
@@ -76,9 +76,13 @@ beforeEach(() => {
   process.env.CADAI_MAX_VARIANTS = '1';
   process.env.CADAI_MAX_ATTEMPTS = '3';
   delete process.env.VERCEL;
+  delete process.env.CADAI_PIPELINE;
+  // Every body in this file is OpenSCAD; the kernel default (brep) is covered in graph-brep.test.ts.
+  process.env.CADAI_KERNEL = 'openscad';
 });
 afterEach(() => {
   delete process.env.CADAI_PIPELINE;
+  delete process.env.CADAI_KERNEL;
   delete process.env.CADAI_MAX_DURATION_MS;
 });
 
@@ -108,6 +112,7 @@ describe('CADAI_PIPELINE=architect', () => {
 describe('the pipeline is pinned per thread', () => {
   it('a thread started on the Drafter stays on it when the flag flips mid-run', async () => {
     process.env.CADAI_MAX_VARIANTS = '2';
+    process.env.CADAI_PIPELINE = 'drafter';
     script(['@body box\ncube([40, 40, 40]);\n@end'], 2); // two variants -> a spec gate pause
     let paused = false;
     const { state, kinds } = await drive(newKey(), (first) => { paused = isInterrupted(first); process.env.CADAI_PIPELINE = 'architect'; });
@@ -117,11 +122,63 @@ describe('the pipeline is pinned per thread', () => {
     expect(kinds).not.toContain('build');
   }, 120_000);
 
-  it('defaults to the Drafter when the flag is unset', async () => {
+  it('defaults to the Architect when the flag is unset', async () => {
+    script(['@body box\ncube([40, 40, 40]);\n@end']);
+    const { state, kinds } = await drive(newKey());
+    expect(state.pipeline).toBe('architect');
+    expect(kinds).toContain('build');
+    expect(kinds).not.toContain('drafter');
+  }, 120_000);
+
+  it('CADAI_PIPELINE=drafter reaches the Drafter, on OpenSCAD', async () => {
+    process.env.CADAI_PIPELINE = 'drafter';
+    delete process.env.CADAI_KERNEL;
     script(['unused']);
-    const { kinds } = await drive(newKey());
+    const { state, kinds } = await drive(newKey());
+    expect(state.pipeline).toBe('drafter');
+    expect(state.kernel).toBe('openscad');
     expect(kinds).toContain('drafter');
     expect(kinds).not.toContain('build');
+  }, 120_000);
+});
+
+describe('pipeline and kernel defaults', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('no env -> architect + brep, with no warning', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const pipeline = resolvePipeline({});
+    expect(pipeline).toBe('architect');
+    expect(resolveKernel(pipeline, {})).toBe('brep');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('CADAI_KERNEL=openscad selects OpenSCAD on the Architect', () => {
+    expect(resolveKernel('architect', { CADAI_KERNEL: 'openscad' })).toBe('openscad');
+  });
+
+  it('CADAI_PIPELINE=drafter selects the Drafter, which stays on OpenSCAD without a warning', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const env = { CADAI_PIPELINE: 'drafter' };
+    expect(resolvePipeline(env)).toBe('drafter');
+    expect(resolveKernel('drafter', env)).toBe('openscad');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('CADAI_KERNEL=brep with the Drafter keeps OpenSCAD and warns once', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(resolveKernel('drafter', { CADAI_KERNEL: 'brep' })).toBe('openscad');
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('the warning fires once per run, not on every architect entry', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.CADAI_PIPELINE = 'drafter';
+    process.env.CADAI_KERNEL = 'brep';
+    script(['unused']);
+    const { state } = await drive(newKey());
+    expect(state.kernel).toBe('openscad');
+    expect(warn.mock.calls.filter((c) => String(c[0]).includes('CADAI_KERNEL=brep'))).toHaveLength(1);
   }, 120_000);
 });
 

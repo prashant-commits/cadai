@@ -592,13 +592,13 @@ export const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => [],
   }),
-  /** Set once, on the thread's first architectNode entry, from CADAI_PIPELINE. Never changes afterwards. */
+  /** Set once, on the thread's first architectNode entry, from CADAI_PIPELINE (default architect). Never changes afterwards. */
   pipeline: Annotation<'drafter' | 'architect' | null>({
     reducer: (_, y) => y,
     default: () => null,
   }),
   /**
-   * Geometry kernel, pinned once per run beside `pipeline` from CADAI_KERNEL.
+   * Geometry kernel, pinned once per run beside `pipeline` from CADAI_KERNEL (default brep).
    * 'brep' (build123d, STEP export) needs the Architect pipeline; the Drafter stays on OpenSCAD.
    */
   kernel: Annotation<'openscad' | 'brep' | null>({
@@ -651,6 +651,29 @@ function writeRetry(
 /**
  * Creates the CAD AI LangGraph agent graph with tool-calling capabilities.
  */
+/**
+ * Default pipeline: the Architect. The Drafter is reachable only with
+ * CADAI_PIPELINE=drafter.
+ */
+export function resolvePipeline(env: Record<string, string | undefined>): 'drafter' | 'architect' {
+  return env.CADAI_PIPELINE === 'drafter' ? 'drafter' : 'architect';
+}
+
+/**
+ * Default kernel: B-rep (build123d, STEP export). OpenSCAD only with
+ * CADAI_KERNEL=openscad, or on the Drafter, which has no B-rep path
+ * (CADAI_KERNEL=brep there keeps OpenSCAD and warns once).
+ */
+export function resolveKernel(pipeline: 'drafter' | 'architect', env: Record<string, string | undefined>, warn = true): 'openscad' | 'brep' {
+  if (pipeline === 'drafter') {
+    if (warn && env.CADAI_KERNEL === 'brep') {
+      console.warn('CADAI_KERNEL=brep is ignored with CADAI_PIPELINE=drafter: the Drafter only writes OpenSCAD');
+    }
+    return 'openscad';
+  }
+  return env.CADAI_KERNEL === 'openscad' ? 'openscad' : 'brep';
+}
+
 export function createCadAgent(
   modelName?: string
 ) {
@@ -1231,7 +1254,7 @@ export function createCadAgent(
     const explanation = assemblySpec ? summarizeSpec(assemblySpec) : NO_SPEC_EXPLANATION;
 
     // Pinned for the thread. A later entry keeps the value already stored.
-    const pipeline = state.pipeline ?? (process.env.CADAI_PIPELINE === 'architect' ? 'architect' : 'drafter');
+    const pipeline = state.pipeline ?? resolvePipeline(process.env);
     return {
       specBrief: brief,
       specVariants: variants,
@@ -1254,7 +1277,7 @@ export function createCadAgent(
       gateAction: null,
       gateFeedback: null,
       pipeline,
-      kernel: state.kernel ?? (pipeline === 'architect' && process.env.CADAI_KERNEL === 'brep' ? 'brep' : 'openscad'),
+      kernel: state.kernel ?? resolveKernel(pipeline, process.env),
     };
   }
 

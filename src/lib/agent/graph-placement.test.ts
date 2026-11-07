@@ -91,6 +91,7 @@ async function runApproved(
 describe('deterministic assembly placement', () => {
   beforeEach(() => {
     // Exact call counts; vision is covered by its own suite.
+    process.env.CADAI_PIPELINE = 'drafter'; // this suite is about the Drafter; the default is the Architect
     process.env.CADAI_VISUAL_CRITIC = 'off';
     // Several tests here exercise a repair; the loop is parked by default.
     process.env.CADAI_MAX_ATTEMPTS = '3';

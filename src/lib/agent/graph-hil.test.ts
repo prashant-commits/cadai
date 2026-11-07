@@ -110,6 +110,7 @@ describe('HIL gating (interrupt/resume)', () => {
   // every count in this file a statement about two unrelated things at once.
   beforeEach(() => {
     process.env.CADAI_VISUAL_CRITIC = 'off';
+    process.env.CADAI_PIPELINE = 'drafter'; // this suite is about the Drafter; the default is the Architect
     // These tests exercise the repair loop, which is parked (default 1 pass).
     process.env.CADAI_MAX_ATTEMPTS = '3';
     invokeMock.mockReset();

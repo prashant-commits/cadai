@@ -105,6 +105,7 @@ describe('spec sheets and reviewer loop', () => {
   beforeEach(() => {
     invokeMock.mockReset();
     lastConfig = null;
+    process.env.CADAI_PIPELINE = 'drafter'; // this suite is about the Drafter; the default is the Architect
     process.env.CADAI_SPEC_SHEETS = 'on';
     process.env.CADAI_MAX_VARIANTS = '3';
     delete process.env.CADAI_SPEC_REVIEW_RETRIES;
