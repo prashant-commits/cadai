@@ -3,6 +3,7 @@ import type { AgentStateType } from '@/lib/agent/graph';
 import { isZeroVec } from '@/lib/design/placement-geometry';
 import { parseParams } from '@/lib/design/parse-params';
 import { judgeCompiledModel, type VisualCritique } from './judge';
+import { classifyParams } from './param-classify';
 
 export interface GenerationMetrics {
   id: string;
@@ -48,8 +49,19 @@ export interface GenerationMetrics {
   partsValid?: number;
   /** B-rep: a STEP came back and re-imports as >= 1 valid solid. */
   stepOk?: boolean;
-  /** Parameters live under perturbation (B-rep), or paramCount - deadParams (OpenSCAD). */
+  /**
+   * Parameters the live ratio is taken over: numeric, not `$`-prefixed, not fixed
+   * (min == max) and not guide-only. B-rep: the ones perturbed (cap 12).
+   */
+  eligibleParams?: number;
+  /** Eligible parameters that change the model (B-rep: under perturbation; OpenSCAD: not swept dead). */
   liveParams?: number;
+  /** Eligible parameters that did not change the model, by name. */
+  deadParamNames?: string[];
+  /** Parameters whose range has min == max. Left out of the ratio. */
+  fixedParams?: string[];
+  /** Parameters no geometry code reads, directly or through derived values. Left out of the ratio. */
+  guideParams?: string[];
   /** B-rep: parameters whose perturbed value made the script fail. They also count as live. */
   breakingParams?: number;
   /** B-rep: numeric parameters parsed from the final script, before the perturbation cap. */
@@ -168,6 +180,9 @@ export function metricsFromState(
   const parsed = state.currentCode ? parseParams(state.currentCode) : [];
   const paramCount = parsed.filter((p) => typeof p.value === 'number').length;
   const deadParams = violations.filter((v) => v.kind === 'dead_parameter').length;
+  const classes = state.currentCode ? classifyParams(state.currentCode) : null;
+  const eligible = classes?.eligible.map((p) => p.name) ?? [];
+  const deadNames = violations.filter((v) => v.kind === 'dead_parameter').map((v) => String(v.field)).filter((n) => eligible.includes(n));
   const kernel = state.kernel === 'brep' ? 'brep' : 'openscad';
   const lastAttempt = state.attemptHistory?.[state.attemptHistory.length - 1];
   const brepFields = kernel === 'brep'
@@ -197,7 +212,11 @@ export function metricsFromState(
     visualFindings: judged.visualFindings,
     kernel,
     ...brepFields,
-    ...(kernel === 'openscad' ? { liveParams: Math.max(0, paramCount - deadParams) } : {}),
+    fixedParams: classes?.fixed ?? [],
+    guideParams: classes?.guide ?? [],
+    ...(kernel === 'openscad'
+      ? { eligibleParams: eligible.length, deadParamNames: deadNames, liveParams: eligible.length - deadNames.length }
+      : {}),
   };
 }
 
@@ -206,9 +225,11 @@ export function geometryOk(m: GenerationMetrics): boolean {
   return m.kernel === 'brep' ? m.brepOk === true : m.compileOk;
 }
 
+/** Live share over the eligible parameters; null when there are none to judge. */
 function liveShare(m: GenerationMetrics): number | null {
-  if (!m.paramCount) return null;
-  return (m.liveParams ?? 0) / m.paramCount;
+  const denominator = m.eligibleParams ?? m.paramCount;
+  if (!denominator) return null;
+  return (m.liveParams ?? 0) / denominator;
 }
 
 /**
@@ -248,7 +269,7 @@ export function failureOf(m: GenerationMetrics, firstError?: string): { failureS
   }
   const share = liveShare(m);
   if (share !== null && share < LIVE_PARAM_SHARE) {
-    return { failureStage: 'params', failureDetail: `${m.liveParams ?? 0}/${m.paramCount} parameters change the model` };
+    return { failureStage: 'params', failureDetail: `${m.liveParams ?? 0}/${m.eligibleParams ?? m.paramCount} parameters change the model${m.deadParamNames?.length ? ` (dead: ${m.deadParamNames.join(', ')})` : ''}` };
   }
   return { failureStage: 'none' };
 }

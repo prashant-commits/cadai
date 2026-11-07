@@ -9,8 +9,8 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AgentStateType } from '@/lib/agent/graph';
 import { runBrep, type BrepPart, type BrepResult } from '@/lib/engine/brep-runner';
-import { parseParams } from '@/lib/design/parse-params';
 import { setParamValue } from '@/lib/design/write-params';
+import { classifyParams } from './param-classify';
 import { perturbedValue, withVerdict, type GenerationMetrics } from './metrics';
 
 export const MAX_PERTURBED_PARAMS = 12;
@@ -28,6 +28,25 @@ export const defaultBrepDeps: BrepEvalDeps = {
   checkStep: checkStepWithPython,
 };
 
+/** Every line the checker prints starts with this, so noise around it cannot be mistaken for the result. */
+export const STEP_CHECK_PREFIX = '@@cadai-step-check@@';
+const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+
+/** Reads the one prefixed JSON line out of whatever the checker printed (escape codes included). */
+export function parseStepCheckOutput(out: string): StepCheck {
+  const clean = out.replace(ANSI, '');
+  for (const line of clean.split(/\r?\n/)) {
+    const at = line.indexOf(STEP_CHECK_PREFIX);
+    if (at < 0) continue;
+    try {
+      const parsed = JSON.parse(line.slice(at + STEP_CHECK_PREFIX.length).trim()) as StepCheck;
+      return { solids: Number(parsed.solids) || 0, valid: parsed.valid === true, error: parsed.error };
+    } catch { /* keep looking */ }
+  }
+  const tail = clean.trim().split('\n').filter(Boolean).slice(-2).join(' | ').slice(0, 200);
+  return { solids: 0, valid: false, error: `step check printed no result${tail ? `: ${tail}` : ''}` };
+}
+
 /** Writes the STEP to a temp file and asks the geo Python (build123d) to re-import it. */
 export async function checkStepWithPython(stepBase64: string): Promise<StepCheck> {
   const py = process.env.CADAI_GEO_PYTHON ?? path.resolve(process.cwd(), 'geo/.venv/bin/python');
@@ -37,18 +56,18 @@ export async function checkStepWithPython(stepBase64: string): Promise<StepCheck
     await fs.writeFile(file, Buffer.from(stepBase64, 'base64'));
     const script = path.join(__dirname, 'step-check.py');
     const out = await new Promise<string>((resolve, reject) => {
-      const child = spawn(py, ['-I', script, file], { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
-      let stdout = '';
-      let stderr = '';
+      const child = spawn(py, ['-I', script, file], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, NO_COLOR: '1', TERM: 'dumb', PYTHONUNBUFFERED: '1' },
+      });
+      let text = '';
       const timer = setTimeout(() => child.kill('SIGKILL'), 60_000);
-      child.stdout.on('data', (c) => { stdout += c; });
-      child.stderr.on('data', (c) => { stderr += c; });
+      child.stdout.on('data', (c) => { text += c; });
+      child.stderr.on('data', (c) => { text += c; });
       child.on('error', (e) => { clearTimeout(timer); reject(e); });
-      child.on('close', () => { clearTimeout(timer); resolve(stdout || stderr); });
+      child.on('close', () => { clearTimeout(timer); resolve(text); });
     });
-    const line = out.trim().split('\n').filter(Boolean).pop() ?? '';
-    const parsed = JSON.parse(line) as StepCheck;
-    return { solids: Number(parsed.solids) || 0, valid: parsed.valid === true, error: parsed.error };
+    return parseStepCheckOutput(out);
   } catch (e) {
     return { solids: 0, valid: false, error: `step check unavailable: ${(e as Error).message}`.slice(0, 300) };
   } finally {
@@ -75,25 +94,42 @@ export function geometryChanged(base: BrepResult, next: BrepResult): boolean {
   return false;
 }
 
-export interface PerturbResult { tested: number; live: number; dead: number; breaking: number; total: number }
+export interface PerturbResult {
+  /** Eligible parameters perturbed (cap 12). */
+  tested: number;
+  live: number;
+  dead: number;
+  deadNames: string[];
+  breaking: number;
+  /** Numeric parameters in the script, fixed and guide-only included. */
+  total: number;
+  fixed: string[];
+  guide: string[];
+}
 
-/** Re-runs the script once per parameter (cap 12) at a different in-range value. */
+/**
+ * Re-runs the script once per eligible parameter (cap 12) at a different
+ * in-range value. Fixed (min == max) and guide-only parameters are not tested.
+ */
 export async function perturbParams(
   code: string,
   baseline: BrepResult,
   run: BrepEvalDeps['runBrep'],
   cap = MAX_PERTURBED_PARAMS,
 ): Promise<PerturbResult> {
-  const numeric = parseParams(code).filter((p) => typeof p.value === 'number');
-  const out: PerturbResult = { tested: 0, live: 0, dead: 0, breaking: 0, total: numeric.length };
-  for (const p of numeric.slice(0, cap)) {
+  const classes = classifyParams(code);
+  const out: PerturbResult = {
+    tested: 0, live: 0, dead: 0, deadNames: [], breaking: 0,
+    total: classes.total.length, fixed: classes.fixed, guide: classes.guide,
+  };
+  for (const p of classes.eligible.slice(0, cap)) {
     out.tested += 1;
-    const next = perturbedValue({ value: p.value as number, min: p.min, max: p.max, step: p.step });
-    if (next === null) { out.dead += 1; continue; }
+    const next = perturbedValue(p);
+    if (next === null) { out.dead += 1; out.deadNames.push(p.name); continue; }
     const result = await run(setParamValue(code, p.name, next));
     if (!result.ok) { out.live += 1; out.breaking += 1; continue; }
     if (geometryChanged(baseline, result)) out.live += 1;
-    else out.dead += 1;
+    else { out.dead += 1; out.deadNames.push(p.name); }
   }
   return out;
 }
@@ -136,10 +172,14 @@ export async function finalizeMetrics(
       next.partsTotal = baseline.parts.length;
       next.partsValid = baseline.parts.filter((p) => p.valid).length;
       const r = await perturbParams(code, baseline, deps.runBrep);
-      next.paramCount = r.tested;
+      next.paramCount = r.total;
       next.paramTotal = r.total;
+      next.eligibleParams = r.tested;
       next.liveParams = r.live;
       next.deadParams = r.dead;
+      next.deadParamNames = r.deadNames;
+      next.fixedParams = r.fixed;
+      next.guideParams = r.guide;
       next.breakingParams = r.breaking;
     } else {
       // The final script did not reproduce its own result: count it as a geometry failure.

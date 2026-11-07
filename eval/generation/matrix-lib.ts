@@ -98,9 +98,10 @@ function liveShare(rows: MatrixRow[]): string {
   let total = 0;
   for (const r of rows) {
     const m = r.metrics;
-    if (!m?.paramCount || m.liveParams === undefined) continue;
+    const eligible = m?.eligibleParams ?? m?.paramCount;
+    if (!m || !eligible || m.liveParams === undefined) continue;
     live += m.liveParams;
-    total += m.paramCount;
+    total += eligible;
   }
   return total === 0 ? '-' : `${live}/${total} (${Math.round((100 * live) / total)}%)`;
 }

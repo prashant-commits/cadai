@@ -12,8 +12,10 @@ const SCRIPT = [
   'width = 40  # [20:5:80] width',
   'height = 80  # [20:10:80] at the max',
   'depth = 10  # [10:10:10] pinned',
+  'note = 3  # [1:1:9] only drawn as a guide',
+  'shim = 2  # [0:1:5] read by the body, but the mock ignores it',
   'def body():',
-  '    return Box(width, 10, height)',
+  '    return Box(width, 10, height + 0 * shim)',
 ].join('\n');
 
 function result(width: number, extra: Partial<BrepResult> = {}): BrepResult {
@@ -38,7 +40,7 @@ function brepState(over: Record<string, unknown> = {}): State {
 
 const base = (state: State) => metricsFromState('p', 'claude-haiku-5.5', state, 1000);
 
-/** Any change to width or height moves the model. Depth never does, so it is dead (and pinned in SCRIPT). */
+/** Any change to width or height moves the model. Shim never does, so it is dead; depth is fixed and note is a guide. */
 const liveWidthDeps = (over: Partial<BrepEvalDeps> = {}): BrepEvalDeps => ({
   checkStep: async () => ({ solids: 1, valid: true }),
   runBrep: async (script) => {
@@ -48,8 +50,15 @@ const liveWidthDeps = (over: Partial<BrepEvalDeps> = {}): BrepEvalDeps => ({
   },
   ...over,
 });
-/** Same as SCRIPT with a movable depth, and a model that depends on all three. */
-const LIVE_SCRIPT = SCRIPT.replace('[10:10:10] pinned', '[10:10:50] depth');
+/** A script whose three parameters all feed geometry, and a model that depends on all three. */
+const LIVE_SCRIPT = [
+  'from build123d import *',
+  'width = 40  # [20:5:80] width',
+  'height = 80  # [20:10:80] at the max',
+  'depth = 10  # [10:10:50] depth',
+  'def body():',
+  '    return Box(width, depth, height)',
+].join('\n');
 const allLiveDeps = (over: Partial<BrepEvalDeps> = {}): BrepEvalDeps => ({
   checkStep: async () => ({ solids: 1, valid: true }),
   runBrep: async (script) => {
@@ -86,13 +95,16 @@ describe('perturbParams', () => {
       return result(40);
     });
     const r = await perturbParams(SCRIPT, result(40), run);
-    expect(r).toEqual({ tested: 3, live: 2, dead: 1, breaking: 1, total: 3 });
+    expect(r).toEqual({
+      tested: 3, live: 2, dead: 1, deadNames: ['shim'], breaking: 1, total: 5, fixed: ['depth'], guide: ['note'],
+    });
   });
 
   it('caps the tested parameters at 12', async () => {
-    const many = ['from build123d import *', ...Array.from({ length: 15 }, (_, i) => `p${i} = 10  # [0:1:20]`)].join('\n');
+    const names = Array.from({ length: 15 }, (_, i) => `p${i}`);
+    const many = ['from build123d import *', ...names.map((n) => `${n} = 10  # [0:1:20]`), 'def body():', `    return Box(${names.slice(0, 3).join(', ')}) + ${names.slice(3).map((n) => `${n}`).join(' + ')}`].join('\n');
     const r = await perturbParams(many, result(40), async () => result(40));
-    expect(r).toMatchObject({ tested: 12, total: 15, dead: 12 });
+    expect(r).toMatchObject({ tested: 12, total: 15, dead: 12, guide: [] });
   });
 });
 
@@ -102,7 +114,7 @@ describe('finalizeMetrics (B-rep)', () => {
     const m = await finalizeMetrics(base(state), state, allLiveDeps());
     expect(m).toMatchObject({
       kernel: 'brep', brepOk: true, stepOk: true, partsTotal: 1, partsValid: 1,
-      paramCount: 3, paramTotal: 3, liveParams: 3, deadParams: 0, breakingParams: 0,
+      paramCount: 3, paramTotal: 3, eligibleParams: 3, liveParams: 3, deadParams: 0, deadParamNames: [], fixedParams: [], guideParams: [], breakingParams: 0,
       failureStage: 'none', workable: true,
     });
   });
@@ -133,7 +145,11 @@ describe('finalizeMetrics (B-rep)', () => {
 
   it('fails at params when every parameter is dead', async () => {
     const m = await finalizeMetrics(base(brepState()), brepState(), liveWidthDeps({ runBrep: async () => result(40) }));
-    expect(m).toMatchObject({ liveParams: 0, deadParams: 3, workable: false, failureStage: 'params' });
+    expect(m).toMatchObject({ eligibleParams: 3, liveParams: 0, deadParams: 3, workable: false, failureStage: 'params' });
+    expect(m.deadParamNames).toEqual(['width', 'height', 'shim']);
+    expect(m.fixedParams).toEqual(['depth']);
+    expect(m.guideParams).toEqual(['note']);
+    expect(m.failureDetail).toContain('dead: width, height, shim');
   });
 
   it('treats a baseline that does not re-run as a geometry failure', async () => {
@@ -146,7 +162,7 @@ describe('finalizeMetrics (B-rep)', () => {
     const m = await finalizeMetrics(base(brepState()), brepState(), liveWidthDeps({
       runBrep: async (script) => (/^height = 70/m.test(script) ? ({ ...result(1), ok: false, error: 'x' } as BrepResult) : result(40)),
     }));
-    expect(m).toMatchObject({ liveParams: 1, breakingParams: 1, deadParams: 2 });
+    expect(m).toMatchObject({ eligibleParams: 3, liveParams: 1, breakingParams: 1, deadParams: 2 });
     expect(m.failureStage).toBe('params');
   });
 });
@@ -191,7 +207,7 @@ describe('workable', () => {
 describe('OpenSCAD rows', () => {
   it('get kernel, live params and a verdict without touching the kernel', async () => {
     const state = as_<State>({
-      assemblySpec: spec, currentCode: 'a = 5; // [1:1:9] a\nb = 6; // [1:1:9] b\n', validation: { valid: true }, attemptCount: 1,
+      assemblySpec: spec, currentCode: 'a = 5; // [1:1:9] a\nb = 6; // [1:1:9] b\nmodule m() { cube([a, b, 1]); }\n', validation: { valid: true }, attemptCount: 1,
       modelInfo: { boundingBox: { min: [0, 0, 0], max: [1, 1, 1] } },
       specViolations: [{ kind: 'dead_parameter', severity: 'warning', field: 'b', expected: '', measured: '', message: '' }],
       placementReport: null,
@@ -199,6 +215,6 @@ describe('OpenSCAD rows', () => {
     const deps = { runBrep: vi.fn(), checkStep: vi.fn() };
     const m = await finalizeMetrics(base(state), state, deps);
     expect(deps.runBrep).not.toHaveBeenCalled();
-    expect(m).toMatchObject({ kernel: 'openscad', paramCount: 2, deadParams: 1, liveParams: 1, workable: false, failureStage: 'params' });
+    expect(m).toMatchObject({ kernel: 'openscad', paramCount: 2, eligibleParams: 2, deadParams: 1, deadParamNames: ['b'], liveParams: 1, workable: false, failureStage: 'params' });
   });
 });

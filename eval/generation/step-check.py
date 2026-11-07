@@ -3,12 +3,15 @@
     python step-check.py <file.step>
 
 ``valid`` is true when every solid in the file is a valid B-rep. Any import
-failure prints ``{"solids": 0, "valid": false, "error": "..."}`` and exits 0, so
-the caller reads one JSON line either way.
+failure reports ``{"solids": 0, "valid": false, "error": "..."}`` and exits 0.
+The result is the one line that starts with PREFIX; the caller ignores every
+other line (library banners, escape codes) and strips escape codes around it.
 """
 
 import json
 import sys
+
+PREFIX = "@@cadai-step-check@@"
 
 
 def main(path: str) -> dict:
@@ -23,4 +26,6 @@ def main(path: str) -> dict:
 
 
 if __name__ == "__main__":
-    print(json.dumps(main(sys.argv[1])))
+    result = main(sys.argv[1])
+    sys.stdout.flush()
+    print(f"\n{PREFIX} {json.dumps(result)}", flush=True)
