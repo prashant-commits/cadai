@@ -156,11 +156,11 @@ export function maxVariantsFromEnv(raw: string | undefined): number {
 const VARIANT_IDS: VariantId[] = ['A', 'B', 'C'];
 
 export function processPlannerVariants(
-  variants: { id: VariantId; name: string; idea: string }[],
+  variants: { id: VariantId; name: string; idea: string; designLanguage?: string }[],
   recommendedId: VariantId,
   maxLimit: number = 3
 ): {
-  variants: { id: VariantId; name: string; idea: string }[];
+  variants: { id: VariantId; name: string; idea: string; designLanguage?: string }[];
   recommendedId: VariantId;
 } {
   const limit = Number.isFinite(maxLimit) && maxLimit >= 1 ? Math.min(Math.floor(maxLimit), 3) : 3; // 3 = A/B/C
@@ -168,7 +168,7 @@ export function processPlannerVariants(
   // never to a letter another variant already claims.
   const claimed = new Set<VariantId>(variants.map((v) => v.id));
   const seen = new Set<VariantId>();
-  const relettered: { id: VariantId; name: string; idea: string }[] = [];
+  const relettered: { id: VariantId; name: string; idea: string; designLanguage?: string }[] = [];
   for (const v of variants) {
     if (!seen.has(v.id)) {
       seen.add(v.id);

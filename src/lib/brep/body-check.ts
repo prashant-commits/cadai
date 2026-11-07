@@ -142,6 +142,60 @@ export function checkPythonBody(body: string, options: BodyCheckOptions = {}): B
 
 export const PRELUDE_SENTINEL = '# ---- cadai prelude end ----';
 
+export const FUSE_HELPER = `def _fuse(items):
+    groups = [([name], shape) for name, shape in items]
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(groups)):
+            for j in range(i + 1, len(groups)):
+                a, b = groups[i][1], groups[j][1]
+                fused = a + b
+                if len(fused.solids()) < len(a.solids()) + len(b.solids()):
+                    groups[i] = (groups[i][0] + groups[j][0], fused)
+                    del groups[j]
+                    merged = True
+                    break
+            if merged:
+                break
+    out = []
+    for names, shape in groups:
+        shape.label = "+".join(names)
+        out.append(shape)
+    return out`;
+
+export const GENERATED_PRELUDE_LINES = [
+  '# Generated from the approved Assembly Spec. Edit a parameter to preview; change the spec to keep it.',
+  'from build123d import *',
+  'import math as _math',
+  'from math import sin, cos, tan, radians, sqrt, pi',
+  '',
+  '# Spec expressions take degrees; model bodies use the math functions above (radians).',
+  'def _sind(deg): return _math.sin(_math.radians(deg))',
+  'def _cosd(deg): return _math.cos(_math.radians(deg))',
+  'def _tand(deg): return _math.tan(_math.radians(deg))',
+  '',
+  FUSE_HELPER,
+];
+export const GENERATED_PRELUDE = GENERATED_PRELUDE_LINES.join('\n');
+
+function normalizePrelude(text: string): string {
+  return text
+    .split('\n')
+    .map((l) => l.trimEnd())
+    .filter((l) => l.trim().length > 0)
+    .join('\n');
+}
+
+export function matchesGeneratedPrelude(prelude: string): boolean {
+  const norm = normalizePrelude(prelude);
+  const canonicalNorm = normalizePrelude(GENERATED_PRELUDE);
+  if (norm === canonicalNorm) return true;
+  const withoutComment = GENERATED_PRELUDE_LINES.filter((l) => !l.startsWith('#')).join('\n');
+  if (norm === normalizePrelude(withoutComment)) return true;
+  return false;
+}
+
 const ALLOWED_MATH_FUNCS = new Set([
   'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
   'radians', 'degrees', 'sqrt', 'pi', 'exp', 'log', 'floor', 'ceil',
@@ -163,11 +217,6 @@ const ALLOWED_PRELUDE_EXACT_LINES = new Set([
 ]);
 
 function stripPrelude(script: string): string {
-  if (script.includes(PRELUDE_SENTINEL)) {
-    const sentinelIdx = script.indexOf(PRELUDE_SENTINEL);
-    return script.slice(sentinelIdx + PRELUDE_SENTINEL.length);
-  }
-
   const lines = script.split('\n');
   let i = 0;
   while (i < lines.length) {
@@ -207,7 +256,17 @@ export function checkPythonScript(script: string): BodyCheck {
     return reject('control character in the script');
   }
 
-  const remainder = stripPrelude(script);
+  let remainder: string;
+  if (script.includes(PRELUDE_SENTINEL)) {
+    const sentinelIdx = script.indexOf(PRELUDE_SENTINEL);
+    const prelude = script.slice(0, sentinelIdx);
+    if (!matchesGeneratedPrelude(prelude)) {
+      return reject('prelude differs from the generated prelude');
+    }
+    remainder = script.slice(sentinelIdx + PRELUDE_SENTINEL.length);
+  } else {
+    remainder = stripPrelude(script);
+  }
   let tokens: Tok[];
   try {
     tokens = tokenize(remainder);

@@ -16,7 +16,7 @@ import {
   type Component,
   type Term,
 } from './blockout-b123d';
-import { checkPythonBody, PRELUDE_SENTINEL } from './body-check';
+import { checkPythonBody, PRELUDE_SENTINEL, FUSE_HELPER } from './body-check';
 import { comment, specNames, isReservedName, type TermContext } from './py-names';
 
 /**
@@ -40,109 +40,7 @@ import { comment, specNames, isReservedName, type TermContext } from './py-names
 
 const AXES = ['x', 'y', 'z'] as const;
 
-/**
- * Fuses the parts that really share material. Box contact only nominates candidates:
- * two boxes that meet at an edge, or whose boxes overlap in empty space, would fuse into a
- * compound of two solids, so a pair merges only when the fuse has fewer solids than its inputs.
- */
-const FUSE_HELPER = `def _fuse(items):
-    groups = [([name], shape) for name, shape in items]
-    merged = True
-    while merged:
-        merged = False
-        for i in range(len(groups)):
-            for j in range(i + 1, len(groups)):
-                a, b = groups[i][1], groups[j][1]
-                fused = a + b
-                if len(fused.solids()) < len(a.solids()) + len(b.solids()):
-                    groups[i] = (groups[i][0] + groups[j][0], fused)
-                    del groups[j]
-                    merged = True
-                    break
-            if merged:
-                break
-    out = []
-    for names, shape in groups:
-        shape.label = "+".join(names)
-        out.append(shape)
-    return out`;
 
-const ROUND_HELPERS = `try:
-    _cadai_notes
-except NameError:
-    _cadai_notes = []
-
-def _select_edges(shape, edges="outer"):
-    if not isinstance(edges, str):
-        return edges
-    if edges == "all":
-        return shape.edges()
-    elif edges == "vertical":
-        return shape.edges().filter_by(Axis.Z)
-    elif edges == "top":
-        max_z = shape.bounding_box().max.Z
-        top_edges = shape.edges().filter_by_position(Axis.Z, max_z - 1e-3, max_z + 1e-3)
-        return top_edges if top_edges else shape.faces().sort_by(Axis.Z)[-1].edges()
-    elif edges == "outer":
-        bb = shape.bounding_box()
-        tol = 1e-3
-        outer = [
-            e for e in shape.edges()
-            if abs(e.bounding_box().min.X - bb.min.X) < tol
-            or abs(e.bounding_box().max.X - bb.max.X) < tol
-            or abs(e.bounding_box().min.Y - bb.min.Y) < tol
-            or abs(e.bounding_box().max.Y - bb.max.Y) < tol
-        ]
-        return outer if outer else shape.edges()
-    return shape.edges()
-
-def _round(shape, r, edges="outer"):
-    if r is None or r <= 0:
-        return shape
-    try:
-        targets = _select_edges(shape, edges)
-        if not targets:
-            return shape
-        try:
-            bb = shape.bounding_box()
-            min_dim = min(bb.size.X, bb.size.Y, bb.size.Z)
-            if min_dim > 0 and r >= min_dim / 2:
-                _cadai_notes.append(f"_round skipped: radius {r}mm exceeds half of minimum dimension {min_dim}mm")
-                return shape
-        except Exception:
-            pass
-        out = fillet(targets, r)
-        if not out.is_valid:
-            _cadai_notes.append(f"_round produced invalid shape with radius {r}mm on {edges} edges")
-            return shape
-        return out
-    except Exception as e:
-        _cadai_notes.append(f"_round failed ({type(e).__name__}: {e}); returned unrounded shape")
-        return shape
-
-def _bevel(shape, d, edges="outer"):
-    if d is None or d <= 0:
-        return shape
-    try:
-        targets = _select_edges(shape, edges)
-        if not targets:
-            return shape
-        try:
-            bb = shape.bounding_box()
-            min_dim = min(bb.size.X, bb.size.Y, bb.size.Z)
-            if min_dim > 0 and d >= min_dim / 2:
-                _cadai_notes.append(f"_bevel skipped: chamfer {d}mm exceeds half of minimum dimension {min_dim}mm")
-                return shape
-        except Exception:
-            pass
-        out = chamfer(targets, d)
-        if not out.is_valid:
-            _cadai_notes.append(f"_bevel produced invalid shape with distance {d}mm on {edges} edges")
-            return shape
-        return out
-    except Exception as e:
-        _cadai_notes.append(f"_bevel failed ({type(e).__name__}: {e}); returned unbeveled shape")
-        return shape`;
 export interface EmitResult {
   script: string;
   skipped: { name: string; reason: string }[];
@@ -179,8 +77,6 @@ export function emitBrepScript(spec: AssemblySpec, bodies: Record<string, string
     'def _tand(deg): return _math.tan(_math.radians(deg))',
     '',
     FUSE_HELPER,
-    '',
-    ROUND_HELPERS,
     '',
     PRELUDE_SENTINEL,
     '',

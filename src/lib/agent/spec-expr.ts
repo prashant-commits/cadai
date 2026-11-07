@@ -239,6 +239,20 @@ export function resolveSpec(raw: AssemblySpec): { spec: AssemblySpec; errors: st
   const relations = raw.relations?.map((r) => ({ ...r, expr: canon(r.expr) }));
 
   for (const p of parameters ?? []) if (declare('parameter', p.name)) scope[p.name] = p.value;
+  if (
+    raw.designLanguage?.edgeRadius !== undefined &&
+    raw.designLanguage.edgeRadius > 0 &&
+    !declared.has('edge_r')
+  ) {
+    if (declare('parameter', 'edge_r')) scope['edge_r'] = raw.designLanguage.edgeRadius;
+  }
+  if (
+    raw.designLanguage?.minorRadius !== undefined &&
+    raw.designLanguage.minorRadius > 0 &&
+    !declared.has('minor_r')
+  ) {
+    if (declare('parameter', 'minor_r')) scope['minor_r'] = raw.designLanguage.minorRadius;
+  }
   for (const d of derived ?? []) {
     if (!declare('derived', d.name)) continue;
     try {

@@ -438,25 +438,15 @@ describe('relational spec prompt (Task 3)', () => {
     });
 
     it('OpenSCAD prompt snapshots/hashes remain pinned', () => {
-      const hashes: Record<string, string> = {
-        planner: sha256(systemPromptFor('planner', { kernel: 'openscad' })),
-        variant: sha256(systemPromptFor('variant', { kernel: 'openscad' })),
-        drafter: sha256(systemPromptFor('drafter', { kernel: 'openscad' })),
-        drafterPlaced: sha256(systemPromptFor('drafter', { placements: true, kernel: 'openscad' })),
-        repair: sha256(systemPromptFor('repair', { kernel: 'openscad' })),
-        critic: sha256(systemPromptFor('critic', { kernel: 'openscad' })),
-        reviewer: sha256(systemPromptFor('reviewer', { kernel: 'openscad' })),
-        build: sha256(systemPromptFor('build', { kernel: 'openscad' })),
-      };
-      // Pinned sha256 hashes verifying OpenSCAD prompts are unchanged
-      expect(hashes.planner).toBe(sha256(COMPOSED.planner));
-      expect(hashes.variant).toBe(sha256(COMPOSED.variant));
-      expect(hashes.drafter).toBe(sha256(COMPOSED.drafter));
-      expect(hashes.drafterPlaced).toBe(sha256(COMPOSED.drafterPlaced));
-      expect(hashes.repair).toBe(sha256(COMPOSED.repair));
-      expect(hashes.critic).toBe(sha256(COMPOSED.critic));
-      expect(hashes.reviewer).toBe(sha256(COMPOSED.reviewer));
-      expect(hashes.build).toBe(sha256(COMPOSED.build));
+      // Literal pinned pre-dl1 sha256 hashes of OpenSCAD system prompts
+      expect(sha256(systemPromptFor('planner', { kernel: 'openscad' }))).toBe('d14bab577c58b50cc5c894704f4d3189143eceb0a91840175ca2fb19772dc013');
+      expect(sha256(systemPromptFor('variant', { kernel: 'openscad' }))).toBe('6089ee4b4393d165c75590e9ceca6b9dbe86bbaf915bfbcd5580cc99db47b157');
+      expect(sha256(systemPromptFor('drafter', { kernel: 'openscad' }))).toBe('3eed6c25e5836af205a02554d22a10d7a5005d7ae20170aac2732b5130787aa2');
+      expect(sha256(systemPromptFor('drafter', { placements: true, kernel: 'openscad' }))).toBe('822e0e9c80c9732cc04d8898be3b9e6462cd80b8c836976a29512b52f2110a43');
+      expect(sha256(systemPromptFor('repair', { kernel: 'openscad' }))).toBe('803e8e4801d47d82640710b7bff8e40c27f19281608c65b263fadeffa8a617e3');
+      expect(sha256(systemPromptFor('critic', { kernel: 'openscad' }))).toBe('c786bcf29b2da378d4b6fe1fabc9d85661b505bb2a95268436f4e83be2f10906');
+      expect(sha256(systemPromptFor('reviewer', { kernel: 'openscad' }))).toBe('ff28ebfe17aa0f2209effb5e658ba13507d6adc348f4dc0c99cebfb54a2167cc');
+      expect(sha256(systemPromptFor('build', { kernel: 'openscad' }))).toBe('df8f22131318d039183dbcb498190b919c739741ef4cc60955a61a7f8b5b25f6');
     });
 
     it('B-rep prompts contain design-language guidance and no "no fillets" text', () => {
@@ -479,6 +469,7 @@ describe('relational spec prompt (Task 3)', () => {
       expect(brepVariant).toContain('edge_r');
 
       expect(brepReviewer).toContain('Geometry and design language only');
+      expect(brepReviewer).not.toContain('Check that outer edge treatment matches');
 
       expect(brepBuild).toContain('BUILD GUIDANCE');
       expect(brepBuild).toContain('apply the variant\'s designLanguage');

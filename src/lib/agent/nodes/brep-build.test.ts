@@ -116,4 +116,24 @@ describe('brepBuild body rejections', () => {
     expect(note?.reason).toContain('extrude(Plane.YZ * Polygon(*pts, align=None), amount=w)');
     expect(note?.reason).toContain('drawn from the blockout');
   });
+
+  it('tells the body model about edge_r and minor_r in parameter list (M3)', async () => {
+    const sWithDl = resolveSpec({
+      ...spec,
+      designLanguage: {
+        name: 'soft monolith',
+        principles: ['soft 6mm'],
+        edgeRadius: 6,
+        minorRadius: 1.5,
+      },
+    } as unknown as AssemblySpec).spec;
+    const { model, calls } = fakeModel(new AIMessage(good));
+    await makeBrepBuild(model as never)(state({ assemblySpec: sWithDl }));
+    const humanMsg = calls[0][1];
+    expect(humanMsg.getType()).toBe('human');
+    const content = typeof humanMsg.content === 'string' ? humanMsg.content : JSON.stringify(humanMsg.content);
+    expect(content).toContain('Parameter names:');
+    expect(content).toContain('edge_r');
+    expect(content).toContain('minor_r');
+  });
 });

@@ -2,7 +2,7 @@
 
 import tempfile
 from pathlib import Path
-from build123d import Box, Align
+from build123d import Box, Cylinder, Pos, Align, Axis, offset
 from cadai_geo.run import script_globals, run
 
 
@@ -55,3 +55,39 @@ result = r
         assert res["ok"] is True
         assert "notes" in res
         assert any("_round skipped" in n or "_round failed" in n for n in res["notes"])
+
+
+def test_edge_selection_outer_and_top():
+    ns = script_globals(full=False)
+    # Box 30x20x10 at origin
+    block = Box(30, 20, 10, align=(Align.MIN, Align.MIN, Align.MIN))
+    sel = ns["_select_edges"](block, "outer")
+    bot = [e for e in sel if abs(e.bounding_box().max.Z - block.bounding_box().min.Z) < 1e-4]
+    # Bottom face edges must be excluded from "outer"
+    assert len(bot) == 0
+    r = ns["_round"](block, 2, "outer")
+    bf = r.faces().sort_by(Axis.Z)[0]
+    # Bottom face area is preserved (only corners rounded by vertical edges: ~596 mm2, not 416 mm2)
+    assert bf.area > 590
+
+    # Part with hole
+    b = Box(40, 30, 10, align=(Align.MIN,)*3) - Pos(20, 15, 0) * Cylinder(3, 30)
+    top_edges = ns["_select_edges"](b, "top")
+    # Top face outer wire only: 4 edges, hole rim excluded
+    assert len(top_edges) == 4
+    o = ns["_round"](b, 1, "top")
+    assert o.is_valid
+    # Hole rim was NOT rounded
+    assert not any("CIRCLE" in str(e.geom_type) and getattr(e, "radius", 0) > 3.5 for e in o.edges())
+
+
+def test_thin_wall_tray_retry():
+    ns = script_globals(full=False)
+    sb = Box(50, 40, 20, align=(Align.MIN,)*3)
+    tray = offset(sb, amount=-2, openings=sb.faces().sort_by(Axis.Z)[-1])
+    # r=3 and r=6 exceed half wall (1 mm), retry/capping succeeds producing a valid filleted solid
+    for rr in (0.9, 1.5, 3, 6):
+        out = ns["_round"](tray, rr, "outer")
+        assert out.is_valid
+        assert abs(out.volume - tray.volume) > 1e-6
+

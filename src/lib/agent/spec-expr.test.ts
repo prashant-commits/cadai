@@ -114,8 +114,11 @@ describe('review round 1', () => {
   it('accepts guide expressions when validating (P0b) but still requests numbers only', () => {
     const withGuide = { ...base, guides: [{ label: 'dryer', kind: 'envelope', localExtents: [60, 60, 200], position: [0, 0, 0], shape: { kind: 'tube', axis: 'z', innerD: 'w/2' } }] };
     expect(AssemblySpecSchema.safeParse(withGuide).success).toBe(true);
-    const guideProps = (assemblySpecRequestSchema() as any).properties.guides.items.properties;
-    for (const f of [guideProps.localExtents, guideProps.position, guideProps.shape.anyOf[0].properties.innerD, guideProps.shape.anyOf[0].properties.wall]) {
+    const schemaObj = assemblySpecRequestSchema() as Record<string, unknown>;
+    const guideProps = ((schemaObj.properties as Record<string, unknown>).guides as Record<string, unknown>).items as Record<string, unknown>;
+    const gp = guideProps.properties as Record<string, unknown>;
+    const shapeUnion = gp.shape as { anyOf: Array<{ properties: Record<string, unknown> }> };
+    for (const f of [gp.localExtents, gp.position, shapeUnion.anyOf[0].properties.innerD, shapeUnion.anyOf[0].properties.wall]) {
       expect(JSON.stringify(f)).not.toContain('"string"');
     }
   });
@@ -199,5 +202,27 @@ describe('trig in degrees, as in OpenSCAD', () => {
     expect(evalExpr('cos(lean)', { lean: 60 })).toBeCloseTo(0.5, 9);
     expect(evalExpr('tan(45)', {})).toBeCloseTo(1, 9);
     expect(evalExpr('abs(0 - 4)', {})).toBe(4);
+  });
+
+  it('puts edge_r and minor_r from designLanguage into scope', () => {
+    const raw = {
+      assemblyName: 'dock',
+      designLanguage: {
+        name: 'soft monolith',
+        principles: ['round'],
+        edgeRadius: 6,
+        minorRadius: 2,
+      },
+      components: [
+        {
+          name: 'base',
+          position: ['2 * edge_r', 'minor_r', 0],
+          localExtents: [100, 50, 10],
+        },
+      ],
+    };
+    const { spec, errors } = resolveSpec(raw as never);
+    expect(errors).toEqual([]);
+    expect(spec.components?.[0].position).toEqual([12, 2, 0]);
   });
 });

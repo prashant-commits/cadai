@@ -506,14 +506,14 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
             const localFrames = r.local ? toModuleFrames({ ...r, parts: r.local }) : undefined;
             const placementReport = toPlacementReport(spec, frames, localFrames);
             const placementViolations = auditPlacement(placementReport, r.bbox?.min ?? null, spec);
-
             const jointedNames = new Set(
               (spec?.jointContracts ?? []).flatMap((j) => [j.partA, j.partB]).filter((n): n is string => Boolean(n))
             );
 
-            const notes = placementViolations
+            const placementNotes = placementViolations
               .filter((v) => v.kind === 'floor' || (v.kind === 'floating' && !jointedNames.has(v.field)))
               .map((v) => v.message);
+            const notes = [...(r.notes ?? []), ...placementNotes];
 
             if (r.disconnected && r.disconnected.length > 0) {
               for (const disc of r.disconnected) {

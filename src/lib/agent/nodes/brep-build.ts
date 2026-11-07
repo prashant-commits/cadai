@@ -104,6 +104,12 @@ function humanPrompt(spec: AssemblySpec, changes: string | null, ask: string[], 
   // The names as the script spells them (a name the script uses itself is prefixed `p_`).
   const { names } = specNames(spec, String);
   const parameters = (spec.parameters ?? []).map((parameter) => names.map.get(parameter.name) ?? parameter.name);
+  if (names.map.has('edge_r') && !parameters.includes(names.map.get('edge_r')!)) {
+    parameters.push(names.map.get('edge_r')!);
+  }
+  if (names.map.has('minor_r') && !parameters.includes(names.map.get('minor_r')!)) {
+    parameters.push(names.map.get('minor_r')!);
+  }
   const derived = (spec.derived ?? []).map((item) => names.map.get(item.name) ?? item.name);
   const blockouts = (spec.components ?? []).map((component) => {
     const body = blockoutFor(spec, component.name);

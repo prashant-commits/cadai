@@ -11,6 +11,7 @@ export interface PlannedVariant {
   id: VariantId;
   name: string;
   idea: string;
+  designLanguage?: string;
 }
 
 /** Planner brief, shared assumptions, open questions and sibling variants, in that order. */
@@ -34,7 +35,7 @@ export function variantPlanContext(variant: PlannedVariant, allVariants: Planned
   const otherVariants = allVariants.filter((v) => v.id !== variant.id);
   if (otherVariants.length > 0) {
     const othersText = otherVariants
-      .map((o) => `- Variant ${o.id}: ${o.name} - ${o.idea}`)
+      .map((o) => `- Variant ${o.id}: ${o.name} - ${o.idea}${o.designLanguage ? ` (design language: ${o.designLanguage})` : ''}`)
       .join('\n');
     parts.push(
       `Other variants planned (this variant must stay structurally distinct):\n${othersText}`
@@ -50,9 +51,10 @@ export function freshVariantPrompt(
   brief: SpecBrief,
   notes?: string[]
 ): string {
+  const dlText = variant.designLanguage ? ` (design language: ${variant.designLanguage})` : '';
   return [
     ...variantPlanContext(variant, allVariants, brief),
-    `Generate the Assembly Spec for Variant ${variant.id}: ${variant.name} - ${variant.idea}`,
+    `Generate the Assembly Spec for Variant ${variant.id}: ${variant.name} - ${variant.idea}${dlText}`,
     notes?.length ? `Human notes:\n${notes.join('\n')}` : '',
   ].filter(Boolean).join('\n\n');
 }

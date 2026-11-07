@@ -483,6 +483,26 @@ describe('M5: placeholders are labelled for the reviewer sheet and the drafter',
     expect(notes[2]).toBe('lip: added 5mm front lip');
   });
 
+  it('sheet notes put placeholders before design language style note (L4)', () => {
+    const s = {
+      sheet: 'test',
+      assemblyName: 'phone_stand',
+      boundingBox: { width: 100, length: 100, height: 100 },
+      designLanguage: { name: 'soft monolith', principles: [] },
+      components: [
+        { name: 'ghost1', description: 'no extents given', position: [0, 0, 0] },
+        { name: 'ghost2', description: 'no extents given', position: [0, 0, 0] },
+        { name: 'ghost3', description: 'no extents given', position: [0, 0, 0] },
+      ],
+    };
+    const notes = sheetNotes(s as never);
+    expect(notes).toHaveLength(3);
+    // All 3 slots should be the placeholder notes, style note does not bump a placeholder off
+    expect(notes[0]).toMatch(/^ghost1: not drawn/);
+    expect(notes[1]).toMatch(/^ghost2: not drawn/);
+    expect(notes[2]).toMatch(/^ghost3: not drawn/);
+  });
+
   it('the drafter is told which components are placeholders, not exact base shapes', async () => {
     invokeMock.mockImplementation(async (messages: unknown) => {
       switch (kindOf(messages)) {

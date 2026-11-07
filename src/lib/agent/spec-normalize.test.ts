@@ -76,4 +76,28 @@ describe('normalizeSpec', () => {
       minorRadius: 1.51,
     });
   });
+
+  it('leniently parses malformed or partial designLanguage without failing spec parse (L2)', () => {
+    const base = {
+      assemblyName: 'dock',
+      boundingBox: { width: 10, length: 10, height: 10 },
+      components: [],
+    };
+    const cases = [
+      { name: 'soft' },
+      { name: 'soft', principles: null },
+      { name: 'soft', principles: 'single principle' },
+      { name: 'soft', principles: [], edgeRadius: null },
+      { name: 'soft', principles: [], edgeRadius: '6 mm' },
+      'not even an object',
+    ];
+    for (const dl of cases) {
+      const res = AssemblySpecSchema.safeParse({ ...base, designLanguage: dl });
+      expect(res.success).toBe(true);
+      if (res.success) {
+        const norm = normalizeSpec(res.data);
+        expect(norm.assemblyName).toBe('dock');
+      }
+    }
+  });
 });
