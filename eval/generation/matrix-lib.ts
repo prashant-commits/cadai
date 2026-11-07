@@ -11,6 +11,10 @@ export interface Cell {
   effort?: 'low' | 'medium' | 'high';
   model?: string;
   attempts?: number;
+  /** Extra env for this cell's child only (e.g. CADAI_BUILD_THINKING). */
+  env?: Record<string, string>;
+  /** Run the standalone intent judge on the final STL. */
+  judge?: boolean;
 }
 
 export const DEFAULT_CELL_MODEL = 'claude-haiku-5.5';
@@ -48,6 +52,11 @@ export function validateCells(raw: unknown): Cell[] {
     if (cell.kernel !== 'openscad' && cell.kernel !== 'brep') throw new Error(`cell ${cell.name}: kernel must be openscad or brep`);
     if (seen.has(cell.name)) throw new Error(`duplicate cell name ${cell.name}`);
     seen.add(cell.name);
+    if (cell.env !== undefined) {
+      const env = cell.env as unknown;
+      const ok = typeof env === 'object' && env !== null && !Array.isArray(env) && Object.values(env).every((v) => typeof v === 'string');
+      if (!ok) throw new Error(`cell ${cell.name}: env must map strings to strings`);
+    }
     return cell as Cell;
   });
 }
@@ -120,6 +129,12 @@ function meanCost(rows: MatrixRow[]): string {
   return `$${(costs.reduce((a, b) => a + b, 0) / costs.length).toFixed(4)}`;
 }
 
+/** Mean of the numbers present, formatted; '-' when there are none. */
+function mean(values: Array<number | null | undefined>, digits: number, prefix = ''): string {
+  const nums = values.filter((v): v is number => typeof v === 'number');
+  return nums.length === 0 ? '-' : `${prefix}${(nums.reduce((a, b) => a + b, 0) / nums.length).toFixed(digits)}`;
+}
+
 const cellText = (s: string) => s.replace(/\|/g, '\\|').replace(/\n/g, ' ');
 
 /** The markdown report: per-cell summary, per-prompt workable grid, then every failed run. */
@@ -134,6 +149,7 @@ export function renderReport(tag: string, all: MatrixRow[], cellOrder?: string[]
   const line = (label: string, f: (rows: MatrixRow[]) => string) =>
     `| ${label} | ${cells.map((c) => f(byCell(c))).join(' | ')} |`;
   const wall = (rs: MatrixRow[]) => rs.map((r) => r.metrics?.wallMs).filter((v): v is number => typeof v === 'number');
+  const judged = (rs: MatrixRow[]) => rs.filter((r) => r.metrics?.intentMatch !== undefined && r.metrics?.intentMatch !== null);
   const brepRows = (rs: MatrixRow[]) => rs.filter((r) => r.metrics?.kernel === 'brep');
 
   out.push(header, rule,
@@ -146,9 +162,12 @@ export function renderReport(tag: string, all: MatrixRow[], cellOrder?: string[]
     line('no floating', (rs) => rate(rs, (m) => (m.floatingCount === null ? null : m.floatingCount === 0))),
     line('stepOk (B-rep)', (rs) => (brepRows(rs).length ? rate(brepRows(rs), (m) => m.stepOk === true) : '-')),
     line(`live params (>= ${LIVE_PARAM_SHARE * 100}% per run)`, liveShare),
+    line('intentMatch (judge)', (rs) => (judged(rs).length ? rate(judged(rs), (m) => m.intentMatch ?? null) : '-')),
+    line('mean intentScore', (rs) => mean(judged(rs).map((r) => r.metrics?.intentScore), 1)),
     line('median wall', (rs) => seconds(percentile(wall(rs), 50))),
     line('p90 wall', (rs) => seconds(percentile(wall(rs), 90))),
     line('mean cost / run', meanCost),
+    line('mean judge cost / run', (rs) => mean(judged(rs).map((r) => r.metrics?.judgeCostUsd), 4, '$')),
     '');
 
   const promptIds = [...new Set(rows.map((r) => r.promptId))];

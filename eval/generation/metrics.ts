@@ -71,6 +71,12 @@ export interface GenerationMetrics {
   inputTokens?: number;
   outputTokens?: number;
   costUsd?: number | null;
+  /** Standalone intent judge (--judge on). Null when it did not run or failed. */
+  intentMatch?: boolean | null;
+  intentScore?: number | null;
+  intentFindings?: Array<{ issue: string; severity: 'minor' | 'major'; view: string }> | null;
+  /** USD for the judge's own tokens, metered apart from costUsd. */
+  judgeCostUsd?: number | null;
   workable?: boolean;
   failureStage?: FailureStage;
   failureDetail?: string;

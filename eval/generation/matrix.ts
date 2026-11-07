@@ -71,6 +71,7 @@ export function childArgs(run: PlannedRun, outDir: string, resultFile: string, t
   if (c.thinking) args.push('--thinking', c.thinking);
   if (c.effort) args.push('--effort', c.effort);
   if (c.attempts) args.push('--attempts', String(c.attempts));
+  if (c.judge) args.push('--judge', 'on');
   return args;
 }
 
@@ -80,7 +81,7 @@ function runChild(run: PlannedRun, outDir: string, tag: string, promptsFile: str
   const resultFile = path.join(tmp, 'row.json');
   return new Promise((resolve) => {
     const child = spawn(path.join(ROOT, 'node_modules', '.bin', 'tsx'), childArgs(run, outDir, resultFile, tag, promptsFile), {
-      cwd: ROOT, env: process.env, stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: ROOT, env: { ...process.env, ...run.cell.env }, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let tail = '';
     const keep = (c: Buffer) => { tail = (tail + c.toString()).slice(-2000); };
