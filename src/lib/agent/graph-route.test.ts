@@ -92,4 +92,57 @@ describe('nextStep', () => {
     }));
     expect(next).toBe('architectNode');
   });
+
+  it('routes START to designerNode when CADAI_PIPELINE=designer or state.pipeline=designer', () => {
+    process.env.CADAI_PIPELINE = 'designer';
+    expect(nextStep('START', state({ pipeline: null }))).toBe('designerNode');
+    delete process.env.CADAI_PIPELINE;
+    expect(nextStep('START', state({ pipeline: 'designer' }))).toBe('designerNode');
+    expect(nextStep('START', state({ pipeline: 'architect' }))).toBe('architectNode');
+    expect(nextStep('START', state({ pipeline: null }))).toBe('architectNode');
+  });
+
+  it('routes designerCheck to designerNode on first failure, and acceptGate otherwise', () => {
+    // First failure with retryCount=1 and failures present
+    const retry = nextStep('designerCheck', state({
+      isValid: false,
+      designerRetryCount: 1,
+      designerCheckFailures: 'disconnected: lid',
+      designerCheckCompleted: false,
+    }));
+    expect(retry).toBe('designerNode');
+
+    // Second failure (completed)
+    const secondFail = nextStep('designerCheck', state({
+      isValid: false,
+      designerRetryCount: 2,
+      designerCheckFailures: 'Built, but failed checks',
+      designerCheckCompleted: true,
+    }));
+    expect(secondFail).toBe('acceptGate');
+
+    // Success
+    const success = nextStep('designerCheck', state({
+      isValid: true,
+      designerCheckCompleted: true,
+    }));
+    expect(success).toBe('acceptGate');
+  });
+
+  it('sends an accept-gate revise to designerNode in designer mode', () => {
+    const next = nextStep('acceptGate', state({
+      pipeline: 'designer',
+      gateAction: 'revise',
+      acceptRevisionCount: 1,
+    }));
+    expect(next).toBe('designerNode');
+  });
+
+  it('sends an accept-gate approve to respondToUser in designer mode', () => {
+    const next = nextStep('acceptGate', state({
+      pipeline: 'designer',
+      gateAction: 'approve',
+    }));
+    expect(next).toBe('respondToUser');
+  });
 });

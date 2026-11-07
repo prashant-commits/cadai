@@ -164,7 +164,7 @@ function parseArgs(argv: string[]): Args {
 }
 
 /** The pipeline and kernel the graph will pin for this process, after flags and env. */
-function effectiveRun(): { pipeline: 'drafter' | 'architect'; kernel: 'openscad' | 'brep' } {
+function effectiveRun(): { pipeline: 'drafter' | 'architect' | 'designer'; kernel: 'openscad' | 'brep' } {
   const pipeline = resolvePipeline(process.env);
   return { pipeline, kernel: resolveKernel(pipeline, process.env, false) };
 }

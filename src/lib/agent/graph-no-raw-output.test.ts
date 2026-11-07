@@ -148,4 +148,68 @@ describe('no raw model output reaches the UI channels', () => {
       flags.dropTag = false;
     }
   });
+
+  it('designer mode deltas contain only rendered phrases and markdown, never raw JSON or code', async () => {
+    process.env.CADAI_PIPELINE = 'designer';
+    const key = runCheckpointKey(`raw-designer-${Date.now()}`, `run-${keys.length}`);
+    keys.push(key);
+
+    const runDesigner = async (_input: unknown, deps: { onEvent?: (e: unknown) => void }) => {
+      deps.onEvent?.({ kind: 'step', text: 'Built the model (2 parts)' });
+      deps.onEvent?.({
+        kind: 'review',
+        flags: [{ severity: 'major', issue: 'thin wall', whyItMatters: 'may break' }],
+        final: false,
+      });
+      deps.onEvent?.({ kind: 'note', text: 'Step completed' });
+      return {
+        script: 'box = Box(10, 10, 10)\n_cadai_parts = [box]',
+        facts: { ok: true, parts: [{ label: 'box', size: [10, 10, 10], valid: true }], interferences: [], disconnected: [], dimensions: [] },
+        summary: 'A 10mm test cube',
+        reviewerFlags: [{ severity: 'major', issue: 'thin wall', whyItMatters: 'may break', round: 1, final: true }],
+        turns: 1,
+        costUsd: 0.01,
+      };
+    };
+
+    const runBrep = async () => ({
+      ok: true,
+      parts: [{ label: 'box', valid: true, volume: 1000, min: [0, 0, 0], max: [10, 10, 10] }],
+      solids: 1,
+      stl: Buffer.from('solid model\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 10 0 0\nvertex 0 10 0\nendloop\nendfacet\nendsolid model').toString('base64'),
+      step: 'STEP',
+      ms: 10,
+    });
+
+    const agent = createCadAgent('claude-haiku-5.5', { runDesigner: runDesigner as never, runBrep: runBrep as never });
+    const stream = await agent.stream(
+      { messages: [new HumanMessage('a 10mm box')] },
+      { configurable: { thread_id: key }, streamMode: ['messages', 'custom', 'updates'] }
+    );
+
+    const deltas: string[] = [];
+    const messageTexts: string[] = [];
+    for await (const [mode, payload] of stream) {
+      if (mode === 'messages') {
+        const [chunk] = payload as unknown as [{ content?: unknown }];
+        messageTexts.push(typeof chunk.content === 'string' ? chunk.content : JSON.stringify(chunk.content));
+      } else if (mode === 'custom') {
+        const ev = payload as { t?: string; text?: string };
+        if (ev.t === 'delta' && typeof ev.text === 'string') deltas.push(ev.text);
+      }
+    }
+
+    expect(deltas.length).toBeGreaterThan(0);
+    for (const delta of deltas) {
+      expect(looksLikeJson(delta)).toBe(false);
+      expect(delta).not.toContain('```python');
+      expect(delta).not.toContain('"severity"');
+      expect(delta).not.toContain('"whyItMatters"');
+    }
+    for (const msg of messageTexts) {
+      expect(looksLikeJson(msg)).toBe(false);
+    }
+    expect(deltas.some((d) => d.includes('Built the model (2 parts)'))).toBe(true);
+    expect(deltas.some((d) => d.includes('thin wall'))).toBe(true);
+  });
 });
