@@ -445,9 +445,27 @@ def compute_interferences(part_shapes: list[tuple[str, object]]) -> list[dict]:
     return interferences
 
 
+def _is_pin_in_bore(s1: object, s2: object, b1: tuple, b2: tuple, dist: float) -> bool:
+    """True when s1/s2 is a pin inside a bore with radial clearance dist <= 1 mm."""
+    if dist > 1.0 + 1e-4:
+        return False
+    if b1[0] is None or b2[0] is None:
+        return False
+    # Must have 3D bounding box overlap (pin penetrates the bore/knuckle envelope)
+    for dim in range(3):
+        if b1[1][dim] < b2[0][dim] - 1e-4 or b2[1][dim] < b1[0][dim] - 1e-4:
+            return False
+    try:
+        has_cyl1 = any("CYLINDER" in str(getattr(f, "geom_type", "")) for f in s1.faces())
+        has_cyl2 = any("CYLINDER" in str(getattr(f, "geom_type", "")) for f in s2.faces())
+        return has_cyl1 and has_cyl2
+    except Exception:
+        return False
+
+
 def compute_disconnected(part_shapes: list[tuple[str, object]]) -> list[str]:
-    """Parts that do not touch and are not within 1 mm of any other part in the closed state.
-    A pin inside a bore with clearance counts as connected."""
+    """Parts that do not touch and are not within 0.5 mm of any other part in the closed state.
+    A pin inside a bore with radial clearance up to 1 mm counts as connected."""
     if len(part_shapes) <= 1:
         return []
 
@@ -476,7 +494,10 @@ def compute_disconnected(part_shapes: list[tuple[str, object]]) -> list[str]:
                     continue
             try:
                 d = shape_i.distance_to(shape_j)
-                if d <= 1.0 + 1e-4:
+                if d <= 0.5 + 1e-4:
+                    connected = True
+                    break
+                elif d <= 1.0 + 1e-4 and _is_pin_in_bore(shape_i, shape_j, box_i, box_j, d):
                     connected = True
                     break
             except Exception:

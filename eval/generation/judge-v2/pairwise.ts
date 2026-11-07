@@ -18,6 +18,7 @@ export const SinglePairwiseVerdictSchema = z.object({
     accessibility: ChoiceSchema,
     manufacturabilityAndRobustness: ChoiceSchema,
     parametricQuality: ChoiceSchema,
+    formAndAesthetics: ChoiceSchema,
   }),
   reasons: z.object({
     requirementsCoverage: z.string(),
@@ -26,6 +27,7 @@ export const SinglePairwiseVerdictSchema = z.object({
     accessibility: z.string(),
     manufacturabilityAndRobustness: z.string(),
     parametricQuality: z.string(),
+    formAndAesthetics: z.string(),
     overall: z.string(),
   }),
 });
@@ -51,6 +53,7 @@ export interface PairwiseComparisonResult {
     accessibility: CriterionConsensus;
     manufacturabilityAndRobustness: CriterionConsensus;
     parametricQuality: CriterionConsensus;
+    formAndAesthetics: CriterionConsensus;
   };
   order1: SinglePairwiseVerdict;
   order2: SinglePairwiseVerdict;
@@ -70,13 +73,14 @@ export interface ComparePairInput {
 const PAIRWISE_SYSTEM_PROMPT = `You are a Senior Mechanical CAD Engineer and Product Auditor conducting a rigorous side-by-side evaluation of two candidate parametric CAD designs (Design 1 vs Design 2).
 
 Both designs were generated for the same user request.
-Evaluate which design is better overall and on each of the 6 core criteria:
+Evaluate which design is better overall and on each of the 7 core criteria:
 1. requirementsCoverage: Which design implements more of the stated requirements and dimensions accurately?
 2. layoutAndClearances: Which design has better spatial organization, avoids part interferences/clashes, and leaves sensible clearances?
 3. functionAndMotion: Which design works better mechanically? (Kinematic clearance when hinges open, cable slot usability, device docking fit).
 4. accessibility: Which design better ensures screws, cables, and storage items can be accessed without disassembly or collision?
 5. manufacturabilityAndRobustness: Which design is more physically sound? (Check the stability margin against tipping: positive is stable, negative will tip over. Check wall thickness and print posture).
 6. parametricQuality: Which design exposes cleaner, safer parameters whose ranges do not collide or break geometry?
+7. formAndAesthetics: Which design has better design language, proportions, fillet/chamfer execution, and overall visual refinement?
 
 RULES:
 - Base facts on the provided Deterministic Facts Tables for each design (ground truth for dimensions, clashes, and stability).
@@ -231,6 +235,7 @@ export async function comparePair(input: ComparePairInput): Promise<PairwiseComp
     'accessibility',
     'manufacturabilityAndRobustness',
     'parametricQuality',
+    'formAndAesthetics',
   ] as const;
 
   const criteriaConsensus = {} as PairwiseComparisonResult['criteria'];

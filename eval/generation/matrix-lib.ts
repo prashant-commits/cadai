@@ -24,6 +24,7 @@ export interface MatrixRow {
   cell: string;
   promptId: string;
   sample: number;
+  v2Form?: number | null;
   metrics: GenerationMetrics | null;
   /** Why the child died (stderr tail). A crashed run is retried on resume. */
   crashed?: string;
@@ -175,6 +176,7 @@ export function renderReport(tag: string, all: MatrixRow[], cellOrder?: string[]
       line('v2Accessibility', (rs) => mean(judgedV2(rs).map((r) => r.metrics?.v2Criteria?.accessibility), 1)),
       line('v2Manufacturability', (rs) => mean(judgedV2(rs).map((r) => r.metrics?.v2Criteria?.manufacturabilityAndRobustness), 1)),
       line('v2ParametricQuality', (rs) => mean(judgedV2(rs).map((r) => r.metrics?.v2Criteria?.parametricQuality), 1)),
+      line('v2Form', (rs) => mean(judgedV2(rs).map((r) => r.v2Form ?? r.metrics?.v2Form ?? r.metrics?.v2Criteria?.formAndAesthetics), 1)),
       line('mean v2 judge cost / run', (rs) => mean(judgedV2(rs).map((r) => r.metrics?.v2CostUsd), 4, '$')),
     ] : []),
     line('median wall', (rs) => seconds(percentile(wall(rs), 50))),

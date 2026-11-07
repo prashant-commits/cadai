@@ -40,7 +40,7 @@ result = Compound([base, lid])
 
 const SCRIPT_2 = `from build123d import *
 lean_deg = 70  # [64:1:90] backrest lean
-lid_open_deg = 0  # [0:5:120] lid angle
+lid_open_deg = 120  # [0:5:120] lid angle
 base = Box(180, 120, 8, align=(Align.MIN, Align.MIN, Align.MIN))
 lid = Pos(10, 70, 38) * Box(160, 40, 4, align=(Align.MIN, Align.MIN, Align.MIN))
 base.label = 'base'
@@ -112,13 +112,15 @@ describe('brepAgentBuild tool loop end to end', () => {
   });
 
   afterEach(() => {
-    process.env = origEnv;
+    delete process.env.CADAI_AGENT_MAX_TURNS;
+    delete process.env.CADAI_AGENT_MAX_RENDERS;
     vi.restoreAllMocks();
   });
 
   it('executes run -> render with override -> run -> finish sequence', async () => {
     const runBrepSpy = vi.spyOn(brepRunner, 'runBrep').mockImplementation(async (script) => {
-      const isOverridden = script.includes('lid_open_deg = 100');
+      const isOverridden = script.includes('lid_open_deg = 100') || script.includes('lid_open_deg = 120');
+      const isFinal = script === SCRIPT_FINAL;
       return {
         ok: true,
         parts: [
@@ -129,7 +131,7 @@ describe('brepAgentBuild tool loop end to end', () => {
         bbox: { min: [0, 0, 0], max: [180, 120, 42] },
         stl: Buffer.from(ASCII_STL).toString('base64'),
         ms: 100,
-        interferences: isOverridden ? [] : [{ a: 'base', b: 'lid', volume: 2.5 }],
+        interferences: (isOverridden || isFinal) ? [] : [{ a: 'base', b: 'lid', volume: 2.5 }],
       };
     });
 
@@ -170,6 +172,7 @@ describe('brepAgentBuild tool loop end to end', () => {
           args: {
             script: SCRIPT_FINAL,
             notes: ['the box sits 17 mm in so it does not cover the rear mounting holes'],
+            requirements: [{ id: 'cad_request', status: 'met' }],
           },
         }],
       }),

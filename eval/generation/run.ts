@@ -256,6 +256,7 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
 
   let v2Metrics: {
     v2Overall?: number | null;
+    v2Form?: number | null;
     v2Criteria?: GenerationMetrics['v2Criteria'];
     v2Coverage?: number | null;
     v2CostUsd?: number | null;
@@ -277,6 +278,7 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
       });
       v2Metrics = {
         v2Overall: v2Res.overallScore,
+        v2Form: v2Res.verdict.criteria.formAndAesthetics.score,
         v2Criteria: {
           requirementsCoverage: v2Res.verdict.criteria.requirementsCoverage.score,
           layoutAndClearances: v2Res.verdict.criteria.layoutAndClearances.score,

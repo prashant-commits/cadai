@@ -1,0 +1,180 @@
+{
+  "promptId": "phone_tablet_dock",
+  "requirements": [
+    {
+      "id": "base_dimensions",
+      "text": "Rectangular base plate is 180 mm wide (X), 120 mm deep (Y) and 8 mm thick.",
+      "kind": "dimension"
+    },
+    {
+      "id": "base_on_build_plate",
+      "text": "Base plate sits on the build plate with its bottom face at z=0.",
+      "kind": "relation"
+    },
+    {
+      "id": "mount_holes",
+      "text": "Four 5 mm diameter through-holes are cut in the base plate for mounting screws.",
+      "kind": "feature"
+    },
+    {
+      "id": "mount_hole_diameter",
+      "text": "Each mounting hole has a diameter of 5 mm.",
+      "kind": "dimension"
+    },
+    {
+      "id": "mount_hole_position",
+      "text": "Each mounting hole is located 12 mm in from the corner (12 mm from each of the two adjacent edges), one per corner.",
+      "kind": "relation"
+    },
+    {
+      "id": "backrest_dimensions",
+      "text": "Phone cradle backrest is 80 mm wide, 110 mm tall and 6 mm thick.",
+      "kind": "dimension"
+    },
+    {
+      "id": "backrest_lean",
+      "text": "Backrest leans back 70 degrees from the base plane.",
+      "kind": "dimension"
+    },
+    {
+      "id": "cradle_position",
+      "text": "Phone cradle is located on the front-left of the base.",
+      "kind": "relation"
+    },
+    {
+      "id": "front_lip_dimensions",
+      "text": "Front lip is 80 mm wide, 12 mm tall and 6 mm deep.",
+      "kind": "dimension"
+    },
+    {
+      "id": "front_lip_location",
+      "text": "Front lip is located at the foot of the backrest to stop the phone sliding.",
+      "kind": "relation"
+    },
+    {
+      "id": "cable_slot_feature",
+      "text": "A charging cable slot passes through both the lip and the backrest.",
+      "kind": "feature"
+    },
+    {
+      "id": "cable_slot_dimensions",
+      "text": "Cable slot is 10 mm wide and 15 mm deep.",
+      "kind": "dimension"
+    },
+    {
+      "id": "tablet_walls",
+      "text": "Tablet slot consists of two parallel upright walls on the base.",
+      "kind": "feature"
+    },
+    {
+      "id": "tablet_wall_dimensions",
+      "text": "Each tablet wall is 70 mm wide and 60 mm tall.",
+      "kind": "dimension"
+    },
+    {
+      "id": "tablet_slot_position",
+      "text": "Tablet slot walls are located on the right half of the base.",
+      "kind": "relation"
+    },
+    {
+      "id": "tablet_gap",
+      "text": "Inner faces of the tablet walls are 14 mm apart, giving 1 mm clearance each side of a 12 mm thick tablet.",
+      "kind": "dimension"
+    },
+    {
+      "id": "storage_box_position",
+      "text": "Storage box is located at the back of the base.",
+      "kind": "relation"
+    },
+    {
+      "id": "storage_box_dimensions",
+      "text": "Storage box is 160 mm wide, 40 mm deep and 30 mm tall.",
+      "kind": "dimension"
+    },
+    {
+      "id": "storage_box_open_top",
+      "text": "Storage box is open-top.",
+      "kind": "feature"
+    },
+    {
+      "id": "storage_box_walls",
+      "text": "Storage box outer walls are 3 mm thick.",
+      "kind": "dimension"
+    },
+    {
+      "id": "compartment_dividers",
+      "text": "Box interior is divided into four equal compartments by internal walls.",
+      "kind": "feature"
+    },
+    {
+      "id": "divider_thickness",
+      "text": "Internal divider walls are 2 mm thick.",
+      "kind": "dimension"
+    },
+    {
+      "id": "lid_dimensions",
+      "text": "Lid is a flat plate 160 mm wide, 40 mm deep and 4 mm thick.",
+      "kind": "dimension"
+    },
+    {
+      "id": "lid_covers_box",
+      "text": "Lid covers the storage box.",
+      "kind": "relation"
+    },
+    {
+      "id": "lid_hinges",
+      "text": "Lid rotates on two pin hinges along the box's back edge.",
+      "kind": "feature"
+    },
+    {
+      "id": "hinge_knuckles",
+      "text": "Pins pass through knuckles on both the box and the lid.",
+      "kind": "feature"
+    },
+    {
+      "id": "pin_diameter",
+      "text": "Hinge pins are 4 mm in diameter.",
+      "kind": "dimension"
+    },
+    {
+      "id": "pin_clearance",
+      "text": "Hinge pin to knuckle clearance is 0.3 mm.",
+      "kind": "dimension"
+    },
+    {
+      "id": "lid_separate_solid",
+      "text": "Lid must remain a separate solid from the box and base.",
+      "kind": "constraint"
+    },
+    {
+      "id": "param_lean_angle",
+      "text": "Lean angle is an adjustable parameter.",
+      "kind": "parameter"
+    },
+    {
+      "id": "param_tablet_gap",
+      "text": "Tablet gap is an adjustable parameter.",
+      "kind": "parameter"
+    },
+    {
+      "id": "param_box_height",
+      "text": "Box height is an adjustable parameter.",
+      "kind": "parameter"
+    },
+    {
+      "id": "param_compartment_count",
+      "text": "Compartment count is an adjustable parameter.",
+      "kind": "parameter"
+    },
+    {
+      "id": "no_fillets_chamfers",
+      "text": "No fillets or chamfers anywhere in the model.",
+      "kind": "constraint"
+    },
+    {
+      "id": "nothing_below_base",
+      "text": "No geometry extends below the base bottom (z<0).",
+      "kind": "constraint"
+    }
+  ]
+}

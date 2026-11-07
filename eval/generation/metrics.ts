@@ -79,6 +79,8 @@ export interface GenerationMetrics {
   judgeCostUsd?: number | null;
   /** Judge v2 overall 0-100 score (--judge v2). Null when v2 judge was not run. */
   v2Overall?: number | null;
+  /** Judge v2 form and aesthetics score (0-5). Null when v2 judge was not run. */
+  v2Form?: number | null;
   /** Judge v2 criterion scores (0-5 each). */
   v2Criteria?: {
     requirementsCoverage: number;

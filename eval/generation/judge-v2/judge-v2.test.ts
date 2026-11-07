@@ -310,6 +310,7 @@ describe('Judge v2: Pairwise order-swap tie logic', () => {
             accessibility: winner,
             manufacturabilityAndRobustness: winner,
             parametricQuality: winner,
+            formAndAesthetics: winner,
           },
           reasons: {
             requirementsCoverage: '',
@@ -318,6 +319,7 @@ describe('Judge v2: Pairwise order-swap tie logic', () => {
             accessibility: '',
             manufacturabilityAndRobustness: '',
             parametricQuality: '',
+            formAndAesthetics: '',
             overall: '',
           },
         };
@@ -362,6 +364,7 @@ describe('Judge v2: Pairwise order-swap tie logic', () => {
           accessibility: 'first',
           manufacturabilityAndRobustness: 'first',
           parametricQuality: 'first',
+          formAndAesthetics: 'first',
         },
         reasons: {
           requirementsCoverage: '',
@@ -370,6 +373,7 @@ describe('Judge v2: Pairwise order-swap tie logic', () => {
           accessibility: '',
           manufacturabilityAndRobustness: '',
           parametricQuality: '',
+          formAndAesthetics: '',
           overall: '',
         },
       }),

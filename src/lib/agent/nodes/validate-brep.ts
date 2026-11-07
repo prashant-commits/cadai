@@ -11,6 +11,8 @@ import { runBrep } from '../../engine/brep-runner';
 import { repairHint } from '../../brep/repair-hints';
 import { isBuilderModeReason } from '../../brep/body-check';
 import { localOriginViolations, stlToAscii, toModelInfo, toModuleFrames, toPlacementReport } from '../../brep/measurements';
+import { auditNesting } from '../nesting-audit';
+import { contentText } from '../message-text';
 
 /**
  * validateBrep: run the emitted build123d script and audit what it measured.
@@ -136,11 +138,63 @@ export async function validateBrep(state: AgentStateType, config?: RunnableConfi
   }
   violations.push(...auditSpecShapes(spec));
 
+  // Check that every spec component survives in _cadai_parts or is recorded as omitted
+  if (state.currentCode.includes('_cadai_parts') || r.parts.length > 0) {
+    const measuredLabels = new Set(r.parts.map((p) => p.label));
+    const omittedNotes = new Map((state.buildNotes ?? []).filter((n) => n.name).map((n) => [n.name, n.reason]));
+    for (const comp of spec?.components ?? []) {
+      if (!measuredLabels.has(comp.name)) {
+        if (omittedNotes.has(comp.name)) {
+          // Already recorded in buildNotes as a warning/note
+        } else {
+          violations.push({
+            kind: 'feature',
+            field: comp.name,
+            expected: 'present in _cadai_parts',
+            measured: 'missing',
+            severity: 'error',
+            message: `Spec component '${comp.name}' is missing from _cadai_parts and was not omitted.`,
+          });
+        }
+      }
+    }
+  }
+
   const frames = toModuleFrames(r);
   const localFrames = r.local ? toModuleFrames({ ...r, parts: r.local }) : undefined;
   const placementReport = spec ? toPlacementReport(spec, frames, localFrames) : null;
   if (spec && localFrames) violations.push(...localOriginViolations(spec, localFrames));
-  violations.push(...auditPlacement(placementReport, r.bbox?.min ?? modelInfo?.boundingBox.min ?? null, spec));
+
+  const jointedNames = new Set(
+    (spec?.jointContracts ?? []).flatMap((j) => [j.partA, j.partB]).filter((n): n is string => Boolean(n))
+  );
+
+  const placementViolations = auditPlacement(placementReport, r.bbox?.min ?? modelInfo?.boundingBox.min ?? null, spec);
+  // Replace the floating warning for jointed parts with the connectivity check
+  for (const pv of placementViolations) {
+    if (pv.kind === 'floating' && (jointedNames.has(pv.field) || /lid|pin|drawer|slide|hinge/i.test(pv.field))) {
+      continue;
+    }
+    violations.push(pv);
+  }
+
+  // Connectivity check: hard error for any disconnected part in the closed pose
+  for (const name of r.disconnected ?? []) {
+    violations.push({
+      kind: 'floating',
+      field: name,
+      expected: 'connected to assembly',
+      measured: 'disconnected',
+      severity: 'error',
+      message: `'${name}' is a disconnected part: it does not touch and is not within 0.5 mm of any other part in the closed pose.`,
+    });
+  }
+
+  // Nesting and fit sanity check
+  const humanMessages = (state.messages ?? []).filter((m) => m._getType() === 'human');
+  const userPrompt = humanMessages.length > 0 ? contentText(humanMessages[0]) : '';
+  violations.push(...auditNesting(spec, r.parts, userPrompt));
+
   for (const frame of frames) {
     if (frame.valid || !frame.name) continue;
     violations.push({

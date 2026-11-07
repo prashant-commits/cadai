@@ -1,0 +1,55 @@
+{
+  "promptId": "drawer_on_rails",
+  "requirements": [
+    {
+      "id": "shell_dimensions",
+      "text": "The outer shell has overall dimensions of 150 mm x 120 mm x 80 mm.",
+      "kind": "dimension"
+    },
+    {
+      "id": "shell_feature",
+      "text": "The unit includes an outer shell that houses the drawer.",
+      "kind": "feature"
+    },
+    {
+      "id": "side_rails_count",
+      "text": "The shell contains exactly two internal side rails, one on each inner side wall.",
+      "kind": "feature"
+    },
+    {
+      "id": "drawer_feature",
+      "text": "The unit includes a drawer that is a separate body from the shell and fits inside the shell.",
+      "kind": "feature"
+    },
+    {
+      "id": "drawer_slides_on_rails",
+      "text": "The drawer rests on and slides along the two internal side rails.",
+      "kind": "relation"
+    },
+    {
+      "id": "drawer_side_clearance",
+      "text": "There is 0.5 mm clearance on each side between the drawer and the adjacent rails/shell side walls.",
+      "kind": "dimension"
+    },
+    {
+      "id": "pull_handle",
+      "text": "The drawer has a pull handle.",
+      "kind": "feature"
+    },
+    {
+      "id": "handle_on_front",
+      "text": "The pull handle is mounted on the front face of the drawer, on the side that faces out of the shell opening.",
+      "kind": "relation"
+    },
+    {
+      "id": "shell_open_front",
+      "text": "The shell has an open front allowing the drawer to be inserted and withdrawn.",
+      "kind": "feature"
+    },
+    {
+      "id": "drawer_fits_in_shell",
+      "text": "The drawer body fits within the shell's internal dimensions without interfering with shell walls or rails.",
+      "kind": "constraint"
+    }
+  ]
+}

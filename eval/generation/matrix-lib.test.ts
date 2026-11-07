@@ -100,6 +100,14 @@ describe('renderReport', () => {
     expect(md).toContain('| b | 0/1 | 0/1 |');
   });
 
+  it('includes judge v2 form score in report when present', () => {
+    const mdWithV2 = renderReport('t', [
+      row('brep-adaptive', 'a', 1, m({ kernel: 'brep', v2Overall: 80, v2Form: 85 })),
+    ], ['brep-adaptive']);
+    expect(mdWithV2).toContain('| v2Overall (judge v2) | 80.0 |');
+    expect(mdWithV2).toContain('| v2Form | 85.0 |');
+  });
+
   it('lists every failed run, crashes included', () => {
     expect(md).toContain('## Failed runs (2)');
     expect(md).toContain('| openscad-off | b | 1 | params | 1/4 parameters change the model |');

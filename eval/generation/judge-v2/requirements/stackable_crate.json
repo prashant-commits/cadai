@@ -1,0 +1,65 @@
+{
+  "promptId": "stackable_crate",
+  "requirements": [
+    {
+      "id": "overall_dimensions",
+      "text": "The crate outer envelope is 160 mm long x 120 mm wide x 90 mm tall.",
+      "kind": "dimension"
+    },
+    {
+      "id": "wall_thickness",
+      "text": "All crate walls are 3 mm thick.",
+      "kind": "dimension"
+    },
+    {
+      "id": "open_top_crate",
+      "text": "The crate is a hollow container with a floor and four walls, open at the top.",
+      "kind": "feature"
+    },
+    {
+      "id": "vent_slots_per_side",
+      "text": "Each of the four side walls has exactly one row of six ventilation slots (24 slots total).",
+      "kind": "feature"
+    },
+    {
+      "id": "vent_slots_through",
+      "text": "Ventilation slots cut completely through the wall thickness.",
+      "kind": "constraint"
+    },
+    {
+      "id": "vent_slots_row_aligned",
+      "text": "The six slots on each side are identical in size, evenly spaced, and arranged in a single horizontal row centered on the wall.",
+      "kind": "relation"
+    },
+    {
+      "id": "vent_slots_within_wall",
+      "text": "Ventilation slots stay fully within the wall faces and do not break through the corners, floor, or top rim.",
+      "kind": "constraint"
+    },
+    {
+      "id": "stacking_lip_feature",
+      "text": "A stacking lip is located on the top rim of the crate, running around the perimeter.",
+      "kind": "feature"
+    },
+    {
+      "id": "lip_fits_in_bottom",
+      "text": "The stacking lip is sized to fit inside the bottom of an identical crate, with its outer profile smaller than the crate's inner cavity/bottom recess so crates nest and stack.",
+      "kind": "relation"
+    },
+    {
+      "id": "bottom_receives_lip",
+      "text": "The underside of the crate is shaped (recess or inner clearance) to receive the stacking lip of an identical crate.",
+      "kind": "feature"
+    },
+    {
+      "id": "single_solid",
+      "text": "The crate is modeled as a single solid body.",
+      "kind": "constraint"
+    },
+    {
+      "id": "lip_not_blocking_slots",
+      "text": "The stacking lip does not obstruct the ventilation slots.",
+      "kind": "constraint"
+    }
+  ]
+}

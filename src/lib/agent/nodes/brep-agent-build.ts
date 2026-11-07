@@ -15,6 +15,8 @@ import { auditPlacement } from '../placement-audit';
 import { componentAtLine } from './validate-brep';
 import { contentText } from '../message-text';
 import { BREP_CHEATSHEET } from '../../brep/cheatsheet';
+import { getBuildRequirements } from '../requirements';
+import { auditNesting } from '../nesting-audit';
 
 export interface ToolBindableModel {
   invoke(messages: BaseMessage[], config?: RunnableConfig): Promise<AIMessage>;
@@ -173,6 +175,40 @@ function componentInTraceback(error: string, names: string[]): string {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+export function hasMovingPart(request: string, spec?: AssemblySpec | null): boolean {
+  if (spec?.jointContracts?.some((j) => /lid|hinge|slide|revolute|prismatic/i.test(j.type))) {
+    return true;
+  }
+  return /\b(lid|door|hinge|drawer|slide|rotate|open|fold)\b/i.test(request);
+}
+
+export interface PoseParameter {
+  name: string;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+}
+
+export function parsePoseParameters(script: string): PoseParameter[] {
+  const params: PoseParameter[] = [];
+  const lines = script.split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('#') || !trimmed.includes('=')) continue;
+    const m = /^([A-Za-z_][A-Za-z0-9_]*(?:_deg|_travel))\s*=\s*([0-9.-]+)\s*#\s*\[\s*([0-9.-]+)(?::([0-9.-]+))?:([0-9.-]+)\s*\]/.exec(trimmed);
+    if (m) {
+      const name = m[1];
+      const value = parseFloat(m[2]);
+      const min = parseFloat(m[3]);
+      const step = m[4] ? parseFloat(m[4]) : undefined;
+      const max = parseFloat(m[5]);
+      params.push({ name, value, min, max, step });
+    }
+  }
+  return params;
+}
+
 export const BREP_AGENT_SYSTEM_PROMPT = `You are the Mechanical Architect Builder, developing a complete parametric build123d Python model through an iterative inspect-and-fix workflow.
 
 # PRODUCT ENGINEERING BRIEF
@@ -189,11 +225,18 @@ export const BREP_AGENT_SYSTEM_PROMPT = `You are the Mechanical Architect Builde
 
 # SCRIPT CONTRACT
 The final gate and the UI sliders depend on this contract:
-1. Top-level parameter lines: keep the format \`name = value  # [min:step:max] description\`. Add parameters for moving-part poses with sensible ranges (e.g. lid_open_deg = 0  # [0:5:120] lid opening angle in degrees), and narrow a range when a clash makes part of it unusable, explaining why in finish notes.
-2. Labelled parts in \`_cadai_parts\`: keep \`_cadai_parts\` as a list of labelled shapes measured before fusing. Labels must match the spec component names. You may add parts; every spec component should still exist unless your finish notes explain a consolidation.
+1. Top-level parameter lines: keep the format \`name = value  # [min:step:max] description\`. Add parameters for moving-part poses with sensible ranges (e.g. lid_open_deg = 0  # [0:5:120] lid opening angle in degrees), and narrow a range when a clash makes part of it unusable, explaining why in finish notes. A pose parameter changes the part's position, never its size.
+2. Labelled parts in \`_cadai_parts\`: \`_cadai_parts\` must contain one labelled shape per spec component (label = component name), measured BEFORE any fusing; consolidation happens only in \`result\`. Every spec component must exist in \`_cadai_parts\` unless deliberately removed/replaced and declared in \`finish(omitted=[{component, reason}])\`.
 3. Exported shape: assign the final fused Compound / Part to \`result\`.
 4. Imports: no imports beyond the existing prelude.
 5. Guardrail rules: use algebra mode only (never \`with BuildPart\`, \`with BuildSketch\`, \`with BuildLine\`). No \`open\`, \`eval\`, \`exec\`, \`os\`, \`sys\`, dunder methods (\`__\`), or file keywords.
+
+# VERIFICATION BEFORE FINISH
+- Before finish, you must verify motion: if the model has a moving part, the script must expose a pose parameter (_deg or _travel with range). You must test the script at its range max (and min if not 0) using render or run_script and see zero unintended collisions.
+- A pose parameter changes the part's position, never its size.
+- Before finish, you must verify the atomic requirements checklist and report each requirement as met, partly, or unmet (with evidence).
+- All parts must touch or be within 0.5 mm of another part in the closed pose (pin in bore clearance <= 1 mm). Disconnected parts are rejected.
+- Inserted or stacking features must fit within their host opening without collision.
 
 # BUILD123D CHEAT SHEET
 ${BREP_CHEATSHEET}`.trim();
@@ -227,6 +270,12 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
     let renderCount = 0;
     let finished = false;
     let finishNotes: string[] = [];
+    let finishOmitted: Array<{ component: string; reason: string }> = [];
+
+    const testedPoses = new Map<string, Set<number>>();
+    const poseInterferences = new Map<string, Map<number, number>>();
+    const posePartVolumes = new Map<string, Map<number, Map<string, number>>>();
+    const defaultPartVolumes = new Map<string, number>();
 
     const runScriptTool = new DynamicStructuredTool({
       name: 'run_script',
@@ -253,6 +302,15 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
       schema: z.object({
         script: z.string().optional().describe('The final complete build123d Python script.'),
         notes: z.union([z.array(z.string()), z.string()]).optional().describe('Short interpretations shown to the user (e.g. clearance choices, consolidation reasons).'),
+        omitted: z.array(z.object({
+          component: z.string().describe('Name of the spec component deliberately omitted or replaced'),
+          reason: z.string().describe('Reason for omitting or replacing the spec component'),
+        })).optional().describe('Components from the spec deliberately omitted or replaced.'),
+        requirements: z.array(z.object({
+          id: z.string().describe('Requirement id from the checklist'),
+          status: z.enum(['met', 'partly', 'unmet']).describe('Status of the requirement'),
+          evidence: z.string().optional().describe('Evidence or reason explaining the status, required if unmet or partly'),
+        })).optional().describe('Self-check against the atomic requirements checklist.'),
       }),
       func: async () => 'handled in loop',
     });
@@ -266,6 +324,9 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
     const humanMessages = state.messages.filter((m) => m._getType() === 'human');
     const userPrompt = humanMessages.length > 0 ? contentText(humanMessages[0]) : 'Design the dock.';
     const compactSpec = renderCompactSpec(spec);
+    const movingNeeded = hasMovingPart(userPrompt, spec);
+
+    const checklist = await getBuildRequirements(userPrompt, undefined, model);
 
     let promptText = `User Request:\n${userPrompt}\n\nApproved Spec:\n${compactSpec}\n\nStarting Script:\n\`\`\`python\n${startingScript}\n\`\`\``;
     if (state.failureKind !== 'none' && state.failureKind !== 'no_code') {
@@ -275,7 +336,9 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
         promptText += `\n\nPrevious attempt failed validation:\n${rep}`;
       }
     }
-    promptText += '\n\nRefine the starting script into the complete parametric design. Keep the script contract and product engineering guidelines. Use `run_script` to check geometry and interferences, use `render` with parameter overrides to visually inspect clearances and motion (e.g. testing lid_open_deg), and call `finish` with the final script and design notes when done.';
+    promptText += '\n\nAtomic Requirements Checklist:\n' +
+      checklist.requirements.map((r) => `- [${r.id}] (${r.kind}): ${r.text}`).join('\n');
+    promptText += '\n\nRefine the starting script into the complete parametric design. Keep the script contract and product engineering guidelines. Use `run_script` to check geometry and interferences, use `render` with parameter overrides to visually inspect clearances and motion (e.g. testing lid_open_deg at its range max), and call `finish` with the final script, design notes, requirements self-check, and any omitted components when done.';
 
     const conversation: BaseMessage[] = [
       cachedSystemMessage(BREP_AGENT_SYSTEM_PROMPT),
@@ -294,6 +357,8 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
         console.warn('brepAgentBuild model invocation failed:', err);
         break;
       }
+
+      if (!reply) break;
 
       const stop = unusableStop(reply);
       if (stop) {
@@ -350,13 +415,48 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
               .filter((i) => i.volume > 1.0)
               .map((i) => ({ a: i.a, b: i.b, volume: round2(i.volume) }));
 
+            // Record tested pose parameter from script if present
+            const poseParams = parsePoseParameters(script);
+            for (const pp of poseParams) {
+              if (!testedPoses.has(pp.name)) testedPoses.set(pp.name, new Set());
+              testedPoses.get(pp.name)!.add(pp.value);
+              if (!poseInterferences.has(pp.name)) poseInterferences.set(pp.name, new Map());
+              poseInterferences.get(pp.name)!.set(pp.value, interferences.length);
+              if (!posePartVolumes.has(pp.name)) posePartVolumes.set(pp.name, new Map());
+              const vMap = new Map<string, number>();
+              for (const part of r.parts) vMap.set(part.label, part.volume);
+              posePartVolumes.get(pp.name)!.set(pp.value, vMap);
+            }
+
+            // Save default volumes if not yet set
+            if (defaultPartVolumes.size === 0) {
+              for (const part of r.parts) defaultPartVolumes.set(part.label, part.volume);
+            }
+
             const frames = toModuleFrames(r);
             const localFrames = r.local ? toModuleFrames({ ...r, parts: r.local }) : undefined;
             const placementReport = toPlacementReport(spec, frames, localFrames);
             const placementViolations = auditPlacement(placementReport, r.bbox?.min ?? null, spec);
+
+            const jointedNames = new Set(
+              (spec?.jointContracts ?? []).flatMap((j) => [j.partA, j.partB]).filter((n): n is string => Boolean(n))
+            );
+
+            // Replace floating warning for jointed parts with connectivity check
             const notes = placementViolations
-              .filter((v) => v.kind === 'floor' || v.kind === 'floating')
+              .filter((v) => v.kind === 'floor' || (v.kind === 'floating' && !jointedNames.has(v.field) && !/lid|pin|drawer|slide|hinge/i.test(v.field)))
               .map((v) => v.message);
+
+            if (r.disconnected && r.disconnected.length > 0) {
+              for (const disc of r.disconnected) {
+                notes.push(`'${disc}' is a disconnected part: it does not touch and is not within 0.5 mm of any other part in the closed pose.`);
+              }
+            }
+
+            const nestingViolations = auditNesting(spec, r.parts, userPrompt);
+            for (const nv of nestingViolations) {
+              notes.push(nv.message);
+            }
 
             const payload = {
               ok: true,
@@ -426,7 +526,7 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
           config?.writer?.({ t: 'delta', text: `render${overrideText ? ` ${overrideText}` : ''}\n`, node: 'brepAgentBuild' });
 
           const overriddenScript = applyParameterOverrides(lastScript, overrides);
-          const r = await runBrep(overriddenScript, { signal: config?.signal });
+          const r = await runBrep(overriddenScript, { interferences: true, signal: config?.signal });
           if (config?.signal?.aborted) {
             throw Object.assign(new Error('The run was stopped during the geometry run.'), { name: 'AbortError' });
           }
@@ -440,11 +540,35 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
             continue;
           }
 
+          const renderInterferences = (r.interferences ?? [])
+            .filter((i) => i.volume > 1.0)
+            .map((i) => ({ a: i.a, b: i.b, volume: round2(i.volume) }));
+
+          // Track overrides for pose parameters
+          if (overrides) {
+            for (const [k, v] of Object.entries(overrides)) {
+              if ((k.endsWith('_deg') || k.endsWith('_travel')) && typeof v === 'number') {
+                if (!testedPoses.has(k)) testedPoses.set(k, new Set());
+                testedPoses.get(k)!.add(v);
+                if (!poseInterferences.has(k)) poseInterferences.set(k, new Map());
+                poseInterferences.get(k)!.set(v, renderInterferences.length);
+                if (!posePartVolumes.has(k)) posePartVolumes.set(k, new Map());
+                const vMap = new Map<string, number>();
+                for (const part of r.parts) vMap.set(part.label, part.volume);
+                posePartVolumes.get(k)!.set(v, vMap);
+              }
+            }
+          }
+
           const ascii = stlToAscii(r.stl);
           const renderedViews = renderStlViews(ascii, { views, size: 512 });
 
+          const clashDesc = renderInterferences.length > 0
+            ? ` (${renderInterferences.length} interference(s) detected: ${renderInterferences.map((i) => `${i.a} with ${i.b} [${i.volume} mm3]`).join(', ')})`
+            : '';
+
           const contentBlocks: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> = [
-            { type: 'text', text: `Rendered ${renderedViews.length} views${overrideText ? ` (${overrideText})` : ''}:` },
+            { type: 'text', text: `Rendered ${renderedViews.length} views${overrideText ? ` (${overrideText})` : ''}${clashDesc}:` },
           ];
           for (const view of renderedViews) {
             contentBlocks.push({ type: 'text', text: `View: ${view.name}` });
@@ -457,15 +581,189 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
             content: contentBlocks as never,
           }));
         } else if (call.name === 'finish') {
-          finished = true;
-          if (typeof call.args?.script === 'string' && call.args.script.trim()) {
-            lastScript = call.args.script;
-            lastOkScript = call.args.script;
+          const finalCandidateScript = (typeof call.args?.script === 'string' && call.args.script.trim())
+            ? call.args.script
+            : (lastOkScript || lastScript);
+
+          const guard = checkScriptGuardrails(finalCandidateScript);
+          if (!guard.ok) {
+            conversation.push(new ToolMessage({
+              tool_call_id: callId,
+              name: call.name,
+              content: JSON.stringify({ ok: false, error: `Finish rejected: Script guardrail failure (${guard.reason})` }),
+            }));
+            continue;
           }
+
+          const r = await runBrep(finalCandidateScript, { interferences: true, signal: config?.signal });
+          if (config?.signal?.aborted) {
+            throw Object.assign(new Error('The run was stopped during the geometry run.'), { name: 'AbortError' });
+          }
+
+          if (!r.ok) {
+            conversation.push(new ToolMessage({
+              tool_call_id: callId,
+              name: call.name,
+              content: JSON.stringify({ ok: false, error: `Finish rejected: Script execution failed (${r.error})` }),
+            }));
+            continue;
+          }
+
+          // Rule 1: Labels survive consolidation
+          const omitted = (call.args?.omitted as Array<{ component: string; reason: string }> | undefined) ?? [];
+          const omittedMap = new Map(omitted.map((o) => [o.component, o.reason]));
+          const partLabels = new Set(r.parts.map((p) => p.label));
+          const missingSpecComps = specComponentNames.filter((name) => !partLabels.has(name) && !omittedMap.has(name));
+          if (missingSpecComps.length > 0) {
+            conversation.push(new ToolMessage({
+              tool_call_id: callId,
+              name: call.name,
+              content: JSON.stringify({
+                ok: false,
+                error: `Finish rejected: Spec component(s) [${missingSpecComps.join(', ')}] missing from _cadai_parts and not listed in omitted. Every spec component must have a labelled shape in _cadai_parts before fusing, or be declared in finish(omitted=[{component, reason}]).`,
+              }),
+            }));
+            continue;
+          }
+
+          // Rule 2: Moving parts must move
+          if (movingNeeded) {
+            const poseParams = parsePoseParameters(finalCandidateScript);
+            if (poseParams.length === 0) {
+              conversation.push(new ToolMessage({
+                tool_call_id: callId,
+                name: call.name,
+                content: JSON.stringify({
+                  ok: false,
+                  error: 'Finish rejected: Moving parts requested/specified, but script does not expose a pose parameter ending in _deg or _travel with a range (e.g. lid_open_deg = 0  # [0:5:120] lid opening angle in degrees).',
+                }),
+              }));
+              continue;
+            }
+
+            let poseError: string | null = null;
+            for (const pp of poseParams) {
+              const testedSet = testedPoses.get(pp.name);
+              const maxTested = testedSet && Array.from(testedSet).some((v) => Math.abs(v - pp.max) <= 1e-2);
+              if (!maxTested) {
+                poseError = `Pose parameter '${pp.name}' was not run at its range max (${pp.max}). Run render or run_script with ${pp.name}=${pp.max} before finish.`;
+                break;
+              }
+              if (pp.min !== 0) {
+                const minTested = testedSet && Array.from(testedSet).some((v) => Math.abs(v - pp.min) <= 1e-2);
+                if (!minTested) {
+                  poseError = `Pose parameter '${pp.name}' was not run at its range min (${pp.min}). Run render or run_script with ${pp.name}=${pp.min} before finish.`;
+                  break;
+                }
+              }
+
+              // Check interferences at pose max
+              const interfsAtMax = poseInterferences.get(pp.name)?.get(pp.max) ?? 0;
+              if (interfsAtMax > 0) {
+                poseError = `Pose parameter '${pp.name}' has unintended collision(s) at range max (${pp.max}). Clear clearances before finish.`;
+                break;
+              }
+
+              // Check if pose parameter changes part size
+              const volsAtMax = posePartVolumes.get(pp.name)?.get(pp.max);
+              if (volsAtMax) {
+                for (const [pName, pVol] of volsAtMax.entries()) {
+                  const defVol = defaultPartVolumes.get(pName);
+                  if (defVol !== undefined && defVol > 1.0) {
+                    const delta = Math.abs(pVol - defVol);
+                    if (delta > 1.0 && delta / defVol > 0.02) {
+                      poseError = `Pose parameter '${pp.name}' changes the size/volume of part '${pName}' (from ${round2(defVol)} to ${round2(pVol)} mm3). A pose parameter must change position/rotation, never size.`;
+                      break;
+                    }
+                  }
+                }
+                if (poseError) break;
+              }
+            }
+
+            if (poseError) {
+              conversation.push(new ToolMessage({
+                tool_call_id: callId,
+                name: call.name,
+                content: JSON.stringify({ ok: false, error: `Finish rejected: ${poseError}` }),
+              }));
+              continue;
+            }
+          }
+
+          // Rule 3: Requirements check before finish
+          const reqs = (call.args?.requirements as Array<{ id: string; status: 'met' | 'partly' | 'unmet'; evidence?: string }> | undefined) ?? [];
+          const reqsMap = new Map(reqs.map((r) => [r.id, r]));
+          const missingReqIds = checklist.requirements.map((r) => r.id).filter((id) => !reqsMap.has(id));
+          if (missingReqIds.length > 0) {
+            conversation.push(new ToolMessage({
+              tool_call_id: callId,
+              name: call.name,
+              content: JSON.stringify({
+                ok: false,
+                error: `Finish rejected: Requirement(s) [${missingReqIds.join(', ')}] missing from finish requirements checklist. Every atomic requirement must be accounted for.`,
+              }),
+            }));
+            continue;
+          }
+
+          const unmetWithoutReason = reqs.find((r) => r.status === 'unmet' && (!r.evidence || !r.evidence.trim()));
+          if (unmetWithoutReason) {
+            conversation.push(new ToolMessage({
+              tool_call_id: callId,
+              name: call.name,
+              content: JSON.stringify({
+                ok: false,
+                error: `Finish rejected: Requirement '${unmetWithoutReason.id}' is marked unmet without an explanation in evidence.`,
+              }),
+            }));
+            continue;
+          }
+
+          // Rule 4: Connectivity check
+          if (r.disconnected && r.disconnected.length > 0) {
+            conversation.push(new ToolMessage({
+              tool_call_id: callId,
+              name: call.name,
+              content: JSON.stringify({
+                ok: false,
+                error: `Finish rejected: Disconnected part(s) detected: ${r.disconnected.join(', ')}. All parts in the closed pose must touch or be within 0.5 mm of another part (or pin in bore with <= 1 mm clearance).`,
+              }),
+            }));
+            continue;
+          }
+
+          // Rule 5: Nesting check
+          const nestingViolations = auditNesting(spec, r.parts, userPrompt);
+          const nestingErrors = nestingViolations.filter((v) => v.severity === 'error');
+          if (nestingErrors.length > 0) {
+            conversation.push(new ToolMessage({
+              tool_call_id: callId,
+              name: call.name,
+              content: JSON.stringify({
+                ok: false,
+                error: `Finish rejected: ${nestingErrors[0].message}`,
+              }),
+            }));
+            continue;
+          }
+
+          // Everything passed!
+          finished = true;
+          lastScript = finalCandidateScript;
+          lastOkScript = finalCandidateScript;
+
           if (call.args?.notes) {
             finishNotes = Array.isArray(call.args.notes)
               ? call.args.notes.filter((n): n is string => typeof n === 'string')
               : [String(call.args.notes)];
+          }
+
+          finishOmitted = omitted;
+          for (const req of reqs) {
+            if (req.status !== 'met') {
+              finishNotes.push(`Requirement [${req.id}] ${req.status}: ${req.evidence ?? ''}`);
+            }
           }
 
           config?.writer?.({ t: 'delta', text: 'finished\n', node: 'brepAgentBuild' });
@@ -487,11 +785,16 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
 
     const finalScript = lastOkScript || lastScript;
 
+    const allBuildNotes: Array<{ name: string; reason: string }> = [
+      ...finishOmitted.map((o) => ({ name: o.component, reason: o.reason })),
+      ...finishNotes.map((reason) => ({ name: '', reason })),
+    ];
+
     return {
       currentCode: finalScript,
       attemptCount: state.attemptCount + 1,
       buildFallbacks: 0,
-      buildNotes: finishNotes.map((reason) => ({ name: '', reason })),
+      buildNotes: allBuildNotes,
       gateAction: null,
       gateFeedback: null,
       failureKind: finalScript ? 'none' : 'compile',

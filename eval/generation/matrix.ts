@@ -94,7 +94,8 @@ function runChild(run: PlannedRun, outDir: string, tag: string, promptsFile: str
       let metrics: GenerationMetrics | null = null;
       try { metrics = JSON.parse(fs.readFileSync(resultFile, 'utf8')) as GenerationMetrics; } catch { /* crashed */ }
       fs.rmSync(tmp, { recursive: true, force: true });
-      resolve(metrics ? { ...base, metrics } : { ...base, metrics: null, crashed: crashReason(code, tail) });
+      const v2Form = metrics?.v2Form ?? metrics?.v2Criteria?.formAndAesthetics ?? null;
+      resolve(metrics ? { ...base, v2Form, metrics } : { ...base, metrics: null, crashed: crashReason(code, tail) });
     });
   });
 }

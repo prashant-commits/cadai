@@ -159,7 +159,11 @@ describe('defaults', () => {
       tool_calls: [{
         id: 'finish_1',
         name: 'finish',
-        args: { script: finalScript, notes: ['agent dock test'] },
+        args: {
+          script: finalScript,
+          notes: ['agent dock test'],
+          requirements: [{ id: 'cad_request', status: 'met' }],
+        },
       }],
     });
     script([], [finishReply]);
