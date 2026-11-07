@@ -32,7 +32,17 @@ export type BrepResult = {
 export interface RunBrepOptions {
   timeoutMs?: number; /* default 60000 */
   fetchImpl?: typeof fetch;
+  /** The run's stop signal: aborts the HTTP request or kills the local process group. Result error is 'cancelled'. */
+  signal?: AbortSignal;
 }
+
+const cancelledResult = (t0: number): BrepResult => ({
+  ok: false,
+  error: 'cancelled',
+  parts: [],
+  solids: 0,
+  ms: Math.max(1, Math.round(performance.now() - t0)),
+});
 
 function findProjectRoot(): string {
   let curr = process.cwd();
@@ -51,7 +61,8 @@ async function runBrepHttp(
   script: string,
   timeoutMs: number,
   fetchImpl: typeof fetch | undefined,
-  t0: number
+  t0: number,
+  runSignal?: AbortSignal
 ): Promise<BrepResult> {
   const geoUrl = process.env.CADAI_GEO_URL!.trim();
   const url = `${geoUrl.replace(/\/+$/, '')}/run`;
@@ -69,7 +80,9 @@ async function runBrepHttp(
 
   let res: Response;
   try {
-    const signal = typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(timeoutMs) : undefined;
+    const timeout = typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(timeoutMs) : undefined;
+    const signals = [timeout, runSignal].filter((x): x is AbortSignal => Boolean(x));
+    const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
     res = await fetchFn(url, {
       method: 'POST',
       headers,
@@ -77,6 +90,7 @@ async function runBrepHttp(
       signal,
     });
   } catch (err: unknown) {
+    if (runSignal?.aborted) return cancelledResult(t0);
     const isTimeout =
       (err && typeof err === 'object' && 'name' in err && (err.name === 'TimeoutError' || err.name === 'AbortError')) ||
       (err instanceof Error && /timeout/i.test(err.message));
@@ -171,10 +185,25 @@ export function localRunnerRefusal(): string | null {
   return null;
 }
 
+/** Kills the child and everything it started (it leads its own process group). */
+function killGroup(child: ReturnType<typeof spawn>) {
+  try {
+    if (child.pid !== undefined && process.platform !== 'win32') process.kill(-child.pid, 'SIGKILL');
+    else child.kill('SIGKILL');
+  } catch {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // already gone
+    }
+  }
+}
+
 async function runBrepLocal(
   script: string,
   timeoutMs: number,
-  t0: number
+  t0: number,
+  runSignal?: AbortSignal
 ): Promise<BrepResult> {
   const refusal = localRunnerRefusal();
   if (refusal) {
@@ -193,12 +222,19 @@ async function runBrepLocal(
     const outDir = path.join(tmpDir, 'out');
     await fs.writeFile(scriptPath, script, 'utf-8');
     await fs.mkdir(outDir, { recursive: true });
+    // A Stop during the setup above fired no listener yet: check before spawning.
+    if (runSignal?.aborted) return cancelledResult(t0);
 
     const childResult = await new Promise<LocalChildResult>((resolve) => {
       let stdout = '';
       let stderr = '';
       let timedOut = false;
       let timer: NodeJS.Timeout | null = null;
+      let onAbort: (() => void) | null = null;
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        if (onAbort) runSignal?.removeEventListener('abort', onAbort);
+      };
 
       let child: ReturnType<typeof spawn>;
       try {
@@ -206,6 +242,9 @@ async function runBrepLocal(
           cwd: geoDir,
           stdio: ['ignore', 'pipe', 'pipe'],
           env: process.env,
+          // Own process group, so a timeout or a stop kills the python process
+          // and anything it spawned, not just the direct child.
+          detached: process.platform !== 'win32',
         });
       } catch (err) {
         return resolve({
@@ -221,8 +260,15 @@ async function runBrepLocal(
       if (timeoutMs > 0 && Number.isFinite(timeoutMs)) {
         timer = setTimeout(() => {
           timedOut = true;
-          child.kill('SIGKILL');
+          killGroup(child);
         }, timeoutMs);
+      }
+
+      if (runSignal) {
+        onAbort = () => killGroup(child);
+        runSignal.addEventListener('abort', onAbort, { once: true });
+        // Aborted between the check above and here: the listener will never fire.
+        if (runSignal.aborted) killGroup(child);
       }
 
       child.stdout?.on('data', (chunk) => {
@@ -234,7 +280,7 @@ async function runBrepLocal(
       });
 
       child.on('error', (err) => {
-        if (timer) clearTimeout(timer);
+        cleanup();
         resolve({
           code: 1,
           signal: null,
@@ -246,7 +292,7 @@ async function runBrepLocal(
       });
 
       child.on('close', (code, signal) => {
-        if (timer) clearTimeout(timer);
+        cleanup();
         resolve({
           code,
           signal,
@@ -256,6 +302,8 @@ async function runBrepLocal(
         });
       });
     });
+
+    if (runSignal?.aborted) return cancelledResult(t0);
 
     if (childResult.timedOut) {
       return {
@@ -366,12 +414,13 @@ export async function runBrep(
 ): Promise<BrepResult> {
   const t0 = performance.now();
   const timeoutMs = opts?.timeoutMs ?? 60000;
+  if (opts?.signal?.aborted) return cancelledResult(t0);
 
   try {
     if (process.env.CADAI_GEO_URL && process.env.CADAI_GEO_URL.trim().length > 0) {
-      return await runBrepHttp(script, timeoutMs, opts?.fetchImpl, t0);
+      return await runBrepHttp(script, timeoutMs, opts?.fetchImpl, t0, opts?.signal);
     }
-    return await runBrepLocal(script, timeoutMs, t0);
+    return await runBrepLocal(script, timeoutMs, t0, opts?.signal);
   } catch (err) {
     return {
       ok: false,

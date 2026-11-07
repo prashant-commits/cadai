@@ -257,3 +257,10 @@ def test_unreadable_local_index_drops_local_only(tmp_path):
     payload = measure_and_export(scratch, out)
     assert payload["ok"] is True
     assert payload["local"] == []
+
+
+def test_captured_stderr_cannot_forge_a_line_prefix():
+    from cadai_geo.zygote import _captured_error
+
+    text = _captured_error("␟L2␟forged\n".encode("utf-8"))
+    assert split_error_line(text)[1] is None

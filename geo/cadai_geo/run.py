@@ -24,6 +24,11 @@ from collections.abc import Sequence
 # display filter.
 _MODEL_PY = re.compile(r"\S*[/\\]model\.py")
 _TMP_LEAK = re.compile(r"/tmp/\S+")
+# 512 used to reject a 600-part model as "geometry". 4096 covers 1000 parts
+# with room; the index cap scales with that (about 2 KB per entry).
+_MAX_PARTS = 4096
+_MAX_INDEX_BYTES = 8 * 1024 * 1024
+_MAX_BREP_BYTES = 256 * 1024 * 1024
 
 # build123d's Compound([shapes]) keeps only the OCC topology, so labels set on
 # the Python shapes are dropped. Remember the shapes that were passed in.
@@ -49,7 +54,7 @@ def _last_line(exc: BaseException) -> str:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     line = lines[-1] if lines else f"{type(exc).__name__}: {exc}"
     # The line-number prefix below is ours alone: an exception message cannot carry one.
-    return redact(line).replace("\u241f", "\ufffd")
+    return redact(line).replace("␟", "�")
 
 
 # A failed run reports the innermost line of the script that raised. The untrusted stage can only
@@ -255,8 +260,23 @@ def _part_shapes(result, measured=None) -> list[tuple[str, object]]:
     return [(getattr(shape, "label", "") or "", shape) for shape in shapes]
 
 
+def _exit_message(exc: SystemExit) -> str:
+    code = exc.code
+    if isinstance(code, int) and code != 0:
+        return f"script exited: {code}"
+    return "script exited"
+
+
 def _discard_geometry(scratch: str) -> None:
     """Remove BREP outputs in ``scratch``. Symlinks are unlinked, not followed."""
+    try:
+        info = os.lstat(scratch)
+    except OSError:
+        return
+    # A scratch path the script replaced with a symlink is not a directory
+    # we created. Do not walk it.
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        return
     result_path = os.path.join(scratch, "result.brep")
     if os.path.lexists(result_path):
         if os.path.islink(result_path) or not os.path.isdir(result_path):
@@ -302,6 +322,10 @@ def capture_geometry(script_path: str, scratch: str, on_error) -> None:
 
     try:
         namespace = _run_script(os.fspath(script_path))
+    except SystemExit as exc:
+        _discard_geometry(scratch)
+        on_error(_exit_message(exc))
+        return
     except Exception as exc:
         _discard_geometry(scratch)
         on_error(_error_with_line(exc, os.fspath(script_path)))
@@ -331,72 +355,151 @@ def capture_geometry(script_path: str, scratch: str, on_error) -> None:
             _discard_geometry(scratch)
             on_error("export_brep failed")
             return
+    except SystemExit as exc:
+        _discard_geometry(scratch)
+        on_error(_exit_message(exc))
     except Exception as exc:
         _discard_geometry(scratch)
         on_error(_last_line(exc))
 
 
-def _measured_shapes(scratch: str, name: str, strict: bool = True) -> list[dict]:
-    """Measure the BREPs in ``<scratch>/<name>``. Labels come from the index; numbers come from the shapes.
+def _open_directory(path: str) -> int:
+    """Open a real directory. A symlink raises ``OSError`` and is not followed."""
+    return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
 
-    ``strict``: a malformed index or entry fails the run (``parts/``). Otherwise the bad entry,
-    or the whole directory when its index is unreadable, is dropped and logged (``local/``).
+
+def _read_regular_at(dir_fd: int, name: str, max_bytes: int) -> bytes | None:
+    """Read one regular file under ``dir_fd``.
+
+    ``None`` means the name does not exist. A symlink, a non-regular file, or
+    an oversized file raises ``ValueError`` so the caller reports ``measure``
+    and does not follow the link.
     """
-    parts_dir = os.path.join(scratch, name)
-    index_path = os.path.join(parts_dir, "index.json")
-    loaded: list[dict] = []
+    if (
+        not isinstance(name, str)
+        or name != os.path.basename(name)
+        or "/" in name
+        or "\\" in name
+        or name in ("", ".", "..")
+    ):
+        raise ValueError("measure")
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValueError("measure") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("measure")
+        if info.st_size > max_bytes:
+            raise ValueError("measure")
+        return os.read(fd, info.st_size)
+    finally:
+        os.close(fd)
+
+
+def _import_brep_bytes(data: bytes, outdir: str):
+    """Import BREP bytes that were read from an already-open, no-follow fd.
+
+    OCC wants a filesystem path. The copy lives in the trusted outdir, which
+    the run uid cannot write, and it is removed after the import.
+    """
+    from build123d import import_brep
+
+    dest = os.path.join(os.fspath(outdir), ".cadai-load.brep")
+    _replace_output(dest)
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+    try:
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError("short write")
+            view = view[written:]
+    finally:
+        os.close(fd)
+    try:
+        return import_brep(dest)
+    finally:
+        _replace_output(dest)
+
+
+def _measured_shapes(scratch_fd: int, outdir: str, name: str, strict: bool) -> list[dict] | None:
+    """Measure the BREPs in <scratch>/<name>. Labels come from the index; numbers come from the shapes.
+
+    Every read is no-follow and fstat-checked. None means there is no such directory or no
+    entries. strict (parts/): a symlinked directory or index, an oversized file or any bad
+    entry is a measure failure. Otherwise (local/) a bad entry, or the whole directory when it
+    cannot be read safely, is dropped and logged, and the run goes on.
+    """
 
     def bad(reason: str) -> None:
         if strict:
-            raise ValueError(name)
+            raise ValueError("measure")
         print(f"cadai_geo: dropped {name}/ entry: {reason}", file=sys.stderr)
 
-    if not regular_file_inside(index_path, parts_dir) or os.path.getsize(index_path) > 1024 * 1024:
-        return loaded
     try:
-        with open(index_path, encoding="utf-8") as handle:
-            entries = json.load(handle)
-    except (OSError, ValueError):
-        bad("index.json is not readable JSON")
-        return loaded
-    if not isinstance(entries, list) or not entries:
-        return loaded
-    if len(entries) > 512:
-        bad("more than 512 entries")
-        return loaded
-    from build123d import import_brep
-
-    for entry in entries:
-        if not isinstance(entry, dict):
-            bad("entry is not an object")
-            continue
-        file = entry.get("file")
-        if (
-            not isinstance(file, str)
-            or file != os.path.basename(file)
-            or file in ("", ".", "..")
-        ):
-            bad("file is not a plain name")
-            continue
-        path = os.path.join(parts_dir, file)
-        if not regular_file_inside(path, parts_dir):
-            bad("file is not a regular file inside the directory")
-            continue
+        dir_fd = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=scratch_fd,
+        )
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if strict:
+            raise ValueError("measure") from exc
+        bad("directory is not a real directory")
+        return None
+    try:
         try:
-            shape = import_brep(path)
+            raw = _read_regular_at(dir_fd, "index.json", _MAX_INDEX_BYTES)
+            entries = json.loads(raw.decode("utf-8")) if raw else None
+        except (ValueError, UnicodeDecodeError):
+            bad("index.json is not a readable JSON file")
+            return None
+        if not isinstance(entries, list) or not entries:
+            return None
+        if len(entries) > _MAX_PARTS:
+            bad(f"more than {_MAX_PARTS} entries")
+            return None
+        loaded = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                bad("entry is not an object")
+                continue
+            try:
+                data = _read_regular_at(dir_fd, entry.get("file"), _MAX_BREP_BYTES)
+            except ValueError:
+                bad("file is not a plain regular file of allowed size")
+                continue
+            if data is None:
+                bad("file is missing")
+                continue
+            try:
+                shape = _import_brep_bytes(data, outdir)
+            except Exception:
+                if strict:
+                    raise
+                bad("file is not a BREP shape")
+                continue
             label = entry.get("label")
             if not isinstance(label, str):
                 label = ""
             loaded.append(_part(shape, label[:256]))
-        except Exception:
-            if strict:
-                raise
-            bad("file is not a BREP shape")
-    return loaded
+        return loaded
+    finally:
+        os.close(dir_fd)
 
 
-def _parts_from_scratch(scratch: str, result) -> list[dict]:
-    loaded = _measured_shapes(scratch, "parts")
+def _parts_from_scratch(scratch_fd: int, outdir: str, result) -> list[dict]:
+    """Measure part BREPs. A missing parts directory falls back to unlabeled solids.
+
+    A symlinked parts directory or index is a measure failure.
+    """
+    loaded = _measured_shapes(scratch_fd, outdir, "parts", strict=True)
     if loaded:
         return loaded
     return [_part(solid, "") for solid in result.solids()]
@@ -405,42 +508,54 @@ def _parts_from_scratch(scratch: str, result) -> list[dict]:
 def measure_and_export(scratch: str, outdir: str, fallback_error: str | None = None) -> dict:
     """Trusted stage: load BREP from ``scratch``, measure it, write exports into ``outdir``.
 
-    Bytes that are not a BREP become ``ok: false``. A parsed shape is measured
-    here; a ``result.json`` sitting in the scratch directory is never read.
+    Bytes that are not a BREP become ``ok: false`` with error ``measure``.
+    A parsed shape is measured here; a ``result.json`` sitting in the scratch
+    directory is never read. ``scratch`` itself is opened with ``O_NOFOLLOW``,
+    so a symlink planted in place of that directory is not followed.
     """
-    result_path = os.path.join(scratch, "result.brep")
-    if not regular_file_inside(result_path, scratch):
-        message, line = split_error_line(fallback_error or "no geometry")
-        failed: dict = {"ok": False, "error": message}
-        if line:
-            failed["line"] = line
-        return failed
     try:
-        from build123d import export_step, export_stl, import_brep
+        scratch_fd = _open_directory(scratch)
+    except OSError:
+        return {"ok": False, "error": "measure"}
+    try:
+        try:
+            data = _read_regular_at(scratch_fd, "result.brep", _MAX_BREP_BYTES)
+        except ValueError:
+            return {"ok": False, "error": "measure"}
+        if data is None:
+            message, line = split_error_line(fallback_error or "no geometry")
+            failed: dict = {"ok": False, "error": message}
+            if line:
+                failed["line"] = line
+            return failed
+        try:
+            from build123d import export_step, export_stl
 
-        result = import_brep(result_path)
-        parts = _parts_from_scratch(scratch, result)
-        local = _measured_shapes(scratch, "local", strict=False)
-        step_path = os.path.join(os.fspath(outdir), "model.step")
-        stl_path = os.path.join(os.fspath(outdir), "model.stl")
-        _replace_output(step_path)
-        _replace_output(stl_path)
-        if not export_step(result, step_path):
-            return {"ok": False, "error": "export_step failed"}
-        if not export_stl(result, stl_path, ascii_format=True):
-            return {"ok": False, "error": "export_stl failed"}
-        box = result.bounding_box()
-        return {
-            "ok": True,
-            "parts": parts,
-            "local": local,
-            "solids": len(list(result.solids())),
-            "bbox": {"min": _xyz(box.min), "max": _xyz(box.max)},
-            "stl": None,
-            "step": None,
-        }
-    except Exception:
-        return {"ok": False, "error": "geometry"}
+            result = _import_brep_bytes(data, outdir)
+            parts = _parts_from_scratch(scratch_fd, outdir, result)
+            local = _measured_shapes(scratch_fd, outdir, "local", strict=False) or []
+            step_path = os.path.join(os.fspath(outdir), "model.step")
+            stl_path = os.path.join(os.fspath(outdir), "model.stl")
+            _replace_output(step_path)
+            _replace_output(stl_path)
+            if not export_step(result, step_path):
+                return {"ok": False, "error": "export_step failed"}
+            if not export_stl(result, stl_path, ascii_format=True):
+                return {"ok": False, "error": "export_stl failed"}
+            box = result.bounding_box()
+            return {
+                "ok": True,
+                "parts": parts,
+                "local": local,
+                "solids": len(list(result.solids())),
+                "bbox": {"min": _xyz(box.min), "max": _xyz(box.max)},
+                "stl": None,
+                "step": None,
+            }
+        except Exception:
+            return {"ok": False, "error": "measure"}
+    finally:
+        os.close(scratch_fd)
 
 
 def run(script_path: str | os.PathLike, outdir: str | os.PathLike) -> dict:
