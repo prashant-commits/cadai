@@ -41,6 +41,16 @@ describe('bridgeGraphStream', () => {
     expect(out.filter((e) => e.t === 'delta')).toEqual([{ t: 'delta', text: 'Hel' }, { t: 'delta', text: 'lo' }]);
   });
 
+  it('streams the text blocks of content-block chunks (native Anthropic tool or thinking calls), not thinking or tool input', async () => {
+    const out = await bridge([
+      ['messages', [{ content: [{ index: 0, type: 'thinking', thinking: 'secret' }] }, { langgraph_node: 'drafterNode' }]],
+      ['messages', [{ content: [{ index: 1, type: 'text', text: 'Hel' }] }, { langgraph_node: 'drafterNode' }]],
+      ['messages', [{ content: [{ index: 1, type: 'text', text: 'lo' }] }, { langgraph_node: 'drafterNode' }]],
+      ['messages', [{ content: [{ index: 2, type: 'input_json_delta', input: '{"a"' }] }, { langgraph_node: 'drafterNode' }]],
+    ]);
+    expect(out.filter((e) => e.t === 'delta')).toEqual([{ t: 'delta', text: 'Hel' }, { t: 'delta', text: 'lo' }]);
+  });
+
   it('emits a gate event with the run id when an interrupt arrives', async () => {
     const payload = { kind: 'spec', spec: null, contract: null, revisionCount: 0 };
     const out = await bridge([['updates', { __interrupt__: [{ id: 'i1', value: payload }] }]]);

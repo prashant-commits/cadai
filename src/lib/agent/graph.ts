@@ -1,16 +1,16 @@
 import { StateGraph, Annotation, END, START, interrupt } from '@langchain/langgraph';
 import type { LangGraphRunnableConfig } from '@langchain/langgraph';
-import { BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
+import { BaseMessage, HumanMessage, AIMessage } from '@langchain/core/messages';
 import type { RunnableConfig } from '@langchain/core/runnables';
 import { z } from 'zod';
 import { createSpecRenderer } from './spec-markdown';
 import { escapeMarkers } from './transcript';
 import { composeRunSummary } from './run-summary';
 import type { StreamEvent } from './stream-events';
-import { systemPromptFor } from './system-prompt';
-import { extractOpenScadCode } from './code-extractor';
+import { cachedSystemMessage, systemPromptFor } from './system-prompt';
+import { contentText } from './message-text';
+import { extractReplyCode, invokeWithToolRound } from './tool-round';
 import { validateOpenScadCode } from './code-validator';
-import { getFunctionalCadModuleTool } from './engineering-tools';
 import { AssemblySpec, AssemblySpecSchema, variantSpecRequestSchema } from './assembly-spec';
 import { ValidationResult, ScadDiagnostic } from '../engine/scad-compiler';
 import { ModelInfo, GatePayload, GateDecision, GateVariant, DesignContract } from '@/types';
@@ -46,7 +46,7 @@ import { auditSpecShapes, auditSpecGround } from './spec-shape-audit';
 import { checkInterference } from '../engine/assembly-verifier';
 import { nullsToUndefined } from './strict-schema';
 import { getCheckpointer } from './checkpointer';
-import { VisualCritiqueSchema, SheetReviewSchema, ArchitectPlanSchema, structuredFor } from './llm-schemas';
+import { VisualCritiqueSchema, SheetReviewSchema, ArchitectPlanSchema, structuredFor, parseArchitectPlan, parseSheetReview, parseVisualCritique, isCutOff, UnusableReplyError, type UnusableStop } from './llm-schemas';
 import {
   SpecVariant,
   SpecBrief,
@@ -649,7 +649,7 @@ export function createCadAgent(
   }
   const model = getChatModel(selectedModel);
   // Revisions previously sampled warmer to avoid re-emitting the previous skeleton,
-  // but temperature cannot be sent on this endpoint (Claude 5.5 models reject temperature).
+  // but temperature cannot be sent (Claude 5.5 models reject non-default temperatures).
   // Revision calls use the model directly.
   const revisionModel = model;
 
@@ -672,8 +672,7 @@ export function createCadAgent(
   // {"type":"number"} lets a constrained decoder emit digits forever and truncate
   // the document. What comes back is validated against the zod schema and normalized.
 
-  // Drafter uses engineering lookup tools
-  const drafterModel = model.bindTools([getFunctionalCadModuleTool]);
+  // The drafter and repair nodes bind the engineering lookup tool in invokeWithToolRound.
 
   // Node 1: architectNode
 
@@ -749,6 +748,8 @@ export function createCadAgent(
     let outOfTime = false;
     let unchangedFeedback = false;
     let unchangedFinal = false;
+    // Why the last attempt's reply was unusable, when it stopped short or was refused.
+    let lastStop: UnusableStop | null = null;
     // The parsed candidate with the fewest self-check errors so far. A later attempt that
     // fails schema or provider must not cost the variant a spec that already parsed.
     let best: { candidate: AssemblySpec; errors: SpecViolation[] } | null = null;
@@ -765,7 +766,11 @@ export function createCadAgent(
         outOfTime = true;
         break;
       }
-      const retryPrompt = (unchangedFeedback
+      const retryPrompt = (isCutOff(lastStop)
+        ? 'Your previous reply was cut off at the output limit before the AssemblySpec tool call was complete. ' +
+          'Emit the spec again, more concisely: a short sheet, one-line descriptions and notes, no repeated text, ' +
+          'and only the components, parameters and guides the design needs.'
+        : unchangedFeedback
         ? `Your revision did not change the geometry. You must change it to resolve: ${majorIssues.join('; ') || 'the required changes'}`
         : coherenceFeedback
         ? 'Your previous Assembly Spec was internally inconsistent:\n' +
@@ -778,6 +783,7 @@ export function createCadAgent(
       const attemptMessages =
         attempt === 0 ? variantMessages : [...variantMessages, new HumanMessage(retryPrompt)];
 
+      lastStop = null;
       try {
         const raw = await variantModel.withConfig({ tags: ['nostream'] }).invoke(attemptMessages, withBudget(config, deadline));
 
@@ -839,6 +845,13 @@ export function createCadAgent(
           );
         }
       } catch (e: unknown) {
+        if (e instanceof UnusableReplyError) {
+          // Not a provider error: the reply arrived but stopped short or was refused.
+          lastStop = e.stop;
+          rawLastError = e.message;
+          console.warn(`architectNode: variant ${variant.id} reply unusable (attempt ${attempt + 1}/${MAX_ARCHITECT_ATTEMPTS}): stop_reason ${e.stop}`);
+          continue;
+        }
         hadProviderError = true;
         rawLastError = e instanceof Error ? e.message : String(e);
         // The raw provider error goes to the log ONLY. It was being sliced into
@@ -861,14 +874,18 @@ export function createCadAgent(
       specErrors = best.errors.map((v) => ({ severity: 'major' as const, issue: v.message }));
     }
 
+    // The last attempt's reason, when it was a reply that stopped short or was refused.
+    const stopReason = isCutOff(lastStop) ? 'reply cut off at the output limit' : lastStop === 'refusal' ? 'the model declined' : null;
     const shortErrorLabel = outOfTime
       ? 'No valid spec: the time budget ran out.'
-      : hadProviderError
-        ? 'No valid spec after 3 attempts (provider error).'
-        : 'No valid spec after 3 attempts.';
+      : stopReason
+        ? `No valid spec after 3 attempts (${stopReason}).`
+        : hadProviderError
+          ? 'No valid spec after 3 attempts (provider error).'
+          : 'No valid spec after 3 attempts.';
     // A revision that failed keeps the previous version on the card, so say that.
     const failureLine = previousSpec
-      ? `revision failed${outOfTime ? ' (time budget)' : hadProviderError ? ' (provider error)' : ''}; keeping version ${version}.`
+      ? `revision failed${outOfTime ? ' (time budget)' : stopReason ? ` (${stopReason})` : hadProviderError ? ' (provider error)' : ''}; keeping version ${version}.`
       : shortErrorLabel;
 
     if (spec) {
@@ -960,7 +977,7 @@ export function createCadAgent(
     const isFresh = variants.length === 0;
 
     if (isFresh) {
-      const plannerSystemMessage = new SystemMessage(systemPromptFor('planner'));
+      const plannerSystemMessage = cachedSystemMessage(systemPromptFor('planner'));
       const plannerMessages: BaseMessage[] = [plannerSystemMessage, ...conversationMessages];
 
       if (state.gateAction === 'revise' && state.gateFeedback) {
@@ -1005,7 +1022,7 @@ export function createCadAgent(
           // Not streamed: LangChain buffers a zod-parsed structured reply and yields
           // it once, so the brief is written when the planner returns.
           const chunkObj = await plannerModel.withConfig({ tags: ['nostream'] }).invoke(attemptMessages, withBudget(config, runDeadline));
-          const parsedPlan = ArchitectPlanSchema.safeParse(nullsToUndefined(chunkObj));
+          const parsedPlan = parseArchitectPlan(chunkObj);
           if (parsedPlan.success && parsedPlan.data.variants.length > 0) {
             plan = parsedPlan.data;
             if (plan.brief) write(config, 'architectNode', { t: 'delta', text: `${plan.brief}
@@ -1056,7 +1073,7 @@ export function createCadAgent(
         };
       }
 
-      const variantSystemMessage = new SystemMessage(systemPromptFor('variant'));
+      const variantSystemMessage = cachedSystemMessage(systemPromptFor('variant'));
       const variantBaseMessages: BaseMessage[] = [variantSystemMessage, ...conversationMessages];
       if (state.gateAction === 'revise' && state.gateFeedback) {
         variantBaseMessages.push(new HumanMessage(`The previous Assembly Spec was rejected at human review. Revise it accordingly:\n${state.gateFeedback}`));
@@ -1083,7 +1100,7 @@ export function createCadAgent(
 
     } else {
       // Revision mode
-      const variantSystemMessage = new SystemMessage(systemPromptFor('variant'));
+      const variantSystemMessage = cachedSystemMessage(systemPromptFor('variant'));
       const variantBaseMessages: BaseMessage[] = [variantSystemMessage, ...conversationMessages];
 
       const currentBrief = brief ?? {
@@ -1281,7 +1298,7 @@ export function createCadAgent(
       SheetReviewSchema
     ).withConfig({ tags: ['nostream'] });
 
-    const reviewerSystem = new SystemMessage(systemPromptFor('reviewer'));
+    const reviewerSystem = cachedSystemMessage(systemPromptFor('reviewer'));
 
     // Variants that got a fresh model verdict this pass; the retry decision for
     // them is made AFTER every review has finished, on the fresh round time.
@@ -1333,12 +1350,24 @@ export function createCadAgent(
           { type: 'image_url', image_url: { url: pngDataUrl } },
         ];
 
+        // The reply is validated against SheetReviewSchema (an unrecognised severity
+        // counts as major); an unusable one is asked for again once.
         let reviewResult: z.infer<typeof SheetReviewSchema> | null = null;
         try {
-          reviewResult = (await reviewerModel.invoke(
-            [reviewerSystem, new HumanMessage({ content: content as never })],
-            withBudget(config, state.runDeadline)
-          )) as z.infer<typeof SheetReviewSchema>;
+          for (let attempt = 0; attempt < 2 && !reviewResult; attempt++) {
+            try {
+              const raw = await reviewerModel.invoke(
+                [reviewerSystem, new HumanMessage({ content: content as never })],
+                withBudget(config, state.runDeadline)
+              );
+              reviewResult = parseSheetReview(raw);
+            } catch (e) {
+              // A reply cut off or refused is unusable like an invalid one: it gets the second ask.
+              if (!(e instanceof UnusableReplyError)) throw e;
+            }
+            if (!reviewResult) console.warn(`specReviewer: unusable review for variant ${v.id} (attempt ${attempt + 1}/2)`);
+          }
+          if (!reviewResult) throw new Error('no valid review after 2 attempts');
         } catch (e) {
           console.error(`specReviewer: model review call failed for variant ${v.id}:`, e);
           const reviewObj: VariantReview = {
@@ -1524,47 +1553,16 @@ ${contract}`;
     }
 
     const messages: BaseMessage[] = [
-      new SystemMessage(drafterSystem),
+      cachedSystemMessage(drafterSystem),
       ...state.messages,
       drafterHumanMessage,
     ];
 
-    let response = await drafterModel.invoke(messages, config);
+    // One optional round of engineering-module lookups, then the script.
+    const response = await invokeWithToolRound(model, messages, config);
 
-    // Handle tool execution loop if the model requests engineering modules
-    if (response.tool_calls && response.tool_calls.length > 0) {
-      const toolCallMessages: BaseMessage[] = [response];
-
-      for (const toolCall of response.tool_calls) {
-        if (toolCall.name === 'get_functional_cad_module') {
-
-
-
-          // Pass `config` so the tool run is parented to this node's span.
-          // Without it the retrieval is invisible to tracing (or shows up as a
-          // detached root trace), which is exactly the step you need to see
-          // when a draft comes back with the wrong hardware module.
-          const toolResult = await getFunctionalCadModuleTool.invoke(
-            toolCall.args as unknown as Parameters<typeof getFunctionalCadModuleTool.invoke>[0],
-            config,
-          );
-          toolCallMessages.push(
-            new ToolMessage({
-              tool_call_id: toolCall.id || `tool-${Date.now()}`,
-              name: toolCall.name,
-              content: typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult),
-            })
-          );
-        }
-      }
-
-
-      // Synthesize final code with tool observations
-      response = await model.invoke([...messages, ...toolCallMessages], config);
-    }
-
-    const content = typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
-    const extracted = extractOpenScadCode(content);
+    const content = contentText(response.content);
+    const extracted = extractReplyCode(response, content);
     const placed = await placeAssembly(extracted.code || '', state.assemblySpec);
 
     return {
@@ -1799,7 +1797,6 @@ ${contract}`;
   // Node 4: fixCode
   async function fixCode(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
     const currentAttempt = state.attemptCount + 1;
-    const fixModel = model.bindTools([getFunctionalCadModuleTool]);
 
 
     const attemptsContext = state.attemptHistory
@@ -1884,45 +1881,15 @@ ${state.assemblySpec ? `Assembly Spec (every stressPoint mitigation in it is man
 Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`openscad ... \`\`\` block.`;
 
     const fixMessages = [
-      new SystemMessage(systemPromptFor('repair')),
+      cachedSystemMessage(systemPromptFor('repair')),
       ...state.messages,
       new HumanMessage(fixPrompt),
     ];
 
-    let response = await fixModel.invoke(fixMessages, config);
+    const response = await invokeWithToolRound(model, fixMessages, config);
     
-    if (response.tool_calls && response.tool_calls.length > 0) {
-      const toolCallMessages: BaseMessage[] = [response];
-
-      for (const toolCall of response.tool_calls) {
-        if (toolCall.name === 'get_functional_cad_module') {
-
-
-
-          // Pass `config` so the tool run is parented to this node's span.
-          // Without it the retrieval is invisible to tracing (or shows up as a
-          // detached root trace), which is exactly the step you need to see
-          // when a draft comes back with the wrong hardware module.
-          const toolResult = await getFunctionalCadModuleTool.invoke(
-            toolCall.args as unknown as Parameters<typeof getFunctionalCadModuleTool.invoke>[0],
-            config,
-          );
-          toolCallMessages.push(
-            new ToolMessage({
-              tool_call_id: toolCall.id || `tool-${Date.now()}`,
-              name: toolCall.name,
-              content: typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult),
-            })
-          );
-        }
-      }
-
-
-      response = await model.invoke([...fixMessages, ...toolCallMessages], config);
-    }
-    
-    const content = typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
-    const extracted = extractOpenScadCode(content);
+    const content = contentText(response.content);
+    const extracted = extractReplyCode(response, content);
 
     // Patch only the attempt being repaired. The merge-by-n reducer applies it
     // in place; returning the whole array would re-append the entire history.
@@ -2006,16 +1973,25 @@ Reply with the FIX: line, then the COMPLETE fixed script in a single \`\`\`opens
       content.push({ type: 'image_url', image_url: { url: view.dataUrl } });
     }
 
+    // Validated against VisualCritiqueSchema; an unusable reply is asked for again once.
     let critique: VisualCritique | null = null;
     try {
-      critique = (await structuredFor(criticModel, criticSlug, VisualCritiqueSchema)
-        .invoke(
-          [
-            new SystemMessage(systemPromptFor('critic')),
-            new HumanMessage({ content: content as never }),
-          ],
-          config
-        )) as VisualCritique;
+      const critic = structuredFor(criticModel, criticSlug, VisualCritiqueSchema);
+      for (let attempt = 0; attempt < 2 && !critique; attempt++) {
+        try {
+          const raw = await critic.invoke(
+            [
+              cachedSystemMessage(systemPromptFor('critic')),
+              new HumanMessage({ content: content as never }),
+            ],
+            config
+          );
+          critique = parseVisualCritique(raw);
+        } catch (e) {
+          if (!(e instanceof UnusableReplyError)) throw e;
+        }
+        if (!critique) console.warn(`Visual critic: unusable critique (attempt ${attempt + 1}/2)`);
+      }
     } catch (e) {
       console.warn('Visual critic: model call failed', e);
       return {};

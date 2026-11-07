@@ -1,4 +1,4 @@
-import { HumanMessage, SystemMessage, type AIMessage, type BaseMessage } from '@langchain/core/messages';
+import { HumanMessage, type AIMessage, type BaseMessage } from '@langchain/core/messages';
 import type { RunnableConfig } from '@langchain/core/runnables';
 import type { AssemblySpec } from '../assembly-spec';
 import { requiredChanges } from '../architect-prompts';
@@ -7,7 +7,7 @@ import type { AgentStateType } from '../graph';
 import { parameterBlock } from '../parameter-block';
 import { placeAssembly } from '../place-assembly';
 import type { SpecViolation } from '../spec-audit';
-import { systemPromptFor } from '../system-prompt';
+import { cachedSystemMessage, systemPromptFor } from '../system-prompt';
 import { blockoutBody } from '../../spec-sheet/blockout-scad';
 
 /**
@@ -29,7 +29,7 @@ export function makeArchitectBuild(model: {
     const { componentNames, reserved, changes, ask, keep } = planBuildVisit(state, spec);
 
     const reply = await model.invoke(
-      [new SystemMessage(systemPromptFor('build')), new HumanMessage(humanPrompt(spec, changes, ask, keep))],
+      [cachedSystemMessage(systemPromptFor('build')), new HumanMessage(humanPrompt(spec, changes, ask, keep))],
       config,
     );
 

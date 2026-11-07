@@ -134,7 +134,8 @@ describe('structuredFor', () => {
     structuredFor(claude.model as never, 'claude-opus-5.5', ArchitectPlanSchema, { name: 'ArchitectPlan', strict: true });
     const sent = JSON.stringify(claude.seen[0].schema);
     for (const k of FORBIDDEN) expect(sent).not.toContain(`"${k}"`);
-    expect(claude.seen[0].opts).toMatchObject({ name: 'ArchitectPlan', strict: true });
+    // Native structured output (output_config.format): no tool call, so no forced tool_choice and no strict flag.
+    expect(claude.seen[0].opts).toEqual({ name: 'ArchitectPlan', method: 'jsonSchema' });
     expect((claude.seen[0].schema as { additionalProperties?: boolean }).additionalProperties).toBe(false);
 
     // The variant JSON schema for Claude has 0 nullable unions and stripped forbidden keywords.
@@ -148,12 +149,11 @@ describe('structuredFor', () => {
     expect(claudeVariant.seen[0].opts).toMatchObject({ name: 'AssemblySpec', method: 'functionCalling' });
     expect('strict' in (claudeVariant.seen[0].opts as object)).toBe(false);
 
-    // Claude non-variant schema (e.g. SheetReviewSchema) still gets strict: true and no method
+    // Claude non-variant schema (e.g. SheetReviewSchema) is sent as native structured output, includeRaw passed through
     const { SheetReviewSchema } = await import('./llm-schemas');
     const claudeReview = recorder();
-    structuredFor(claudeReview.model as never, 'claude-opus-5.5', SheetReviewSchema, { name: 'SheetReview', strict: true });
-    expect(claudeReview.seen[0].opts).toMatchObject({ name: 'SheetReview', strict: true });
-    expect('method' in (claudeReview.seen[0].opts as object)).toBe(false);
+    structuredFor(claudeReview.model as never, 'claude-opus-5.5', SheetReviewSchema, { name: 'SheetReview', strict: true, includeRaw: true });
+    expect(claudeReview.seen[0].opts).toEqual({ name: 'SheetReview', method: 'jsonSchema', includeRaw: true });
 
     // Verify union-typed parameters: 0 nullable unions in Claude variant schema,
     // whereas OpenAI strict variant schema has ~30 nullable unions.
@@ -909,54 +909,44 @@ describe('structuredFor', () => {
   it('structuredFor variant spec on Claude models binds tool_choice auto and never forced tool choice', async () => {
     const { structuredFor } = await import('./llm-schemas');
     const { variantSpecRequestSchema } = await import('./assembly-spec');
-    const { ChatOpenAI } = await import('@langchain/openai');
+    const { ChatAnthropic } = await import('@langchain/anthropic');
     const { AIMessage } = await import('@langchain/core/messages');
 
+    // The RunnableBinding that wraps the ChatAnthropic, carrying the bound tools and tool_choice.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    function findChatOpenAI(node: any): any {
+    function findBinding(node: any): any {
       if (!node) return null;
-      if (node.completions) return node;
-      if (node.first) return findChatOpenAI(node.first);
-      if (node.steps?.raw) return findChatOpenAI(node.steps.raw);
-      if (node.bound) return findChatOpenAI(node.bound);
-      if (node.runnable) return findChatOpenAI(node.runnable);
+      if (node.bound instanceof ChatAnthropic) return node;
+      if (node.first) return findBinding(node.first);
+      if (node.steps?.raw) return findBinding(node.steps.raw);
+      if (node.bound) return findBinding(node.bound);
+      if (node.runnable) return findBinding(node.runnable);
       return null;
     }
 
     for (const slug of ['claude-sonnet-5.5', 'claude-opus-5.5', 'claude-haiku-5.5']) {
-      const model = new ChatOpenAI({
+      const model = new ChatAnthropic({
         apiKey: 'test-key',
         model: slug.replace(/\./g, '-'),
       });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const bound: any = structuredFor(model, slug, variantSpecRequestSchema(), {
-        name: 'AssemblySpec',
-        strict: true,
-      });
+      for (const includeRaw of [undefined, true]) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const bound: any = structuredFor(model, slug, variantSpecRequestSchema(), {
+          name: 'AssemblySpec',
+          strict: true,
+          ...(includeRaw ? { includeRaw } : {}),
+        });
 
-      const innerLlm = findChatOpenAI(bound);
-      expect(innerLlm).toBeInstanceOf(ChatOpenAI);
-      const params = innerLlm.completions.invocationParams(innerLlm.defaultOptions);
+        const binding = findBinding(bound);
+        expect(binding).not.toBeNull();
+        const params = binding.bound.invocationParams({ ...binding.kwargs, ...binding.config });
 
-      // Verify tool_choice is 'auto', never forced or rejected types
-      expect(params.tool_choice).toBe('auto');
-      expect(typeof params.tool_choice === 'object' && params.tool_choice !== null).toBe(false);
-      expect(['tool', 'any', 'required']).not.toContain(params.tool_choice);
-      expect(params.tools).toBeDefined();
-      expect(params.tools[0].function.name).toBe('AssemblySpec');
-
-      // Also verify when includeRaw is true
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const rawBound: any = structuredFor(model, slug, variantSpecRequestSchema(), {
-        name: 'AssemblySpec',
-        strict: true,
-        includeRaw: true,
-      });
-      const rawInnerLlm = findChatOpenAI(rawBound);
-      expect(rawInnerLlm).toBeInstanceOf(ChatOpenAI);
-      const rawParams = rawInnerLlm.completions.invocationParams(rawInnerLlm.defaultOptions);
-      expect(rawParams.tool_choice).toBe('auto');
-      expect(['tool', 'any', 'required']).not.toContain(rawParams.tool_choice);
+        // tool_choice is auto, never forced: Sonnet and Opus 5.5 reject "tool" and "any" with a 400.
+        expect(params.tool_choice).toEqual({ type: 'auto' });
+        expect(params.tools).toHaveLength(1);
+        expect(params.tools[0].name).toBe('AssemblySpec');
+        expect(params.tools[0].strict).toBeUndefined();
+      }
     }
 
     // Verify reply without tool call returns undefined (treated as failed attempt)

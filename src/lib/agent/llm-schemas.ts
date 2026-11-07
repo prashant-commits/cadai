@@ -2,7 +2,9 @@ import { z } from 'zod';
 import { RunnableLambda } from '@langchain/core/runnables';
 import { JsonOutputKeyToolsParser } from '@langchain/core/output_parsers/openai_tools';
 import { assembleStructuredOutputPipeline } from '@langchain/core/language_models/structured_output';
-import { toAnthropicCompatibleSchema } from './strict-schema';
+import { JsonOutputParser } from '@langchain/core/output_parsers';
+import { ChatAnthropic } from '@langchain/anthropic';
+import { nullsToUndefined, toAnthropicCompatibleSchema } from './strict-schema';
 import { AssemblySpecSchema, omitRequestComponentFields } from './assembly-spec';
 
 // Schemas handed to withStructuredOutput. Anthropic's endpoint enforces strict
@@ -381,6 +383,36 @@ function normalizeShape(shape: unknown): unknown {
   }
 }
 
+function axisIndex(axis: unknown): 0 | 1 | 2 | undefined {
+  if (axis === 'x') return 0;
+  if (axis === 'y') return 1;
+  if (axis === 'z') return 2;
+  return undefined;
+}
+
+/**
+ * A hole's `at` with exactly two items is the two in-face coordinates with the
+ * one along `axis` left out (16 of 72 thinking-off specs, Haiku 5.5): e.g.
+ * `{axis: "y", at: ["hole_x1", "hole_z"]}` on a plate with localExtents
+ * `["plate_w", "plate_t", "plate_h"]`. The missing coordinate is inserted at the
+ * axis index as the component's extent along that axis, i.e. the mouth on the +
+ * face, the same convention as a z hole in a 5 mm plate having at[2] = 5
+ * (hole-audit.ts probeOrigin). Without a usable axis or extent the hole is left
+ * as it is and fails validation.
+ */
+function completeHoleAt(hole: Record<string, unknown>, localExtents: unknown): Record<string, unknown> {
+  if (!Array.isArray(hole.at) || hole.at.length !== 2) return hole;
+  const i = axisIndex(hole.axis);
+  if (i === undefined || !Array.isArray(localExtents) || localExtents.length !== 3) return hole;
+  const extent: unknown = localExtents[i];
+  const usable =
+    (typeof extent === 'number' && Number.isFinite(extent)) || (typeof extent === 'string' && extent.trim() !== '');
+  if (!usable) return hole;
+  const at = [...hole.at];
+  at.splice(i, 0, extent);
+  return { ...hole, at };
+}
+
 function normalizeComponent(comp: unknown): unknown {
   if (!comp || typeof comp !== 'object' || Array.isArray(comp)) return comp;
   const c = { ...(comp as Record<string, unknown>) };
@@ -390,7 +422,7 @@ function normalizeComponent(comp: unknown): unknown {
   if (Array.isArray(c.holes)) {
     c.holes = c.holes.map((h) => {
       if (!h || typeof h !== 'object' || Array.isArray(h)) return h;
-      const hole = { ...(h as Record<string, unknown>) };
+      const hole = completeHoleAt({ ...(h as Record<string, unknown>) }, c.localExtents);
       if (hole.note === '') {
         delete hole.note;
       }
@@ -493,13 +525,69 @@ function parseBled(field: string, text: string): Record<string, unknown> | null 
 }
 
 /**
+ * Top-level array fields that sometimes arrive as a JSON string of the array.
+ * Their string ELEMENTS are parsed too, which is safe only because every one of
+ * these fields has object elements in AssemblySpecSchema (a plain string element
+ * fails it anyway); native-api-review.test.ts pins that.
+ */
+const STRINGIFIED_ARRAY_FIELDS = [
+  'components', 'parameters', 'derived', 'relations', 'guides', 'jointContracts', 'assumptions', 'openQuestions',
+] as const;
+/** Top-level object fields that sometimes arrive as a JSON string of the object. */
+const STRINGIFIED_OBJECT_FIELDS = ['boundingBox'] as const;
+
+/** `text` parsed as JSON when it is JSON of the wanted kind; otherwise undefined. */
+function parseJsonOfKind(text: string, kind: 'array' | 'object'): unknown {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (kind === 'array') return Array.isArray(value) ? value : undefined;
+  return isPlainObject(value) ? value : undefined;
+}
+
+/**
+ * With thinking off, Haiku 5.5 sometimes sends a whole field as a JSON string
+ * (`components: "[{\"name\": ...}]"`, 3 of 72 specs) or one array element as
+ * a JSON string of an object (`parameters[1]`, 1 of 72). A string that parses
+ * as JSON of the right kind is replaced by the parsed value; any other string
+ * is left for the schema to reject.
+ */
+export function parseStringifiedFields(input: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...input };
+  for (const field of STRINGIFIED_ARRAY_FIELDS) {
+    const value = out[field];
+    if (typeof value === 'string') {
+      const parsed = parseJsonOfKind(value, 'array');
+      if (parsed !== undefined) out[field] = parsed;
+    }
+    const arr = out[field];
+    if (Array.isArray(arr) && arr.some((el) => typeof el === 'string')) {
+      out[field] = arr.map((el) => (typeof el === 'string' ? (parseJsonOfKind(el, 'object') ?? el) : el));
+    }
+  }
+  for (const field of STRINGIFIED_OBJECT_FIELDS) {
+    const value = out[field];
+    if (typeof value !== 'string') continue;
+    const parsed = parseJsonOfKind(value, 'object');
+    if (parsed !== undefined) out[field] = parsed;
+  }
+  return out;
+}
+
+/**
  * Maps neutral values emitted by Claude back to "absent" so lenient zod schemas
- * parse the result identically to the OpenAI path. Pure; does not mutate input.
+ * parse the result identically to the OpenAI path, and repairs two format slips
+ * first seen with thinking off: fields sent as JSON strings
+ * (parseStringifiedFields) and two-item hole `at` (completeHoleAt). Pure; does
+ * not mutate input.
  */
 export function normalizeClaudeSentinels(raw: unknown): unknown {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
 
-  const out = recoverBledFields(raw as Record<string, unknown>);
+  const out = recoverBledFields(parseStringifiedFields(raw as Record<string, unknown>));
 
   if (Array.isArray(out.jointContracts)) {
     out.jointContracts = out.jointContracts.map(normalizeJointContract);
@@ -520,6 +608,49 @@ export function normalizeClaudeSentinels(raw: unknown): unknown {
   return out;
 }
 
+/** Stop reasons that leave a reply cut off before it was finished. */
+const CUT_OFF_STOPS = new Set(['max_tokens', 'model_context_window_exceeded', 'pause_turn']);
+export type UnusableStop = 'max_tokens' | 'model_context_window_exceeded' | 'pause_turn' | 'refusal';
+
+/**
+ * The stop reason of a model reply when it makes the reply unusable: cut off
+ * (max_tokens, model_context_window_exceeded, or pause_turn, which only server
+ * tools cause and none are bound), where a tool call's input is a parseable but
+ * partial object the 6-optional variant schema could accept as a complete spec;
+ * or a refusal. Non-streamed replies carry it in response_metadata, streamed
+ * ones in additional_kwargs (from the message_delta event).
+ */
+export function unusableStop(msg: unknown): UnusableStop | null {
+  if (!msg || typeof msg !== 'object') return null;
+  const m = msg as { response_metadata?: Record<string, unknown>; additional_kwargs?: Record<string, unknown> };
+  const reason = m.response_metadata?.stop_reason ?? m.additional_kwargs?.stop_reason;
+  if (reason === 'refusal') return 'refusal';
+  return typeof reason === 'string' && CUT_OFF_STOPS.has(reason) ? (reason as UnusableStop) : null;
+}
+
+/** True for the stop reasons that cut a reply short (as opposed to a refusal). */
+export function isCutOff(stop: UnusableStop | null | undefined): boolean {
+  return !!stop && CUT_OFF_STOPS.has(stop);
+}
+
+/** A structured reply that stopped for an unusable reason; callers retry, and can tell a truncation apart. */
+export class UnusableReplyError extends Error {
+  constructor(readonly stop: UnusableStop) {
+    super(`structured reply unusable: stop_reason ${stop}`);
+    this.name = 'UnusableReplyError';
+  }
+}
+
+/** JsonOutputParser that throws on a reply cut off at max_tokens or refused, so the caller retries. */
+class StopCheckedJsonOutputParser extends JsonOutputParser {
+  async parseResult(...args: Parameters<JsonOutputParser['parseResult']>): ReturnType<JsonOutputParser['parseResult']> {
+    const message = (args[0][0] as { message?: unknown } | undefined)?.message;
+    const stop = unusableStop(message);
+    if (stop) throw new UnusableReplyError(stop);
+    return super.parseResult(...args);
+  }
+}
+
 /**
  * `model.withStructuredOutput(schema, opts)`, adapted for Claude models on the Anthropic endpoint.
  *
@@ -532,7 +663,10 @@ export function normalizeClaudeSentinels(raw: unknown): unknown {
  * The 6-optional schema stays because it also keeps the tool schema small and the descriptions tell the model the neutral values.
  * Outputs from the variant spec are piped through normalizeClaudeSentinels.
  *
- * For other Claude routes (planner, reviewer, critic), schemas are small and use strict: true.
+ * For other Claude routes (planner, reviewer, critic) the schemas are small and are sent as native
+ * structured output (`method: 'jsonSchema'`, i.e. `output_config.format`), which constrains the reply
+ * to the schema without a tool call. ChatAnthropic's tool-calling method would force tool_choice
+ * whenever thinking is disabled, and strict is only accepted with that method.
  * For non-Claude slugs, schema and opts are passed untouched.
  * The reply is still validated by the caller against the zod schema.
  */
@@ -581,6 +715,10 @@ export function structuredFor<M extends { withStructuredOutput: (...args: never[
           if (msg && typeof msg === 'object' && !('content' in msg) && !('_getType' in msg)) {
             return msg;
           }
+          // Truncated or refused: a failed attempt, which the caller retries (and, for a
+          // truncation, retries asking for a shorter spec).
+          const stop = unusableStop(msg);
+          if (stop) throw new UnusableReplyError(stop);
           const parsedTool = await toolsParser.invoke(msg as never);
           if (parsedTool !== undefined) return parsedTool;
           if (msg && typeof msg === 'object' && 'content' in msg) {
@@ -655,8 +793,91 @@ export function structuredFor<M extends { withStructuredOutput: (...args: never[
 
   const safe = toAnthropicCompatibleSchema(json);
   delete safe.$schema;
-  return call.call(model, safe, { ...opts, name: opts.name ?? 'Reply', strict: true });
+  if (model instanceof ChatAnthropic) {
+    // Sent as output_config.format directly. withStructuredOutput({method: 'jsonSchema'})
+    // would run the schema through the SDK's transformJSONSchema, which moves `enum`
+    // (severity, variant ids) into the description as text, so the decoder no longer
+    // enforces it. `safe` is already Anthropic-compatible.
+    const llm = model.withConfig({
+      outputVersion: 'v0',
+      outputConfig: { format: { type: 'json_schema', schema: safe } },
+      ls_structured_output_format: { kwargs: { method: 'json_schema' }, schema: safe },
+    } as never);
+    return assembleStructuredOutputPipeline(
+      llm as never,
+      new StopCheckedJsonOutputParser() as never,
+      opts.includeRaw
+    ) as unknown as ReturnType<M['withStructuredOutput']>;
+  }
+  const jsonOpts: { name: string; method: 'jsonSchema'; includeRaw?: boolean } = {
+    name: opts.name ?? 'Reply',
+    method: 'jsonSchema',
+  };
+  if (opts.includeRaw !== undefined) jsonOpts.includeRaw = opts.includeRaw;
+  return call.call(model, safe, jsonOpts);
 }
 
+/**
+ * Severity words outside the enum, read by meaning. The decoder enforces
+ * `minor | major`, but a reply can still arrive another way (a mock, a model
+ * that ignores the schema), and a lost major finding marks a wrong design as
+ * validated. So anything not clearly minor counts as major: fail closed.
+ */
+const MINOR_SEVERITIES = new Set(['minor', 'low', 'trivial', 'cosmetic', 'nit', 'info', 'informational', 'suggestion']);
 
+export function normalizeSeverity(value: unknown): 'minor' | 'major' {
+  const word = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return MINOR_SEVERITIES.has(word) ? 'minor' : 'major';
+}
 
+function withNormalizedSeverities(raw: unknown): unknown {
+  if (!isPlainObject(raw) || !Array.isArray(raw.findings)) return raw;
+  return {
+    ...raw,
+    findings: raw.findings.map((f) => (isPlainObject(f) ? { ...f, severity: normalizeSeverity(f.severity) } : f)),
+  };
+}
+
+/** A Sheet Reviewer reply validated against SheetReviewSchema, or null when it is unusable. */
+export function parseSheetReview(raw: unknown): z.infer<typeof SheetReviewSchema> | null {
+  const parsed = SheetReviewSchema.safeParse(withNormalizedSeverities(nullsToUndefined(raw)));
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * A Design Inspector reply validated against VisualCritiqueSchema, or null when it is unusable.
+ * A finding without `view` is kept with view "" (all views), as the graph read it before validation.
+ */
+export function parseVisualCritique(raw: unknown): z.infer<typeof VisualCritiqueSchema> | null {
+  let value = withNormalizedSeverities(nullsToUndefined(raw));
+  if (isPlainObject(value) && Array.isArray(value.findings)) {
+    value = {
+      ...value,
+      findings: value.findings.map((f) => (isPlainObject(f) && typeof f.view !== 'string' ? { ...f, view: '' } : f)),
+    };
+  }
+  const parsed = VisualCritiqueSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+/** A variant id in any case ("a", " B ") as the schema's "A" | "B" | "C"; anything else unchanged. */
+function upperVariantId(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const id = value.trim().toUpperCase();
+  return id === 'A' || id === 'B' || id === 'C' ? id : value;
+}
+
+/** A planner reply validated against ArchitectPlanSchema, variant ids read case-insensitively. */
+export function parseArchitectPlan(raw: unknown): ReturnType<typeof ArchitectPlanSchema.safeParse> {
+  let value = nullsToUndefined(raw);
+  if (isPlainObject(value)) {
+    value = {
+      ...value,
+      recommendedId: upperVariantId(value.recommendedId),
+      variants: Array.isArray(value.variants)
+        ? value.variants.map((v) => (isPlainObject(v) ? { ...v, id: upperVariantId(v.id) } : v))
+        : value.variants,
+    };
+  }
+  return ArchitectPlanSchema.safeParse(value);
+}
