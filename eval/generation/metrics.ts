@@ -3,6 +3,7 @@ import type { AgentStateType } from '@/lib/agent/graph';
 import { isZeroVec } from '@/lib/design/placement-geometry';
 import { parseParams } from '@/lib/design/parse-params';
 import { judgeCompiledModel, type VisualCritique } from './judge';
+import { classifyParams } from './param-classify';
 
 export interface GenerationMetrics {
   id: string;
@@ -39,7 +40,46 @@ export interface GenerationMetrics {
   visualMatch: boolean | null;
   /** Findings the judge returned. Null when the part was not judged. */
   visualFindings: number | null;
+
+  // Fields below are filled by the kernel-comparison eval (matrix.ts). All optional.
+  kernel?: 'openscad' | 'brep';
+  /** B-rep: the last geometry run succeeded. */
+  brepOk?: boolean;
+  partsTotal?: number;
+  partsValid?: number;
+  /** B-rep: a STEP came back and re-imports as >= 1 valid solid. */
+  stepOk?: boolean;
+  /**
+   * Parameters the live ratio is taken over: numeric, not `$`-prefixed, not fixed
+   * (min == max) and not guide-only. B-rep: the ones perturbed (cap 12).
+   */
+  eligibleParams?: number;
+  /** Eligible parameters that change the model (B-rep: under perturbation; OpenSCAD: not swept dead). */
+  liveParams?: number;
+  /** Eligible parameters that did not change the model, by name. */
+  deadParamNames?: string[];
+  /** Parameters whose range has min == max. Left out of the ratio. */
+  fixedParams?: string[];
+  /** Parameters no geometry code reads, directly or through derived values. Left out of the ratio. */
+  guideParams?: string[];
+  /** B-rep: parameters whose perturbed value made the script fail. They also count as live. */
+  breakingParams?: number;
+  /** B-rep: numeric parameters parsed from the final script, before the perturbation cap. */
+  paramTotal?: number;
+  /** Total runBrep time inside the graph. The graph does not record it, so this is omitted today. */
+  geometryMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  costUsd?: number | null;
+  workable?: boolean;
+  failureStage?: FailureStage;
+  failureDetail?: string;
 }
+
+export type FailureStage = 'spec' | 'geometry' | 'validation' | 'step' | 'params' | 'none';
+
+/** A parameter must change the model for this share of the tested parameters. */
+export const LIVE_PARAM_SHARE = 0.8;
 
 export interface VisualScore {
   visualMatch: boolean | null;
@@ -140,6 +180,14 @@ export function metricsFromState(
   const parsed = state.currentCode ? parseParams(state.currentCode) : [];
   const paramCount = parsed.filter((p) => typeof p.value === 'number').length;
   const deadParams = violations.filter((v) => v.kind === 'dead_parameter').length;
+  const classes = state.currentCode ? classifyParams(state.currentCode) : null;
+  const eligible = classes?.eligible.map((p) => p.name) ?? [];
+  const deadNames = violations.filter((v) => v.kind === 'dead_parameter').map((v) => String(v.field)).filter((n) => eligible.includes(n));
+  const kernel = state.kernel === 'brep' ? 'brep' : 'openscad';
+  const lastAttempt = state.attemptHistory?.[state.attemptHistory.length - 1];
+  const brepFields = kernel === 'brep'
+    ? { brepOk: lastAttempt ? lastAttempt.exitCode === 0 : false }
+    : {};
 
   return {
     id,
@@ -162,7 +210,100 @@ export function metricsFromState(
     ...variantStats(variants, recommendedId),
     visualMatch: judged.visualMatch,
     visualFindings: judged.visualFindings,
+    kernel,
+    ...brepFields,
+    fixedParams: classes?.fixed ?? [],
+    guideParams: classes?.guide ?? [],
+    ...(kernel === 'openscad'
+      ? { eligibleParams: eligible.length, deadParamNames: deadNames, liveParams: eligible.length - deadNames.length }
+      : {}),
   };
+}
+
+/** Whether the geometry kernel produced a model on the last run. */
+export function geometryOk(m: GenerationMetrics): boolean {
+  return m.kernel === 'brep' ? m.brepOk === true : m.compileOk;
+}
+
+/** Live share over the eligible parameters; null when there are none to judge. */
+function liveShare(m: GenerationMetrics): number | null {
+  const denominator = m.eligibleParams ?? m.paramCount;
+  if (!denominator) return null;
+  return (m.liveParams ?? 0) / denominator;
+}
+
+/**
+ * The single number both kernels are compared on: the spec parsed, the geometry
+ * ran, the model passes extents, floor and floating, a B-rep also has a STEP
+ * that re-imports, and at least 80% of the parameters change the model.
+ */
+export function isWorkable(m: GenerationMetrics): boolean {
+  const share = liveShare(m);
+  return m.specOk
+    && geometryOk(m)
+    && m.extentsOk !== false
+    && m.floorOk !== false
+    && (m.floatingCount ?? 0) === 0
+    && (m.kernel !== 'brep' || m.stepOk === true)
+    && (share === null || share >= LIVE_PARAM_SHARE);
+}
+
+const clip = (text: string, max = 200) => {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+};
+
+/** The first stage that failed, in pipeline order, with a short reason. */
+export function failureOf(m: GenerationMetrics, firstError?: string): { failureStage: FailureStage; failureDetail?: string } {
+  if (!m.specOk) return { failureStage: 'spec', failureDetail: 'no assembly spec was produced' };
+  if (!geometryOk(m)) {
+    return { failureStage: 'geometry', failureDetail: clip(firstError || (m.kernel === 'brep' ? 'the last build123d run failed' : 'the OpenSCAD compile failed')) };
+  }
+  const bad: string[] = [];
+  if (m.extentsOk === false) bad.push('extents');
+  if (m.floorOk === false) bad.push('floor');
+  if ((m.floatingCount ?? 0) > 0) bad.push(`floating x${m.floatingCount}`);
+  if (bad.length) return { failureStage: 'validation', failureDetail: bad.join(', ') };
+  if (m.kernel === 'brep' && m.stepOk !== true) {
+    return { failureStage: 'step', failureDetail: clip(firstError || 'STEP missing or did not re-import as a valid solid') };
+  }
+  const share = liveShare(m);
+  if (share !== null && share < LIVE_PARAM_SHARE) {
+    return { failureStage: 'params', failureDetail: `${m.liveParams ?? 0}/${m.eligibleParams ?? m.paramCount} parameters change the model${m.deadParamNames?.length ? ` (dead: ${m.deadParamNames.join(', ')})` : ''}` };
+  }
+  return { failureStage: 'none' };
+}
+
+/** Fills `workable`, `failureStage` and `failureDetail`. Call once every other field is set. */
+export function withVerdict(m: GenerationMetrics, firstError?: string): GenerationMetrics {
+  const failure = failureOf(m, firstError);
+  return {
+    ...m,
+    workable: isWorkable(m),
+    failureStage: failure.failureStage,
+    failureDetail: failure.failureDetail,
+  };
+}
+
+/**
+ * A different, in-range value for a perturbation run: value + step, else
+ * value - step, else the midpoint of the range. A parameter without a range
+ * steps by 10% of its value (1 when it is 0). Null when no different value fits.
+ */
+export function perturbedValue(p: { value: number; min?: number; max?: number; step?: number }): number | null {
+  const { value, min, max } = p;
+  const step = p.step && p.step > 0 ? p.step : (value !== 0 ? Math.abs(value) * 0.1 : 1);
+  const round = (n: number) => Math.round(n * 1e6) / 1e6;
+  const inRange = (n: number) => (min === undefined || n >= min) && (max === undefined || n <= max);
+  const up = round(value + step);
+  if (inRange(up)) return up;
+  const down = round(value - step);
+  if (inRange(down)) return down;
+  if (min !== undefined && max !== undefined) {
+    const mid = round((min + max) / 2);
+    if (mid !== value) return mid;
+  }
+  return null;
 }
 
 function rate(rows: GenerationMetrics[], pick: (m: GenerationMetrics) => boolean | null): string {
@@ -223,6 +364,8 @@ export function scoresFor(m: GenerationMetrics): Array<{ name: string; value: nu
   out.push({ name: 'variants_validated', value: m.variantsValidated, dataType: 'NUMERIC' });
   out.push({ name: 'review_rounds', value: m.reviewRounds, dataType: 'NUMERIC' });
   bool('chosen_validated', m.chosenValidated);
+  bool('workable', m.workable ?? null);
+  bool('step_ok', m.stepOk ?? null);
   bool('visual_match', m.visualMatch);
   if (m.visualFindings !== null) out.push({ name: 'visual_findings', value: m.visualFindings, dataType: 'NUMERIC' });
   out.push({ name: 'wall_ms', value: m.wallMs, dataType: 'NUMERIC' });
