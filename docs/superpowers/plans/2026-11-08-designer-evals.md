@@ -82,9 +82,9 @@ Only the candidate and the ablation are re-run, so baselines cost nothing.
 - **Per lane:** unit tests plus the gate, with no model calls.
 - **Per merge to the designer branch:** smoke-test 3 prompts (open, mechanism, edit) on the automatic metrics, about $1.
 - **Per milestone:**
-  - full run: open × 2 arms, prescriptive, mechanism, edits, adversarial;
+  - full run: open × 2 arms, prescriptive, mechanism, edits, iterative (about 24 extra steps), adversarial;
   - concurrency 5;
-  - about $15–20;
+  - about $20–25;
   - then a user blind session.
 - **Report:** `eval/designer/results/<tag>.md` with the metrics table, cost and time, links to the blind page, and a diff against the last milestone.
 
