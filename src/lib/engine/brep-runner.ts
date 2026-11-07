@@ -153,11 +153,33 @@ interface LocalChildResult {
   error?: Error;
 }
 
+let warnedLocal = false;
+
+/**
+ * The local backend runs model-written Python as the app user with no process sandbox
+ * (no uid drop, no rlimits, no network cut). It is for development and evals only: it
+ * refuses to run under NODE_ENV=production unless CADAI_GEO_ALLOW_LOCAL=1.
+ */
+export function localRunnerRefusal(): string | null {
+  if (process.env.NODE_ENV === 'production' && process.env.CADAI_GEO_ALLOW_LOCAL !== '1') {
+    return 'local geometry runner is disabled in production: set CADAI_GEO_URL (or CADAI_GEO_ALLOW_LOCAL=1)';
+  }
+  if (!warnedLocal) {
+    warnedLocal = true;
+    console.warn('local geometry runner has no process sandbox: dev only');
+  }
+  return null;
+}
+
 async function runBrepLocal(
   script: string,
   timeoutMs: number,
   t0: number
 ): Promise<BrepResult> {
+  const refusal = localRunnerRefusal();
+  if (refusal) {
+    return { ok: false, error: refusal, parts: [], solids: 0, ms: Math.max(1, Math.round(performance.now() - t0)) };
+  }
   const root = findProjectRoot();
   const pyEnv = process.env.CADAI_GEO_PYTHON ?? 'geo/.venv/bin/python';
   const pythonPath = pyEnv.includes('/') || pyEnv.includes('\\')

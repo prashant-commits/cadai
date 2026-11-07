@@ -348,8 +348,9 @@ function holeLine(
   const extent = axis === 'x' ? ex : axis === 'y' ? ey : ez;
   const along = hole.at[axis === 'x' ? 0 : axis === 'y' ? 1 : 2];
   const fromMin = Math.abs(along) <= Math.abs(along - extentNum);
-  const through = hole.depth === undefined;
-  const depth: Term | undefined = hole.depth === undefined ? undefined : fieldTerm(he?.depth, hole.depth);
+  // No depth, or a depth of 0 or less (saved specs write `depth: 0` with the note "through"), is a through hole.
+  const through = hole.depth === undefined || !(hole.depth > 0);
+  const depth: Term | undefined = through ? undefined : fieldTerm(he?.depth, hole.depth!);
   const start: Term = through || fromMin ? -OVERSHOOT : sub(extent, depth ?? 0);
   const height: Term = through ? add(extent, OVERSHOOT * 2) : add(depth ?? 0, OVERSHOOT);
   const spin = axis === 'x' ? ' rotate([0, 90, 0])' : axis === 'y' ? ' rotate([-90, 0, 0])' : '';

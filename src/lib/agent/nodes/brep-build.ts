@@ -22,7 +22,7 @@ export function makeBrepBuild(model: {
     const attemptCount = state.attemptCount + 1;
     const spec = state.assemblySpec;
     if (!spec) {
-      return { currentCode: state.currentCode, attemptCount, buildFallbacks: 0, gateAction: null, gateFeedback: null };
+      return { currentCode: state.currentCode, attemptCount, buildFallbacks: 0, buildNotes: [], gateAction: null, gateFeedback: null };
     }
 
     const { componentNames, reserved, changes, ask, keep } = planBuildVisit(state, spec);
@@ -46,11 +46,15 @@ export function makeBrepBuild(model: {
       }
     }
 
-    const { script } = emitBrepScript(spec, parsed.bodies);
+    const { script, skipped } = emitBrepScript(spec, parsed.bodies);
+    // A body the parser accepted (or kept from the previous build) can still be rejected by the
+    // emitter's own check; it is then drawn from the blockout and counted as a fallback too.
+    const emitterRejected = skipped.filter((note) => /^body rejected/.test(note.reason) && Object.prototype.hasOwnProperty.call(parsed.bodies, note.name));
     return {
       currentCode: script,
       attemptCount,
-      buildFallbacks: countFallbacks(componentNames, parsed, (name) => blockoutFor(spec, name) !== null),
+      buildFallbacks: countFallbacks(componentNames, parsed, (name) => blockoutFor(spec, name) !== null) + emitterRejected.length,
+      buildNotes: skipped,
       gateAction: null,
       gateFeedback: null,
     };

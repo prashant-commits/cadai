@@ -183,8 +183,9 @@ export function holeExpr(
   const alongIndex = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
   const along = hole.at[alongIndex];
   const fromMin = Math.abs(along) <= Math.abs(along - extentNum);
-  const through = hole.depth === undefined;
-  const depth: Term = hole.depth === undefined ? 0 : ctx.term(he?.depth, hole.depth);
+  // No depth, or a depth of 0 or less (saved specs write `depth: 0` with the note "through"), is a through hole.
+  const through = hole.depth === undefined || !(hole.depth > 0);
+  const depth: Term = through ? 0 : ctx.term(he?.depth, hole.depth!);
   let start: Term = through || fromMin ? -OVERSHOOT : sub(extent, depth);
   if (!through && [at[alongIndex], extent, depth].some((t) => typeof t === 'string')) {
     // The mouth is on the nearer face. With a parameter in play that choice is made when the

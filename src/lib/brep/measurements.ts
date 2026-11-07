@@ -5,6 +5,7 @@ import type { ModuleFrame } from '../engine/module-frames';
 import { analyzeStl } from '../engine/geometry-utils';
 import { placedBounds, type Vec3 } from '../design/placement-geometry';
 import { buildPlacementComponents, type PlacementReport } from '../design/placement-report';
+import type { SpecViolation } from '../agent/spec-audit';
 
 /**
  * Adapters from a B-rep run to the shapes the OpenSCAD audits already take:
@@ -66,12 +67,14 @@ export function toModelInfo(r: BrepResult, asciiStl: string): ModelInfo {
   return info;
 }
 
+/** How far a part's own-frame min corner may sit from the origin before it is reported (mm). */
+export const LOCAL_ORIGIN_TOLERANCE = 0.05;
+
 /**
- * The placement report for a B-rep run. The local size is reconstructed from
- * the placed size, which is exact for an unrotated part but can miss a swapped
- * size on a rotated one. When the script also lists each component's own-frame
- * solid (`local`), that size is compared too, and per axis the one farther from
- * the spec is reported.
+ * The placement report for a B-rep run. A part with an own-frame solid (`local`,
+ * measured before placement) has its exact local size from that solid, whatever
+ * its rotation or shape. Without one, the local size is reconstructed from the
+ * placed box, which is exact for an unrotated box.
  */
 export function toPlacementReport(spec: AssemblySpec, frames: ModuleFrame[], localFrames?: ModuleFrame[]): PlacementReport {
   const byName = new Map(frames.map((f) => [f.name, f]));
@@ -82,16 +85,16 @@ export function toPlacementReport(spec: AssemblySpec, frames: ModuleFrame[], loc
     const frame = byName.get(comp.name);
     const ext = comp.localExtents as Vec3 | undefined;
     if (!frame || !frame.valid || !ext) continue;
-    const position = (comp.position ?? [0, 0, 0]) as Vec3;
-    const rotation = (comp.rotation ?? [0, 0, 0]) as Vec3;
-    const expected = placedBounds({ min: [0, 0, 0], max: [ext[0], ext[1], ext[2]] }, position, rotation);
-    const fromPlaced = [0, 1, 2].map((i) => round2(ext[i] + (frame.size[i] - (expected.max[i] - expected.min[i])))) as Vec3;
-    // Both measurements must agree with the spec: per axis keep whichever is farther from it, so a
-    // wrong own-frame size (hidden by a rotation) and a wrong placed box are both reported.
     const own = localByName.get(comp.name);
-    const size = own?.valid
-      ? ([0, 1, 2].map((i) => (Math.abs(own.size[i] - ext[i]) >= Math.abs(fromPlaced[i] - ext[i]) ? own.size[i] : fromPlaced[i])) as Vec3)
-      : fromPlaced;
+    let size: Vec3;
+    if (own?.valid) {
+      size = own.size;
+    } else {
+      const position = (comp.position ?? [0, 0, 0]) as Vec3;
+      const rotation = (comp.rotation ?? [0, 0, 0]) as Vec3;
+      const expected = placedBounds({ min: [0, 0, 0], max: [ext[0], ext[1], ext[2]] }, position, rotation);
+      size = [0, 1, 2].map((i) => round2(ext[i] + (frame.size[i] - (expected.max[i] - expected.min[i])))) as Vec3;
+    }
     local.push({ name: comp.name, valid: true, min: [0, 0, 0], max: size, size });
     placed.set(comp.name, { min: frame.min, max: frame.max });
   }
@@ -100,4 +103,32 @@ export function toPlacementReport(spec: AssemblySpec, frames: ModuleFrame[], loc
     return box ? { ...c, placedMin: box.min, placedMax: box.max } : c;
   });
   return { composed: true, removedStatements: 0, components };
+}
+
+/**
+ * The local-frame contract: each component is built with its min corner at the origin, and
+ * placement moves that corner to the spec position. A body built centred, with align=MAX, or
+ * shifted by a Pos() lands somewhere else while its size can still be right, so the own-frame
+ * min corner is checked directly.
+ */
+export function localOriginViolations(spec: AssemblySpec, localFrames: ModuleFrame[]): SpecViolation[] {
+  const names = new Set((spec.components ?? []).map((c) => c.name));
+  const out: SpecViolation[] = [];
+  for (const frame of localFrames) {
+    if (!frame.valid || !names.has(frame.name)) continue;
+    const off = frame.min.map((v) => round2(v));
+    if (off.every((v) => Math.abs(v) <= LOCAL_ORIGIN_TOLERANCE)) continue;
+    out.push({
+      kind: 'local_frame',
+      field: frame.name,
+      expected: 'min corner at [0, 0, 0]',
+      measured: `[${off.join(', ')}]`,
+      deltaMm: Math.max(...off.map(Math.abs)),
+      severity: 'error',
+      message:
+        `${frame.name} is built with its min corner at [${off.join(', ')}] in its own frame, not at the origin, ` +
+        'so it lands away from its spec position. Build it with align=(Align.MIN, Align.MIN, Align.MIN) and no offset.',
+    });
+  }
+  return out;
 }

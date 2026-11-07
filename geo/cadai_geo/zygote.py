@@ -99,8 +99,13 @@ class ZygoteServer:
         sock_path = os.path.join(directory, "zygote.sock")
         # exec, not a Python fork of the service: a fork would keep the
         # token in this process's address space. env is empty on purpose.
+        argv = [sys.executable, "-I", "-m", "cadai_geo.zygote", sock_path]
+        # Test-only: the b1 sandbox probes need full builtins in the script (see run._FULL_BUILTINS).
+        # It travels as an argument because the zygote's environment is empty on purpose.
+        if os.environ.get("CADAI_GEO_TEST_FULL_BUILTINS") == "1":
+            argv.append("--test-full-builtins")
         proc = subprocess.Popen(
-            [sys.executable, "-I", "-m", "cadai_geo.zygote", sock_path],
+            argv,
             env={},
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -577,6 +582,12 @@ def main(argv: list[str] | None = None) -> None:
     if any(name in os.environ for name in _SECRET_ENV):
         sys.stderr.write("zygote: refusing to start with a token in the environment\n")
         sys.exit(1)
+    if len(args) == 3 and args[2] == "--test-full-builtins":
+        from cadai_geo import run as run_module
+
+        run_module._FULL_BUILTINS = True
+        sys.stderr.write("zygote: --test-full-builtins, scripts get full builtins (tests only)\n")
+        args = args[:2]
     if len(args) != 2:
         sys.stderr.write("usage: python -m cadai_geo.zygote <socket>\n")
         sys.exit(2)

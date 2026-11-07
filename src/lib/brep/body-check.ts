@@ -33,10 +33,21 @@ const BANNED_ANYWHERE = new Set([
 /** Names a body may not use as a bare name (an attribute of the same spelling is harmless). */
 const BANNED_NAMES = new Set([
   'exec', 'eval', 'compile', 'open', 'globals', 'locals', 'vars', 'dir', 'getattr', 'setattr', 'delattr',
-  'input', 'breakpoint', 'help', 'exit', 'quit', 'memoryview', 'Mesher', 'ezdxf', 'brep_from_stl',
+  'input', 'breakpoint', 'help', 'exit', 'quit', 'memoryview', 'type', 'object', 'super', 'classmethod',
+  'staticmethod', 'property', 'Mesher', 'ezdxf', 'brep_from_stl', 'FontManager',
   'os', 'sys', 'subprocess', 'builtins', 'ctypes', 'pathlib', 'shutil', 'socket', 'importlib', 'pickle',
 ]);
-const STRING_PREFIX = /^(?:[rRbBuUfF]|[rR][bBfF]|[bBfF][rR])$/;
+/**
+ * Attribute names a body may not reach: anything private or special (`_x`, `__x__`), the
+ * frame, code and traceback introspection families (`gi_frame.f_builtins` reaches `exec`
+ * without a dunder), and the MRO.
+ */
+const BANNED_ATTRIBUTE = /^(?:_|gi_|cr_|ag_|f_|tb_|co_|func_)|^(?:mro|format|format_map)$/;
+/** Keyword arguments that name a file to read or write (`Text(..., font_path=...)`). */
+const FILE_KEYWORD = /^(?:font|font_path|file|files|filename|file_name|fname|filepath|path_name)$|_path$|_file$/;
+/** Text(txt, font_size, font, font_path, ...): only the first two may be positional. */
+const TEXT_MAX_POSITIONAL = 2;
+const STRING_PREFIX = /^(?:[rRbBuUfFtT]|[rR][bBfFtT]|[bBfFtT][rR])$/;
 const AUGMENTED = new Set(['+=', '-=', '*=', '/=', '//=', '%=', '**=', '@=', '&=', '|=', '^=', '>>=', '<<=']);
 const OPS3 = ['**=', '//=', '>>=', '<<=', '...'];
 const OPS2 = ['==', '!=', '<=', '>=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '@=', ':=', '->', '**', '//', '<<', '>>'];
@@ -63,15 +74,24 @@ export function checkPythonBody(body: string, options: BodyCheckOptions = {}): B
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
     if (t.k === 'str') {
-      if (/[fF]/.test(t.prefix)) return reject('f-string');
+      // f-strings and (Python 3.14) t-strings evaluate the expressions inside their braces.
+      if (/[fFtT]/.test(t.prefix)) return reject('f-string or t-string');
       if (t.v.includes('__')) return reject('dunder in a string');
       continue;
     }
     if (t.k !== 'name') continue;
-    if (t.v.startsWith('__') || t.v.endsWith('__')) return reject(`dunder name ${t.v}`);
+    if (t.v.includes('__')) return reject(`dunder name ${t.v}`);
     if (BANNED_ANYWHERE.has(t.v)) return reject(`${t.v} is not allowed in a body`);
-    if (attribute(i)) continue;
+    if (attribute(i)) {
+      // Every attribute in a chain is checked, not only the first after a name.
+      if (BANNED_ATTRIBUTE.test(t.v)) return reject(`attribute .${t.v} is not allowed in a body`);
+      continue;
+    }
     if (BANNED_NAMES.has(t.v) || /^(?:export|import)/i.test(t.v)) return reject(`${t.v} is not allowed in a body`);
+    if (isKeywordArgument(tokens, i) && FILE_KEYWORD.test(t.v)) return reject(`keyword ${t.v}= names a file`);
+    if (t.v === 'Text' && isOp(tokens[i + 1], '(') && positionalArguments(tokens, i + 1) > TEXT_MAX_POSITIONAL) {
+      return reject('Text with a font or file given by position');
+    }
   }
 
   const bound = boundNames(tokens);
@@ -85,6 +105,14 @@ export function checkPythonBody(body: string, options: BodyCheckOptions = {}): B
     if (isKeywordArgument(tokens, i)) continue;
     return reject(`refers to the component ${t.v}`);
   }
+  // `_`-prefixed names belong to the script around the body (`_l_<part>`, `_p_<part>`, `_fuse`):
+  // a body may use only the ones it binds itself.
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.k !== 'name' || !t.v.startsWith('_') || t.v === '_' || attribute(i)) continue;
+    if (bound.has(t.v) || isKeywordArgument(tokens, i)) continue;
+    return reject(`refers to ${t.v}, which the body does not define`);
+  }
 
   if (!tokens.some((t) => t.k === 'name' && t.v === 'return')) return reject('no return statement');
   return { ok: true };
@@ -96,6 +124,34 @@ function isOp(t: Tok | undefined, v: string): boolean {
 
 function reject(reason: string): BodyCheck {
   return { ok: false, reason };
+}
+
+/** Positional arguments of the call whose '(' is at `open` (top level only; `name=` arguments are not counted). */
+function positionalArguments(tokens: Tok[], open: number): number {
+  let depth = 0;
+  let count = 0;
+  let argStart = true;
+  for (let i = open; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.k === 'op' && '([{'.includes(t.v)) {
+      depth++;
+      if (depth === 1) continue;
+    } else if (t.k === 'op' && ')]}'.includes(t.v)) {
+      depth--;
+      if (depth === 0) return count;
+    }
+    if (depth !== 1) continue;
+    if (isOp(t, ',')) {
+      argStart = true;
+      continue;
+    }
+    if (argStart) {
+      argStart = false;
+      const keyword = t.k === 'name' && isOp(tokens[i + 1], '=');
+      if (!keyword) count++;
+    }
+  }
+  return count;
 }
 
 function isKeywordArgument(tokens: Tok[], i: number): boolean {

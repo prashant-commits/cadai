@@ -140,6 +140,8 @@ function print(node: Node, lookup: NameLookup, required: number): string {
       break;
     }
     case 'call': {
+      // The spec allows min(x) and max(x); Python's min and max need two or more values, so one is just x.
+      if ((node.fn === 'min' || node.fn === 'max') && node.args.length === 1) return print(node.args[0], lookup, required);
       const args = node.args.map((a) => print(a, lookup, 0)).join(', ');
       text = `${FUNCS[node.fn].py}(${args})`;
       prec = PREC.atom;

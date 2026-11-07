@@ -7,7 +7,7 @@ import { auditPlacement } from '../placement-audit';
 import type { AttemptRecord } from '../graph';
 import type { ValidationResult } from '../../engine/scad-compiler';
 import { runBrep } from '../../engine/brep-runner';
-import { stlToAscii, toModelInfo, toModuleFrames, toPlacementReport } from '../../brep/measurements';
+import { localOriginViolations, stlToAscii, toModelInfo, toModuleFrames, toPlacementReport } from '../../brep/measurements';
 
 /**
  * validateBrep: run the emitted build123d script and audit what it measured.
@@ -81,10 +81,23 @@ export async function validateBrep(state: AgentStateType): Promise<Partial<Agent
     });
   }
   violations.push(...auditSpecCoherence(spec));
+  // What the build itself replaced or dropped, so the model and the user see it.
+  for (const note of state.buildNotes ?? []) {
+    violations.push({
+      kind: 'build',
+      field: note.name,
+      expected: 'used as written',
+      measured: note.reason,
+      severity: 'warning',
+      message: `${note.name}: ${note.reason}`,
+    });
+  }
   violations.push(...auditSpecShapes(spec));
 
   const frames = toModuleFrames(r);
-  const placementReport = spec ? toPlacementReport(spec, frames, r.local ? toModuleFrames({ ...r, parts: r.local }) : undefined) : null;
+  const localFrames = r.local ? toModuleFrames({ ...r, parts: r.local }) : undefined;
+  const placementReport = spec ? toPlacementReport(spec, frames, localFrames) : null;
+  if (spec && localFrames) violations.push(...localOriginViolations(spec, localFrames));
   violations.push(...auditPlacement(placementReport, r.bbox?.min ?? modelInfo?.boundingBox.min ?? null, spec));
   for (const frame of frames) {
     if (frame.valid || !frame.name) continue;

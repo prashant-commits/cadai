@@ -48,7 +48,8 @@ def _last_line(exc: BaseException) -> str:
     text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     line = lines[-1] if lines else f"{type(exc).__name__}: {exc}"
-    return redact(line)
+    # The line-number prefix below is ours alone: an exception message cannot carry one.
+    return redact(line).replace("\u241f", "\ufffd")
 
 
 # A failed run reports the innermost line of the script that raised. The untrusted stage can only
@@ -93,6 +94,65 @@ def _shape_list(value: object, allow_empty: bool = False) -> list | None:
     if not all(hasattr(item, "bounding_box") and hasattr(item, "wrapped") for item in value):
         return None
     return list(value)
+
+
+# ---- the script's namespace
+
+# Builtins a geometry script needs. Everything else (open, exec, eval, compile, getattr,
+# globals, vars, type, object, __build_class__, ...) is absent. This is defense in depth
+# behind the body check; the process sandbox is the security boundary.
+_SAFE_BUILTIN_NAMES = (
+    "abs", "min", "max", "round", "range", "len", "enumerate", "zip", "sum", "list", "tuple",
+    "dict", "set", "frozenset", "float", "int", "bool", "str", "sorted", "reversed", "map",
+    "filter", "any", "all", "isinstance", "print", "pow", "divmod", "slice",
+    "Exception", "ValueError", "TypeError", "ZeroDivisionError", "ArithmeticError",
+    "IndexError", "KeyError", "RuntimeError", "AssertionError", "NotImplementedError",
+    "True", "False", "None",
+)
+# The emitted prelude imports these, and nothing else.
+_IMPORTABLE = ("build123d", "math")
+
+# Test-only: the b1 sandbox tests run escape probes (import os, fork, sleep) to prove the process
+# sandbox holds against a script that has full Python. Read once at import, from the service's own
+# environment (a script's environment is cleared before it runs). Never set it in a deployment.
+_FULL_BUILTINS = os.environ.get("CADAI_GEO_TEST_FULL_BUILTINS") == "1"
+if _FULL_BUILTINS:
+    print("cadai_geo: CADAI_GEO_TEST_FULL_BUILTINS=1, scripts get full builtins (tests only)", file=sys.stderr)
+
+
+def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if level != 0 or name not in _IMPORTABLE:
+        raise ImportError(f"import of {name} is not allowed")
+    import importlib
+
+    return importlib.import_module(name)
+
+
+def script_globals(full: bool | None = None) -> dict:
+    """Initial globals for a geometry script: curated builtins, build123d's names and math."""
+    import builtins
+    import math
+
+    import build123d
+
+    if _FULL_BUILTINS if full is None else full:
+        namespace: dict = {}
+    else:
+        safe = {name: getattr(builtins, name) for name in _SAFE_BUILTIN_NAMES if hasattr(builtins, name)}
+        safe["__import__"] = _safe_import
+        namespace = {"__builtins__": safe}
+    for name in getattr(build123d, "__all__", ()):
+        if hasattr(build123d, name):
+            namespace[name] = getattr(build123d, name)
+    for name in ("sin", "cos", "tan", "radians", "degrees", "sqrt", "pi", "atan2", "hypot"):
+        namespace[name] = getattr(math, name)
+    return namespace
+
+
+def _run_script(script_path: str) -> dict:
+    import runpy
+
+    return runpy.run_path(script_path, init_globals=script_globals(), run_name="__main__")
 
 
 def _shape_sources(obj: object) -> list | None:
@@ -238,11 +298,10 @@ def capture_geometry(script_path: str, scratch: str, on_error) -> None:
     ``scratch``; the trusted stage must treat that as untrusted bytes.
     """
     _remember_compound_sources()
-    import runpy
     from build123d import export_brep
 
     try:
-        namespace = runpy.run_path(os.fspath(script_path), run_name="__main__")
+        namespace = _run_script(os.fspath(script_path))
     except Exception as exc:
         _discard_geometry(scratch)
         on_error(_error_with_line(exc, os.fspath(script_path)))
@@ -277,37 +336,62 @@ def capture_geometry(script_path: str, scratch: str, on_error) -> None:
         on_error(_last_line(exc))
 
 
-def _measured_shapes(scratch: str, name: str) -> list[dict]:
-    """Measure the BREPs in ``<scratch>/<name>``. Labels come from the index; numbers come from the shapes."""
+def _measured_shapes(scratch: str, name: str, strict: bool = True) -> list[dict]:
+    """Measure the BREPs in ``<scratch>/<name>``. Labels come from the index; numbers come from the shapes.
+
+    ``strict``: a malformed index or entry fails the run (``parts/``). Otherwise the bad entry,
+    or the whole directory when its index is unreadable, is dropped and logged (``local/``).
+    """
     parts_dir = os.path.join(scratch, name)
     index_path = os.path.join(parts_dir, "index.json")
     loaded: list[dict] = []
-    if regular_file_inside(index_path, parts_dir) and os.path.getsize(index_path) <= 1024 * 1024:
+
+    def bad(reason: str) -> None:
+        if strict:
+            raise ValueError(name)
+        print(f"cadai_geo: dropped {name}/ entry: {reason}", file=sys.stderr)
+
+    if not regular_file_inside(index_path, parts_dir) or os.path.getsize(index_path) > 1024 * 1024:
+        return loaded
+    try:
         with open(index_path, encoding="utf-8") as handle:
             entries = json.load(handle)
-        if isinstance(entries, list) and entries:
-            if len(entries) > 512:
-                raise ValueError(name)
-            from build123d import import_brep
+    except (OSError, ValueError):
+        bad("index.json is not readable JSON")
+        return loaded
+    if not isinstance(entries, list) or not entries:
+        return loaded
+    if len(entries) > 512:
+        bad("more than 512 entries")
+        return loaded
+    from build123d import import_brep
 
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    raise ValueError(name)
-                file = entry.get("file")
-                if (
-                    not isinstance(file, str)
-                    or file != os.path.basename(file)
-                    or file in ("", ".", "..")
-                ):
-                    raise ValueError(name)
-                path = os.path.join(parts_dir, file)
-                if not regular_file_inside(path, parts_dir):
-                    raise ValueError(name)
-                shape = import_brep(path)
-                label = entry.get("label")
-                if not isinstance(label, str):
-                    label = ""
-                loaded.append(_part(shape, label[:256]))
+    for entry in entries:
+        if not isinstance(entry, dict):
+            bad("entry is not an object")
+            continue
+        file = entry.get("file")
+        if (
+            not isinstance(file, str)
+            or file != os.path.basename(file)
+            or file in ("", ".", "..")
+        ):
+            bad("file is not a plain name")
+            continue
+        path = os.path.join(parts_dir, file)
+        if not regular_file_inside(path, parts_dir):
+            bad("file is not a regular file inside the directory")
+            continue
+        try:
+            shape = import_brep(path)
+            label = entry.get("label")
+            if not isinstance(label, str):
+                label = ""
+            loaded.append(_part(shape, label[:256]))
+        except Exception:
+            if strict:
+                raise
+            bad("file is not a BREP shape")
     return loaded
 
 
@@ -336,7 +420,7 @@ def measure_and_export(scratch: str, outdir: str, fallback_error: str | None = N
 
         result = import_brep(result_path)
         parts = _parts_from_scratch(scratch, result)
-        local = _measured_shapes(scratch, "local")
+        local = _measured_shapes(scratch, "local", strict=False)
         step_path = os.path.join(os.fspath(outdir), "model.step")
         stl_path = os.path.join(os.fspath(outdir), "model.stl")
         _replace_output(step_path)
@@ -363,11 +447,10 @@ def run(script_path: str | os.PathLike, outdir: str | os.PathLike) -> dict:
     """Execute ``script_path`` and write ``model.step`` / ``model.stl`` into ``outdir``."""
     try:
         _remember_compound_sources()
-        import runpy
         from build123d import export_step, export_stl
 
         try:
-            namespace = runpy.run_path(os.fspath(script_path), run_name="__main__")
+            namespace = _run_script(os.fspath(script_path))
         except Exception as exc:
             failed = {"ok": False, "error": _last_line(exc)}
             line = _script_line(exc, os.fspath(script_path))

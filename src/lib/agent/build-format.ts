@@ -228,10 +228,15 @@ export function sanitizePythonBody(
   // the parameter-write filter below and the token check see the code at its real depth.
   lines = dedent(lines);
 
+  // A column-0 `width = ...` statement rebinding a parameter is dropped. A `width=5,` line inside an
+  // open bracket is a keyword argument continuing the previous line, and stays.
   const names = new Set(reserved);
+  let depth = 0;
   lines = lines.filter((line) => {
+    const atTop = depth === 0;
+    depth = Math.max(0, depth + bracketDelta(line));
     const m = /^([A-Za-z_]\w*)[ \t]*=(?!=)/.exec(line);
-    return !(m && names.has(m[1]));
+    return !(atTop && m && names.has(m[1]));
   });
   const body = lines.join('\n').replace(/\s+$/, '');
 
@@ -242,6 +247,25 @@ export function sanitizePythonBody(
     components: [...componentNames, ...componentNames.map((name) => `${name}_part`)],
   });
   return verdict.ok ? body : null;
+}
+
+/** Net bracket depth change of one Python line, ignoring strings and comments (single-line strings only). */
+function bracketDelta(line: string): number {
+  let delta = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === '\\') i++;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '#') break;
+    if (ch === '"' || ch === "'") quote = ch;
+    else if ('([{'.includes(ch)) delta++;
+    else if (')]}'.includes(ch)) delta--;
+  }
+  return delta;
 }
 
 function dedent(lines: string[]): string[] {

@@ -15,6 +15,11 @@ describe('pyExpr', () => {
     expect(pyExpr('max(w, 3) + sqrt(t)', lookup)).toBe('max(w, 3) + sqrt(t)');
     expect(pyExpr('sin(30) * w', lookup)).toBe('_sind(30) * w');
   });
+  it('prints one-argument min and max as the argument (Python needs two)', () => {
+    expect(pyExpr('max(w)', lookup)).toBe('w');
+    expect(pyExpr('min(w + t) * 2', lookup)).toBe('(w + t) * 2');
+    expect(pyExpr('max(h)', lookup)).toBe('p_class');
+  });
   it('treats a newline as whitespace and never copies it', () => {
     expect(pyExpr('w\n+ 1', lookup)).toBe('w + 1');
   });
