@@ -40,38 +40,36 @@ export async function validateBrep(state: AgentStateType, config?: RunnableConfi
   if (!state.currentCode) return { isValid: false, failureKind: 'no_code' };
 
   const isAgentMode = (state as { buildMode?: string }).buildMode === 'agent' || process.env.CADAI_BUILD_MODE === 'agent';
-  if (isAgentMode) {
-    const guard = checkPythonScript(state.currentCode);
-    if (!guard.ok) {
-      const failure: SpecViolation = {
-        kind: 'compile',
-        field: '',
-        expected: 'script passes guardrails',
-        measured: 'rejected',
-        severity: 'error',
-        message: `Script guardrail failure: ${guard.reason}`,
-      };
-      const attempt: AttemptRecord = {
-        n: state.attemptCount,
-        phase: state.attemptCount === 1 ? 'draft' : 'repair',
-        code: state.currentCode,
-        exitCode: 1,
-        errors: [{ severity: 'error', message: guard.reason ?? 'guardrail failure', count: 1, raw: guard.reason ?? '' }],
-        warnings: [],
-        violations: [failure],
-        diagnosis: 'guardrail',
-      };
-      return {
-        isValid: false,
-        stlContent: null,
-        stepContent: null,
-        specViolations: [failure],
-        attemptHistory: [attempt],
-        failureKind: 'compile',
-        compileFailures: state.compileFailures + 1,
-        messages: [new HumanMessage(`[Validation Report]\nValidation Result: Failed\nViolations:\n- ERROR [compile]: ${failure.message}\n`)],
-      };
-    }
+  const guard = checkPythonScript(state.currentCode);
+  if (!guard.ok) {
+    const failure: SpecViolation = {
+      kind: 'compile',
+      field: '',
+      expected: 'script passes guardrails',
+      measured: 'rejected',
+      severity: 'error',
+      message: `Script guardrail failure: ${guard.reason}`,
+    };
+    const attempt: AttemptRecord = {
+      n: state.attemptCount,
+      phase: state.attemptCount === 1 ? 'draft' : 'repair',
+      code: state.currentCode,
+      exitCode: 1,
+      errors: [{ severity: 'error', message: guard.reason ?? 'guardrail failure', count: 1, raw: guard.reason ?? '' }],
+      warnings: [],
+      violations: [failure],
+      diagnosis: 'guardrail',
+    };
+    return {
+      isValid: false,
+      stlContent: null,
+      stepContent: null,
+      specViolations: [failure],
+      attemptHistory: [attempt],
+      failureKind: 'compile',
+      compileFailures: state.compileFailures + 1,
+      messages: [new HumanMessage(`[Validation Report]\nValidation Result: Failed\nViolations:\n- ERROR [compile]: ${failure.message}\n`)],
+    };
   }
 
   const spec = state.assemblySpec;
@@ -224,15 +222,26 @@ export async function validateBrep(state: AgentStateType, config?: RunnableConfi
 
   // Connectivity check: error unless parts are allowed islands (placed apart on purpose, e.g. print layout)
   const isPrintLayout = /print\s+.*beside|print.*layout|coasters|chess|loose|separate/i.test(userPrompt) || /print/i.test((spec as { assemblyMode?: string })?.assemblyMode ?? '');
-  for (const name of r.disconnected ?? []) {
+  if (r.disconnected === 'not checked') {
     violations.push({
       kind: 'floating',
-      field: name,
-      expected: 'connected to assembly',
-      measured: 'disconnected',
+      field: '',
+      expected: 'connectivity verified (<= 40 parts)',
+      measured: 'not checked',
       severity: (!isAgentMode || isPrintLayout) ? 'warning' : 'error',
-      message: `'${name}' is a disconnected part: it does not touch and is not within 0.5 mm of any other part in the closed pose.`,
+      message: 'Connectivity not checked: model has more than 40 parts (consolidate parts or split the request).',
     });
+  } else if (Array.isArray(r.disconnected)) {
+    for (const name of r.disconnected) {
+      violations.push({
+        kind: 'floating',
+        field: name,
+        expected: 'connected to assembly',
+        measured: 'disconnected',
+        severity: (!isAgentMode || isPrintLayout) ? 'warning' : 'error',
+        message: `'${name}' is a disconnected part: it does not touch and is not within 0.5 mm of any other part in the closed pose.`,
+      });
+    }
   }
 
   for (const frame of frames) {

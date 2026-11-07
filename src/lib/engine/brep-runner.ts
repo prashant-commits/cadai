@@ -39,7 +39,7 @@ export type BrepResult = {
   ms: number;
   interferences?: Array<{ a: string; b: string; volume: number }>;
   partMeshes?: Record<string, string>;
-  disconnected?: string[];
+  disconnected?: string[] | 'not checked';
 };
 
 export interface RunBrepOptions {
@@ -193,7 +193,9 @@ async function runBrepHttp(
       partMeshes: (data.partMeshes ?? (data as Record<string, unknown>).part_meshes) as Record<string, string> | undefined,
       disconnected: Array.isArray((data as { disconnected?: unknown }).disconnected)
         ? ((data as { disconnected: string[] }).disconnected)
-        : undefined,
+        : (data as { disconnected?: unknown }).disconnected === 'not checked'
+          ? 'not checked'
+          : undefined,
     };
   } catch (err) {
     return brepFailed(err instanceof Error ? err.message : 'Invalid JSON response from geometry service', 'unreachable', t0);
@@ -308,10 +310,12 @@ async function runBrepLocal(
         if (opts?.partMeshes) {
           args.push('--part-meshes');
         }
+        const childEnv = localChildEnv();
+        childEnv.CADAI_GEO_TIMEOUT = String(Math.ceil(timeoutMs / 1000));
         child = spawn(pythonPath, args, {
           cwd: geoDir,
           stdio: ['ignore', 'pipe', 'pipe'],
-          env: localChildEnv() as NodeJS.ProcessEnv,
+          env: childEnv as NodeJS.ProcessEnv,
           // Own process group, so a timeout or a stop kills the python process
           // and anything it spawned, not just the direct child.
           detached: process.platform !== 'win32',
@@ -443,7 +447,9 @@ async function runBrepLocal(
         partMeshes: (parsed.partMeshes ?? parsed.part_meshes) as Record<string, string> | undefined,
         disconnected: Array.isArray(parsed.disconnected)
           ? (parsed.disconnected as string[])
-          : undefined,
+          : parsed.disconnected === 'not checked'
+            ? 'not checked'
+            : undefined,
       };
     }
 

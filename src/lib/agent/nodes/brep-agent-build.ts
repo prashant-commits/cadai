@@ -429,6 +429,7 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
     }
 
     let turns = 0;
+    const turnCosts: number[] = [];
     while (turns < maxTurns && !finished) {
       if (budgetExceededReason) break;
 
@@ -478,7 +479,15 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
       if (!reply) break;
 
       const usage = extractReplyUsage(reply);
-      accumulatedCostUsd += estimateCostUsd(modelSlug, usage);
+      const isMissingUsage = usage.input_tokens === 0 && usage.output_tokens === 0;
+      let replyCost = estimateCostUsd(modelSlug, usage);
+      if (isMissingUsage) {
+        const last3 = turnCosts.slice(-3);
+        const floor = last3.length > 0 ? Math.max(0.05, ...last3) : 0.05;
+        replyCost = Math.max(replyCost, floor);
+      }
+      turnCosts.push(replyCost);
+      accumulatedCostUsd += replyCost;
 
       const elapsedAfterModelSec = (initialWallMs + (Date.now() - visitStartMs)) / 1000;
       if (elapsedAfterModelSec >= maxWallSec) {
@@ -573,6 +582,18 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
             }));
             continue;
           }
+          const elapsedBeforeRun = (initialWallMs + (Date.now() - visitStartMs)) / 1000;
+          if (elapsedBeforeRun >= maxWallSec) {
+            budgetExceededReason = `wall time limit of ${maxWallSec}s exceeded (${elapsedBeforeRun.toFixed(1)}s elapsed across build)`;
+            console.warn(`brepAgentBuild: ${budgetExceededReason}`);
+            break;
+          }
+          if (accumulatedCostUsd >= maxUsd) {
+            budgetExceededReason = `cost budget of $${maxUsd.toFixed(2)} exceeded ($${accumulatedCostUsd.toFixed(4)} spent across build)`;
+            console.warn(`brepAgentBuild: ${budgetExceededReason}`);
+            break;
+          }
+
           geoRuns++;
 
           const r = await runBrep(script, { interferences: true, connectivity: true, signal: config?.signal });
@@ -620,7 +641,9 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
               .map((v) => v.message);
             const notes = [...(r.notes ?? []), ...placementNotes];
 
-            if (r.disconnected && r.disconnected.length > 0) {
+            if (r.disconnected === 'not checked') {
+              notes.push('Connectivity not checked: model has more than 40 parts (consolidate parts or split the request).');
+            } else if (Array.isArray(r.disconnected) && r.disconnected.length > 0) {
               for (const disc of r.disconnected) {
                 notes.push(`'${disc}' is a disconnected part: it does not touch and is not within 0.5 mm of any other part in the closed pose.`);
               }
@@ -720,6 +743,18 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
             }));
             continue;
           }
+          const elapsedBeforeRender = (initialWallMs + (Date.now() - visitStartMs)) / 1000;
+          if (elapsedBeforeRender >= maxWallSec) {
+            budgetExceededReason = `wall time limit of ${maxWallSec}s exceeded (${elapsedBeforeRender.toFixed(1)}s elapsed across build)`;
+            console.warn(`brepAgentBuild: ${budgetExceededReason}`);
+            break;
+          }
+          if (accumulatedCostUsd >= maxUsd) {
+            budgetExceededReason = `cost budget of $${maxUsd.toFixed(2)} exceeded ($${accumulatedCostUsd.toFixed(4)} spent across build)`;
+            console.warn(`brepAgentBuild: ${budgetExceededReason}`);
+            break;
+          }
+
           geoRuns++;
 
           const r = await runBrep(overriddenScript, { interferences: true, connectivity: true, signal: config?.signal });
@@ -806,6 +841,18 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
             }));
             continue;
           }
+          const elapsedBeforeFinish = (initialWallMs + (Date.now() - visitStartMs)) / 1000;
+          if (elapsedBeforeFinish >= maxWallSec) {
+            budgetExceededReason = `wall time limit of ${maxWallSec}s exceeded (${elapsedBeforeFinish.toFixed(1)}s elapsed across build)`;
+            console.warn(`brepAgentBuild: ${budgetExceededReason}`);
+            break;
+          }
+          if (accumulatedCostUsd >= maxUsd) {
+            budgetExceededReason = `cost budget of $${maxUsd.toFixed(2)} exceeded ($${accumulatedCostUsd.toFixed(4)} spent across build)`;
+            console.warn(`brepAgentBuild: ${budgetExceededReason}`);
+            break;
+          }
+
           geoRuns++;
 
           const r = await runBrep(finalCandidateScript, { interferences: true, connectivity: true, signal: config?.signal });
@@ -1039,7 +1086,18 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
           }
 
           // Rule 4: Connectivity check
-          if (r.disconnected && r.disconnected.length > 0) {
+          if (r.disconnected === 'not checked') {
+            conversation.push(new ToolMessage({
+              tool_call_id: callId,
+              name: call.name,
+              content: JSON.stringify({
+                ok: false,
+                error: 'Finish rejected: Connectivity not checked: model has more than 40 parts. Consolidate parts or split the request.',
+              }),
+            }));
+            continue;
+          }
+          if (Array.isArray(r.disconnected) && r.disconnected.length > 0) {
             conversation.push(new ToolMessage({
               tool_call_id: callId,
               name: call.name,

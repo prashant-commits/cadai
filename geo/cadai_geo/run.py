@@ -220,96 +220,172 @@ def _select_edges(shape, edges="outer"):
     return shape.edges()
 
 
-def _make_round(notes: list):
-    def _round(shape, r, edges="outer"):
-        import math
-        if not isinstance(r, (int, float)) or math.isnan(r) or r <= 0:
-            return shape
-        from build123d import fillet
-        targets = _select_edges(shape, edges)
-        if not targets:
-            return shape
-        min_dim = 0.0
-        try:
-            bb = shape.bounding_box()
-            min_dim = min(bb.size.X, bb.size.Y, bb.size.Z)
-            if min_dim > 0 and r >= min_dim / 2:
-                notes.append(f"_round skipped: radius {r}mm exceeds half of minimum dimension {min_dim}mm")
-                return shape
-        except Exception:
-            pass
-        try:
-            wall = _thinnest_wall(shape)
-            if wall is not None and wall < min_dim and r >= wall / 2:
-                r = (wall / 2) * 0.95
-        except Exception:
-            pass
-        curr_r = float(r)
-        last_exc = None
-        for attempt in range(4):
-            try:
-                out = fillet(targets, curr_r)
-                if out.is_valid:
-                    return out
-            except Exception as e:
-                last_exc = e
-            curr_r /= 2.0
-            if curr_r < 0.05:
-                break
-        msg = (
-            f"_round failed ({type(last_exc).__name__}: {last_exc}); returned unrounded shape"
-            if last_exc is not None
-            else f"_round produced invalid shape on {edges} edges; returned unrounded shape"
-        )
-        notes.append(msg)
-        return shape
-    return _round
+_HELPERS_SOURCE = """
+def _thinnest_wall(shape):
+    from build123d import GeomType
+    try:
+        planar = [f for f in shape.faces() if f.geom_type == GeomType.PLANE]
+        min_w = float("inf")
+        for f in planar:
+            iw_list = f.inner_wires()
+            if iw_list:
+                ow_bb = f.outer_wire().bounding_box()
+                for iw in iw_list:
+                    iw_bb = iw.bounding_box()
+                    for d in (
+                        iw_bb.min.X - ow_bb.min.X,
+                        ow_bb.max.X - iw_bb.max.X,
+                        iw_bb.min.Y - ow_bb.min.Y,
+                        ow_bb.max.Y - iw_bb.max.Y,
+                    ):
+                        if 1e-3 < d < min_w:
+                            min_w = d
+        faces_to_check = planar[:30]
+        for i, f1 in enumerate(faces_to_check):
+            n1 = f1.normal_at(f1.center())
+            for f2 in faces_to_check[i + 1 :]:
+                n2 = f2.normal_at(f2.center())
+                if (n1 + n2).length < 1e-4:
+                    d = abs((f2.center() - f1.center()).dot(n1))
+                    if 1e-3 < d < min_w:
+                        min_w = d
+        if min_w < float("inf"):
+            return min_w
+    except Exception:
+        pass
+    try:
+        bb = shape.bounding_box()
+        min_dim = min(bb.size.X, bb.size.Y, bb.size.Z)
+        if min_dim > 1e-3:
+            return min_dim
+    except Exception:
+        pass
+    return None
 
 
-def _make_bevel(notes: list):
-    def _bevel(shape, d, edges="outer"):
-        import math
-        if not isinstance(d, (int, float)) or math.isnan(d) or d <= 0:
-            return shape
-        from build123d import chamfer
-        targets = _select_edges(shape, edges)
-        if not targets:
-            return shape
-        min_dim = 0.0
-        try:
-            bb = shape.bounding_box()
-            min_dim = min(bb.size.X, bb.size.Y, bb.size.Z)
-            if min_dim > 0 and d >= min_dim / 2:
-                notes.append(f"_bevel skipped: chamfer {d}mm exceeds half of minimum dimension {min_dim}mm")
-                return shape
-        except Exception:
-            pass
-        try:
-            wall = _thinnest_wall(shape)
-            if wall is not None and wall < min_dim and d >= wall / 2:
-                d = (wall / 2) * 0.95
-        except Exception:
-            pass
-        curr_d = float(d)
-        last_exc = None
-        for attempt in range(4):
+def _select_edges(shape, edges="outer"):
+    if not isinstance(edges, str):
+        return edges
+    from build123d import Axis
+    if edges == "all":
+        return shape.edges()
+    elif edges == "vertical":
+        return shape.edges().filter_by(Axis.Z)
+    elif edges == "top":
+        max_z = shape.bounding_box().max.Z
+        top_faces = shape.faces().filter_by_position(Axis.Z, max_z - 1e-3, max_z + 1e-3)
+        if not top_faces:
+            top_faces = [shape.faces().sort_by(Axis.Z)[-1]]
+        edges_out = []
+        for face in top_faces:
             try:
-                out = chamfer(targets, curr_d)
-                if out.is_valid:
-                    return out
-            except Exception as e:
-                last_exc = e
-            curr_d /= 2.0
-            if curr_d < 0.05:
-                break
-        msg = (
-            f"_bevel failed ({type(last_exc).__name__}: {last_exc}); returned unbeveled shape"
-            if last_exc is not None
-            else f"_bevel produced invalid shape on {edges} edges; returned unbeveled shape"
-        )
-        notes.append(msg)
+                edges_out.extend(face.outer_wire().edges())
+            except Exception:
+                edges_out.extend(face.edges())
+        return edges_out if edges_out else shape.edges()
+    elif edges == "outer":
+        bb = shape.bounding_box()
+        tol = 1e-3
+        outer = [
+            e for e in shape.edges()
+            if (
+                abs(e.bounding_box().min.X - bb.min.X) < tol
+                or abs(e.bounding_box().max.X - bb.max.X) < tol
+                or abs(e.bounding_box().min.Y - bb.min.Y) < tol
+                or abs(e.bounding_box().max.Y - bb.max.Y) < tol
+            )
+            and not (abs(e.bounding_box().max.Z - bb.min.Z) < tol)
+        ]
+        return outer if outer else shape.edges()
+    return shape.edges()
+
+
+def _round(shape, r, edges="outer"):
+    if not isinstance(r, (int, float)) or isnan(r) or r <= 0:
         return shape
-    return _bevel
+    from build123d import fillet
+    targets = _select_edges(shape, edges)
+    if not targets:
+        return shape
+    min_dim = 0.0
+    try:
+        bb = shape.bounding_box()
+        min_dim = min(bb.size.X, bb.size.Y, bb.size.Z)
+        if min_dim > 0 and r >= min_dim / 2:
+            _cadai_notes.append(f"_round skipped: radius {r}mm exceeds half of minimum dimension {min_dim}mm")
+            return shape
+    except Exception:
+        pass
+    try:
+        wall = _thinnest_wall(shape)
+        if wall is not None and wall < min_dim and r >= wall / 2:
+            r = (wall / 2) * 0.95
+    except Exception:
+        pass
+    curr_r = float(r)
+    last_exc = None
+    for attempt in range(4):
+        try:
+            out = fillet(targets, curr_r)
+            if out.is_valid:
+                return out
+        except Exception as e:
+            last_exc = e
+        curr_r /= 2.0
+        if curr_r < 0.05:
+            break
+    msg = (
+        f"_round failed ({type(last_exc).__name__}: {last_exc}); returned unrounded shape"
+        if last_exc is not None
+        else f"_round produced invalid shape on {edges} edges; returned unrounded shape"
+    )
+    _cadai_notes.append(msg)
+    return shape
+
+
+def _bevel(shape, d, edges="outer"):
+    if not isinstance(d, (int, float)) or isnan(d) or d <= 0:
+        return shape
+    from build123d import chamfer
+    targets = _select_edges(shape, edges)
+    if not targets:
+        return shape
+    min_dim = 0.0
+    try:
+        bb = shape.bounding_box()
+        min_dim = min(bb.size.X, bb.size.Y, bb.size.Z)
+        if min_dim > 0 and d >= min_dim / 2:
+            _cadai_notes.append(f"_bevel skipped: chamfer {d}mm exceeds half of minimum dimension {min_dim}mm")
+            return shape
+    except Exception:
+        pass
+    try:
+        wall = _thinnest_wall(shape)
+        if wall is not None and wall < min_dim and d >= wall / 2:
+            d = (wall / 2) * 0.95
+    except Exception:
+        pass
+    curr_d = float(d)
+    last_exc = None
+    for attempt in range(4):
+        try:
+            out = chamfer(targets, curr_d)
+            if out.is_valid:
+                return out
+        except Exception as e:
+            last_exc = e
+        curr_d /= 2.0
+        if curr_d < 0.05:
+            break
+    msg = (
+        f"_bevel failed ({type(last_exc).__name__}: {last_exc}); returned unbeveled shape"
+        if last_exc is not None
+        else f"_bevel produced invalid shape on {edges} edges; returned unbeveled shape"
+    )
+    _cadai_notes.append(msg)
+    return shape
+"""
+_HELPERS_CODE = compile(_HELPERS_SOURCE, "<helpers>", "exec")
 
 
 def script_globals(full: bool | None = None) -> dict:
@@ -328,20 +404,37 @@ def script_globals(full: bool | None = None) -> dict:
     for name in getattr(build123d, "__all__", ()):
         if hasattr(build123d, name):
             namespace[name] = getattr(build123d, name)
-    for name in ("sin", "cos", "tan", "radians", "degrees", "sqrt", "pi", "atan2", "hypot"):
+    for name in ("sin", "cos", "tan", "radians", "degrees", "sqrt", "pi", "atan2", "hypot", "isnan"):
         namespace[name] = getattr(math, name)
     notes_list: list[str] = []
     namespace["_cadai_notes"] = notes_list
-    namespace["_select_edges"] = _select_edges
-    namespace["_round"] = _make_round(notes_list)
-    namespace["_bevel"] = _make_bevel(notes_list)
+    exec(_HELPERS_CODE, namespace)
     return namespace
 
 
 def _run_script(script_path: str) -> dict:
-    import runpy
+    fpath = os.fspath(script_path)
+    with open(fpath, "r", encoding="utf-8") as handle:
+        source = handle.read()
+    code = compile(source, fpath, "exec")
+    g = script_globals()
+    g["__file__"] = fpath
+    g["__name__"] = "__main__"
 
-    return runpy.run_path(script_path, init_globals=script_globals(), run_name="__main__")
+    trampoline_env = {
+        "__builtins__": g["__builtins__"] if "__builtins__" in g else {},
+        "exec": exec,
+    }
+    exec(
+        compile(
+            "def _trampoline_run(code, g):\n    exec(code, g)\n",
+            "<trampoline>",
+            "exec",
+        ),
+        trampoline_env,
+    )
+    trampoline_env["_trampoline_run"](code, g)
+    return g
 
 
 def _shape_sources(obj: object) -> list | None:
@@ -603,11 +696,13 @@ def _is_pin_in_bore(s1: object, s2: object, b1: tuple, b2: tuple, dist: float) -
 _BASE_PART_REGEX = re.compile(r"base|bottom|case|housing|body|frame|chassis|stand|host", re.I)
 
 
-def compute_disconnected(part_shapes: list[tuple[str, object]]) -> list[str]:
+def compute_disconnected(part_shapes: list[tuple[str, object]]) -> list[str] | str:
     """Parts that do not connect to the main assembly in the closed state.
     Builds an adjacency graph across all parts. A pin inside a bore with radial clearance
     up to 1 mm counts as connected."""
-    if len(part_shapes) <= 1 or len(part_shapes) > 40:
+    if len(part_shapes) > 40:
+        return "not checked"
+    if len(part_shapes) <= 1:
         return []
 
     boxes = []
@@ -643,7 +738,9 @@ def compute_disconnected(part_shapes: list[tuple[str, object]]) -> list[str]:
                     adj[i].append(j)
                     adj[j].append(i)
             except Exception:
-                pass
+                # distance_to failure counts as unknown, not as a missing edge
+                adj[i].append(j)
+                adj[j].append(i)
 
     visited = [False] * n
     components: list[list[int]] = []
@@ -1321,6 +1418,14 @@ def main(argv: list[str] | None = None) -> None:
     if len(args) != 3:
         payload = {"ok": False, "error": "usage: python -m cadai_geo <script.py> <outdir> [--interferences] [--connectivity] [--part-meshes]"}
     else:
+        try:
+            from cadai_geo.isolate import _DEFAULT_AS_LIMIT, _disable_core, _limit_and_drop
+            as_limit = int(os.environ.get("CADAI_GEO_RLIMIT_AS", os.environ.get("CADAI_GEO_AS_LIMIT", _DEFAULT_AS_LIMIT)))
+            timeout_s = float(os.environ.get("CADAI_GEO_TIMEOUT", 60.0))
+            _limit_and_drop(timeout_s=timeout_s, as_limit=as_limit, account=None)
+            _disable_core()
+        except Exception:
+            pass
         os.makedirs(args[2], exist_ok=True)
         sink = io.StringIO()
         with contextlib.redirect_stdout(sink):

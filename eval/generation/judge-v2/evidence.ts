@@ -609,7 +609,7 @@ export async function buildEvidence(opts: BuildEvidenceOptions): Promise<Evidenc
     span: [maxB[0] - minB[0], maxB[1] - minB[1], maxB[2] - minB[2]] as [number, number, number],
   };
 
-  let disconnected: string[] = mainRes.disconnected ?? [];
+  let disconnected: string[] = Array.isArray(mainRes.disconnected) ? mainRes.disconnected : [];
   if (!mainRes.disconnected && parts.length > 1) {
     const disc: string[] = [];
     for (let i = 0; i < parts.length; i++) {

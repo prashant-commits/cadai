@@ -165,4 +165,30 @@ describe('/api/compile build123d contract', () => {
     expect(scadBody.apiError.code).not.toBe('compile_failed');
     expect(scadBody.apiError.code).not.toBe('bad_request');
   });
+
+  it('rejects oversized scripts (> 256 KiB) with 400 bad_request before running', async () => {
+    const huge = 'x = 1\n'.repeat(60 * 1024); // > 300 KiB
+    const res = await post({ code: huge, language: 'build123d' });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.apiError.code).toBe('bad_request');
+    expect(data.error).toBe('script too large');
+    expect(runBrep).not.toHaveBeenCalled();
+  });
+
+  it('rejects Grok payloads before running runBrep', async () => {
+    const globals = "raise Exception('LEAK:' + _round.__globals__['os'].environ['CADAI_PROBE_CANARY'])\n";
+    const resGlobals = await post({ code: globals, language: 'build123d' });
+    expect(resGlobals.status).toBe(400);
+    const dataGlobals = await resGlobals.json();
+    expect(dataGlobals.apiError.code).toBe('bad_request');
+    expect(runBrep).not.toHaveBeenCalled();
+
+    const frame = "try:\n    raise Exception('marker')\nexcept Exception as e:\n    b = e.__traceback__.tb_frame.f_back.f_builtins\n    data = b['open']('x').read()\n";
+    const resFrame = await post({ code: frame, language: 'build123d' });
+    expect(resFrame.status).toBe(400);
+    const dataFrame = await resFrame.json();
+    expect(dataFrame.apiError.code).toBe('bad_request');
+    expect(runBrep).not.toHaveBeenCalled();
+  });
 });

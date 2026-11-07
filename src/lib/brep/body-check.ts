@@ -63,11 +63,79 @@ const BANNED_ATTRIBUTE = /^(?:_|gi_|cr_|ag_|f_|tb_|co_|func_)|^(?:mro|format|for
 const FILE_KEYWORD = /^(?:font|font_path|file|files|filename|file_name|fname|filepath|path_name)$|_path$|_file$/;
 /** Text(txt, font_size, font, font_path, ...): only the first two may be positional. */
 const TEXT_MAX_POSITIONAL = 2;
+export const MAX_SCRIPT_BYTES = 256 * 1024;
 const STRING_PREFIX = /^(?:[rRbBuUfFtT]|[rR][bBfFtT]|[bBfFtT][rR])$/;
 const AUGMENTED = new Set(['+=', '-=', '*=', '/=', '//=', '%=', '**=', '@=', '&=', '|=', '^=', '>>=', '<<=']);
 const OPS3 = ['**=', '//=', '>>=', '<<=', '...'];
 const OPS2 = ['==', '!=', '<=', '>=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '@=', ':=', '->', '**', '//', '<<', '>>'];
 const NUMBER = /^(?:0[xXoObB][0-9a-fA-F_]+|(?:\d[\d_]*\.?[\d_]*|\.\d[\d_]*)(?:[eE][+-]?\d+)?[jJ]?)/;
+
+function findTextMakerAliases(tokens: Tok[]): Set<string> {
+  const textMakers = new Set(['Text', 'make_text']);
+  let added = true;
+  while (added) {
+    added = false;
+    for (let i = 0; i < tokens.length - 2; i++) {
+      const t0 = tokens[i];
+      const t1 = tokens[i + 1];
+      const t2 = tokens[i + 2];
+      if (t0.k === 'name' && isOp(t1, '=')) {
+        const lhs = t0.v;
+        if (t2?.k === 'name' && textMakers.has(t2.v)) {
+          if (!textMakers.has(lhs)) {
+            textMakers.add(lhs);
+            added = true;
+          }
+        }
+        const t3 = tokens[i + 3];
+        const t4 = tokens[i + 4];
+        if (
+          t2?.k === 'name' &&
+          t2.v === 'Compound' &&
+          isOp(t3, '.') &&
+          t4?.k === 'name' &&
+          textMakers.has(t4.v)
+        ) {
+          if (!textMakers.has(lhs)) {
+            textMakers.add(lhs);
+            added = true;
+          }
+        }
+      }
+    }
+  }
+  return textMakers;
+}
+
+function hasPositionalStringFontPath(tokens: Tok[], open: number): boolean {
+  let depth = 0;
+  let posIndex = -1;
+  let argStart = true;
+  for (let i = open; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.k === 'op' && '([{'.includes(t.v)) {
+      depth++;
+      if (depth === 1) continue;
+    } else if (t.k === 'op' && ')]}'.includes(t.v)) {
+      depth--;
+      if (depth === 0) return false;
+    }
+    if (depth !== 1) continue;
+    if (isOp(t, ',')) {
+      argStart = true;
+      continue;
+    }
+    if (argStart) {
+      argStart = false;
+      const keyword = t.k === 'name' && isOp(tokens[i + 1], '=');
+      if (!keyword) {
+        posIndex++;
+        if (posIndex === 3 && t.k === 'str') return true;
+      }
+    }
+  }
+  return false;
+}
 
 export function checkPythonBody(body: string, options: BodyCheckOptions = {}): BodyCheck {
   // Only \n ends a line. A carriage return, form feed, NUL or other control character would
@@ -82,6 +150,7 @@ export function checkPythonBody(body: string, options: BodyCheckOptions = {}): B
 
   const reserved = new Set(options.reserved ?? []);
   const components = new Set(options.components ?? []);
+  const textMakers = findTextMakerAliases(tokens);
 
   // A name is an attribute when the previous token is '.'; a keyword argument when it sits
   // directly after '(' or ',' inside a call and is followed by '=' (not '==').
@@ -103,6 +172,16 @@ export function checkPythonBody(body: string, options: BodyCheckOptions = {}): B
     if (t.v.includes('__')) return reject(`dunder name ${t.v}`);
     if (!attribute(i) && BUILDER_NAMES.test(t.v)) return reject(BUILDER_MODE_REASON);
     if (BANNED_ANYWHERE.has(t.v)) return reject(`${t.v} is not allowed in a body`);
+
+    const isTextCall =
+      isOp(tokens[i + 1], '(') &&
+      ((attribute(i) && t.v === 'make_text') || (!attribute(i) && textMakers.has(t.v)));
+    if (isTextCall) {
+      if (positionalArguments(tokens, i + 1) > TEXT_MAX_POSITIONAL) return reject(`${t.v} with a font or file given by position`);
+      if (hasPositionalStringFontPath(tokens, i + 1)) return reject(`${t.v} with a font or file given by position`);
+      if (unpacksArguments(tokens, i + 1)) return reject(`${t.v} with * or ** arguments`);
+    }
+
     if (attribute(i)) {
       // Every attribute in a chain is checked, not only the first after a name.
       if (BANNED_ATTRIBUTE.test(t.v)) return reject(`attribute .${t.v} is not allowed in a body`);
@@ -110,10 +189,6 @@ export function checkPythonBody(body: string, options: BodyCheckOptions = {}): B
     }
     if (BANNED_NAMES.has(t.v) || /^(?:export|import)/i.test(t.v)) return reject(`${t.v} is not allowed in a body`);
     if (isKeywordArgument(tokens, i) && FILE_KEYWORD.test(t.v)) return reject(`keyword ${t.v}= names a file`);
-    if (t.v === 'Text' && isOp(tokens[i + 1], '(')) {
-      if (positionalArguments(tokens, i + 1) > TEXT_MAX_POSITIONAL) return reject('Text with a font or file given by position');
-      if (unpacksArguments(tokens, i + 1)) return reject('Text with * or ** arguments');
-    }
   }
 
   const bound = boundNames(tokens);
@@ -230,6 +305,17 @@ function stripPrelude(script: string): string {
       i++;
       continue;
     }
+    if (trimmed.startsWith('from build123d import ')) {
+      const items = trimmed.slice('from build123d import '.length).split(',').map((s) => s.trim());
+      if (items.length === 1 && items[0] === '*') {
+        i++;
+        continue;
+      }
+      if (items.length > 0 && items.every((fn) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(fn) && !BANNED_NAMES.has(fn) && !BANNED_ANYWHERE_SCRIPT.has(fn) && !fn.includes('__'))) {
+        i++;
+        continue;
+      }
+    }
     if (trimmed.startsWith('from math import ')) {
       const items = trimmed.slice('from math import '.length).split(',').map((s) => s.trim());
       if (items.length > 0 && items.every((fn) => ALLOWED_MATH_FUNCS.has(fn))) {
@@ -252,6 +338,9 @@ const BANNED_ANYWHERE_SCRIPT = new Set([
  * strictly enforces attribute, string, keyword, and name bans.
  */
 export function checkPythonScript(script: string): BodyCheck {
+  if (Buffer.byteLength(script, 'utf-8') > MAX_SCRIPT_BYTES) {
+    return reject('script too large');
+  }
   if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029]/.test(script)) {
     return reject('control character in the script');
   }
@@ -274,6 +363,7 @@ export function checkPythonScript(script: string): BodyCheck {
     return reject((error as Error).message);
   }
 
+  const textMakers = findTextMakerAliases(tokens);
   const attribute = (i: number) => isOp(tokens[i - 1], '.');
 
   for (let i = 0; i < tokens.length; i++) {
@@ -289,16 +379,22 @@ export function checkPythonScript(script: string): BodyCheck {
     if (t.v.includes('__')) return reject(`dunder name ${t.v}`);
     if (!attribute(i) && BUILDER_NAMES.test(t.v)) return reject(BUILDER_MODE_REASON);
     if (BANNED_ANYWHERE_SCRIPT.has(t.v)) return reject(`${t.v} is not allowed in a script`);
+
+    const isTextCall =
+      isOp(tokens[i + 1], '(') &&
+      ((attribute(i) && t.v === 'make_text') || (!attribute(i) && textMakers.has(t.v)));
+    if (isTextCall) {
+      if (positionalArguments(tokens, i + 1) > TEXT_MAX_POSITIONAL) return reject(`${t.v} with a font or file given by position`);
+      if (hasPositionalStringFontPath(tokens, i + 1)) return reject(`${t.v} with a font or file given by position`);
+      if (unpacksArguments(tokens, i + 1)) return reject(`${t.v} with * or ** arguments`);
+    }
+
     if (attribute(i)) {
       if (BANNED_ATTRIBUTE.test(t.v)) return reject(`attribute .${t.v} is not allowed in a script`);
       continue;
     }
     if (BANNED_NAMES.has(t.v) || /^(?:export|import)/i.test(t.v)) return reject(`${t.v} is not allowed in a script`);
     if (isKeywordArgument(tokens, i) && FILE_KEYWORD.test(t.v)) return reject(`keyword ${t.v}= names a file`);
-    if (t.v === 'Text' && isOp(tokens[i + 1], '(')) {
-      if (positionalArguments(tokens, i + 1) > TEXT_MAX_POSITIONAL) return reject('Text with a font or file given by position');
-      if (unpacksArguments(tokens, i + 1)) return reject('Text with * or ** arguments');
-    }
   }
 
   return { ok: true };

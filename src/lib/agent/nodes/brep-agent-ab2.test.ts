@@ -665,6 +665,45 @@ result = Compound([cabinet, drawer])
     expect(err).toContain("Pose parameter 'pull_out_travel' defaults to 50");
     expect(err).toContain('must default to its closed/home pose');
   });
+
+  it('rejects finish when connectivity returns not checked (> 40 parts) (L3)', async () => {
+    const staticSpec = resolveSpec({
+      assemblyName: 'box',
+      boundingBox: { width: 10, length: 10, height: 10 },
+      components: [{ name: 'base', description: 'base box', localExtents: [10, 10, 10], position: [0, 0, 0], shape: { kind: 'box' } }],
+    } as unknown as AssemblySpec).spec;
+
+    const turns = [
+      new AIMessage({
+        content: 'I finish now',
+        tool_calls: [{
+          id: 'finish_1',
+          name: 'finish',
+          args: {
+            script: 'from build123d import *\nbase = Box(10, 10, 10)\nbase.label = "base"\n_cadai_parts = [base]\nresult = base',
+            requirements: [{ id: 'cad_request', status: 'met' }],
+          },
+        }],
+      }),
+    ];
+
+    const err = await runBuildWithTurns(
+      turns,
+      async () => ({
+        ok: true,
+        solids: 41,
+        parts: [
+          { label: 'base', valid: true, volume: 10, min: [0, 0, 0], max: [1, 1, 1] },
+          ...Array.from({ length: 40 }, (_, i) => ({ label: `p${i}`, valid: true, volume: 10, min: [0, 0, 0], max: [1, 1, 1] })),
+        ],
+        disconnected: 'not checked',
+        ms: 10,
+      }),
+      staticSpec
+    );
+
+    expect(err).toContain('Finish rejected: Connectivity not checked: model has more than 40 parts');
+  });
 });
 
 const ESCAPE = `from build123d import *
@@ -1061,5 +1100,102 @@ describe('ab2m Item 3: Per-build run budget (wall time and USD)', () => {
     const budgetNote = out1.buildNotes?.find((n) => n.reason.includes('cost budget of $0.50 exceeded'));
     expect(budgetNote).toBeDefined();
     expect(out1.currentCode).toContain('Box(10, 10, 10)');
+  });
+
+  it('L2: missing usage metadata charges floor ($0.05) and bounds cost loop', async () => {
+    process.env.CADAI_AGENT_MAX_USD = '0.08'; // $0.08 budget, floor is $0.05 so 2nd turn trips
+    const fakeModel = {
+      invoke: vi.fn().mockImplementation(async () => {
+        return new AIMessage({
+          content: 'No usage metadata here',
+          tool_calls: [{
+            id: 'call_run',
+            name: 'run_script',
+            args: { script: 'from build123d import *\nresult = Box(10, 10, 10)' },
+          }],
+        });
+      }),
+    };
+
+    vi.spyOn(brepRunner, 'runBrep').mockResolvedValue({
+      ok: true,
+      parts: [{ label: 'base', valid: true, volume: 1000, min: [0, 0, 0], max: [10, 10, 10] }],
+      solids: 1,
+      ms: 10,
+    });
+
+    const agentBuild = makeBrepAgentBuild(fakeModel as never);
+    const state = {
+      assemblySpec: resolveSpec({
+        assemblyName: 'box',
+        boundingBox: { width: 10, length: 10, height: 10 },
+        components: [{ name: 'base', description: 'base box', localExtents: [10, 10, 10], position: [0, 0, 0], shape: { kind: 'box' } }],
+      } as unknown as AssemblySpec).spec,
+      currentCode: 'from build123d import *\nresult = Box(10, 10, 10)',
+      attemptCount: 0,
+      buildWallMs: 0,
+      buildCostUsd: 0,
+      buildNotes: [],
+      messages: [new HumanMessage('simple box')],
+      failureKind: 'none',
+    } as unknown as AgentStateType;
+
+    const out = await agentBuild(state);
+    // 1st turn charged $0.05 floor, 2nd turn charged $0.05 floor -> $0.10 > $0.08!
+    expect(out.buildCostUsd).toBeGreaterThanOrEqual(0.08);
+    const budgetNote = out.buildNotes?.find((n) => n.reason.includes('cost budget of $0.08 exceeded'));
+    expect(budgetNote).toBeDefined();
+  });
+
+  it('L2: wall clock check before runBrep stops tool loop execution', async () => {
+    process.env.CADAI_AGENT_MAX_WALL_S = '5';
+    let callCount = 0;
+    const fakeModel = {
+      invoke: vi.fn().mockImplementation(async () => {
+        return new AIMessage({
+          content: 'Run then Finish',
+          tool_calls: [
+            {
+              id: 'call_run',
+              name: 'run_script',
+              args: { script: 'from build123d import *\nresult = Box(10, 10, 10)' },
+            },
+          ],
+        });
+      }),
+    };
+
+    const runSpy = vi.spyOn(brepRunner, 'runBrep').mockImplementation(async () => {
+      callCount++;
+      return {
+        ok: true,
+        parts: [{ label: 'base', valid: true, volume: 1000, min: [0, 0, 0], max: [10, 10, 10] }],
+        solids: 1,
+        ms: 10,
+      };
+    });
+    runSpy.mockClear();
+
+    const agentBuild = makeBrepAgentBuild(fakeModel as never);
+    const state = {
+      assemblySpec: resolveSpec({
+        assemblyName: 'box',
+        boundingBox: { width: 10, length: 10, height: 10 },
+        components: [{ name: 'base', description: 'base box', localExtents: [10, 10, 10], position: [0, 0, 0], shape: { kind: 'box' } }],
+      } as unknown as AssemblySpec).spec,
+      currentCode: 'from build123d import *\nresult = Box(10, 10, 10)',
+      attemptCount: 0,
+      buildWallMs: 5_500, // already exceeded
+      buildCostUsd: 0,
+      buildNotes: [],
+      messages: [new HumanMessage('simple box')],
+      failureKind: 'none',
+    } as unknown as AgentStateType;
+
+    const out = await agentBuild(state);
+    expect(callCount).toBe(0);
+    expect(runSpy).not.toHaveBeenCalled();
+    const budgetNote = out.buildNotes?.find((n) => n.reason.includes('wall time limit of 5s exceeded'));
+    expect(budgetNote).toBeDefined();
   });
 });

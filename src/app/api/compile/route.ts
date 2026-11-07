@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { compileScad } from '@/lib/engine/scad-compiler';
 import { runBrep, type BrepPart } from '@/lib/engine/brep-runner';
 import { detectLanguage } from '@/lib/brep/language';
+import { checkPythonScript, MAX_SCRIPT_BYTES } from '@/lib/brep/body-check';
 import type { PartInfo, ResultArtifacts } from '@/lib/contract/run-contract';
 import { badRequest, compileFailed, compileStatus, errorBody, fromBrep } from '@/lib/contract/api-error';
 import { getArtifactStore } from '@/lib/runs/artifact-store';
@@ -78,7 +79,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(errorBody(badRequest(message)), { status: 400 });
     }
 
+    if (Buffer.byteLength(code, 'utf-8') > MAX_SCRIPT_BYTES) {
+      return NextResponse.json(errorBody(badRequest('script too large')), { status: 400 });
+    }
+
     if (language === 'build123d') {
+      const check = checkPythonScript(code);
+      if (!check.ok) {
+        return NextResponse.json(errorBody(badRequest(check.reason)), { status: 400 });
+      }
       const result = await runBrep(code);
       if (!result.ok) {
         const err = fromBrep(result.error || 'build123d compilation failed.', result.failure);
