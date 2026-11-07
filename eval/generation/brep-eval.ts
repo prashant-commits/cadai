@@ -10,6 +10,7 @@ import path from 'node:path';
 import type { AgentStateType } from '@/lib/agent/graph';
 import { runBrep, type BrepPart, type BrepResult } from '@/lib/engine/brep-runner';
 import { setParamValue } from '@/lib/design/write-params';
+import { stlFingerprint } from './fingerprint';
 import { classifyParams } from './param-classify';
 import { perturbedValue, withVerdict, type GenerationMetrics } from './metrics';
 
@@ -86,8 +87,13 @@ function partsDiffer(a: BrepPart[], b: BrepPart[]): boolean {
   });
 }
 
-/** True when any part's bbox or volume (or the whole bbox) differs from the baseline. */
+/**
+ * True when the geometry differs from the baseline at all: any part's bbox or
+ * volume, the whole bbox, or the STL fingerprint (which also catches a hole
+ * that moves inside a plate with every bbox and volume unchanged).
+ */
 export function geometryChanged(base: BrepResult, next: BrepResult): boolean {
+  if (base.stl && next.stl && stlFingerprint(base.stl) !== stlFingerprint(next.stl)) return true;
   if (partsDiffer(base.parts, next.parts)) return true;
   if (base.solids !== next.solids) return true;
   if (base.bbox && next.bbox) return vecDiffers(base.bbox.min, next.bbox.min) || vecDiffers(base.bbox.max, next.bbox.max);
@@ -134,10 +140,22 @@ export async function perturbParams(
   return out;
 }
 
-function firstErrorOf(state: Partial<AgentStateType>): string | undefined {
+/** The reason a run failed, from what the state kept: attempt errors, violations, else the last message. */
+export function firstErrorOf(state: Partial<AgentStateType>): string | undefined {
   const violations = (state.specViolations ?? []).filter((v) => v.severity === 'error');
   const last = state.attemptHistory?.[state.attemptHistory.length - 1];
-  return last?.errors?.[0]?.message || violations[0]?.message;
+  const found = last?.errors?.[0]?.message || violations[0]?.message;
+  if (found) return found;
+  const message = state.messages?.[state.messages.length - 1];
+  const text = typeof message?.content === 'string' ? message.content : '';
+  return text.trim() ? `last message: ${text.trim()}` : undefined;
+}
+
+/** "graph threw: <message>" plus the head of the stack. */
+export function thrownDetail(err: unknown): string {
+  const e = err as Error;
+  const frames = (e?.stack ?? '').split('\n').filter((l) => l.trim().startsWith('at ')).slice(0, 3).map((l) => l.trim());
+  return `graph threw: ${e?.message ?? String(err)}${frames.length ? ` | ${frames.join(' | ')}` : ''}`.slice(0, 400);
 }
 
 /**
@@ -149,8 +167,14 @@ export async function finalizeMetrics(
   m: GenerationMetrics,
   state: Partial<AgentStateType>,
   deps: BrepEvalDeps = defaultBrepDeps,
+  thrown?: string,
 ): Promise<GenerationMetrics> {
-  if (m.kernel !== 'brep') return withVerdict(m, firstErrorOf(state));
+  const verdict = (row: GenerationMetrics, firstError?: string) => {
+    const v = withVerdict(row, thrown ?? firstError);
+    // A run that threw never counts as workable, whatever partial state it left.
+    return thrown && v.workable ? { ...v, workable: false, failureStage: 'geometry' as const, failureDetail: thrown } : v;
+  };
+  if (m.kernel !== 'brep') return verdict(m, firstErrorOf(state));
 
   const next: GenerationMetrics = { ...m };
   let stepError: string | undefined;
@@ -188,5 +212,5 @@ export async function finalizeMetrics(
     }
   }
   const firstError = rerunError ?? (next.brepOk ? stepError : firstErrorOf(state));
-  return withVerdict(next, firstError);
+  return verdict(next, firstError);
 }
