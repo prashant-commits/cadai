@@ -15,7 +15,40 @@
 | **prescriptive** | 13 | The A/B prompts: stated dimensions and features met |
 | **mechanism** | 6 | Hinges, drawers, snap-fits, sliding lids, rotating arms, nesting or stacking: real motion and fit |
 | **edits** | 6 sequences | Build, then 2 follow-ups each ("20 mm taller", "add a cable hole at the back", "rounder corners"): the edit is applied and everything else is kept |
+| **iterative** | 12 sequences | Build, then add 1, 2 or 3 random features one at a time (see section 2a): each new feature lands, earlier features survive, and the design stays coherent |
 | **adversarial** | 5 | Prompt-injection and escape attempts in the request: guardrail holds, nothing unsafe runs, honest failure message |
+
+## 2a. Iterative set: does the design survive repeated feature additions?
+**Shape:** a base request, then a random sequence of follow-up feature additions, at most 3, sent one at a time as chat follow-ups. This is the same path a user takes.
+- **Mixed lengths:** across the 12 sequences, 4 get 1 addition, 4 get 2 and 4 get 3.
+- **Mixed kinds:** each sequence draws its features from different kinds, so no sequence is all cosmetic.
+- **Reproducible:** sequences are generated once from a fixed seed and frozen in `eval/designer/sets/iterative.json`.
+
+**Base objects (12):** box with lid, phone stand, desk organizer, wall shelf, headphone stand, small enclosure, planter, lamp base, drawer unit, cable tray, pen holder, monitor riser.
+
+**Feature pool,** drawn by kind:
+| Kind | Examples |
+|---|---|
+| Simple cut or boss | cable hole at the back, mounting holes, label recess on the front, rubber-foot recesses underneath, ventilation slots |
+| Added part | handle, hook, divider, pen slot, phone slot, small tray |
+| Mechanism | hinged lid, small drawer, sliding cover, snap-on cap |
+| Global change | 20 mm taller, rounder edges, make it 30% wider, thinner walls |
+| Conflicting | add something where an earlier feature already is (a drawer where the storage cavity is): the designer must resolve it sensibly and say how |
+
+**Measured at every step:**
+- **Feature landed.** Checked with a geometric probe where possible: hole or slot count up, a new labelled part, a bbox or named-dimension change of the right size, a moving part that moves. Otherwise the reviewer checks it on renders.
+- **Nothing lost.** Every feature from earlier steps is still present; the probes are re-run cumulatively.
+- **Locality.** Named dimensions and parts the user did not mention are unchanged. Measure how much of the script changed outside the edited area.
+- **Hard checks** pass after each step.
+- **Cost and time per step.**
+
+**Measured at the end:**
+- **Coherence.** The final design after 1–3 additions is ranked blind by the user against a fresh single-request build of the same combined request: "box with lid + cable hole + drawer" asked all at once. If iteration degrades quality, the gap shows here.
+- **Metrics and targets:**
+  - feature landed ≥ 95% of steps;
+  - nothing lost ≥ 95% of steps;
+  - no cap hit within a sequence;
+  - blind tie or win against the single-request build in ≥ 50% of sequences.
 
 ## 3. Arms
 - **Candidate:** designer + reviewer.
@@ -35,6 +68,7 @@ Only the candidate and the ablation are re-run, so baselines cost nothing.
 | Hard checks pass (after designerCheck) | compiles, valid, connected, no interference, motion | 100% |
 | Stated-dimension conformance (prescriptive) | dimensions parsed from the prompt vs measured part and body sizes | ≥ 90% |
 | Edit fidelity (edits set) | requested change present; other named dimensions and bbox unchanged | ≥ 90% |
+| Iterative (iterative set) | feature landed; earlier features kept; final design vs single-request build | landed ≥ 95%, kept ≥ 95%, blind tie or win ≥ 50% |
 | Named-dimension coverage | share of the request's stated sizes that appear as named variables | ≥ 80% |
 | Reviewer usefulness | share of blocking/major flags followed by a fix; user marks false flags on a sample; ablation win rate | flags fixed ≥ 70%; false flags ≤ 20% |
 | Cost per build | usage, including cache | median ≤ $0.30 |
