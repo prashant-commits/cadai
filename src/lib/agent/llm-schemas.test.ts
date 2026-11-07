@@ -200,6 +200,26 @@ describe('structuredFor', () => {
     expect(ArchitectPlanSchema.safeParse({ variants: [v('A'), v('B'), v('C'), v('A')] }).success).toBe(false);
   });
 
+  it('gates designLanguage in planner schema to B-rep kernel (M5)', async () => {
+    const { architectPlanSchema, structuredFor } = await import('./llm-schemas');
+    const openscadSchema = architectPlanSchema('openscad');
+    const brepSchema = architectPlanSchema('brep');
+
+    const claudeScad = recorder();
+    structuredFor(claudeScad.model as never, 'claude-opus-5.5', openscadSchema, { name: 'ArchitectPlan', strict: true });
+    const scadSchema = claudeScad.seen[0].schema as Record<string, unknown>;
+    const scadVariants = (scadSchema?.properties as Record<string, unknown>)?.variants as Record<string, unknown>;
+    const scadItemProps = (scadVariants?.items as Record<string, unknown>)?.properties as Record<string, unknown>;
+    expect(scadItemProps?.designLanguage).toBeUndefined();
+
+    const claudeBrep = recorder();
+    structuredFor(claudeBrep.model as never, 'claude-opus-5.5', brepSchema, { name: 'ArchitectPlan', strict: true });
+    const brepSchemaObj = claudeBrep.seen[0].schema as Record<string, unknown>;
+    const brepVariants = (brepSchemaObj?.properties as Record<string, unknown>)?.variants as Record<string, unknown>;
+    const brepItemProps = (brepVariants?.items as Record<string, unknown>)?.properties as Record<string, unknown>;
+    expect(brepItemProps?.designLanguage).toBeDefined();
+  });
+
   it('replies still go through nullsToUndefined and the same zod schemas', async () => {
     const { nullsToUndefined } = await import('./strict-schema');
     const { AssemblySpecSchema } = await import('./assembly-spec');

@@ -208,26 +208,34 @@ export const BoundingBoxSchema = z.object({ width: z.number(), length: z.number(
 export type BoundingBox = z.infer<typeof BoundingBoxSchema>;
 
 const OptNum = z.preprocess((v) => {
+  if (v === null || v === undefined) return undefined;
   if (typeof v === 'string') {
     const parsed = parseFloat(v);
     return isNaN(parsed) ? undefined : parsed;
   }
-  return v;
+  return typeof v === 'number' && !isNaN(v) ? v : undefined;
 }, z.number().optional());
 
 export const DesignLanguageSchema = z.object({
-  name: z.string().describe('Short style name, e.g. "soft monolith", "faceted", "minimal frame", "organic"'),
-  principles: z.preprocess((v) => {
-    if (typeof v === 'string') {
-      try {
-        const parsed = JSON.parse(v);
-        if (Array.isArray(parsed)) return parsed;
-      } catch {
-        return [v];
+  name: z
+    .preprocess((v) => (typeof v === 'string' ? v : ''), z.string().default(''))
+    .describe('Short style name, e.g. "soft monolith", "faceted", "minimal frame", "organic"'),
+  principles: z
+    .preprocess((v) => {
+      if (v === null || v === undefined) return [];
+      if (typeof v === 'string') {
+        try {
+          const parsed = JSON.parse(v);
+          if (Array.isArray(parsed)) return parsed.map(String);
+        } catch {
+          return [v];
+        }
       }
-    }
-    return v;
-  }, z.array(z.string())).describe('3-6 short strings describing design principles'),
+      if (Array.isArray(v)) return v.map(String);
+      return [];
+    }, z.array(z.string()))
+    .default([])
+    .describe('3-6 short strings describing design principles'),
   edgeRadius: OptNum.describe('mm, the main radius family'),
   minorRadius: OptNum.describe('mm, the minor radius family'),
 });
@@ -235,7 +243,7 @@ export type DesignLanguage = z.infer<typeof DesignLanguageSchema>;
 
 export const AssemblySpecSchema = z.object({
   assemblyName: z.string(),
-  designLanguage: DesignLanguageSchema.optional(),
+  designLanguage: DesignLanguageSchema.optional().catch(undefined),
   // Code derives boundingBox at runtime (normalizeSpec), so it is optional in the schema.
   // Cast to z.ZodType<BoundingBox> preserves non-optional BoundingBox in static type AssemblySpec
   // so existing consumers (summarizeSpec, graph, spec-audit) continue typechecking cleanly.

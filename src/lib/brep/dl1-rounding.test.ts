@@ -55,6 +55,38 @@ describe('DL1 designLanguage emitter parameters', () => {
     expect(edgeRLines).toHaveLength(1);
     expect(edgeRLines[0]).toContain('custom radius');
   });
+
+  it('handles small radius, off-grid steps, and thickness-aware max (L3)', () => {
+    const sSmall: AssemblySpec = {
+      ...base,
+      designLanguage: {
+        name: 'tiny',
+        principles: [],
+        edgeRadius: 0.05,
+        minorRadius: 1.51,
+      },
+      boundingBox: { width: 100, length: 100, height: 10 },
+      components: [comp('base', [100, 100, 10], [0, 0, 0])],
+    };
+    const { parameterLines } = specNames(normalizeSpec(sSmall), String);
+    const edgeLine = parameterLines.find((l) => l.startsWith('edge_r ='))!;
+    const minorLine = parameterLines.find((l) => l.startsWith('minor_r ='))!;
+    // edge_r=0.05: min must be <= 0.05
+    expect(edgeLine).toMatch(/^edge_r = 0\.05\s+# \[0\.05:0\.01:2\]/);
+    // minor_r=1.51: step must be 0.01 to stay on grid, max capped at thickness half (5)
+    expect(minorLine).toMatch(/^minor_r = 1\.51\s+# \[0\.5:0\.01:5\]/);
+
+    // Derived edge_r avoids collision
+    const sDerived: AssemblySpec = {
+      ...base,
+      derived: [{ name: 'edge_r', expr: '5' }],
+      designLanguage: { name: 'dl', principles: [], edgeRadius: 6 },
+      boundingBox: { width: 100, length: 100, height: 50 },
+      components: [],
+    };
+    const resDerived = specNames(normalizeSpec(sDerived), String);
+    expect(resDerived.parameterLines.filter((l) => l.includes('main edge radius'))).toHaveLength(0);
+  });
 });
 
 describe('DL1 safe rounding helpers in execution', () => {

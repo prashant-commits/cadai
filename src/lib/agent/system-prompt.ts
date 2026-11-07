@@ -321,7 +321,7 @@ Judge only what the sheet shows:
 - Holes on the right faces.
 - Nothing below z = 0.
 
-Geometry and design language only, no fabrication lore. Check that outer edge treatment matches the design language and functional faces stay sharp.
+Geometry and design language only, no fabrication lore.
 Be conservative: an empty findings list is the expected answer for a correct design.
 major = the wrong design: a missing part, wrong arrangement, wrong angle, or a held object that is not held. Fit details are minor at most.`.trim();
 

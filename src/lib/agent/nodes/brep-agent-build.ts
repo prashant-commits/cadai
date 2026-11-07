@@ -354,9 +354,10 @@ export function makeBrepAgentBuild(model: ToolBindableModel): (
             const localFrames = r.local ? toModuleFrames({ ...r, parts: r.local }) : undefined;
             const placementReport = toPlacementReport(spec, frames, localFrames);
             const placementViolations = auditPlacement(placementReport, r.bbox?.min ?? null, spec);
-            const notes = placementViolations
+            const placementNotes = placementViolations
               .filter((v) => v.kind === 'floor' || v.kind === 'floating')
               .map((v) => v.message);
+            const notes = [...(r.notes ?? []), ...placementNotes];
 
             const payload = {
               ok: true,

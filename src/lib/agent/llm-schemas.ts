@@ -59,6 +59,34 @@ export const ArchitectPlanSchema = z.object({
         id: z.enum(['A', 'B', 'C']),
         name: z.string(),
         idea: z.string(),
+      })
+    )
+    .min(1)
+    .max(3),
+  recommendedId: z.enum(['A', 'B', 'C']).default('A'),
+});
+
+export const ArchitectPlanBrepSchema = z.object({
+  brief: z.string().default(''),
+  assumptions: z
+    .array(z.object({ field: z.string(), value: z.string(), rationale: z.string() }))
+    .default([]),
+  openQuestions: z
+    .array(
+      z.object({
+        id: z.string(),
+        question: z.string(),
+        options: z.array(z.string()).default([]),
+        suggestedAnswer: z.string().default(''),
+      })
+    )
+    .default([]),
+  variants: z
+    .array(
+      z.object({
+        id: z.enum(['A', 'B', 'C']),
+        name: z.string(),
+        idea: z.string(),
         designLanguage: z.string().default(''),
       })
     )
@@ -66,6 +94,10 @@ export const ArchitectPlanSchema = z.object({
     .max(3),
   recommendedId: z.enum(['A', 'B', 'C']).default('A'),
 });
+
+export function architectPlanSchema(kernel: 'openscad' | 'brep' = 'openscad') {
+  return kernel === 'brep' ? ArchitectPlanBrepSchema : ArchitectPlanSchema;
+}
 
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -871,8 +903,8 @@ function upperVariantId(value: unknown): unknown {
   return id === 'A' || id === 'B' || id === 'C' ? id : value;
 }
 
-/** A planner reply validated against ArchitectPlanSchema, variant ids read case-insensitively. */
-export function parseArchitectPlan(raw: unknown): ReturnType<typeof ArchitectPlanSchema.safeParse> {
+/** A planner reply validated against ArchitectPlanBrepSchema, variant ids read case-insensitively. */
+export function parseArchitectPlan(raw: unknown): ReturnType<typeof ArchitectPlanBrepSchema.safeParse> {
   let value = nullsToUndefined(raw);
   if (isPlainObject(value)) {
     value = {
@@ -883,5 +915,5 @@ export function parseArchitectPlan(raw: unknown): ReturnType<typeof ArchitectPla
         : value.variants,
     };
   }
-  return ArchitectPlanSchema.safeParse(value);
+  return ArchitectPlanBrepSchema.safeParse(value);
 }

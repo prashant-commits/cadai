@@ -115,3 +115,13 @@ def test_zygote_restarts_after_kill_mid_run():
     assert payload["ok"] is True, payload
     assert {part["label"] for part in payload["parts"]} == {"base", "lid"}
     assert zygote.pid is not None
+
+
+def test_notes_oversize_via_zygote():
+    # 80 KB of notes from model script should not trigger a measure failure
+    r = _post("from build123d import *\n_cadai_notes.extend(['x'*200]*400)\nresult = Box(1,1,1)\n").json()
+    assert r.get("ok") is True
+    notes = r.get("notes") or []
+    assert len(notes) <= 50
+    assert all(len(n) <= 500 for n in notes)
+

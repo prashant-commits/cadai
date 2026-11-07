@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { requiredChanges, variantNamedIn } from './architect-prompts';
+import { requiredChanges, variantNamedIn, variantPlanContext, freshVariantPrompt, type PlannedVariant } from './architect-prompts';
 
 describe('requiredChanges', () => {
   it('lists majors, then minors, then the human lines', () => {
@@ -35,5 +35,20 @@ describe('variantNamedIn', () => {
     expect(variantNamedIn(['make it taller'], ['A', 'B'])).toBeNull();
     expect(variantNamedIn(['variant A or variant B'], ['A', 'B'])).toBeNull();
     expect(variantNamedIn(['variant C'], ['A', 'B'])).toBeNull();
+  });
+});
+
+describe('designLanguage in variant prompts (M5)', () => {
+  it('carries designLanguage into freshVariantPrompt and sibling contexts', () => {
+    const allVariants: PlannedVariant[] = [
+      { id: 'A', name: 'Clean', idea: 'standard dock', designLanguage: 'soft monolith' },
+      { id: 'B', name: 'Faceted', idea: 'angled planes', designLanguage: 'faceted architectural' },
+    ];
+    const promptA = freshVariantPrompt(allVariants[0], allVariants, { markdown: '', assumptions: [], openQuestions: [], recommendedId: 'A' });
+    expect(promptA).toContain('Variant A: Clean - standard dock (design language: soft monolith)');
+    expect(promptA).toContain('Variant B: Faceted - angled planes (design language: faceted architectural)');
+
+    const context = variantPlanContext(allVariants[0], allVariants, { markdown: '', assumptions: [], openQuestions: [], recommendedId: 'A' });
+    expect(context.some((c) => c.includes('Variant B: Faceted - angled planes (design language: faceted architectural)'))).toBe(true);
   });
 });

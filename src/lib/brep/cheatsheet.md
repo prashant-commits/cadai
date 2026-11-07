@@ -121,10 +121,10 @@ sec1 = Plane.XY * Rectangle(30, 30)
 sec2 = Plane.XY.offset(25) * Circle(8)
 lofted = loft([sec1, sec2])
 
-sweep_profile = Circle(3)
-sweep_path = ThreePointArc((0, 0, 0), (15, 0, 15), (0, 0, 30))
+sweep_path = ThreePointArc((0, 0, 5), (15, 0, 20), (0, 0, 35))
+sweep_profile = Plane(origin=sweep_path @ 0, z_dir=sweep_path % 0) * Circle(3)
 swept = sweep(sections=sweep_profile, path=sweep_path)
-assert lofted.is_valid and swept.is_valid
+assert lofted.is_valid and swept.is_valid and swept.volume > 0
 ```
 
 ## Uniform-wall shell and patterns

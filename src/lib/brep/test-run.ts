@@ -38,7 +38,8 @@ export function geoPython(): string {
 const RUNNER = `
 import json, sys, traceback
 try:
-    ns = {}
+    from cadai_geo.run import script_globals
+    ns = script_globals(full=False)
     exec(compile(sys.stdin.read(), "<script>", "exec"), ns)
     result = ns.get("result")
     if result is None:

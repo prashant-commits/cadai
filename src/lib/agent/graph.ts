@@ -55,7 +55,7 @@ import { auditSpecShapes, auditSpecGround } from './spec-shape-audit';
 import { checkInterference } from '../engine/assembly-verifier';
 import { nullsToUndefined } from './strict-schema';
 import { getCheckpointer } from './checkpointer';
-import { VisualCritiqueSchema, SheetReviewSchema, ArchitectPlanSchema, structuredFor, parseArchitectPlan, parseSheetReview, parseVisualCritique, isCutOff, UnusableReplyError, type UnusableStop } from './llm-schemas';
+import { VisualCritiqueSchema, SheetReviewSchema, ArchitectPlanSchema, architectPlanSchema, structuredFor, parseArchitectPlan, parseSheetReview, parseVisualCritique, isCutOff, UnusableReplyError, type UnusableStop } from './llm-schemas';
 import {
   SpecVariant,
   SpecBrief,
@@ -107,7 +107,7 @@ export function sheetNotes(spec: AssemblySpec): string[] {
     (c) => `${c.host}: cavity cut by code for ${c.inserted} (${c.clearance} mm)`
   );
   const assumptions = (spec.assumptions ?? []).map((a) => `${a.field}: ${a.value}`);
-  return [...dlNotes, ...placeholders, ...cutNotes, ...assumptions].map((n) => truncateAtWord(n, 60)).slice(0, 3); // 60 chars per note and 3 notes: the sheet's notes strip
+  return [...placeholders, ...cutNotes, ...dlNotes, ...assumptions].map((n) => truncateAtWord(n, 60)).slice(0, 3); // 60 chars per note and 3 notes: the sheet's notes strip
 }
 
 /** Renders a variant's concept sheet. Deterministic and fast, so state keeps only the spec and this is redrawn on demand. */
@@ -1055,7 +1055,7 @@ export function createCadAgent(
 `,
       });
 
-      const plannerModel = structuredFor(model, selectedModel, ArchitectPlanSchema, {
+      const plannerModel = structuredFor(model, selectedModel, architectPlanSchema(kernel), {
         name: 'ArchitectPlan',
         strict: true,
         includeRaw: false,
@@ -1118,7 +1118,7 @@ export function createCadAgent(
         }
       }
 
-      let deduped: { id: VariantId; name: string; idea: string }[];
+      let deduped: { id: VariantId; name: string; idea: string; designLanguage?: string }[];
       if (!plan || !plan.variants || plan.variants.length === 0) {
         write(config, 'architectNode', {
           t: 'delta',

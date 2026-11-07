@@ -4,6 +4,8 @@ import type { AgentStateType } from '../graph';
 import type { AssemblySpec } from '../assembly-spec';
 import { resolveSpec } from '../spec-expr';
 import { makeBrepAgentBuild, applyParameterOverrides, checkScriptGuardrails, renderCompactSpec } from './brep-agent-build';
+import { emitBrepScript } from '../../brep/emit-script';
+import { normalizeSpec } from '../spec-normalize';
 import * as brepRunner from '../../engine/brep-runner';
 import { routeAfterSpecGate, repairTarget, draftTarget } from '../graph-route';
 
@@ -352,5 +354,28 @@ describe('brepAgentBuild tool loop end to end', () => {
     expect(repairTarget(state)).toBe('brepBuild');
     expect(draftTarget(state)).toBe('brepBuild');
     expect(routeAfterSpecGate(state)).toBe('brepBuild');
+  });
+
+  it('checkScriptGuardrails accepts the unmodified emitted starting script', () => {
+    const s = normalizeSpec({
+      sheet: '## Dock\nDesktop dock',
+      assemblyName: 'dock',
+      assumptions: [],
+      openQuestions: [],
+      guides: [],
+      stressPoints: [],
+      boundingBox: { width: 10, length: 10, height: 10 },
+      designLanguage: {
+        name: 'soft monolith',
+        principles: ['soft 2mm radius'],
+        edgeRadius: 2,
+      },
+      components: [
+        { name: 'base', description: '', localExtents: [10, 10, 10], position: [0, 0, 0], shape: { kind: 'box' } },
+      ],
+    } as unknown as AssemblySpec);
+    const { script } = emitBrepScript(s);
+    const check = checkScriptGuardrails(script);
+    expect(check.ok).toBe(true);
   });
 });
