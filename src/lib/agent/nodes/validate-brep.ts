@@ -1,4 +1,5 @@
 import { HumanMessage } from '@langchain/core/messages';
+import type { RunnableConfig } from '@langchain/core/runnables';
 import type { AgentStateType } from '../graph';
 import { auditSpec, type SpecViolation } from '../spec-audit';
 import { auditSpecCoherence } from '../spec-coherence';
@@ -15,11 +16,17 @@ import { stlToAscii, toModelInfo, toModuleFrames, toPlacementReport } from '../.
  * Skipped on this kernel: the OpenSCAD-only static guards, the solo-module
  * hole/interference probes, the parameter sweep and the literal lint.
  */
-export async function validateBrep(state: AgentStateType): Promise<Partial<AgentStateType>> {
+export async function validateBrep(state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> {
   if (!state.currentCode) return { isValid: false, failureKind: 'no_code' };
 
   const spec = state.assemblySpec;
-  const r = await runBrep(state.currentCode);
+  // The run's stop signal reaches the geometry process: a stopped run kills it
+  // instead of waiting out the runner's own timeout.
+  const signal = config?.signal;
+  const r = await runBrep(state.currentCode, { signal });
+  if (signal?.aborted) {
+    throw Object.assign(new Error('The run was stopped during the geometry run.'), { name: 'AbortError' });
+  }
 
   if (!r.ok) {
     const tail = tracebackTail(r.error ?? 'the script failed');

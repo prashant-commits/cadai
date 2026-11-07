@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { NextRequest } from 'next/server';
 import { DEFAULT_MODEL } from '@/lib/agent/models';
 
@@ -13,9 +16,11 @@ beforeEach(() => {
   createAgent.mockReset();
   createAgent.mockReturnValue({ stream: async () => (async function* () {})() });
   delete process.env.CADAI_MODEL;
+  process.env.CADAI_RUN_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cadai-chat-'));
 });
 
 afterEach(() => {
+  fs.rmSync(process.env.CADAI_RUN_DIR!, { recursive: true, force: true });
   process.env = { ...saved };
 });
 
