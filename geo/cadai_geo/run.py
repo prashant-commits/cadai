@@ -140,6 +140,88 @@ def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
     return importlib.import_module(name)
 
 
+def _select_edges(shape, edges="outer"):
+    if not isinstance(edges, str):
+        return edges
+    from build123d import Axis
+    if edges == "all":
+        return shape.edges()
+    elif edges == "vertical":
+        return shape.edges().filter_by(Axis.Z)
+    elif edges == "top":
+        max_z = shape.bounding_box().max.Z
+        top_edges = shape.edges().filter_by_position(Axis.Z, max_z - 1e-3, max_z + 1e-3)
+        return top_edges if top_edges else shape.faces().sort_by(Axis.Z)[-1].edges()
+    elif edges == "outer":
+        bb = shape.bounding_box()
+        tol = 1e-3
+        outer = [
+            e for e in shape.edges()
+            if abs(e.bounding_box().min.X - bb.min.X) < tol
+            or abs(e.bounding_box().max.X - bb.max.X) < tol
+            or abs(e.bounding_box().min.Y - bb.min.Y) < tol
+            or abs(e.bounding_box().max.Y - bb.max.Y) < tol
+        ]
+        return outer if outer else shape.edges()
+    return shape.edges()
+
+
+def _make_round(notes: list):
+    def _round(shape, r, edges="outer"):
+        if r is None or r <= 0:
+            return shape
+        from build123d import fillet
+        try:
+            targets = _select_edges(shape, edges)
+            if not targets:
+                return shape
+            try:
+                bb = shape.bounding_box()
+                min_dim = min(bb.size.X, bb.size.Y, bb.size.Z)
+                if min_dim > 0 and r >= min_dim / 2:
+                    notes.append(f"_round skipped: radius {r}mm exceeds half of minimum dimension {min_dim}mm")
+                    return shape
+            except Exception:
+                pass
+            out = fillet(targets, r)
+            if not out.is_valid:
+                notes.append(f"_round produced invalid shape with radius {r}mm on {edges} edges")
+                return shape
+            return out
+        except Exception as e:
+            notes.append(f"_round failed ({type(e).__name__}: {e}); returned unrounded shape")
+            return shape
+    return _round
+
+
+def _make_bevel(notes: list):
+    def _bevel(shape, d, edges="outer"):
+        if d is None or d <= 0:
+            return shape
+        from build123d import chamfer
+        try:
+            targets = _select_edges(shape, edges)
+            if not targets:
+                return shape
+            try:
+                bb = shape.bounding_box()
+                min_dim = min(bb.size.X, bb.size.Y, bb.size.Z)
+                if min_dim > 0 and d >= min_dim / 2:
+                    notes.append(f"_bevel skipped: chamfer {d}mm exceeds half of minimum dimension {min_dim}mm")
+                    return shape
+            except Exception:
+                pass
+            out = chamfer(targets, d)
+            if not out.is_valid:
+                notes.append(f"_bevel produced invalid shape with distance {d}mm on {edges} edges")
+                return shape
+            return out
+        except Exception as e:
+            notes.append(f"_bevel failed ({type(e).__name__}: {e}); returned unbeveled shape")
+            return shape
+    return _bevel
+
+
 def script_globals(full: bool | None = None) -> dict:
     """Initial globals for a geometry script: curated builtins, build123d's names and math."""
     import builtins
@@ -158,6 +240,11 @@ def script_globals(full: bool | None = None) -> dict:
             namespace[name] = getattr(build123d, name)
     for name in ("sin", "cos", "tan", "radians", "degrees", "sqrt", "pi", "atan2", "hypot"):
         namespace[name] = getattr(math, name)
+    notes_list: list[str] = []
+    namespace["_cadai_notes"] = notes_list
+    namespace["_select_edges"] = _select_edges
+    namespace["_round"] = _make_round(notes_list)
+    namespace["_bevel"] = _make_bevel(notes_list)
     return namespace
 
 
@@ -478,7 +565,8 @@ def _checked_export(
                 parts,
             )
         if extras is not None:
-            extras["notes"] = [_FUSED_STEP_NOTE]
+            existing = extras.get("notes", [])
+            extras["notes"] = existing + [_FUSED_STEP_NOTE]
             extras["solids"] = len(list(separate.solids()))
     # ASCII so consumers that read the file as text (the web compile
     # route decodes STL as UTF-8) get a mesh that starts with "solid".
@@ -517,6 +605,9 @@ def _discard_geometry(scratch: str) -> None:
             os.unlink(directory)
         elif os.path.isdir(directory):
             shutil.rmtree(directory)
+    notes_path = os.path.join(scratch, "notes.json")
+    if os.path.lexists(notes_path):
+        os.unlink(notes_path)
 
 
 def _write_shapes(scratch: str, name: str, shapes: list[tuple[str, object]]) -> bool:
@@ -583,6 +674,11 @@ def capture_geometry(script_path: str, scratch: str, on_error) -> None:
             _discard_geometry(scratch)
             on_error("export_brep failed")
             return
+        cadai_notes = namespace.get("_cadai_notes")
+        if isinstance(cadai_notes, list) and cadai_notes:
+            notes_path = os.path.join(scratch, "notes.json")
+            with open(notes_path, "w", encoding="utf-8") as handle:
+                json.dump([str(n) for n in cadai_notes if n], handle)
     except SystemExit as exc:
         _discard_geometry(scratch)
         on_error(_exit_message(exc))
@@ -778,6 +874,15 @@ def measure_and_export(
             failure = _checked_export(result, parts, step_path, stl_path, part_shapes, extras)
             if failure is not None:
                 return failure
+            notes_bytes = _read_regular_at(scratch_fd, "notes.json", 64 * 1024)
+            if notes_bytes:
+                try:
+                    loaded = json.loads(notes_bytes.decode("utf-8"))
+                    if isinstance(loaded, list) and loaded:
+                        existing = extras.get("notes", [])
+                        extras["notes"] = existing + [str(n) for n in loaded if n]
+                except Exception:
+                    pass
             box = result.bounding_box()
             payload = {
                 "ok": True,
@@ -801,6 +906,7 @@ def measure_and_export(
 def run(script_path: str | os.PathLike, outdir: str | os.PathLike, interferences: bool = False) -> dict:
     """Execute ``script_path`` and write ``model.step`` / ``model.stl`` into ``outdir``."""
     try:
+        os.makedirs(outdir, exist_ok=True)
         _remember_compound_sources()
 
         try:
@@ -827,6 +933,10 @@ def run(script_path: str | os.PathLike, outdir: str | os.PathLike, interferences
         )
         if failure is not None:
             return failure
+        cadai_notes = namespace.get("_cadai_notes")
+        if isinstance(cadai_notes, list) and cadai_notes:
+            existing = extras.get("notes", [])
+            extras["notes"] = existing + [str(n) for n in cadai_notes if n]
         box = result.bounding_box()
         payload = {
             "ok": True,

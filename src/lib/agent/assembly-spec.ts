@@ -108,11 +108,11 @@ export const GuideSchema = z.object({
 export type Guide = z.infer<typeof GuideSchema>;
 
 /*
- * Edge treatments (chamfers, fillets, rounds, elephant-foot, lead-ins) were
- * removed from the spec on purpose: every softened edge was extra CSG the
- * model got wrong (non-manifold hulls, changed bounding boxes), and generated
- * parts ship with sharp edges. Any finishing belongs to the parked print-prep
- * node, not to generation.
+ * Edge treatments (chamfers, fillets, rounds, elephant-foot, lead-ins):
+ * On the OpenSCAD kernel, edges stay sharp because softened edges were extra CSG
+ * that broke manifoldness and bounding boxes. On the B-rep kernel, the user has
+ * lifted this rule: native fillet() and chamfer() operations are supported and
+ * guided by the spec's designLanguage.
  */
 
 export const StressRiskSchema = z.enum(['low', 'medium', 'high']);
@@ -207,8 +207,35 @@ function jsonArray<T extends z.ZodType>(schema: T) {
 export const BoundingBoxSchema = z.object({ width: z.number(), length: z.number(), height: z.number() });
 export type BoundingBox = z.infer<typeof BoundingBoxSchema>;
 
+const OptNum = z.preprocess((v) => {
+  if (typeof v === 'string') {
+    const parsed = parseFloat(v);
+    return isNaN(parsed) ? undefined : parsed;
+  }
+  return v;
+}, z.number().optional());
+
+export const DesignLanguageSchema = z.object({
+  name: z.string().describe('Short style name, e.g. "soft monolith", "faceted", "minimal frame", "organic"'),
+  principles: z.preprocess((v) => {
+    if (typeof v === 'string') {
+      try {
+        const parsed = JSON.parse(v);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        return [v];
+      }
+    }
+    return v;
+  }, z.array(z.string())).describe('3-6 short strings describing design principles'),
+  edgeRadius: OptNum.describe('mm, the main radius family'),
+  minorRadius: OptNum.describe('mm, the minor radius family'),
+});
+export type DesignLanguage = z.infer<typeof DesignLanguageSchema>;
+
 export const AssemblySpecSchema = z.object({
   assemblyName: z.string(),
+  designLanguage: DesignLanguageSchema.optional(),
   // Code derives boundingBox at runtime (normalizeSpec), so it is optional in the schema.
   // Cast to z.ZodType<BoundingBox> preserves non-optional BoundingBox in static type AssemblySpec
   // so existing consumers (summarizeSpec, graph, spec-audit) continue typechecking cleanly.

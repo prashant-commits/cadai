@@ -19,6 +19,7 @@ export interface TestPart {
 export interface TestRun {
   ok: boolean;
   error?: string;
+  notes?: string[];
   parts: TestPart[];
   /** Each component in its own frame before placement (`_local`), when the script lists it. */
   local: TestPart[];
@@ -56,9 +57,10 @@ try:
         }
     parts = [measure(p) for p in items]
     local = [measure(p) for p in ns.get("_local", [])]
-    out = {"ok": True, "parts": parts, "local": local, "children": [c.label for c in result.children], "solids": len(result.solids())}
+    notes = [str(n) for n in ns.get("_cadai_notes", []) if n]
+    out = {"ok": True, "notes": notes, "parts": parts, "local": local, "children": [c.label for c in result.children], "solids": len(result.solids())}
 except BaseException:
-    out = {"ok": False, "error": traceback.format_exc().strip().splitlines()[-1], "parts": [], "local": [], "children": [], "solids": 0}
+    out = {"ok": False, "notes": [], "error": traceback.format_exc().strip().splitlines()[-1], "parts": [], "local": [], "children": [], "solids": 0}
 print("@@RESULT@@" + json.dumps(out))
 `;
 
@@ -92,6 +94,7 @@ export interface GeoCliRun {
   error?: string;
   /** Line of the script that raised, innermost. */
   line?: number;
+  notes?: string[];
   parts: TestPart[];
   local?: TestPart[];
   solids?: number;

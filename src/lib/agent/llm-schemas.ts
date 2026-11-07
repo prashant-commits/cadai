@@ -59,6 +59,7 @@ export const ArchitectPlanSchema = z.object({
         id: z.enum(['A', 'B', 'C']),
         name: z.string(),
         idea: z.string(),
+        designLanguage: z.string().default(''),
       })
     )
     .min(1)
@@ -80,7 +81,7 @@ function requireComponentFields(json: Record<string, unknown>, fields: string[])
   return json;
 }
 
-/** The 6 properties kept optional in Claude's variant spec schema because they have no safe neutral value. */
+/** The properties kept optional in Claude's variant spec schema because they have no safe neutral value or are optional design fields. */
 const keepSet = new Set([
   'components[].holes[].depth',
   'guides[].shape',
@@ -88,6 +89,9 @@ const keepSet = new Set([
   'guides[].position',
   'guides[].points',
   'stressPoints[].gusset',
+  'designLanguage',
+  'designLanguage.edgeRadius',
+  'designLanguage.minorRadius',
 ]);
 (keepSet as unknown as Record<string, unknown>).add = () => {
   throw new Error('CLAUDE_KEEP_OPTIONAL is read-only');

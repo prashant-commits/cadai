@@ -75,6 +75,32 @@ export function specNames(spec: AssemblySpec, fmt: (n: number) => string): {
     const desc = comment(p.description);
     lines.push(`${py} = ${fmt(p.value)}  # [${fmt(p.min)}:${fmt(step)}:${fmt(p.max)}]${desc ? ` ${desc}` : ''}`);
   }
+  if (
+    spec.designLanguage?.edgeRadius !== undefined &&
+    spec.designLanguage.edgeRadius > 0 &&
+    !spec.parameters?.some((p) => p.name === 'edge_r')
+  ) {
+    const val = spec.designLanguage.edgeRadius;
+    const min = val <= 1 ? 0.1 : 0.5;
+    const step = val <= 1 ? 0.1 : 0.5;
+    const max = val <= 1 ? Math.max(Math.round(val * 3 * 10) / 10, 2) : Math.max(Math.round(val * 2 * 2) / 2, 10);
+    const py = safeIdentifier('edge_r', taken);
+    map.set('edge_r', py);
+    lines.push(`${py} = ${fmt(val)}  # [${fmt(min)}:${fmt(step)}:${fmt(max)}] main edge radius`);
+  }
+  if (
+    spec.designLanguage?.minorRadius !== undefined &&
+    spec.designLanguage.minorRadius > 0 &&
+    !spec.parameters?.some((p) => p.name === 'minor_r')
+  ) {
+    const val = spec.designLanguage.minorRadius;
+    const min = val <= 1 ? 0.1 : 0.5;
+    const step = val <= 1 ? 0.1 : 0.5;
+    const max = val <= 1 ? Math.max(Math.round(val * 3 * 10) / 10, 2) : Math.max(Math.round(val * 2 * 2) / 2, 5);
+    const py = safeIdentifier('minor_r', taken);
+    map.set('minor_r', py);
+    lines.push(`${py} = ${fmt(val)}  # [${fmt(min)}:${fmt(step)}:${fmt(max)}] minor edge radius`);
+  }
   for (const d of spec.derived ?? []) {
     const printed = pyExpr(d.expr, lookup);
     const py = map.get(d.name) ?? safeIdentifier(d.name, taken);

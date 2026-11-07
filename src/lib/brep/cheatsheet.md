@@ -78,6 +78,72 @@ y_cyl = Cylinder(3, 10, rotation=(-90, 0, 0), align=(Align.MIN, Align.MIN, Align
 assert x_cyl.size.X > 9.9 and y_cyl.size.Y > 9.9
 ```
 
+## Fillet and chamfer (edge treatments)
+
+Fillet rounds edges; chamfer bevels them. Select edges with `.filter_by(Axis.Z)`, `.sort_by(Axis.Z)[-1].edges()`, or use the safe helpers `_round(shape, r, edges="outer"|"vertical"|"top"|"all")` and `_bevel(shape, d, edges=...)` which catch geometry failures and degrade gracefully without failing the build.
+
+```python
+block = Box(30, 20, 10, align=(Align.MIN, Align.MIN, Align.MIN))
+vert_edges = block.edges().filter_by(Axis.Z)
+rounded_cols = fillet(vert_edges, 2)
+top_edges = rounded_cols.faces().sort_by(Axis.Z)[-1].edges()
+soft_top = fillet(top_edges, 1)
+safe_box = _round(block, 2, edges="outer")
+beveled = _bevel(block, 1, edges="top")
+assert safe_box.is_valid and beveled.is_valid
+```
+
+## Rounded rectangles, arcs and splines
+
+`RectangleRounded(width, height, radius=...)` makes a profile with pre-filleted corners. Complex profiles can be assembled from `ThreePointArc`, `Spline`, and `Line` edges inside a `Wire`, then turned into a face with `make_face(wire)`.
+
+```python
+r_rect = RectangleRounded(40, 25, radius=3, align=(Align.MIN, Align.MIN))
+r_body = extrude(Plane.XY * r_rect, amount=12)
+
+arc_edge = ThreePointArc((0, 0), (10, 4), (20, 0))
+line_edges = [Line((20, 0), (20, -10)), Line((20, -10), (0, -10)), Line((0, -10), (0, 0))]
+arc_face = make_face(Wire([arc_edge] + line_edges))
+arc_solid = extrude(arc_face, amount=15)
+
+spline_edge = Spline((0, 0), (10, 6), (20, 0))
+spline_face = make_face(Wire([spline_edge] + line_edges))
+spline_solid = extrude(spline_face, amount=15)
+assert r_body.is_valid and arc_solid.is_valid and spline_solid.is_valid
+```
+
+## Loft and sweep
+
+`loft([section1, section2, ...])` creates a solid smoothly transitioning between profiles at different planes/heights. `sweep(sections=profile, path=curve)` drives a cross-section along a 3D path.
+
+```python
+sec1 = Plane.XY * Rectangle(30, 30)
+sec2 = Plane.XY.offset(25) * Circle(8)
+lofted = loft([sec1, sec2])
+
+sweep_profile = Circle(3)
+sweep_path = ThreePointArc((0, 0, 0), (15, 0, 15), (0, 0, 30))
+swept = sweep(sections=sweep_profile, path=sweep_path)
+assert lofted.is_valid and swept.is_valid
+```
+
+## Uniform-wall shell and patterns
+
+`offset(solid, amount=-thickness, openings=open_faces)` creates a hollow shell with uniform walls, open at the selected faces.
+In algebra mode, `GridLocations` and `PolarLocations` are iterable location lists; generate repeated features with list comprehensions and combine them with `Compound(...)`.
+
+```python
+solid_box = Box(50, 40, 20, align=(Align.MIN, Align.MIN, Align.MIN))
+open_top = solid_box.faces().sort_by(Axis.Z)[-1]
+tray = offset(solid_box, amount=-2, openings=open_top)
+
+grid_cutters = Compound([loc * Cylinder(2, 25) for loc in GridLocations(12, 10, 2, 2)])
+tray_with_holes = tray - Pos(25, 20, 0) * grid_cutters
+
+polar_ribs = Compound([loc * Box(2, 10, 8, align=(Align.CENTER, Align.MIN, Align.MIN)) for loc in PolarLocations(radius=12, count=6)])
+assert tray.is_valid and len(tray.solids()) == 1 and polar_ribs.is_valid
+```
+
 ## Rules
 
 - Every dimension is a named top-level variable (`name = number`) and every size and position is an expression over those names.

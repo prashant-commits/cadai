@@ -176,6 +176,19 @@ describe('builder mode is rejected with a reason that names the fix', () => {
     expect(ok('pts = [(0, 0), (20, 0), (0, 20)]\nreturn extrude(make_face(Polyline(*pts, close=True)), amount=80)')).toBe(true);
   });
 
+  it('accepts fillet, chamfer, _round, _bevel and _select_edges', () => {
+    expect(ok('b = Box(20, 20, 10)\nreturn fillet(b.edges().filter_by(Axis.Z), 2)')).toBe(true);
+    expect(ok('b = Box(20, 20, 10)\nreturn chamfer(b.edges().filter_by(Axis.Z), 1)')).toBe(true);
+    expect(ok('b = Box(20, 20, 10)\nreturn _round(b, 2, "outer")')).toBe(true);
+    expect(ok('b = Box(20, 20, 10)\nreturn _bevel(b, 1, "vertical")')).toBe(true);
+    expect(ok('b = Box(20, 20, 10)\nedges = _select_edges(b, "top")\nreturn fillet(edges, 1)')).toBe(true);
+  });
+
+  it('still rejects unauthorized _-prefixed names', () => {
+    expect(checkPythonBody('return _fuse([])', opts)).toMatchObject({ ok: false, reason: 'refers to _fuse, which the body does not define' });
+    expect(checkPythonBody('return _unknown(Box(1, 1, 1))', opts)).toMatchObject({ ok: false });
+  });
+
   it('does not mistake an unrelated name or an attribute for a builder', () => {
     expect(ok('BuildPartCount = 3\nreturn Box(BuildPartCount, 1, 1)')).toBe(true);
     expect(ok('return Box(1, 1, 1).BuildPart')).toBe(true);
