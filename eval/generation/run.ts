@@ -64,7 +64,8 @@ import { gateVariants } from '@/lib/agent/spec-variants';
 import { getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor, initLangfuseTracing } from '@/lib/tracing/langfuse';
 import { GenerationMetrics, SpecGateCapture, measureVisualMatch, metricsFromState, scoresFor, summarize } from './metrics';
-import { finalizeMetrics } from './brep-eval';
+import { finalizeMetrics, thrownDetail } from './brep-eval';
+import { saveRunArtifacts } from './run-artifacts';
 import { UsageHandler } from './usage';
 import { DEFAULT_PROMPTS_FILE, EVAL_DEFAULT_MODEL, loadPrompts, recursionLimitFromEnv, selectPrompts, sheetsModelError, type PromptItem } from './run-config';
 
@@ -205,14 +206,22 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
 
   const t0 = Date.now();
   let specGate: SpecGateCapture | null = null;
-  let result = await agent.invoke({ messages: [new HumanMessage(item.prompt)] }, config);
-  for (let i = 0; i < 12 && isInterrupted(result); i++) {
+  // A graph that throws still yields a row: the state its checkpoint kept, plus why it died.
+  let thrown: string | undefined;
+  try {
+    let result = await agent.invoke({ messages: [new HumanMessage(item.prompt)] }, config);
+    for (let i = 0; i < 12 && isInterrupted(result); i++) {
+      specGate = captureSpecGate(result, specGate);
+      result = await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
+    }
     specGate = captureSpecGate(result, specGate);
-    result = await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
+  } catch (err) {
+    thrown = thrownDetail(err);
+    console.error(`${item.id}: ${thrown}`);
   }
-  specGate = captureSpecGate(result, specGate);
-  const state = (await agent.getState(config)).values as AgentStateType;
-  await getCheckpointer().deleteThread(key);
+  let state = {} as AgentStateType;
+  try { state = (await agent.getState(config)).values as AgentStateType; } catch { /* no checkpoint: empty state */ }
+  await getCheckpointer().deleteThread(key).catch(() => undefined);
 
   // Judge every compiled mesh, including ones the graph never showed the
   // critic because an audit error skipped that node.
@@ -230,10 +239,9 @@ async function runOne(item: PromptItem, args: Args, jsonl: string): Promise<Gene
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     costUsd: usage.cost(args.model),
-  }, state);
-  // The final script beside the results, so a failing audit can be diagnosed without a re-run.
-  const ext = m.kernel === 'brep' ? 'py' : 'scad';
-  if (state.currentCode) fs.writeFileSync(jsonl.replace(/\.jsonl$/, `-${item.id}.${ext}`), state.currentCode);
+  }, state, undefined, thrown);
+  // The final script and spec beside the results, so a failing run can be diagnosed without a re-run.
+  saveRunArtifacts(jsonl, item.id, m.kernel, state);
   console.log(`${item.id}: kernel=${m.kernel} workable=${m.workable} stage=${m.failureStage} composed=${m.composed} floor=${m.floorOk} floating=${m.floatingCount} localFrame=${m.localFrameOk} errors=[${m.errorKinds.join(',')}] visual=${m.visualMatch} findings=${m.visualFindings} ${m.wallMs} ms`);
   // Written per prompt so a killed run keeps what it finished.
   fs.appendFileSync(jsonl, JSON.stringify(m) + '\n');

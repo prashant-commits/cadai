@@ -255,7 +255,7 @@ const clip = (text: string, max = 200) => {
 
 /** The first stage that failed, in pipeline order, with a short reason. */
 export function failureOf(m: GenerationMetrics, firstError?: string): { failureStage: FailureStage; failureDetail?: string } {
-  if (!m.specOk) return { failureStage: 'spec', failureDetail: 'no assembly spec was produced' };
+  if (!m.specOk) return { failureStage: 'spec', failureDetail: firstError ? clip(`no assembly spec: ${firstError}`) : 'no assembly spec was produced' };
   if (!geometryOk(m)) {
     return { failureStage: 'geometry', failureDetail: clip(firstError || (m.kernel === 'brep' ? 'the last build123d run failed' : 'the OpenSCAD compile failed')) };
   }
