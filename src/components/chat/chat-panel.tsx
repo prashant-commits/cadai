@@ -5,34 +5,32 @@ import { useAppStore } from '@/store/app-store';
 import { MessageBubble } from './message-bubble';
 import { ChatInput } from './chat-input';
 import { ThreadDrawer } from './thread-drawer';
-import { readStream } from '@/lib/stream-reader';
-import { serializeTranscript } from '@/lib/agent/transcript';
 import { freezeStreamingMessages } from '@/lib/chat/chat-messages';
-import { applyStreamResult } from './apply-stream-result';
-import { ChatMessage } from '@/types';
+import { isServerThreadId } from '@/lib/client/server-thread';
+import { LEGACY } from '@/lib/persist/phrases';
 import {
   FolderKanban,
   Plus,
   Edit2,
   Check,
   Loader2,
+  Square,
 } from 'lucide-react';
 
 export function ChatPanel() {
   const {
     messages,
-    addMessage,
     isGenerating,
-    setIsGenerating,
     generatingThreadId,
-    setGeneratingThreadId,
-    selectedModel,
+    inFlightRunId,
     threads,
     activeThreadId,
     createNewThread,
     renameThread,
     initializeFromStorage,
     updateMessage,
+    sendMessage,
+    stopCurrentRun,
   } = useAppStore();
 
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -64,6 +62,7 @@ export function ChatPanel() {
 
   const activeThread = threads.find((t) => t.id === activeThreadId);
   const isCurrentThreadGenerating = isGenerating && generatingThreadId === activeThreadId;
+  const isLegacy = activeThread ? !isServerThreadId(activeThread.id) : false;
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -87,105 +86,9 @@ export function ChatPanel() {
     setIsEditingTitle(false);
   };
 
-  /**
-   * Drives one stream into ONE assistant message.
-   */
-  const consumeStream = async (
-    response: Response,
-    targetThreadId: string,
-    messageId: string
-  ) => {
-    // Persisting on every token would thrash IndexedDB, so the flush is
-    // debounced and forced once at the end.
-    let lastFlush = 0;
-    const FLUSH_MS = 250;
-
-    await readStream(response, {
-      onUpdate: (state) => {
-        const now = Date.now();
-        if (now - lastFlush < FLUSH_MS) return;
-        lastFlush = now;
-        updateMessage(messageId, { transcript: serializeTranscript(state.nodes) }, targetThreadId);
-      },
-      onDone: async (state) => {
-        await applyStreamResult(state, targetThreadId, messageId);
-      },
-    });
-  };
-
   const handleSendMessage = async (userText: string, image?: string) => {
-    const targetThreadId = activeThreadId;
-    // An annotated screenshot on its own is a valid turn - the input enables
-    // submit for image-without-text, so this guard must accept it too.
-    if ((!userText.trim() && !image) || isGenerating || !targetThreadId) return;
-
-    // 1. Add user message to target thread
-    const userMsgId = 'user-' + Date.now();
-    const userMsg: ChatMessage = {
-      id: userMsgId,
-      role: 'user',
-      content: userText,
-      image,
-      timestamp: Date.now(),
-    };
-    addMessage(userMsg, targetThreadId);
-
-    // 2. Prepare assistant placeholder
-    const assistantMsgId = 'assistant-' + Date.now();
-
-    setIsGenerating(true);
-    setGeneratingThreadId(targetThreadId);
-
-    // Snapshot target thread messages up to this point
-    const targetThreadObj = threads.find((t) => t.id === targetThreadId);
-    const existingMessages = targetThreadObj ? targetThreadObj.messages : messages;
-
-    try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          // `image` must survive this mapping: /api/chat turns it into the
-          // image_url content block (route.ts:33-40) that is the only way
-          // geometry feedback reaches the model.
-          messages: [...existingMessages, userMsg].map((m) => ({
-            role: m.role,
-            content: m.content,
-            image: m.image,
-          })),
-          model: selectedModel,
-          threadId: targetThreadId,
-          designContract: targetThreadObj?.designContract ?? null,
-        }),
-      });
-
-      if (!response.ok) {
-        const errJson = await response.json().catch(() => ({}));
-        throw new Error(errJson.error || `Server responded with HTTP ${response.status}`);
-      }
-
-      if (!response.body) {
-        throw new Error('No response stream received.');
-      }
-
-      const assistantMsg: ChatMessage = {
-        id: assistantMsgId,
-        role: 'assistant',
-        content: '',
-        transcript: '',
-        status: 'streaming',
-        timestamp: Date.now(),
-      };
-      addMessage(assistantMsg, targetThreadId);
-
-      await consumeStream(response, targetThreadId, assistantMsgId);
-
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      updateMessage(assistantMsgId, { content: `**Error:** ${errorMessage}`, status: 'error' }, targetThreadId);
-      setIsGenerating(false);
-      setGeneratingThreadId(null);
-    }
+    if (isLegacy || isGenerating) return;
+    await sendMessage(userText, image);
   };
 
   return (
@@ -232,13 +135,26 @@ export function ChatPanel() {
               className="flex items-center gap-1.5 text-xs font-semibold text-slate-200 truncate cursor-pointer hover:text-indigo-300 transition-colors group"
               title="Click to rename design thread"
             >
-              <span className="truncate">{activeThread?.title || 'Design'}</span>
+              <span className="truncate">{activeThread?.title || 'New design'}</span>
               <Edit2 className="w-3 h-3 opacity-0 group-hover:opacity-100 text-slate-500 transition-opacity shrink-0" />
               {isCurrentThreadGenerating && (
-                <span className="flex items-center gap-1 text-[10px] text-indigo-400 font-mono shrink-0">
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                  <span>Generating...</span>
-                </span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span className="flex items-center gap-1 text-[10px] text-indigo-400 font-mono">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span>Generating...</span>
+                  </span>
+                  {inFlightRunId && (
+                    <button
+                      onClick={() => void stopCurrentRun()}
+                      aria-label="Stop"
+                      title="Stop"
+                      className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-semibold flex items-center gap-1 cursor-pointer transition-colors"
+                    >
+                      <Square className="w-2.5 h-2.5 fill-current" />
+                      <span>Stop</span>
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -255,6 +171,16 @@ export function ChatPanel() {
         </button>
       </div>
 
+      {/* Legacy Thread Banner */}
+      {isLegacy && (
+        <div
+          role="alert"
+          className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-2.5 text-xs text-amber-300 font-medium text-center"
+        >
+          {LEGACY}
+        </div>
+      )}
+
       {/* Message List */}
       <div className="flex-1 overflow-y-auto p-4 space-y-2 scrollbar-thin">
         {messages.map((msg) => (
@@ -267,7 +193,9 @@ export function ChatPanel() {
       {/* Input bar */}
       <ChatInput
         onSendMessage={handleSendMessage}
-        disabled={isCurrentThreadGenerating}
+        onStop={() => void stopCurrentRun()}
+        disabled={isCurrentThreadGenerating || isLegacy}
+        isGenerating={isCurrentThreadGenerating}
       />
     </div>
   );

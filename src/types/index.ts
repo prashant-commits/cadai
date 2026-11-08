@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { DesignContract, ModelInfo } from './designer';
+import type { ServerThreadVersion } from '@/lib/client/server-thread';
 export * from './designer';
 
 /** How far the assistant message's own turn got. */
@@ -36,6 +37,8 @@ export interface ChatThread {
   selectedModel?: string;
   designContract?: DesignContract;
   step?: string | null;
+  activeRunId?: string | null;
+  versions?: ServerThreadVersion[];
 }
 
 

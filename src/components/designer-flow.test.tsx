@@ -158,9 +158,20 @@ describe('0c component test: designer run and slider recompilation', () => {
 
   it('a designer run renders end to end, and slider moves recompile through /api/compile', async () => {
     // 1. Create a thread in the store
-    const store = useAppStore.getState();
-    store.createNewThread('Parametric Box');
-    const targetThreadId = useAppStore.getState().activeThreadId;
+    const targetThreadId = crypto.randomUUID();
+    useAppStore.setState({
+      threads: [
+        {
+          id: targetThreadId,
+          title: 'Parametric Box',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          code: '',
+          messages: [],
+        },
+      ],
+      activeThreadId: targetThreadId,
+    });
     expect(targetThreadId).toBeTruthy();
 
     const assistantMsgId = 'assistant-wire-1';

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useAppStore } from './app-store';
 import { DB_NAME } from '@/lib/storage/db-schema';
-import { __resetDbForTests, loadAllThreads } from '@/lib/storage/thread-storage';
+import { __resetDbForTests, loadAllThreads, DEFAULT_CODE, upsertThread } from '@/lib/storage/thread-storage';
 import { PRELUDE_SENTINEL } from '@/lib/brep/prelude';
 
 function deleteDatabase(): Promise<void> {
@@ -193,8 +193,25 @@ describe('useAppStore thread scoping & progress isolation', () => {
   });
 
   describe('IndexedDB persistence', () => {
+    function seedPersistedThread(id = crypto.randomUUID(), title = 'Persisted') {
+      const thread = {
+        id,
+        title,
+        createdAt: 1000,
+        updatedAt: 1000,
+        code: DEFAULT_CODE,
+        messages: [],
+      };
+      useAppStore.setState({
+        threads: [thread],
+        activeThreadId: id,
+      });
+      void upsertThread(thread);
+      return id;
+    }
+
     it('persists an added message', async () => {
-      const threadId = useAppStore.getState().createNewThread('Persisted');
+      const threadId = seedPersistedThread();
       useAppStore.getState().addMessage(
         { id: 'msg-1', role: 'user', content: 'hello there', timestamp: 123 },
         threadId
@@ -208,7 +225,7 @@ describe('useAppStore thread scoping & progress isolation', () => {
     });
 
     it('persists code edits once the debounce elapses', async () => {
-      const threadId = useAppStore.getState().createNewThread('Persisted');
+      const threadId = seedPersistedThread();
       useAppStore.getState().setCode('cube(42);', threadId);
 
       await flushWrites();
@@ -220,7 +237,7 @@ describe('useAppStore thread scoping & progress isolation', () => {
     });
 
     it('removes a deleted thread and its messages', async () => {
-      const threadId = useAppStore.getState().createNewThread('Doomed');
+      const threadId = seedPersistedThread(crypto.randomUUID(), 'Doomed');
       useAppStore.getState().addMessage(
         { id: 'msg-1', role: 'user', content: 'bye', timestamp: 123 },
         threadId
