@@ -45,7 +45,11 @@ describe('POST /api/compile', () => {
     const { POST } = await import('@/app/api/compile/route');
     const stl = 'solid m\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid m\n';
     runBrepMock.mockResolvedValue({ ok: true, parts: [], solids: 1, bbox: { min: [0, 0, 0], max: [1, 1, 1] }, stl: Buffer.from(stl).toString('base64'), step: 'U1RFUA==', ms: 5 });
-    const res = await POST(new Request('http://x/api/compile', { method: 'POST', body: JSON.stringify({ code: PY }) }) as never);
+    const res = await POST(new Request('http://x/api/compile', {
+      method: 'POST',
+      headers: { cookie: 'cadai_owner=550e8400-e29b-41d4-a716-446655440000' },
+      body: JSON.stringify({ code: PY }),
+    }) as never);
     expect(res.status).toBe(200);
     const j = await res.json();
     expect(j.stl ?? j.stlContent).toContain('facet normal');
@@ -56,7 +60,11 @@ describe('POST /api/compile', () => {
   it('returns 422 with the traceback tail when the script fails', async () => {
     const { POST } = await import('@/app/api/compile/route');
     runBrepMock.mockResolvedValue({ ok: false, error: 'TypeError: bad', parts: [], solids: 0, ms: 5 });
-    const res = await POST(new Request('http://x/api/compile', { method: 'POST', body: JSON.stringify({ code: PY }) }) as never);
+    const res = await POST(new Request('http://x/api/compile', {
+      method: 'POST',
+      headers: { cookie: 'cadai_owner=550e8400-e29b-41d4-a716-446655440000' },
+      body: JSON.stringify({ code: PY }),
+    }) as never);
     expect(res.status).toBe(422);
     expect((await res.json()).error).toMatch(/TypeError/);
   });

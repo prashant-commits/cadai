@@ -138,7 +138,10 @@ describe('0c component test: designer run and slider recompilation', () => {
 
         const nextReq = new NextRequest('http://localhost:3000/api/compile', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            cookie: 'cadai_owner=550e8400-e29b-41d4-a716-446655440000',
+          },
           body: JSON.stringify(reqBody),
         });
         return await compileRoutePOST(nextReq);

@@ -1,0 +1,120 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import type { Readable } from 'stream';
+import { runStoreDir, RUN_DIR_NOT_WRITABLE } from '@/lib/runs/config';
+
+export interface ObjectStore {
+  put(key: string, bytes: Uint8Array): Promise<void>;
+  openStream(key: string): Promise<Readable | null>;
+  delete(key: string): Promise<void>;
+}
+
+export const OBJECT_KEY_REGEX = /^[a-z]+\/[A-Za-z0-9_-]{22}$/;
+
+export function validateObjectKey(key: string): void {
+  if (typeof key !== 'string' || !OBJECT_KEY_REGEX.test(key)) {
+    throw new Error(`Invalid object key "${key}".`);
+  }
+}
+
+function assertDirWritable(dir: string): void {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.accessSync(dir, fs.constants.W_OK);
+    const probe = path.join(
+      /*turbopackIgnore: true*/ dir,
+      `.probe-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+    fs.writeFileSync(probe, 'probe', 'utf8');
+    fs.unlinkSync(probe);
+  } catch {
+    throw new Error(`${RUN_DIR_NOT_WRITABLE} (${dir})`);
+  }
+}
+
+export class LocalObjectStore implements ObjectStore {
+  readonly dir: string;
+
+  constructor(dir: string) {
+    assertDirWritable(dir);
+    this.dir = dir;
+  }
+
+  private resolvePath(key: string): string {
+    validateObjectKey(key);
+    return path.join(/*turbopackIgnore: true*/ this.dir, ...key.split('/'));
+  }
+
+  async put(key: string, bytes: Uint8Array): Promise<void> {
+    const targetPath = this.resolvePath(key);
+    const targetDir = path.dirname(/*turbopackIgnore: true*/ targetPath);
+    await fs.promises.mkdir(targetDir, { recursive: true });
+
+    const tmpPath = path.join(
+      /*turbopackIgnore: true*/ targetDir,
+      `.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+
+    try {
+      await fs.promises.writeFile(tmpPath, bytes);
+      await fs.promises.rename(tmpPath, targetPath);
+    } catch (err) {
+      try {
+        await fs.promises.unlink(tmpPath);
+      } catch {
+        // ignore errors
+      }
+      throw err;
+    }
+  }
+
+  async openStream(key: string): Promise<Readable | null> {
+    const targetPath = this.resolvePath(key);
+    try {
+      const handle = await fs.promises.open(targetPath, 'r');
+      return handle.createReadStream();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  async delete(key: string): Promise<void> {
+    const targetPath = this.resolvePath(key);
+    try {
+      await fs.promises.unlink(targetPath);
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        throw err;
+      }
+    }
+  }
+}
+
+const storeCache = new Map<string, LocalObjectStore>();
+
+let defaultObjectStore: ObjectStore | undefined;
+
+export function setObjectStore(store: ObjectStore | undefined): void {
+  defaultObjectStore = store;
+}
+
+export function getObjectStore(): ObjectStore {
+  if (defaultObjectStore) {
+    return defaultObjectStore;
+  }
+
+  const raw = (process.env.CADAI_ARTIFACT_STORE ?? 'local').trim().toLowerCase();
+  if (raw === '' || raw === 'local') {
+    const dir = path.join(/*turbopackIgnore: true*/ runStoreDir(), 'objects');
+    let store = storeCache.get(dir);
+    if (!store) {
+      store = new LocalObjectStore(dir);
+      storeCache.set(dir, store);
+    }
+    return store;
+  }
+  throw new Error(`Unsupported CADAI_ARTIFACT_STORE "${raw}". Only "local" is implemented.`);
+}
