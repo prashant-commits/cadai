@@ -2,11 +2,13 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { useAppStore } from '@/store/app-store';
-import { Send, Loader2, Sparkles, X, Image as ImageIcon } from 'lucide-react';
+import { Send, Loader2, Sparkles, X, Image as ImageIcon, Square } from 'lucide-react';
 
 interface ChatInputProps {
   onSendMessage: (message: string, image?: string) => void;
+  onStop?: () => void;
   disabled?: boolean;
+  isGenerating?: boolean;
 }
 
 const QUICK_PROMPTS = [
@@ -16,7 +18,12 @@ const QUICK_PROMPTS = [
   '⚙️ Parametric 16-tooth GT2 pulley',
 ];
 
-export function ChatInput({ onSendMessage, disabled = false }: ChatInputProps) {
+export function ChatInput({
+  onSendMessage,
+  onStop,
+  disabled = false,
+  isGenerating = false,
+}: ChatInputProps) {
   const { pendingAttachment, setPendingAttachment } = useAppStore();
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -108,18 +115,32 @@ export function ChatInput({ onSendMessage, disabled = false }: ChatInputProps) {
             className="flex-1 bg-transparent resize-none text-sm text-slate-100 placeholder-slate-500 focus:outline-none scrollbar-thin px-1 py-0.5"
           />
 
-          <button
-            type="submit"
-            disabled={disabled || (!input.trim() && !pendingAttachment)}
-            className="p-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-600 text-white shadow-md shadow-indigo-600/30 transition-all shrink-0 cursor-pointer disabled:cursor-not-allowed"
-            title="Send prompt (Enter)"
-          >
-            {disabled ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Send className="w-4 h-4" />
-            )}
-          </button>
+          {isGenerating && onStop ? (
+            <button
+              type="button"
+              onClick={onStop}
+              aria-label="Stop"
+              title="Stop"
+              className="px-3 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow-md shadow-rose-600/30 transition-all shrink-0 cursor-pointer"
+            >
+              <Square className="w-3.5 h-3.5 fill-current" />
+              <span>Stop</span>
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={disabled || (!input.trim() && !pendingAttachment)}
+              aria-label="Send prompt"
+              className="p-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-600 text-white shadow-md shadow-indigo-600/30 transition-all shrink-0 cursor-pointer disabled:cursor-not-allowed"
+              title="Send prompt (Enter)"
+            >
+              {disabled ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Send className="w-4 h-4" />
+              )}
+            </button>
+          )}
         </div>
       </form>
       <div className="flex justify-between items-center text-[10px] text-slate-500 px-1">

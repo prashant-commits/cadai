@@ -1,4 +1,5 @@
 import type { ChatMessage, DesignContract } from '@/types';
+import type { EndEvent } from '@/lib/persist/types';
 import type { StreamEvent } from './agent/stream-events';
 import type { TranscriptNode, TranscriptSection } from './agent/transcript';
 import { escapeMarkers, serializeTranscript } from './agent/transcript';
@@ -15,6 +16,8 @@ export interface StreamState {
   /** The run that produced this message. */
   runId?: string;
   error?: string;
+  designVersion?: number;
+  endEvent?: EndEvent;
 }
 
 export interface StreamCallbacks {
@@ -82,6 +85,8 @@ export async function readStream(response: Response, callbacks: StreamCallbacks)
           open = null;
         }
         state.summary = event.reply.markdown;
+        state.designVersion = event.designVersion;
+        state.endEvent = event;
         if (event.status === 'failed') {
           state.error = event.reply.markdown;
         } else if (event.status === 'cancelled') {
