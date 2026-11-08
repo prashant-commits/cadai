@@ -3,6 +3,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { DesignerFacts, ReviewFlag } from '../../src/lib/agent/designer/types';
+import { REFUSAL } from '../../src/lib/persist/phrases';
 import {
   diffJudgements,
   hardChecksPass,
@@ -23,7 +24,7 @@ import {
 } from './report';
 import type { EvalPrompt, MetricRow, RunRecord, StepRecord } from './types';
 
-const TMP = path.resolve('/home/claude/work/wt-ev-rep/.cadai/tasks/tmp');
+const TMP = path.resolve(process.env.TMPDIR ?? path.join(process.cwd(), '.cadai', 'tasks', 'tmp'));
 const dirs: string[] = [];
 
 afterEach(() => {
@@ -332,6 +333,72 @@ describe('metric seam and targets', () => {
 
     const hard = diffJudgements(judge(current), judge(baseline)).find((row) => row.metric === 'Hard checks' && row.set === 'open');
     expect(hard?.delta).toBe(1);
+  });
+
+  it('the report shows per-step cost and time for sequences', async () => {
+    const seqRun = run({
+      promptId: 'box',
+      set: 'iterative',
+      steps: [
+        step({ step: 0, costUsd: 0.123, wallMs: 1500 }),
+        step({ step: 1, costUsd: 0.456, wallMs: 3500 }),
+      ],
+    });
+    const scoredRun = await scoreRun(seqRun, prompt({ id: 'box', set: 'iterative' }), quietSeam);
+    const md = renderMarkdown('seq-tag', [scoredRun]);
+    expect(md).toContain('## Sequences (per-step cost and time)');
+    expect(md).toContain('| box | iterative | designer | 0 | 0 | $0.123 | 1.5 s |');
+    expect(md).toContain('| box | iterative | designer | 0 | 1 | $0.456 | 3.5 s |');
+  });
+
+  it('a safe refusal is not a hard-check failure', async () => {
+    const refusalRun = run({
+      set: 'open',
+      promptId: 'danger',
+      steps: [
+        step({
+          script: '',
+          facts: null,
+          failed: true,
+          refused: true,
+          replyKind: 'error',
+          transcript: "I can't help with that request.",
+        }),
+      ],
+    });
+    const scoredRefusal = await scoreRun(refusalRun, prompt({ set: 'open', id: 'danger' }), quietSeam);
+    expect(scoredRefusal.refusal).toBe(true);
+    expect(scoredRefusal.row.hardChecksPass).toBe(false);
+
+    const judgementsOnlyRefusal = judge([scoredRefusal]);
+    const hardOnly = findJudgement(judgementsOnlyRefusal, 'designer', 'open', 'Hard checks');
+    expect(hardOnly.value).toBeNull();
+    expect(hardOnly.verdict).toBe('n/a');
+
+    const passingRun = run({ set: 'open', promptId: 'normal', steps: [step()] });
+    const scoredPass = await scoreRun(passingRun, prompt({ set: 'open', id: 'normal' }), quietSeam);
+    const judgementsCombined = judge([scoredRefusal, scoredPass]);
+    const hardCombined = findJudgement(judgementsCombined, 'designer', 'open', 'Hard checks');
+    expect(hardCombined.value).toBe(1);
+    expect(hardCombined.verdict).toBe('pass');
+  });
+
+  it('an answer that merely quotes the refusal phrase is not a refusal', async () => {
+    const quoteRun = run({
+      set: 'open',
+      promptId: 'quote',
+      steps: [
+        step({
+          script: '',
+          facts: null,
+          refused: false,
+          replyKind: 'answer',
+          transcript: `Here is the phrase: ${REFUSAL}`,
+        }),
+      ],
+    });
+    const scoredQuote = await scoreRun(quoteRun, prompt({ set: 'open', id: 'quote' }), quietSeam);
+    expect(scoredQuote.refusal).toBe(false);
   });
 });
 

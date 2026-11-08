@@ -38,6 +38,7 @@ export interface FollowUp {
   text: string;
   kind: FollowUpKind;
   probe: FeatureProbe;
+  attachments?: string[];
 }
 
 /** A dimension the request states, for conformance checks. */
@@ -52,6 +53,8 @@ export interface EvalPrompt {
   id: string;
   set: SetName;
   request: string;
+  /** Optional image file paths to attach to the initial prompt. */
+  attachments?: string[];
   /** edits / iterative sets: sent one at a time as chat follow-ups on the same thread. */
   followUps?: FollowUp[];
   /** Filled by the dimension parser (or by hand) for prescriptive prompts. */
@@ -78,6 +81,11 @@ export interface StepRecord {
   transcript?: string;
   /** sha256 (hex) of input.priorScript on the step's first designer call; null when that call had no prior script. */
   priorScriptSha?: string | null;
+  runId?: string;
+  designVersion?: number | null;
+  endStatus?: string;
+  replyKind?: string;
+  refused?: boolean;
 }
 
 export interface RunRecord {
