@@ -60,7 +60,6 @@ describe('client threads and reconnect', () => {
       modelInfo: null,
       compileStatus: 'idle',
       compileError: null,
-      contractDiff: null,
       isGenerating: false,
       generatingThreadId: null,
       editorView: 'design',

@@ -1,6 +1,7 @@
 import { IDBPDatabase, IDBPTransaction, openDB } from 'idb';
 import { ChatMessage, ChatThread } from '@/types';
 import { DEFAULT_MODEL, isOfferedModel } from '@/lib/agent/models';
+import { toBody } from '@/lib/brep/prelude';
 import {
   ACTIVE_THREAD_META_KEY,
   CadaiDB,
@@ -189,6 +190,7 @@ async function assembleThread(
 
   return {
     ...row,
+    code: toBody(row.code),
     // Every loaded thread carries a contract, as the old loader guaranteed.
     designContract: row.designContract || { standing: {}, pinnedParams: {} },
     // ...and a slug currently offered.
@@ -401,6 +403,63 @@ export async function setActiveThreadId(threadId: string): Promise<void> {
     await db.put('meta', threadId, ACTIVE_THREAD_META_KEY);
   } catch (err) {
     console.error('Failed to persist active thread id:', err);
+  }
+}
+
+// --- Draft storage (meta store) ---------------------------------------------
+
+export interface LocalDraft {
+  editedBody?: string;
+  pinnedParams?: Record<string, number>;
+}
+
+export function draftKey(threadId: string, version: number | null | undefined): string {
+  const verStr = version !== null && version !== undefined ? String(version) : 'none';
+  return `draft:${threadId}:${verStr}`;
+}
+
+export async function getDraft(
+  threadId: string,
+  version: number | null | undefined
+): Promise<LocalDraft | null> {
+  const db = await getDB();
+  if (!db) return null;
+
+  try {
+    const raw = await db.get('meta', draftKey(threadId, version));
+    if (!raw || typeof raw !== 'string') return null;
+    return JSON.parse(raw) as LocalDraft;
+  } catch {
+    return null;
+  }
+}
+
+export async function setDraft(
+  threadId: string,
+  version: number | null | undefined,
+  draft: LocalDraft
+): Promise<void> {
+  const db = await getDB();
+  if (!db) return;
+
+  try {
+    await db.put('meta', JSON.stringify(draft), draftKey(threadId, version));
+  } catch (err) {
+    console.error('Failed to set draft:', err);
+  }
+}
+
+export async function clearDraft(
+  threadId: string,
+  version: number | null | undefined
+): Promise<void> {
+  const db = await getDB();
+  if (!db) return;
+
+  try {
+    await db.delete('meta', draftKey(threadId, version));
+  } catch (err) {
+    console.error('Failed to clear draft:', err);
   }
 }
 

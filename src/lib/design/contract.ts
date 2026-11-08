@@ -1,13 +1,9 @@
 import {
   ScadParam,
   StandingConstraints,
-  DesignContract,
-  ContractDiff,
   ModelInfo,
   SpecViolation,
 } from '@/types/designer';
-import { setParamValue } from './write-params';
-import { parseParams } from './parse-params';
 
 function isWallParam(name: string): boolean {
   const n = name.toLowerCase();
@@ -62,55 +58,4 @@ export function checkStanding(params: ScadParam[], info: ModelInfo | null, s: St
   }
 
   return violations;
-}
-
-export function applyContract(newCode: string, contract: DesignContract): { code: string; diff: ContractDiff } {
-  let code = newCode;
-  const currentParams = parseParams(newCode);
-  
-  const diff: ContractDiff = {
-    applied: [],
-    dropped: [],
-    unchanged: [],
-    rejected: []
-  };
-  
-  if (!contract.pinnedParams) return { code, diff };
-
-  const s = contract.standing || {};
-  const minWall = s.minWallMm;
-
-  for (const [name, pin] of Object.entries(contract.pinnedParams)) {
-    const aiParam = currentParams.find(p => p.name === name);
-    if (!aiParam) {
-      diff.dropped.push(name);
-      continue;
-    }
-
-    let rejected = false;
-    if (minWall !== undefined && typeof pin.value === 'number' && isWallParam(name)) {
-      if (pin.value < minWall) {
-        diff.rejected.push({
-          name,
-          value: pin.value,
-          reason: `Value is below the minimum wall thickness of ${minWall}mm.`
-        });
-        rejected = true;
-      }
-    }
-
-    if (rejected) {
-      continue;
-    }
-
-    if (aiParam.value === pin.value) {
-      diff.unchanged.push(name);
-      continue;
-    }
-    
-    code = setParamValue(code, name, pin.value);
-    diff.applied.push({ name, pinned: pin.value, aiValue: aiParam.value });
-  }
-
-  return { code, diff };
 }

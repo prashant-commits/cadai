@@ -1,6 +1,15 @@
 import { create } from 'zustand';
 import * as THREE from 'three';
-import { ChatMessage, ModelInfo, ViewportSettings, CompileResult, ChatThread, ScadParam, ContractDiff, ParamValue, StandingConstraints, DesignContract } from '@/types';
+import {
+  ChatMessage,
+  ModelInfo,
+  ViewportSettings,
+  CompileResult,
+  ChatThread,
+  ScadParam,
+  ParamValue,
+  StandingConstraints,
+} from '@/types';
 import {
   DEFAULT_CODE,
   clearThreadMessages,
@@ -11,10 +20,13 @@ import {
   setCodeDebounced,
   upsertMessage,
   upsertThread,
+  getDraft,
+  setDraft,
+  clearDraft,
+  type LocalDraft,
 } from '@/lib/storage/thread-storage';
-import { applyContract } from '@/lib/design/contract';
 import { parseParams } from '@/lib/design/parse-params';
-import { toBody } from '@/lib/brep/prelude';
+import { toBody, PRELUDE_VERSION } from '@/lib/brep/prelude';
 import { setParamValue } from '@/lib/design/write-params';
 import { compileModel } from '@/lib/engine/build123d-client';
 import { DEFAULT_MODEL } from '@/lib/agent/models';
@@ -27,11 +39,11 @@ import {
   tailRun,
   sendChat,
   buildChatRequest,
-  getLatestViewingVersion,
   isServerThreadId,
   fetchArtifactText,
   uploadAttachment,
   type ServerThreadDetail,
+  type ServerThreadVersion,
 } from '@/lib/client/server-thread';
 import { parseStlToGeometry } from '@/lib/engine/geometry-utils';
 import { readStream, streamMessagePatch } from '@/lib/stream-reader';
@@ -53,6 +65,78 @@ function dataUrlToBlob(dataUrlOrBytes: string): Blob {
   return new Blob([u8arr], { type: mimeType });
 }
 
+async function resolveVersionState(
+  threadId: string,
+  version: ServerThreadVersion,
+  isActiveThread: boolean,
+  setCompileStatus?: (status: 'idle' | 'compiling' | 'success' | 'error') => void
+): Promise<{
+  code: string;
+  draft: LocalDraft | null;
+  geometry: THREE.BufferGeometry | null;
+  stlContent: string | null;
+  modelInfo: ModelInfo | null;
+  step: null;
+}> {
+  const draft = await getDraft(threadId, version.version);
+  const baseBody = draft?.editedBody ?? version.body;
+  let shownCode = baseBody;
+  if (draft?.pinnedParams) {
+    for (const [name, val] of Object.entries(draft.pinnedParams)) {
+      if (typeof val === 'number' && Number.isFinite(val)) {
+        shownCode = setParamValue(shownCode, name, val);
+      }
+    }
+  }
+  const finalCode = toBody(shownCode);
+
+  let newStl: string | null = null;
+  let newGeometry: THREE.BufferGeometry | null = null;
+  let newModelInfo: ModelInfo | null = null;
+
+  const hasEdits =
+    draft &&
+    (draft.editedBody !== undefined ||
+      (draft.pinnedParams && Object.keys(draft.pinnedParams).length > 0));
+
+  if (!hasEdits && version.stl) {
+    try {
+      const stlText = await fetchArtifactText(version.stl);
+      newStl = stlText;
+      if (stlText.includes('facet normal')) {
+        const parsed = parseStlToGeometry(stlText);
+        newGeometry = parsed.geometry;
+        newModelInfo = parsed.modelInfo;
+      }
+    } catch (err) {
+      console.warn('Failed to fetch artifact for version:', err);
+    }
+  } else {
+    if (isActiveThread && setCompileStatus) {
+      setCompileStatus('compiling');
+    }
+    try {
+      const res = await compileModel(finalCode, {
+        preludeVersion: version.preludeVersion ?? PRELUDE_VERSION,
+      });
+      newStl = res.stlContent || null;
+      newGeometry = res.geometry || null;
+      newModelInfo = res.modelInfo || null;
+    } catch (err) {
+      console.warn('Failed to compile version code:', err);
+    }
+  }
+
+  return {
+    code: finalCode,
+    draft,
+    geometry: newGeometry,
+    stlContent: newStl,
+    modelInfo: newModelInfo,
+    step: null,
+  };
+}
+
 interface AppState {
   selectedModel: string;
   threads: ChatThread[];
@@ -65,16 +149,18 @@ interface AppState {
   stlContent: string | null;
   modelInfo: ModelInfo | null;
   step: string | null;
-  
-  // Design Contract & Parameters
+  viewingVersion: number | null;
+  activeDraft: LocalDraft | null;
+
+  // Design Parameters
   params: ScadParam[];
-  contractDiff: ContractDiff | null;
   editorView: 'code' | 'design';
 
   // Runtime State & Generation
   isGenerating: boolean;
   generatingThreadId: string | null;
   inFlightRunId: string | null;
+  runsByThread: Record<string, string>;
   compileStatus: 'idle' | 'compiling' | 'success' | 'error';
   compileError: string | null;
   compileTimeMs: number;
@@ -90,6 +176,7 @@ interface AppState {
   switchThread: (threadId: string) => void;
   deleteThread: (threadId: string) => void;
   renameThread: (threadId: string, title: string) => void;
+  selectVersion: (version: number) => Promise<void>;
 
   // Settings & State Actions
   setSelectedModel: (model: string) => void;
@@ -99,7 +186,7 @@ interface AppState {
   setGeneratingThreadId: (threadId: string | null) => void;
   setInFlightRunId: (runId: string | null) => void;
   stopCurrentRun: () => Promise<void>;
-  loadServerThread: (threadId: string) => Promise<ServerThreadDetail | null>;
+  loadServerThread: (threadId: string, targetVersion?: number) => Promise<ServerThreadDetail | null>;
   consumeRunStream: (opts: {
     response: Response;
     threadId: string;
@@ -111,17 +198,14 @@ interface AppState {
   setCompileResult: (result: CompileResult, threadId?: string) => void;
   setCompileStatus: (status: 'idle' | 'compiling' | 'success' | 'error', error?: string | null) => void;
   updateViewportSettings: (settings: Partial<ViewportSettings>) => void;
-  
+
   // Editor View & Contract
   setEditorView: (view: 'code' | 'design') => void;
   pinParam: (name: string, value: ParamValue) => void;
   unpinParam: (name: string) => void;
   unpinAll: () => void;
   setStanding: (partial: Partial<StandingConstraints>) => void;
-  /** Persist the contract the agent returned (carries the human-approved spec). */
-  setThreadContract: (contract: DesignContract, threadId?: string) => void;
-  dismissContractDiff: () => void;
-  
+
   setIsAnnotating: (isAnnotating: boolean) => void;
   setBaseSnapshot: (snapshot: string | null) => void;
   setPendingAttachment: (image: string | null) => void;
@@ -136,18 +220,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeThreadId: '',
 
   messages: [],
-  code: DEFAULT_CODE,
+  code: toBody(DEFAULT_CODE),
   geometry: null,
   stlContent: null,
   modelInfo: null,
   step: null,
+  viewingVersion: null,
+  activeDraft: null,
   params: [],
-  contractDiff: null,
   editorView: 'design',
 
   isGenerating: false,
   generatingThreadId: null,
   inFlightRunId: null,
+  runsByThread: {},
   compileStatus: 'idle',
   compileError: null,
   compileTimeMs: 0,
@@ -166,7 +252,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setInFlightRunId: (runId) => set({ inFlightRunId: runId }),
 
   stopCurrentRun: async () => {
-    const runId = get().inFlightRunId;
+    const activeThreadId = get().activeThreadId;
+    const runId = get().runsByThread[activeThreadId] ?? get().inFlightRunId;
     if (!runId) return;
 
     try {
@@ -177,22 +264,65 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       if (res.status === 200) {
         // 200 means it ended: reload the thread.
-        const activeThreadId = get().activeThreadId;
-        if (activeThreadId) {
-          await get().loadServerThread(activeThreadId);
-        }
+        const nextRuns = { ...get().runsByThread };
+        delete nextRuns[activeThreadId];
         set({
-          isGenerating: false,
-          generatingThreadId: null,
-          inFlightRunId: null,
+          runsByThread: nextRuns,
+          isGenerating: Object.keys(nextRuns).length > 0,
+          inFlightRunId: nextRuns[activeThreadId] ?? null,
         });
+        await get().loadServerThread(activeThreadId);
       }
     } catch (err) {
       console.warn('Failed to stop run:', err);
     }
   },
 
-  loadServerThread: async (threadId: string) => {
+  selectVersion: async (versionNumber: number) => {
+    const { threads, activeThreadId } = get();
+    const currentThread = threads.find((t) => t.id === activeThreadId);
+    if (!currentThread || !currentThread.versions) return;
+
+    const targetVersion = currentThread.versions.find((v) => v.version === versionNumber);
+    if (!targetVersion) return;
+
+    const resolved = await resolveVersionState(
+      activeThreadId,
+      targetVersion,
+      true,
+      (status) => set({ compileStatus: status })
+    );
+
+    const updatedThread: ChatThread = {
+      ...currentThread,
+      viewingVersion: versionNumber,
+      code: resolved.code,
+      stlContent: resolved.stlContent,
+      modelInfo: resolved.modelInfo,
+      step: null,
+      updatedAt: Date.now(),
+    };
+
+    const updatedThreads = threads.map((t) => (t.id === activeThreadId ? updatedThread : t));
+
+    set({
+      threads: updatedThreads,
+      viewingVersion: versionNumber,
+      activeDraft: resolved.draft,
+      code: resolved.code,
+      params: parseParams(toBody(resolved.code)),
+      stlContent: resolved.stlContent,
+      geometry: resolved.geometry,
+      modelInfo: resolved.modelInfo,
+      step: null,
+      compileStatus: 'idle',
+      compileError: null,
+    });
+
+    void upsertThread(updatedThread);
+  },
+
+  loadServerThread: async (threadId: string, targetVersion?: number) => {
     if (!isServerThreadId(threadId)) return null;
 
     let serverThread: ServerThreadDetail | null = null;
@@ -218,11 +348,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           threads: remaining,
           activeThreadId: nextActive.id,
           messages: nextActive.messages,
-          code: nextActive.code || DEFAULT_CODE,
+          code: toBody(nextActive.code || DEFAULT_CODE),
           stlContent: nextActive.stlContent || null,
           geometry: null,
           modelInfo: nextActive.modelInfo || null,
           step: nextActive.step || null,
+          viewingVersion: nextActive.viewingVersion ?? null,
           isGenerating: false,
           generatingThreadId: null,
           inFlightRunId: null,
@@ -258,47 +389,53 @@ export const useAppStore = create<AppState>((set, get) => ({
           }))
         : currentThread?.messages || [];
 
-    let newCode = currentThread?.code || DEFAULT_CODE;
+    let viewingVersion: number | null = null;
+    let newCode = toBody(currentThread?.code || DEFAULT_CODE);
     let newStl = currentThread?.stlContent || null;
     let newGeometry: THREE.BufferGeometry | null =
       threadId === activeThreadId ? get().geometry : null;
     let newModelInfo = currentThread?.modelInfo || null;
     let newStep = currentThread?.step || null;
+    let activeDraft: LocalDraft | null = null;
 
     if (serverThread.versions && serverThread.versions.length > 0) {
-      // Stale STEP: when loadServerThread shows a server version, set step to null
-      newStep = null;
-      const latest = serverThread.versions.reduce(
-        (max, v) => (v.version > max.version ? v : max),
-        serverThread.versions[0]
-      );
-      newCode = latest.body;
-
-      if (latest.stl) {
-        try {
-          const stlText = await fetchArtifactText(latest.stl);
-          newStl = stlText;
-          if (stlText.includes('facet normal')) {
-            const parsed = parseStlToGeometry(stlText);
-            newGeometry = parsed.geometry;
-            newModelInfo = parsed.modelInfo;
-          }
-        } catch (err) {
-          console.warn('Failed to fetch artifact for version:', err);
-        }
+      if (
+        targetVersion !== undefined &&
+        serverThread.versions.some((v) => v.version === targetVersion)
+      ) {
+        viewingVersion = targetVersion;
+      } else if (
+        currentThread?.viewingVersion != null &&
+        serverThread.versions.some((v) => v.version === currentThread.viewingVersion)
+      ) {
+        viewingVersion = currentThread.viewingVersion;
       } else {
-        if (threadId === activeThreadId) {
-          set({ compileStatus: 'compiling' });
-        }
-        try {
-          const res = await compileModel(latest.body);
-          newStl = res.stlContent || null;
-          newGeometry = res.geometry || null;
-          newModelInfo = res.modelInfo || null;
-        } catch (err) {
-          console.warn('Failed to compile version with null stl:', err);
-        }
+        viewingVersion = Math.max(...serverThread.versions.map((v) => v.version));
       }
+
+      const versionObj = serverThread.versions.find((v) => v.version === viewingVersion)!;
+      const resolved = await resolveVersionState(
+        threadId,
+        versionObj,
+        threadId === activeThreadId,
+        (status) => {
+          if (threadId === activeThreadId) set({ compileStatus: status });
+        }
+      );
+
+      newCode = resolved.code;
+      newStl = resolved.stlContent;
+      newGeometry = resolved.geometry;
+      newModelInfo = resolved.modelInfo;
+      newStep = null;
+      activeDraft = resolved.draft;
+    } else {
+      viewingVersion = null;
+      const draft = await getDraft(threadId, null);
+      if (draft?.editedBody) {
+        newCode = toBody(draft.editedBody);
+      }
+      activeDraft = draft;
     }
 
     const updatedThread: ChatThread = {
@@ -313,6 +450,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       step: newStep,
       activeRunId: serverThread.activeRun?.id || null,
       versions: serverThread.versions,
+      viewingVersion,
       selectedModel: currentThread?.selectedModel || get().selectedModel,
     };
 
@@ -326,6 +464,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         threads: updatedThreads,
         messages: mappedMessages,
         code: newCode,
+        viewingVersion,
+        activeDraft,
         params: parseParams(toBody(newCode)),
         stlContent: newStl,
         geometry: newGeometry,
@@ -344,19 +484,35 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (
       serverThread.activeRun &&
       serverThread.activeRun.status === 'running' &&
-      !get().isGenerating
+      !get().runsByThread[threadId]
     ) {
       const runId = serverThread.activeRun.id;
-      try {
-        const tailRes = await tailRun(runId, 0);
-        await get().consumeRunStream({
-          response: tailRes,
-          threadId,
-          runId,
-        });
-      } catch (err) {
-        console.warn('Failed to tail active run:', err);
-      }
+      set({
+        runsByThread: { ...get().runsByThread, [threadId]: runId },
+        isGenerating: true,
+        generatingThreadId: threadId,
+        inFlightRunId: get().activeThreadId === threadId ? runId : get().inFlightRunId,
+      });
+
+      void (async () => {
+        try {
+          const tailRes = await tailRun(runId, 0);
+          await get().consumeRunStream({
+            response: tailRes,
+            threadId,
+            runId,
+          });
+        } catch (err) {
+          console.warn('Failed to tail active run:', err);
+          const nextRuns = { ...get().runsByThread };
+          delete nextRuns[threadId];
+          set({
+            runsByThread: nextRuns,
+            isGenerating: Object.keys(nextRuns).length > 0,
+            inFlightRunId: nextRuns[get().activeThreadId] ?? null,
+          });
+        }
+      })();
     }
 
     return serverThread;
@@ -373,10 +529,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     runId: string;
     reconnectCount?: number;
   }) => {
+    const currentRuns = { ...get().runsByThread, [threadId]: runId };
     set({
+      runsByThread: currentRuns,
       isGenerating: true,
       generatingThreadId: threadId,
-      inFlightRunId: runId,
+      inFlightRunId: get().activeThreadId === threadId ? runId : get().inFlightRunId,
     });
 
     const { threads } = get();
@@ -399,6 +557,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     let seenEnd = false;
+    let endDesignVersion: number | undefined;
     let lastFlush = 0;
     const FLUSH_MS = 250;
 
@@ -418,6 +577,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           if (state.endEvent || state.summary) {
             seenEnd = true;
           }
+          if (state.endEvent?.designVersion !== undefined) {
+            endDesignVersion = state.endEvent.designVersion;
+          } else if (state.designVersion !== undefined) {
+            endDesignVersion = state.designVersion;
+          }
           get().updateMessage(
             assistantMsgId,
             streamMessagePatch(state),
@@ -429,13 +593,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       console.error('Error during readStream:', err);
     }
 
+    const nextRuns = { ...get().runsByThread };
+    delete nextRuns[threadId];
+    const activeRunId = nextRuns[get().activeThreadId] ?? null;
+    set({
+      runsByThread: nextRuns,
+      isGenerating: Object.keys(nextRuns).length > 0,
+      generatingThreadId: Object.keys(nextRuns)[0] ?? null,
+      inFlightRunId: activeRunId,
+    });
+
     if (seenEnd) {
-      await get().loadServerThread(threadId);
-      set({
-        isGenerating: false,
-        generatingThreadId: null,
-        inFlightRunId: null,
-      });
+      await get().loadServerThread(threadId, endDesignVersion);
     } else {
       const reloaded = await get().loadServerThread(threadId);
       if (
@@ -454,18 +623,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           });
         } catch (err) {
           console.warn('Failed to reconnect tail:', err);
-          set({
-            isGenerating: false,
-            generatingThreadId: null,
-            inFlightRunId: null,
-          });
         }
-      } else {
-        set({
-          isGenerating: false,
-          generatingThreadId: null,
-          inFlightRunId: null,
-        });
       }
     }
   },
@@ -475,7 +633,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!targetThreadId) return;
 
     if (!isServerThreadId(targetThreadId)) return;
-    if (get().isGenerating) return;
+    if (get().runsByThread[targetThreadId]) return;
     if (!userText.trim() && !image) return;
 
     const userMsgId = 'user-' + Date.now();
@@ -501,8 +659,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       targetThreadId
     );
 
-    set({ isGenerating: true, generatingThreadId: targetThreadId });
-
     let attachmentIds: string[] | undefined;
     if (image) {
       try {
@@ -516,18 +672,52 @@ export const useAppStore = create<AppState>((set, get) => ({
           { content: `**Error:** ${msg}`, status: 'error' },
           targetThreadId
         );
-        set({ isGenerating: false, generatingThreadId: null, inFlightRunId: null });
         return;
       }
     }
 
     const targetThread = get().threads.find((t) => t.id === targetThreadId);
-    const viewingVersion = getLatestViewingVersion(targetThread?.versions);
+    const viewingVersion =
+      get().activeThreadId === targetThreadId
+        ? get().viewingVersion
+        : targetThread?.viewingVersion ?? null;
+
+    const versionObj = targetThread?.versions?.find((v) => v.version === viewingVersion);
+    const draft =
+      get().activeThreadId === targetThreadId
+        ? get().activeDraft
+        : await getDraft(targetThreadId, viewingVersion);
+
+    let editedBodyToSend: string | undefined;
+    let pinnedParamsToSend: Record<string, number> | undefined;
+
+    if (versionObj) {
+      if (draft?.editedBody !== undefined && draft.editedBody !== versionObj.body) {
+        editedBodyToSend = draft.editedBody;
+      }
+
+      if (draft?.pinnedParams && Object.keys(draft.pinnedParams).length > 0) {
+        const parsed = parseParams(versionObj.body);
+        const diffPins: Record<string, number> = {};
+        for (const [name, val] of Object.entries(draft.pinnedParams)) {
+          const origParam = parsed.find((p) => p.name === name);
+          if (!origParam || origParam.value !== val) {
+            diffPins[name] = val;
+          }
+        }
+        if (Object.keys(diffPins).length > 0) {
+          pinnedParamsToSend = diffPins;
+        }
+      }
+    }
+
     const req = buildChatRequest({
       threadId: targetThreadId,
       text: userText,
       viewingVersion,
       attachmentIds,
+      pinnedParams: pinnedParamsToSend,
+      editedBody: editedBodyToSend,
       model: get().selectedModel,
     });
 
@@ -539,12 +729,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         { content: `**Error:** ${sendRes.message}`, status: 'error' },
         targetThreadId
       );
-      set({ isGenerating: false, generatingThreadId: null, inFlightRunId: null });
       return;
     }
 
-    // When sendChat returns stream or attach:
-    // If it was a draft, add the thread to the top of threads and to the IndexedDB cache
+    // Clear draft after stream or attach
+    await clearDraft(targetThreadId, viewingVersion);
+    if (get().activeThreadId === targetThreadId) {
+      set({ activeDraft: null });
+    }
+
+    // If it was a draft thread, add to threads
     const existingThread = get().threads.find((t) => t.id === targetThreadId);
     if (!existingThread) {
       const firstLine = userText.split('\n')[0].trim().slice(0, 80);
@@ -556,6 +750,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         selectedModel: get().selectedModel,
         code: get().code,
         messages: get().messages,
+        viewingVersion: null,
         step: null,
       };
       const updatedThreads = [newThread, ...get().threads];
@@ -575,7 +770,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
-    set({ inFlightRunId: sendRes.runId });
     await get().consumeRunStream({
       response: sendRes.response,
       threadId: targetThreadId,
@@ -586,14 +780,33 @@ export const useAppStore = create<AppState>((set, get) => ({
   initializeFromStorage: async () => {
     const { threads: cachedThreads, activeThreadId: cachedActiveId } = await loadAllThreads();
     const active = cachedThreads.find((t) => t.id === cachedActiveId) || cachedThreads[0];
-    const initialCode = active?.code || DEFAULT_CODE;
+    const initialCode = toBody(active?.code || DEFAULT_CODE);
+    const viewingVer = active?.viewingVersion ?? null;
+
+    let initialDraft: LocalDraft | null = null;
+    let resolvedCode = initialCode;
+    if (active) {
+      initialDraft = await getDraft(active.id, viewingVer);
+      if (initialDraft?.editedBody) {
+        resolvedCode = toBody(initialDraft.editedBody);
+      }
+      if (initialDraft?.pinnedParams) {
+        for (const [name, val] of Object.entries(initialDraft.pinnedParams)) {
+          if (typeof val === 'number' && Number.isFinite(val)) {
+            resolvedCode = toBody(setParamValue(resolvedCode, name, val));
+          }
+        }
+      }
+    }
 
     set({
       threads: cachedThreads,
       activeThreadId: active ? active.id : '',
       messages: active ? active.messages : [],
-      code: initialCode,
-      params: parseParams(toBody(initialCode)),
+      code: resolvedCode,
+      viewingVersion: viewingVer,
+      activeDraft: initialDraft,
+      params: parseParams(resolvedCode),
       stlContent: active?.stlContent || null,
       modelInfo: active?.modelInfo || null,
       step: active?.step || null,
@@ -627,7 +840,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           updatedAt: summary.updatedAt,
           activeRunId: summary.activeRunId,
           messages: [],
-          code: DEFAULT_CODE,
+          code: toBody(DEFAULT_CODE),
         };
       });
 
@@ -659,7 +872,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         threads: mergedThreads,
         activeThreadId: activeObj.id,
         messages: activeObj.messages,
-        code: activeObj.code || DEFAULT_CODE,
+        code: toBody(activeObj.code || DEFAULT_CODE),
+        viewingVersion: activeObj.viewingVersion ?? null,
         stlContent: activeObj.stlContent || null,
         modelInfo: activeObj.modelInfo || null,
         step: activeObj.step || null,
@@ -675,19 +889,20 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   createNewThread: () => {
     const id = crypto.randomUUID();
+    const defaultBody = toBody(DEFAULT_CODE);
     set({
       activeThreadId: id,
       messages: [],
-      code: DEFAULT_CODE,
-      params: parseParams(toBody(DEFAULT_CODE)),
+      code: defaultBody,
+      params: parseParams(defaultBody),
       geometry: null,
       stlContent: null,
       modelInfo: null,
       step: null,
       compileStatus: 'idle',
       compileError: null,
-      isGenerating: false,
-      generatingThreadId: null,
+      viewingVersion: null,
+      activeDraft: null,
       inFlightRunId: null,
     });
     return id;
@@ -697,30 +912,48 @@ export const useAppStore = create<AppState>((set, get) => ({
     const target = get().threads.find((t) => t.id === threadId);
     if (!target) return;
 
-    const initialCode = target.code || DEFAULT_CODE;
+    const currentRuns = get().runsByThread;
+    const targetRunId = currentRuns[threadId] ?? null;
+    const initialCode = toBody(target.code || DEFAULT_CODE);
+    const viewingVer = target.viewingVersion ?? null;
+
     set({
       activeThreadId: target.id,
       messages: target.messages,
       code: initialCode,
-      params: parseParams(toBody(initialCode)),
-      geometry: null, // will recompile on mount/switch
+      viewingVersion: viewingVer,
+      activeDraft: null,
+      params: parseParams(initialCode),
+      geometry: null,
       stlContent: target.stlContent || null,
       modelInfo: target.modelInfo || null,
       step: target.step || null,
       selectedModel: target.selectedModel || get().selectedModel,
       compileStatus: 'idle',
       compileError: null,
+      inFlightRunId: targetRunId,
+      isGenerating: !!targetRunId,
+      generatingThreadId: targetRunId ? target.id : null,
     });
 
     void setActiveThreadId(target.id);
+    void getDraft(target.id, viewingVer).then((draft) => {
+      if (draft && get().activeThreadId === target.id) {
+        set({ activeDraft: draft });
+      }
+    });
 
     if (isServerThreadId(target.id)) {
-      void get().loadServerThread(target.id);
+      if (!currentRuns[target.id]) {
+        void get().loadServerThread(target.id);
+      }
     }
   },
 
   deleteThread: (threadId) => {
     const { threads, activeThreadId } = get();
+    void clearDraft(threadId, null);
+
     if (threads.length <= 1) {
       if (threads.some((t) => t.id === threadId)) {
         void deleteThreadCascade(threadId);
@@ -741,14 +974,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     const newActiveId = activeThreadId === threadId ? filtered[0].id : activeThreadId;
     const newActive = filtered.find((t) => t.id === newActiveId)!;
-    const initialCode = newActive.code || DEFAULT_CODE;
+    const initialCode = toBody(newActive.code || DEFAULT_CODE);
 
     set({
       threads: filtered,
       activeThreadId: newActive.id,
       messages: newActive.messages,
       code: initialCode,
-      params: parseParams(toBody(initialCode)),
+      viewingVersion: newActive.viewingVersion ?? null,
+      activeDraft: null,
+      params: parseParams(initialCode),
       geometry: null,
       stlContent: newActive.stlContent || null,
       modelInfo: newActive.modelInfo || null,
@@ -795,7 +1030,6 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const updatedMessages = [...targetThread.messages, message];
 
-    // Smart title generation on first user prompt
     let title = targetThread.title || 'Design';
     if (message.role === 'user' && title.startsWith('Design #')) {
       title = message.content.slice(0, 32) + (message.content.length > 32 ? '...' : '');
@@ -815,7 +1049,6 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     void upsertMessage(targetId, message);
 
-    // Thread row carries the (possibly auto-generated) title and updatedAt.
     const updatedThread = updatedThreads.find((t) => t.id === targetId);
     if (updatedThread) void upsertThread(updatedThread);
   },
@@ -859,82 +1092,53 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setCode: (code, threadId, source = 'agent') => {
     const targetId = threadId || get().activeThreadId;
-    const { threads, activeThreadId } = get();
-    const targetThread = threads.find((t) => t.id === targetId);
-    if (!targetThread) {
-      if (targetId === activeThreadId) {
-        set({
-          code,
-          params: parseParams(toBody(code)),
-        });
-      }
-      return;
-    }
+    const { threads, activeThreadId, viewingVersion } = get();
+    const finalCode = toBody(code);
 
-    let finalCode = code;
-    let newContractDiff: ContractDiff | null = null;
-    let newContract = targetThread.designContract;
-    
-    if (newContract) {
-      if (source === 'agent') {
-        const { code: contractAppliedCode, diff } = applyContract(code, newContract);
-        finalCode = contractAppliedCode;
-        
-        // Only surface the diff in the active thread if changes were actually applied or rejected
-        if (targetId === activeThreadId && (diff.applied.length > 0 || diff.rejected.length > 0)) {
-          newContractDiff = diff;
-        }
-      } else {
-        // User manual edit: do not apply contract. Instead, update pins to match hand-typed values.
-        const parsedParams = parseParams(toBody(code));
-        let contractUpdated = false;
-        const newPinnedParams = { ...(newContract.pinnedParams || {}) };
+    const currentParams = parseParams(finalCode);
 
-        for (const [name, pin] of Object.entries(newPinnedParams)) {
-          const editedParam = parsedParams.find(p => p.name === name);
-          if (editedParam && editedParam.value !== pin.value) {
-            newPinnedParams[name] = { ...pin, value: editedParam.value, pinnedAt: Date.now() };
-            contractUpdated = true;
+    let newDraft = get().activeDraft;
+    if (source === 'user' && targetId === activeThreadId) {
+      const prevPins = get().activeDraft?.pinnedParams;
+      let nextPins: Record<string, number> | undefined;
+      if (prevPins && Object.keys(prevPins).length > 0) {
+        nextPins = {};
+        for (const [name] of Object.entries(prevPins)) {
+          const parsed = currentParams.find((p) => p.name === name);
+          if (parsed && typeof parsed.value === 'number' && Number.isFinite(parsed.value)) {
+            nextPins[name] = parsed.value;
           }
         }
-        
-        if (contractUpdated) {
-          newContract = { ...newContract, pinnedParams: newPinnedParams };
-        }
       }
+
+      newDraft = {
+        ...(get().activeDraft || {}),
+        editedBody: finalCode,
+        pinnedParams: nextPins,
+      };
+      set({ activeDraft: newDraft });
+      void setDraft(targetId, viewingVersion, newDraft);
     }
 
-    const currentParams = parseParams(toBody(finalCode));
-
     const updatedThreads = threads.map((t) =>
-      t.id === targetId ? { ...t, code: finalCode, designContract: newContract, updatedAt: Date.now() } : t
+      t.id === targetId ? { ...t, code: finalCode, updatedAt: Date.now() } : t
     );
 
     if (targetId === activeThreadId) {
-      set({ 
-        code: finalCode, 
+      set({
+        code: finalCode,
         params: currentParams,
-        threads: updatedThreads 
+        threads: updatedThreads,
       });
-      if (newContractDiff) {
-        set({ contractDiff: newContractDiff });
-      }
     } else {
       set({ threads: updatedThreads });
     }
 
-    // Editor keystrokes land here, so the code write is debounced. A contract
-    // change (pins rewritten by a manual edit) is rare — write it straight through.
-    if (newContract !== targetThread.designContract) {
-      const updatedThread = updatedThreads.find((t) => t.id === targetId);
-      if (updatedThread) void upsertThread(updatedThread);
-    } else {
-      setCodeDebounced(targetId, finalCode, Date.now());
-    }
+    setCodeDebounced(targetId, finalCode, Date.now());
   },
 
   setCompileResult: (result, threadId) => {
-    if (result.aborted) return; // Do not process stale compile results
+    if (result.aborted) return;
 
     const targetId = threadId || get().activeThreadId;
     const { threads, activeThreadId } = get();
@@ -983,110 +1187,128 @@ export const useAppStore = create<AppState>((set, get) => ({
   setEditorView: (view) => set({ editorView: view }),
 
   pinParam: (name, value) => {
-    const { activeThreadId, threads, code, params } = get();
-    const targetThread = threads.find((t) => t.id === activeThreadId);
-    if (!targetThread) return;
+    if (typeof value !== 'number' || !Number.isFinite(value)) return;
 
-    // Determine supersededValue if not already pinned
-    let supersededValue = value;
-    const existingContract = targetThread.designContract || { standing: {}, pinnedParams: {} };
-    const existingPins = existingContract.pinnedParams || {};
-    
-    if (existingPins[name]) {
-      supersededValue = existingPins[name].supersededValue;
-    } else {
-      const p = params.find(param => param.name === name);
-      if (p) supersededValue = p.value;
-    }
+    const { activeThreadId, threads, viewingVersion, code } = get();
+    const currentThread = threads.find((t) => t.id === activeThreadId);
+    const currentDraft: LocalDraft = get().activeDraft ?? {};
 
-    // 1. Write the literal to code
-    const newCode = setParamValue(code, name, value);
-
-    // 2. Record the pin in thread
-    const updatedContract = {
-      ...existingContract,
+    const updatedDraft: LocalDraft = {
+      ...currentDraft,
       pinnedParams: {
-        ...existingPins,
-        [name]: { value, supersededValue, pinnedAt: Date.now() },
-      }
+        ...(currentDraft.pinnedParams || {}),
+        [name]: value,
+      },
     };
 
+    const newCode = toBody(setParamValue(code, name, value));
     const updatedThreads = threads.map((t) =>
-      t.id === activeThreadId ? { ...t, designContract: updatedContract } : t
+      t.id === activeThreadId ? { ...t, code: newCode, updatedAt: Date.now() } : t
     );
-    set({ threads: updatedThreads });
 
-    const updatedThread = updatedThreads.find((t) => t.id === activeThreadId);
-    if (updatedThread) void upsertThread(updatedThread);
+    set({
+      threads: updatedThreads,
+      code: newCode,
+      activeDraft: updatedDraft,
+      params: parseParams(newCode),
+    });
 
-    // 3. Call setCode to derive params and apply contract (but don't overwrite user intent)
-    get().setCode(newCode, activeThreadId, 'user');
+    void setDraft(activeThreadId, viewingVersion, updatedDraft);
+    setCodeDebounced(activeThreadId, newCode, Date.now());
 
-    // 4. Schedule debounced compile
+    const versionObj = currentThread?.versions?.find((v) => v.version === viewingVersion);
+    const preludeVersion = versionObj?.preludeVersion ?? PRELUDE_VERSION;
+
     set({ compileStatus: 'compiling' });
-    compileModel(get().code).then(result => {
+    compileModel(newCode, { preludeVersion }).then((result) => {
       get().setCompileResult(result);
     });
   },
 
   unpinParam: (name) => {
-    const { activeThreadId, threads, code } = get();
-    const targetThread = threads.find((t) => t.id === activeThreadId);
-    if (!targetThread || !targetThread.designContract?.pinnedParams) return;
+    const { activeThreadId, threads, viewingVersion, code } = get();
+    const currentThread = threads.find((t) => t.id === activeThreadId);
+    const currentDraft = get().activeDraft;
+    if (!currentDraft?.pinnedParams || !(name in currentDraft.pinnedParams)) return;
 
-    const pinnedParam = targetThread.designContract.pinnedParams[name];
-    if (!pinnedParam) return;
+    const nextPins = { ...currentDraft.pinnedParams };
+    delete nextPins[name];
 
-    const newPinned = { ...targetThread.designContract.pinnedParams };
-    delete newPinned[name];
+    const updatedDraft: LocalDraft = {
+      ...currentDraft,
+      pinnedParams: nextPins,
+    };
 
-    const updatedContract = { ...targetThread.designContract, pinnedParams: newPinned };
+    const versionObj = currentThread?.versions?.find((v) => v.version === viewingVersion);
+    const parsed = parseParams(versionObj ? versionObj.body : '');
+    const origParam = parsed.find((p) => p.name === name);
+    const restoredValue = origParam?.value;
+
+    let newCode = code;
+    if (typeof restoredValue === 'number') {
+      newCode = toBody(setParamValue(code, name, restoredValue));
+    }
 
     const updatedThreads = threads.map((t) =>
-      t.id === activeThreadId ? { ...t, designContract: updatedContract } : t
+      t.id === activeThreadId ? { ...t, code: newCode, updatedAt: Date.now() } : t
     );
-    set({ threads: updatedThreads });
 
-    const updatedThread = updatedThreads.find((t) => t.id === activeThreadId);
-    if (updatedThread) void upsertThread(updatedThread);
+    set({
+      threads: updatedThreads,
+      code: newCode,
+      activeDraft: updatedDraft,
+      params: parseParams(newCode),
+    });
 
-    // Restore supersededValue
-    const newCode = setParamValue(code, name, pinnedParam.supersededValue);
-    get().setCode(newCode, activeThreadId, 'user');
+    void setDraft(activeThreadId, viewingVersion, updatedDraft);
+    setCodeDebounced(activeThreadId, newCode, Date.now());
 
+    const preludeVersion = versionObj?.preludeVersion ?? PRELUDE_VERSION;
     set({ compileStatus: 'compiling' });
-    compileModel(get().code).then(result => {
+    compileModel(newCode, { preludeVersion }).then((result) => {
       get().setCompileResult(result);
     });
   },
 
   unpinAll: () => {
-    const { activeThreadId, threads, code } = get();
-    const targetThread = threads.find((t) => t.id === activeThreadId);
-    if (!targetThread || !targetThread.designContract?.pinnedParams) return;
+    const { activeThreadId, threads, viewingVersion, code } = get();
+    const currentThread = threads.find((t) => t.id === activeThreadId);
+    const currentDraft = get().activeDraft;
+    if (!currentDraft?.pinnedParams || Object.keys(currentDraft.pinnedParams).length === 0) return;
 
-    const pinnedParams = targetThread.designContract.pinnedParams;
-    if (Object.keys(pinnedParams).length === 0) return;
+    const updatedDraft: LocalDraft = {
+      ...currentDraft,
+      pinnedParams: {},
+    };
 
-    const updatedContract = { ...targetThread.designContract, pinnedParams: {} };
+    const versionObj = currentThread?.versions?.find((v) => v.version === viewingVersion);
+    const parsed = parseParams(versionObj ? versionObj.body : '');
+
+    let newCode = code;
+    for (const [name] of Object.entries(currentDraft.pinnedParams)) {
+      const origParam = parsed.find((p) => p.name === name);
+      if (typeof origParam?.value === 'number') {
+        newCode = toBody(setParamValue(newCode, name, origParam.value));
+      }
+    }
 
     const updatedThreads = threads.map((t) =>
-      t.id === activeThreadId ? { ...t, designContract: updatedContract } : t
+      t.id === activeThreadId ? { ...t, code: newCode, updatedAt: Date.now() } : t
     );
-    set({ threads: updatedThreads });
 
-    const updatedThread = updatedThreads.find((t) => t.id === activeThreadId);
-    if (updatedThread) void upsertThread(updatedThread);
+    set({
+      threads: updatedThreads,
+      code: newCode,
+      activeDraft: updatedDraft,
+      params: parseParams(newCode),
+    });
 
-    // Restore supersededValues
-    let newCode = code;
-    for (const [name, pin] of Object.entries(pinnedParams)) {
-      newCode = setParamValue(newCode, name, pin.supersededValue);
-    }
-    get().setCode(newCode, activeThreadId, 'user');
+    void setDraft(activeThreadId, viewingVersion, updatedDraft);
+    setCodeDebounced(activeThreadId, newCode, Date.now());
 
+    const preludeVersion = versionObj?.preludeVersion ?? PRELUDE_VERSION;
     set({ compileStatus: 'compiling' });
-    compileModel(get().code).then(result => {
+    compileModel(newCode, { preludeVersion }).then((result) => {
       get().setCompileResult(result);
     });
   },
@@ -1111,61 +1333,38 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (updatedThread) void upsertThread(updatedThread);
   },
 
-  setThreadContract: (_contract, threadId) => {
-    void _contract;
-    const targetId = threadId || get().activeThreadId;
-    const { threads } = get();
-    const targetThread = threads.find((t) => t.id === targetId);
-    if (!targetThread) return;
-
-    // The client owns standing constraints and pins; since the spec left the
-    // contract, the server's copy carries nothing authoritative, so it is not
-    // merged.
-    const updatedContract: DesignContract = targetThread.designContract ?? {
-      standing: {},
-      pinnedParams: {},
-    };
-
-    const updatedThreads = threads.map((t) =>
-      t.id === targetId ? { ...t, designContract: updatedContract, updatedAt: Date.now() } : t
-    );
-    set({ threads: updatedThreads });
-
-    const updatedThread = updatedThreads.find((t) => t.id === targetId);
-    if (updatedThread) void upsertThread(updatedThread);
-  },
-
-  dismissContractDiff: () => set({ contractDiff: null }),
-
   setIsAnnotating: (isAnnotating) => set({ isAnnotating }),
   setBaseSnapshot: (snapshot) => set({ baseSnapshot: snapshot }),
   setPendingAttachment: (image) => set({ pendingAttachment: image }),
 
   resetProject: () => {
     const { threads, activeThreadId } = get();
+    const defaultBody = toBody(DEFAULT_CODE);
     const resetThreads = threads.map((t) =>
       t.id === activeThreadId
         ? {
             ...t,
-            code: DEFAULT_CODE,
+            code: defaultBody,
             designContract: undefined,
             stlContent: null,
             modelInfo: null,
             step: null,
             messages: createInitialThread().messages,
+            viewingVersion: null,
             updatedAt: Date.now(),
           }
         : t
     );
 
     set({
-      code: DEFAULT_CODE,
-      params: parseParams(toBody(DEFAULT_CODE)),
-      contractDiff: null,
+      code: defaultBody,
+      params: parseParams(defaultBody),
       geometry: null,
       stlContent: null,
       modelInfo: null,
       step: null,
+      viewingVersion: null,
+      activeDraft: null,
       compileStatus: 'idle',
       compileError: null,
       threads: resetThreads,
@@ -1173,7 +1372,6 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const resetThread = resetThreads.find((t) => t.id === activeThreadId);
     if (resetThread) {
-      // Old messages go first, so the fresh welcome message isn't swept up with them.
       void (async () => {
         await clearThreadMessages(activeThreadId);
         await upsertThread(resetThread);

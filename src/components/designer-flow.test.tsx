@@ -4,15 +4,11 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { NextRequest } from 'next/server';
 import { POST as compileRoutePOST } from '@/app/api/compile/route';
 import { runBrep } from '@/lib/engine/brep-runner';
-import { parseStlToGeometry } from '@/lib/engine/geometry-utils';
 import { withGeneratedPrelude, toBody } from '@/lib/brep/prelude';
 import { useAppStore } from '@/store/app-store';
 import { DB_NAME } from '@/lib/storage/db-schema';
-import { __resetDbForTests } from '@/lib/storage/thread-storage';
-import { readStream } from '@/lib/stream-reader';
+import { __resetDbForTests, getDraft } from '@/lib/storage/thread-storage';
 import type { StreamEvent } from '@/lib/agent/stream-events';
-import type { ChatMessage } from '@/types';
-import { applyStreamResult } from './chat/apply-stream-result';
 import { DesignPanel } from './design/design-panel';
 import { MessageBubble } from './chat/message-bubble';
 
@@ -53,12 +49,9 @@ result = box
 const origUseSyncExternalStore = React.useSyncExternalStore;
 
 describe('0c component test: designer run and slider recompilation', () => {
-  const compileBodies: Array<{ code?: unknown; language?: unknown }> = [];
+  const compileBodies: Array<{ code?: unknown; language?: unknown; preludeVersion?: unknown }> = [];
 
   beforeEach(async () => {
-    // In node environment without DOM, renderToStaticMarkup acts as SSR and calls
-    // getServerSnapshot (which zustand binds to getInitialState). Patch useSyncExternalStore
-    // so server-rendered component markup reflects the updated store state.
     React.useSyncExternalStore = (subscribe, getSnapshot) => {
       return origUseSyncExternalStore(subscribe, getSnapshot, getSnapshot);
     };
@@ -99,13 +92,24 @@ describe('0c component test: designer run and slider recompilation', () => {
       stlContent: null,
       modelInfo: null,
       compileStatus: 'idle',
-      contractDiff: null,
       isGenerating: false,
       generatingThreadId: null,
+      viewingVersion: null,
+      activeDraft: null,
       editorView: 'design',
     });
+  });
 
-    // Fake fetch routing for /api/chat and /api/compile
+  afterEach(() => {
+    React.useSyncExternalStore = origUseSyncExternalStore;
+    vi.unstubAllGlobals();
+  });
+
+  it('a designer run renders end to end, and slider moves recompile through /api/compile', async () => {
+    const targetThreadId = crypto.randomUUID();
+    const sampleBody = toBody(SAMPLE_BUILD123D_CODE);
+
+    // Fake fetch routing for /api/chat, /api/threads/:id, /api/artifacts/:id, and /api/compile
     vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
 
@@ -118,6 +122,7 @@ describe('0c component test: designer run and slider recompilation', () => {
             t: 'end',
             seq: 2,
             status: 'done',
+            designVersion: 1,
             reply: {
               messageId: 'm1',
               kind: 'result',
@@ -128,8 +133,48 @@ describe('0c component test: designer run and slider recompilation', () => {
         const body = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('');
         return new Response(new Blob([body]).stream(), {
           status: 200,
-          headers: { 'Content-Type': 'text/event-stream' },
+          headers: { 'X-Run-Id': 'r1', 'Content-Type': 'text/event-stream' },
         });
+      }
+
+      if (url === `/api/threads/${targetThreadId}`) {
+        return new Response(
+          JSON.stringify({
+            id: targetThreadId,
+            title: 'Parametric Box',
+            activeRun: null,
+            messages: [
+              {
+                id: 'm1',
+                seq: 1,
+                role: 'assistant',
+                kind: 'result',
+                markdown: 'A parametric box with customizable width and depth.',
+                designVersion: 1,
+                attachments: [],
+              },
+            ],
+            versions: [
+              {
+                version: 1,
+                parentVersion: null,
+                origin: 'designer',
+                summary: 'A parametric box with customizable width and depth.',
+                flags: [],
+                body: sampleBody,
+                preludeVersion: '1',
+                stl: 'art-stl-1',
+                step: 'art-step-1',
+                createdAt: 1000,
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+
+      if (url === '/api/artifacts/art-stl-1') {
+        return new Response(VALID_ASCII_STL, { status: 200 });
       }
 
       if (url.endsWith('/api/compile')) {
@@ -149,16 +194,8 @@ describe('0c component test: designer run and slider recompilation', () => {
 
       throw new Error(`Unhandled fake fetch URL: ${url}`);
     });
-  });
 
-  afterEach(() => {
-    React.useSyncExternalStore = origUseSyncExternalStore;
-    vi.unstubAllGlobals();
-  });
-
-  it('a designer run renders end to end, and slider moves recompile through /api/compile', async () => {
     // 1. Create a thread in the store
-    const targetThreadId = crypto.randomUUID();
     useAppStore.setState({
       threads: [
         {
@@ -174,51 +211,13 @@ describe('0c component test: designer run and slider recompilation', () => {
     });
     expect(targetThreadId).toBeTruthy();
 
-    const assistantMsgId = 'assistant-wire-1';
-    const assistantMsg: ChatMessage = {
-      id: assistantMsgId,
-      role: 'assistant',
-      content: '',
-      transcript: '',
-      status: 'streaming',
-      timestamp: Date.now(),
-    };
-    useAppStore.getState().addMessage(assistantMsg, targetThreadId);
-
-    // 2. Fetch /api/chat and drive stream through applyStreamResult
-    const chatRes = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ threadId: targetThreadId }),
-    });
-    expect(chatRes.ok).toBe(true);
-
-    await readStream(chatRes, {
-      onUpdate: () => {},
-      onDone: async (state) => {
-        await applyStreamResult(state, targetThreadId, assistantMsgId);
-      },
-    });
-
-    // In C1, code and STL are loaded via thread reload (A10a).
-    // Populate store to assert DesignPanel and slider move recompilation.
-    const { geometry, modelInfo } = parseStlToGeometry(VALID_ASCII_STL);
-    useAppStore.getState().setCode(SAMPLE_BUILD123D_CODE, targetThreadId);
-    useAppStore.getState().setCompileResult(
-      {
-        success: true,
-        stlContent: VALID_ASCII_STL,
-        geometry,
-        modelInfo,
-        compileTimeMs: 0,
-      },
-      targetThreadId
-    );
+    // 2. Drive run through store sendMessage
+    await useAppStore.getState().sendMessage('Create a parametric box');
 
     // 3. Assert the run rendered in store
     const stateAfterRun = useAppStore.getState();
-    expect(stateAfterRun.code).toBe(SAMPLE_BUILD123D_CODE);
-    expect(stateAfterRun.compileStatus).toBe('success');
+    expect(stateAfterRun.code).toBe(sampleBody);
+    expect(stateAfterRun.compileStatus).toBe('idle');
     expect(stateAfterRun.compileError).toBeNull();
     expect(stateAfterRun.geometry).toBeDefined();
     expect(stateAfterRun.modelInfo).toBeDefined();
@@ -243,7 +242,7 @@ describe('0c component test: designer run and slider recompilation', () => {
 
     // Assistant message got summary as content with status complete
     const targetThread = stateAfterRun.threads.find((t) => t.id === targetThreadId);
-    const completedMsg = targetThread?.messages.find((m) => m.id === assistantMsgId);
+    const completedMsg = targetThread?.messages.find((m) => m.id === 'm1');
     expect(completedMsg?.status).toBe('complete');
     expect(completedMsg?.content).toBe('A parametric box with customizable width and depth.');
 
@@ -259,7 +258,7 @@ describe('0c component test: designer run and slider recompilation', () => {
     const bubbleMarkup = renderToStaticMarkup(<MessageBubble message={completedMsg!} />);
     expect(bubbleMarkup).toContain('A parametric box with customizable width and depth.');
 
-    // 4. Assert a slider move recompiles through /api/compile
+    // 4. Assert a slider move recompiles through /api/compile with preludeVersion
     compileBodies.length = 0;
     (runBrep as unknown as ReturnType<typeof vi.fn>).mockClear();
     (runBrep as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
@@ -277,7 +276,7 @@ describe('0c component test: designer run and slider recompilation', () => {
       ],
     });
 
-    // Call the same store action slider's onChange + onPin calls
+    // Call store pinParam
     useAppStore.getState().pinParam('width', 55);
 
     // Wait until compileModel completes and compileStatus leaves 'compiling' (bounded to 5s)
@@ -291,14 +290,15 @@ describe('0c component test: designer run and slider recompilation', () => {
 
     // Exactly one /api/compile request
     expect(compileBodies).toHaveLength(1);
-    const compileBody = compileBodies[0] as { code: string; language: string };
+    const compileBody = compileBodies[0] as { code: string; language: string; preludeVersion?: string };
     expect(compileBody.language).toBe('build123d');
+    expect(compileBody.preludeVersion).toBe('1');
     expect(compileBody.code).toContain('width = 55');
     expect(compileBody.code).toContain('depth = 60');
 
-    // Mocked runBrep received the updated code
+    // Mocked runBrep received the updated code with prelude
     expect(runBrep).toHaveBeenCalledTimes(1);
-    expect(runBrep).toHaveBeenCalledWith(withGeneratedPrelude(toBody(compileBody.code)));
+    expect(runBrep).toHaveBeenCalledWith(withGeneratedPrelude(toBody(compileBody.code), '1'));
 
     // Store has new compile status and recompiled mesh reached stlContent/geometry
     const finalState = useAppStore.getState();
@@ -309,12 +309,9 @@ describe('0c component test: designer run and slider recompilation', () => {
     expect(finalState.geometry).toBeDefined();
     expect(finalState.geometry).not.toBe(stateAfterRun.geometry);
 
-    const finalThread = finalState.threads.find((t) => t.id === targetThreadId);
-    expect(finalThread?.designContract?.pinnedParams?.width).toMatchObject({
-      value: 55,
-      supersededValue: 40,
-      pinnedAt: expect.any(Number),
-    });
+    // Pins are now stored on the draft
+    const draft = await getDraft(targetThreadId, 1);
+    expect(draft?.pinnedParams?.width).toBe(55);
 
     // 5. Assert the OpenSCAD path is gone: language 'openscad' returns 400 and runBrep is not called
     (runBrep as unknown as ReturnType<typeof vi.fn>).mockClear();

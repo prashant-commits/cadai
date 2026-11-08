@@ -23,7 +23,17 @@ export function ParamControl({ param, pinned, onPin, onUnpin, onChange }: ParamC
 
   const handleReset = () => {
     onChange(param.authoredValue);
-    if (pinned) onUnpin();
+    if (pinned) {
+      onUnpin();
+    } else if (typeof param.authoredValue === 'number') {
+      const { code, setCode } = useAppStore.getState();
+      import('@/lib/design/write-params').then(({ setParamValue }) => {
+        const newCode = setParamValue(code, param.name, param.authoredValue);
+        if (newCode !== code) {
+          setCode(newCode, undefined, 'user');
+        }
+      });
+    }
   };
 
   const hasChanged = param.value !== param.authoredValue;

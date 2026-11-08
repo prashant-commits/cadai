@@ -39,6 +39,7 @@ export interface ChatThread {
   step?: string | null;
   activeRunId?: string | null;
   versions?: ServerThreadVersion[];
+  viewingVersion?: number | null;
 }
 
 

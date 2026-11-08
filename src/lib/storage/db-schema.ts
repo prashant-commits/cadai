@@ -27,6 +27,7 @@ export interface ThreadRow {
   selectedModel?: string;
   designContract?: DesignContract;
   step?: string | null;
+  viewingVersion?: number | null;
 }
 
 /**

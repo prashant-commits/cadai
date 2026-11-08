@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useAppStore } from './app-store';
 import { DB_NAME } from '@/lib/storage/db-schema';
-import { __resetDbForTests, loadAllThreads, DEFAULT_CODE, upsertThread } from '@/lib/storage/thread-storage';
+import { __resetDbForTests, loadAllThreads, DEFAULT_CODE, upsertThread, getDraft } from '@/lib/storage/thread-storage';
 import { PRELUDE_SENTINEL } from '@/lib/brep/prelude';
 
 function deleteDatabase(): Promise<void> {
@@ -54,7 +54,6 @@ describe('useAppStore thread scoping & progress isolation', () => {
       messages: [],
       code: 'cube(10);',
       params: [],
-      contractDiff: null,
       isGenerating: false,
       generatingThreadId: null,
       editorView: 'design',
@@ -109,84 +108,110 @@ describe('useAppStore thread scoping & progress isolation', () => {
   });
 
   describe('Contract and Pins', () => {
-    it('pinParam updates code and contract together', () => {
+    it('pinParam updates code and draft together', async () => {
       const store = useAppStore.getState();
       store.setCode('w = 10;\ncube(w);'); // set code first to parse params
-      
+
       useAppStore.getState().pinParam('w', 55);
-      
+
       const updated = useAppStore.getState();
       expect(updated.code).toBe('w = 55;\ncube(w);');
-      
-      const activeThread = updated.threads.find(t => t.id === updated.activeThreadId);
-      expect(activeThread?.designContract?.pinnedParams['w'].value).toBe(55);
-      expect(activeThread?.designContract?.pinnedParams['w'].supersededValue).toBe(10);
+      expect(updated.activeDraft?.pinnedParams?.['w']).toBe(55);
+
+      await flushWrites();
+      const draft = await getDraft(updated.activeThreadId, updated.viewingVersion);
+      expect(draft?.pinnedParams?.['w']).toBe(55);
     });
 
-    it('unpinParam restores supersededValue', () => {
-      const store = useAppStore.getState();
-      store.switchThread('thread-2'); // active code is 'w = 10; cube(w);' with pin w=20, superseded=10
-      // the initial code is 'w = 10; cube(w);'. wait, if w is pinned to 20, the code in state is 'w = 10...' 
-      // let's just make it right.
-      useAppStore.getState().setCode('w = 20;\ncube(w);'); // sync it
-      
+    it('unpinParam restores version value', () => {
+      const version = {
+        version: 1,
+        parentVersion: null,
+        origin: 'designer' as const,
+        summary: 'v1',
+        flags: [],
+        body: 'w = 10;\ncube(w);',
+        preludeVersion: '1',
+        stl: null,
+        step: null,
+        createdAt: 1000,
+      };
+
+      useAppStore.setState({
+        threads: [
+          {
+            id: 'thread-2',
+            title: 'Thread 2',
+            createdAt: 1000,
+            updatedAt: 1000,
+            messages: [],
+            code: 'w = 10;\ncube(w);',
+            versions: [version],
+            viewingVersion: 1,
+          },
+        ],
+        activeThreadId: 'thread-2',
+        viewingVersion: 1,
+        code: 'w = 10;\ncube(w);',
+      });
+
+      useAppStore.getState().pinParam('w', 55);
+      expect(useAppStore.getState().code).toBe('w = 55;\ncube(w);');
+      expect(useAppStore.getState().activeDraft?.pinnedParams?.['w']).toBe(55);
+
       useAppStore.getState().unpinParam('w');
-      
+
       const updated = useAppStore.getState();
       expect(updated.code).toBe('w = 10;\ncube(w);');
-      
-      const activeThread = updated.threads.find(t => t.id === updated.activeThreadId);
-      expect(activeThread?.designContract?.pinnedParams['w']).toBeUndefined();
+      expect(updated.activeDraft?.pinnedParams?.['w']).toBeUndefined();
     });
 
-    it('pins are thread-scoped and do not leak across switchThread', () => {
+    it('pins are thread-scoped and do not leak across switchThread', async () => {
       const store = useAppStore.getState();
-      store.setCode('w = 10; cube(w);');
+      store.setCode('w = 10;\ncube(w);');
       store.pinParam('w', 42);
-      
+      expect(useAppStore.getState().activeDraft?.pinnedParams?.['w']).toBe(42);
+
       store.switchThread('thread-2');
       const t2State = useAppStore.getState();
-      // thread-2 has its own contract defined in beforeEach
-      const activeThread = t2State.threads.find(t => t.id === t2State.activeThreadId);
-      expect(activeThread?.designContract?.pinnedParams['w'].value).toBe(20);
-      
+      expect(t2State.activeDraft?.pinnedParams?.['w']).toBeUndefined();
+
       store.switchThread('thread-1');
+      await flushWrites();
       const t1State = useAppStore.getState();
-      const t1Thread = t1State.threads.find(t => t.id === t1State.activeThreadId);
-      expect(t1Thread?.designContract?.pinnedParams['w'].value).toBe(42);
+      expect(t1State.code).toBe('w = 42;\ncube(w);');
     });
 
-    it('regeneration into a background thread merges against the correct contract', () => {
+    it('regeneration into a background thread does not apply sticky pins', () => {
       const store = useAppStore.getState();
-      // Active thread is thread-1. thread-2 has a pin for w=20.
-      
+      // Active thread is thread-1
+      expect(store.activeThreadId).toBe('thread-1');
+
       // Simulate regeneration writing to thread-2
       store.setCode('w = 99;\ncube(w);', 'thread-2');
-      
+
       const updated = useAppStore.getState();
-      const t2 = updated.threads.find(t => t.id === 'thread-2');
-      
-      // The pin in thread-2 forces w back to 20
-      expect(t2?.code).toBe('w = 20;\ncube(w);');
-      
+      const t2 = updated.threads.find((t) => t.id === 'thread-2');
+
+      // The sticky pins were deleted, so w stays 99
+      expect(t2?.code).toBe('w = 99;\ncube(w);');
+
       // And the active thread is completely unaffected
       expect(updated.code).toBe('cube(10);');
     });
 
-    it('manual edits to a pinned parameter update the pin instead of reverting', () => {
+    it('manual edits to a pinned parameter update the draft editedBody', () => {
       const store = useAppStore.getState();
       store.setCode('w = 10;\ncube(w);');
       store.pinParam('w', 42); // Pin is now 42
-      
+
       // Simulate user typing w = 99 in the editor (source = 'user')
       useAppStore.getState().setCode('w = 99;\ncube(w);', undefined, 'user');
-      
+
       const updated = useAppStore.getState();
-      expect(updated.code).toBe('w = 99;\ncube(w);'); // Code stays what user typed
-      
-      const activeThread = updated.threads.find(t => t.id === updated.activeThreadId);
-      expect(activeThread?.designContract?.pinnedParams['w'].value).toBe(99); // Pin updated to 99
-      expect(activeThread?.designContract?.pinnedParams['w'].supersededValue).toBe(10); // supersededValue unchanged
+      expect(updated.code).toBe('w = 99;\ncube(w);');
+      expect(updated.activeDraft?.editedBody).toBe('w = 99;\ncube(w);');
+      expect(updated.activeDraft?.pinnedParams?.['w']).toBe(99);
     });
 
 

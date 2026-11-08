@@ -4,6 +4,7 @@ import React, { useRef, useState, useEffect, useCallback } from 'react';
 import Editor, { Monaco } from '@monaco-editor/react';
 import { useAppStore } from '@/store/app-store';
 import { compileModel } from '@/lib/engine/build123d-client';
+import { PRELUDE_VERSION } from '@/lib/brep/prelude';
 import {
   Play,
   Copy,
@@ -15,13 +16,25 @@ import {
   Printer,
 } from 'lucide-react';
 
+export const PRELUDE_NOTE = "Helpers like _round and _bevel come from the tool's prelude; edit only the design code.";
+
+/** The editor's compile: the body plus the viewed version's preludeVersion. */
+export async function compileEditorCode(body: string): Promise<void> {
+  const { threads, activeThreadId, viewingVersion, setCompileStatus, setCompileResult } =
+    useAppStore.getState();
+  const currentThread = threads.find((t) => t.id === activeThreadId);
+  const version = currentThread?.versions?.find((v) => v.version === viewingVersion);
+  const preludeVersion = version?.preludeVersion ?? PRELUDE_VERSION;
+  setCompileStatus('compiling');
+  const result = await compileModel(body, { preludeVersion });
+  setCompileResult(result);
+}
+
 export function CodeEditorPanel() {
   const {
     code,
     setCode,
     compileStatus,
-    setCompileResult,
-    setCompileStatus,
     isGenerating,
     editorView,
     setEditorView,
@@ -69,11 +82,9 @@ export function CodeEditorPanel() {
 
   const triggerRecompile = useCallback(
     async (codeToCompile: string) => {
-      setCompileStatus('compiling');
-      const result = await compileModel(codeToCompile);
-      setCompileResult(result);
+      await compileEditorCode(codeToCompile);
     },
-    [setCompileResult, setCompileStatus]
+    []
   );
 
   const handleEditorChange = (value?: string) => {
@@ -165,6 +176,11 @@ export function CodeEditorPanel() {
             <span className="text-[11px]">Compile</span>
           </button>
         </div>
+      </div>
+
+      {/* Fixed prelude note */}
+      <div className="px-3.5 py-1.5 bg-slate-900/60 border-b border-slate-800 text-[11px] text-slate-400 select-none">
+        {PRELUDE_NOTE}
       </div>
 
       {/* Monaco Editor Container */}

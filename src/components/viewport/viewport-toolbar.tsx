@@ -13,6 +13,27 @@ import {
   Download,
 } from 'lucide-react';
 import { exportStep } from '@/lib/export/stl-exporter';
+import { fetchArtifactText } from '@/lib/client/server-thread';
+
+export async function downloadStep(): Promise<void> {
+  const { threads, activeThreadId, viewingVersion, step } = useAppStore.getState();
+  const activeThread = threads.find((t) => t.id === activeThreadId);
+  const version = activeThread?.versions?.find((v) => v.version === viewingVersion);
+  const title = activeThread?.title?.trim() || 'model';
+  const baseTitle = title.replace(/\.step$/i, '') || 'model';
+  const filename = `${baseTitle}.step`;
+
+  try {
+    if (version?.step) {
+      const stepText = await fetchArtifactText(version.step);
+      exportStep(stepText, filename, 'text');
+    } else if (step) {
+      exportStep(step, filename, 'base64');
+    }
+  } catch (err) {
+    console.error('Failed to download STEP file:', err);
+  }
+}
 
 interface ViewportToolbarProps {
   onResetCamera: () => void;
@@ -27,7 +48,12 @@ export function ViewportToolbar({ onResetCamera }: ViewportToolbarProps) {
     step,
     threads,
     activeThreadId,
+    viewingVersion,
   } = useAppStore();
+
+  const activeThread = threads.find((t) => t.id === activeThreadId);
+  const viewedVersion = activeThread?.versions?.find((v) => v.version === viewingVersion);
+  const hasStep = Boolean(viewedVersion?.step || step);
 
   const handleSnapshot = () => {
     const canvas = document.querySelector('canvas');
@@ -39,17 +65,7 @@ export function ViewportToolbar({ onResetCamera }: ViewportToolbarProps) {
   };
 
   const handleDownloadStep = () => {
-    if (!step) return;
-    const activeThread = threads.find((t) => t.id === activeThreadId);
-    const title = activeThread?.title?.trim() || 'model';
-    const baseTitle = title.replace(/\.step$/i, '') || 'model';
-    const filename = `${baseTitle}.step`;
-
-    try {
-      exportStep(step, filename);
-    } catch (err) {
-      console.error('Failed to download STEP file:', err);
-    }
+    void downloadStep();
   };
 
   return (
@@ -142,12 +158,12 @@ export function ViewportToolbar({ onResetCamera }: ViewportToolbarProps) {
       </button>
 
       {/* STEP Download */}
-      {step && (
+      {hasStep && (
         <>
           <div className="w-px h-4 bg-slate-800 mx-0.5" />
           <button
             onClick={handleDownloadStep}
-            className="p-1.5 rounded-md text-xs text-indigo-400 hover:text-indigo-200 hover:bg-indigo-900/30 transition-colors flex items-center gap-1 font-medium"
+            className="p-1.5 rounded-md text-xs text-indigo-400 hover:text-indigo-200 hover:bg-indigo-900/30 transition-colors flex items-center gap-1 font-medium cursor-pointer"
             title="Download STEP"
           >
             <Download className="w-4 h-4" />
