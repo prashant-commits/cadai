@@ -1,77 +1,9 @@
 import * as THREE from 'three';
-import { AssemblySpec } from '../lib/agent/assembly-spec';
-import type { DesignContract, ModelInfo, SpecViolation } from './designer';
+import type { DesignContract, ModelInfo } from './designer';
 export * from './designer';
 
-import type { VariantId, VariantReview } from '../lib/agent/spec-variants';
-export type { VariantId, VariantReview };
-
-export interface GateVariant {
-  id: VariantId;
-  name: string;
-  idea: string;
-  spec: AssemblySpec | null;
-  sheetSvg: string | null;
-  review: VariantReview | null;
-  error?: string;
-}
-
-// The data a paused graph run sends the client to render a HIL gate.
-export type GatePayload =
-  | {
-      kind: 'spec';
-      brief?: string;
-      variants?: GateVariant[];
-      recommendedId?: VariantId;
-      openQuestions?: AssemblySpec['openQuestions'];
-      contract: DesignContract | null;
-      revisionCount: number;
-      /** legacy records only */
-      spec?: AssemblySpec | null;
-    }
-  | {
-      kind: 'accept';
-      modelInfo: ModelInfo | null;
-      violations: SpecViolation[];
-      code: string;
-      stl?: string;
-      revisionCount: number;
-    };
-
-// What the client sends back to resume a paused graph run.
-export interface GateDecision {
-  action: 'approve' | 'revise' | 'cancel';
-  chosenVariantId?: VariantId;
-  spec?: AssemblySpec;   // edited spec, spec-gate approve only
-  comment?: string;      // revise feedback, or an optional approve note
-  /**
-   * Answers to the spec's openQuestions, keyed by question id. The architect
-   * asks these to resolve exactly the ambiguity that makes a spec wrong; before
-   * this existed they rendered as read-only text and the only way to respond
-   * was Revise, which threw the whole spec away and re-rolled the architect.
-   */
-  answers?: Record<string, string>;
-}
-
-/** Where one gate got to. `open` is the only state that accepts input. */
-export type GateStatus = 'open' | 'approved' | 'revised' | 'denied';
-
 /** How far the assistant message's own turn got. */
-export type MessageStatus = 'streaming' | 'awaiting_input' | 'complete' | 'interrupted' | 'error';
-
-/**
- * One human-in-the-loop gate, as it appears in the transcript.
- *
- * The payload rides here rather than inside the markdown: embedding a
- * multi-kilobyte spec would mean escaping it through the renderer and
- * re-parsing it on every read. The markdown carries only `<!--gate:<id>-->`.
- */
-export interface GateRecord {
-  payload: GatePayload;
-  decision?: GateDecision;
-  status: GateStatus;
-  decidedAt?: number;
-}
+export type MessageStatus = 'streaming' | 'complete' | 'interrupted' | 'error';
 
 export interface ChatMessage {
   id: string;
@@ -84,9 +16,8 @@ export interface ChatMessage {
   content: string;
   /** Serialised TranscriptNode[]; display only, never leaves the browser. */
   transcript?: string;
-  gates?: Record<string, GateRecord>;
   status?: MessageStatus;
-  /** The paused run behind an open gate on this message. */
+  /** The run that produced this message. */
   runId?: string;
   image?: string;
   code?: string;

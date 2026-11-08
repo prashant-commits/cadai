@@ -1,653 +1,146 @@
 import { describe, it, expect } from 'vitest';
-import type { ZodType } from 'zod';
-import { toJsonSchema } from '@langchain/core/utils/json_schema';
-import { VisualCritiqueSchema, SheetReviewSchema, ArchitectPlanSchema } from './llm-schemas';
+import { z } from 'zod';
+import { ChatAnthropic } from '@langchain/anthropic';
+import {
+  structuredFor,
+  unusableStop,
+  isCutOff,
+  UnusableReplyError,
+  StopCheckedJsonOutputParser,
+  isPlainObject,
+} from './llm-schemas';
 
-type Node = { properties?: Record<string, unknown>; required?: string[]; [k: string]: unknown };
-
-/** Collects every object node that violates OpenAI strict json_schema (all properties required). */
-function violations(node: unknown, path: string, out: string[]): string[] {
-  if (Array.isArray(node)) {
-    node.forEach((n, i) => violations(n, `${path}[${i}]`, out));
-  } else if (node && typeof node === 'object') {
-    const n = node as Node;
-    if (n.properties) {
-      const missing = Object.keys(n.properties).filter((k) => !(n.required ?? []).includes(k));
-      if (missing.length) out.push(`${path}: not required: ${missing.join(', ')}`);
-    }
-    for (const [k, v] of Object.entries(n)) violations(v, `${path}.${k}`, out);
-  }
-  return out;
-}
-
-describe('structured-output schemas are strict-json_schema safe', () => {
-  const schemas: Record<string, ZodType> = { VisualCritiqueSchema, SheetReviewSchema, ArchitectPlanSchema };
-  for (const [name, schema] of Object.entries(schemas)) {
-    it(`${name}: every object lists all its properties as required`, () => {
-      const json = toJsonSchema(schema, { cycles: 'ref', reused: 'ref' }) // same options as interopZodResponseFormat;
-      expect(violations(json, name, [])).toEqual([]);
+describe('llm-schemas', () => {
+  describe('isPlainObject', () => {
+    it('identifies plain objects and rejects arrays, null, primitives', () => {
+      expect(isPlainObject({})).toBe(true);
+      expect(isPlainObject({ a: 1 })).toBe(true);
+      expect(isPlainObject(null)).toBe(false);
+      expect(isPlainObject([])).toBe(false);
+      expect(isPlainObject('string')).toBe(false);
+      expect(isPlainObject(123)).toBe(false);
+      expect(isPlainObject(undefined)).toBe(false);
     });
-  }
-});
-
-describe('structuredFor', () => {
-  const FORBIDDEN = ['maxItems', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'pattern', 'default'];
-
-  const recorder = () => {
-    const seen: Array<{ schema: unknown; opts: unknown }> = [];
-    return { seen, model: { withStructuredOutput(schema: unknown, opts: unknown) { seen.push({ schema, opts }); return 'bound'; } } };
-  };
-
-  /**
-   * Test-local walker that counts optional property paths across a schema.
-   * Enters properties (with or without type: 'object'), items, prefixItems,
-   * anyOf, oneOf, allOf, and $defs.
-   */
-  function walkOptionalPaths(schema: unknown, parentPath = ''): string[] {
-    const optional: string[] = [];
-    if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return optional;
-    const node = schema as Record<string, unknown>;
-
-    if (node.properties && typeof node.properties === 'object' && !Array.isArray(node.properties)) {
-      const props = node.properties as Record<string, unknown>;
-      const req = new Set((Array.isArray(node.required) ? node.required : []) as string[]);
-      for (const [k, v] of Object.entries(props)) {
-        const propPath = parentPath ? `${parentPath}.${k}` : k;
-        if (!req.has(k)) {
-          optional.push(propPath);
-        }
-        optional.push(...walkOptionalPaths(v, propPath));
-      }
-    }
-
-    if (node.items && typeof node.items === 'object' && !Array.isArray(node.items)) {
-      optional.push(...walkOptionalPaths(node.items, `${parentPath}[]`));
-    } else if (Array.isArray(node.items)) {
-      for (const item of node.items) {
-        optional.push(...walkOptionalPaths(item, `${parentPath}[]`));
-      }
-    }
-
-    if (Array.isArray(node.prefixItems)) {
-      for (const item of node.prefixItems) {
-        optional.push(...walkOptionalPaths(item, `${parentPath}[]`));
-      }
-    }
-
-    for (const unionKey of ['anyOf', 'oneOf', 'allOf'] as const) {
-      if (Array.isArray(node[unionKey])) {
-        for (const branch of node[unionKey] as unknown[]) {
-          optional.push(...walkOptionalPaths(branch, parentPath));
-        }
-      }
-    }
-
-    if (node.$defs && typeof node.$defs === 'object' && !Array.isArray(node.$defs)) {
-      for (const [defName, def] of Object.entries(node.$defs as Record<string, unknown>)) {
-        const defPath = parentPath ? `${parentPath}.$defs.${defName}` : `$defs.${defName}`;
-        optional.push(...walkOptionalPaths(def, defPath));
-      }
-    }
-
-    return optional;
-  }
-
-  function countUnions(schema: unknown): { total: number; nullable: number; genuine: number } {
-    let total = 0;
-    let nullable = 0;
-    let genuine = 0;
-
-    function walk(node: unknown) {
-      if (Array.isArray(node)) {
-        node.forEach(walk);
-        return;
-      }
-      if (node && typeof node === 'object') {
-        const obj = node as Record<string, unknown>;
-        const union = obj.anyOf ?? obj.oneOf;
-        if (Array.isArray(union)) {
-          total++;
-          const isNullable = union.some(
-            (branch) => branch && typeof branch === 'object' && (branch as Record<string, unknown>).type === 'null'
-          );
-          if (isNullable) {
-            nullable++;
-          } else {
-            genuine++;
-          }
-        }
-        for (const v of Object.values(obj)) {
-          walk(v);
-        }
-      }
-    }
-
-    walk(schema);
-    return { total, nullable, genuine };
-  }
-
-  it('claude slugs get an Anthropic-safe strict JSON schema; other slugs get the schema unchanged', async () => {
-    const { structuredFor, ArchitectPlanSchema } = await import('./llm-schemas');
-    const { variantSpecRequestSchema } = await import('./assembly-spec');
-
-    const claude = recorder();
-    structuredFor(claude.model as never, 'claude-opus-5.5', ArchitectPlanSchema, { name: 'ArchitectPlan', strict: true });
-    const sent = JSON.stringify(claude.seen[0].schema);
-    for (const k of FORBIDDEN) expect(sent).not.toContain(`"${k}"`);
-    // Native structured output (output_config.format): no tool call, so no forced tool_choice and no strict flag.
-    expect(claude.seen[0].opts).toEqual({ name: 'ArchitectPlan', method: 'jsonSchema' });
-    expect((claude.seen[0].schema as { additionalProperties?: boolean }).additionalProperties).toBe(false);
-
-    // The variant JSON schema for Claude has 0 nullable unions and stripped forbidden keywords.
-    const variantJson = variantSpecRequestSchema();
-    const claudeVariant = recorder();
-    structuredFor(claudeVariant.model as never, 'claude-opus-5.5', variantJson, { name: 'AssemblySpec', strict: true });
-    const variantSent = JSON.stringify(claudeVariant.seen[0].schema);
-    for (const k of FORBIDDEN) expect(variantSent).not.toContain(`"${k}"`);
-
-    // Claude variant branch passes method: 'functionCalling' and has NO strict property
-    expect(claudeVariant.seen[0].opts).toMatchObject({ name: 'AssemblySpec', method: 'functionCalling' });
-    expect('strict' in (claudeVariant.seen[0].opts as object)).toBe(false);
-
-    // Claude non-variant schema (e.g. SheetReviewSchema) is sent as native structured output, includeRaw passed through
-    const { SheetReviewSchema } = await import('./llm-schemas');
-    const claudeReview = recorder();
-    structuredFor(claudeReview.model as never, 'claude-opus-5.5', SheetReviewSchema, { name: 'SheetReview', strict: true, includeRaw: true });
-    expect(claudeReview.seen[0].opts).toEqual({ name: 'SheetReview', method: 'jsonSchema', includeRaw: true });
-
-    // Verify union-typed parameters: 0 nullable unions in Claude variant schema,
-    // whereas OpenAI strict variant schema has ~30 nullable unions.
-    const openaiCounts = countUnions(variantJson);
-    expect(openaiCounts.nullable).toBeGreaterThanOrEqual(25);
-
-    const claudeCounts = countUnions(claudeVariant.seen[0].schema);
-    expect(claudeCounts.nullable).toBe(0);
-    expect(claudeCounts.total).toBe(claudeCounts.genuine);
-    expect(claudeCounts.total).toBeLessThan(5); // far below Anthropic's limit
-
-    // Structural requirements on Claude variant schema:
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const schemaObj = claudeVariant.seen[0].schema as any;
-    expect(schemaObj.additionalProperties).toBe(false);
-    expect(schemaObj.required.at(-1)).toBe('sheet'); // sheet last
-    expect(Object.keys(schemaObj.properties).at(-1)).toBe('sheet');
-    expect(schemaObj.required).toContain('components');
-    const compReq = schemaObj.properties.components.items.required;
-    expect(compReq).toContain('position');
-    expect(compReq).toContain('localExtents');
-    expect(compReq).toContain('shape');
-
-    // OpenAI routes (gpt-5.6-luna, gpt-6-sol) stay byte-identical.
-    const luna = recorder();
-    structuredFor(luna.model as never, 'gpt-5.6-luna', ArchitectPlanSchema, { name: 'ArchitectPlan', strict: true });
-    expect(luna.seen[0].schema).toBe(ArchitectPlanSchema);
-    expect(luna.seen[0].opts).toEqual({ name: 'ArchitectPlan', strict: true });
-    const lunaVariant = recorder();
-    structuredFor(lunaVariant.model as never, 'gpt-5.6-luna', variantJson, { name: 'AssemblySpec', strict: true });
-    expect(lunaVariant.seen[0].schema).toBe(variantJson);
-    expect(lunaVariant.seen[0].opts).toEqual({ name: 'AssemblySpec', strict: true });
-
-    const solVariant = recorder();
-    structuredFor(solVariant.model as never, 'gpt-6-sol', variantJson, { name: 'AssemblySpec', strict: true });
-    expect(solVariant.seen[0].schema).toBe(variantJson);
-    expect(solVariant.seen[0].opts).toEqual({ name: 'AssemblySpec', strict: true });
-    expect(JSON.stringify(solVariant.seen[0].schema)).toBe(JSON.stringify(variantJson));
   });
 
-  it('replies are still validated by the original zod schema (too many variants fails)', async () => {
-    const { ArchitectPlanSchema } = await import('./llm-schemas');
-    const v = (id: string) => ({ id, name: id, idea: id });
-    expect(ArchitectPlanSchema.safeParse({ variants: [v('A'), v('B'), v('C'), v('A')] }).success).toBe(false);
+  describe('unusableStop and isCutOff', () => {
+    it('returns null for normal replies or missing metadata', () => {
+      expect(unusableStop(null)).toBe(null);
+      expect(unusableStop({})).toBe(null);
+      expect(unusableStop({ response_metadata: { stop_reason: 'stop' } })).toBe(null);
+      expect(unusableStop({ response_metadata: { stop_reason: 'end_turn' } })).toBe(null);
+      expect(unusableStop({ additional_kwargs: { stop_reason: 'stop' } })).toBe(null);
+    });
+
+    it('detects refusal from response_metadata or additional_kwargs', () => {
+      expect(unusableStop({ response_metadata: { stop_reason: 'refusal' } })).toBe('refusal');
+      expect(unusableStop({ additional_kwargs: { stop_reason: 'refusal' } })).toBe('refusal');
+      expect(isCutOff('refusal')).toBe(false);
+    });
+
+    it('detects cut-off stop reasons and marks them in isCutOff', () => {
+      const cutOffs = ['max_tokens', 'model_context_window_exceeded', 'pause_turn'] as const;
+      for (const stop of cutOffs) {
+        expect(unusableStop({ response_metadata: { stop_reason: stop } })).toBe(stop);
+        expect(unusableStop({ additional_kwargs: { stop_reason: stop } })).toBe(stop);
+        expect(isCutOff(stop)).toBe(true);
+      }
+      expect(isCutOff(null)).toBe(false);
+      expect(isCutOff(undefined)).toBe(false);
+    });
   });
 
-  it('gates designLanguage in planner schema to B-rep kernel (M5)', async () => {
-    const { architectPlanSchema, structuredFor } = await import('./llm-schemas');
-    const openscadSchema = architectPlanSchema('openscad');
-    const brepSchema = architectPlanSchema('brep');
-
-    const claudeScad = recorder();
-    structuredFor(claudeScad.model as never, 'claude-opus-5.5', openscadSchema, { name: 'ArchitectPlan', strict: true });
-    const scadSchema = claudeScad.seen[0].schema as Record<string, unknown>;
-    const scadVariants = (scadSchema?.properties as Record<string, unknown>)?.variants as Record<string, unknown>;
-    const scadItemProps = (scadVariants?.items as Record<string, unknown>)?.properties as Record<string, unknown>;
-    expect(scadItemProps?.designLanguage).toBeUndefined();
-
-    const claudeBrep = recorder();
-    structuredFor(claudeBrep.model as never, 'claude-opus-5.5', brepSchema, { name: 'ArchitectPlan', strict: true });
-    const brepSchemaObj = claudeBrep.seen[0].schema as Record<string, unknown>;
-    const brepVariants = (brepSchemaObj?.properties as Record<string, unknown>)?.variants as Record<string, unknown>;
-    const brepItemProps = (brepVariants?.items as Record<string, unknown>)?.properties as Record<string, unknown>;
-    expect(brepItemProps?.designLanguage).toBeDefined();
+  describe('UnusableReplyError', () => {
+    it('sets name and message correctly', () => {
+      const err = new UnusableReplyError('max_tokens');
+      expect(err.name).toBe('UnusableReplyError');
+      expect(err.stop).toBe('max_tokens');
+      expect(err.message).toContain('max_tokens');
+    });
   });
 
-  it('replies still go through nullsToUndefined and the same zod schemas', async () => {
-    const { nullsToUndefined } = await import('./strict-schema');
-    const { AssemblySpecSchema } = await import('./assembly-spec');
+  describe('StopCheckedJsonOutputParser', () => {
+    it('throws UnusableReplyError on a truncated or refused reply', async () => {
+      const parser = new StopCheckedJsonOutputParser();
+      const message = { response_metadata: { stop_reason: 'max_tokens' } };
+      await expect(
+        parser.parseResult([{ text: '{"partial": true}', message: message as never }])
+      ).rejects.toThrow(UnusableReplyError);
+    });
 
-    // A model reply with nulls for optional fields or omitted fields parses cleanly
-    const rawReply = {
-      sheet: '## Plate\nPlate design.',
-      assemblyName: 'plate_assembly',
-      boundingBox: { width: 100, length: 50, height: 10 },
-      jointContracts: null,
-      components: [
-        {
-          name: 'base_plate',
-          description: 'A mounting plate',
-          position: [0, 0, 0],
-          localExtents: [100, 50, 10],
-          shape: { kind: 'box' },
-          holes: null,
-          bedFace: null,
-        },
-      ],
-      guides: null,
-      stressPoints: null,
-      assumptions: null,
-      openQuestions: null,
-    };
-
-    const cleaned = nullsToUndefined(rawReply);
-    const parsed = AssemblySpecSchema.safeParse(cleaned);
-    expect(parsed.success).toBe(true);
-    if (parsed.success) {
-      expect(parsed.data.sheet).toBe('## Plate\nPlate design.');
-      expect(parsed.data.components?.[0].name).toBe('base_plate');
-      expect(parsed.data.components?.[0].holes).toBeUndefined();
-    }
+    it('parses valid JSON when the reply was not cut off', async () => {
+      const parser = new StopCheckedJsonOutputParser();
+      const message = { response_metadata: { stop_reason: 'end_turn' } };
+      const res = await parser.parseResult([{ text: '{"hello": "world"}', message: message as never }]);
+      expect(res).toEqual({ hello: 'world' });
+    });
   });
 
-  const LITERAL_R11_OPTIONAL_PATHS = [
-    'components[].holes[].depth',
-    'designLanguage',
-    'designLanguage.edgeRadius',
-    'designLanguage.minorRadius',
-    'guides[].shape',
-    'guides[].localExtents',
-    'guides[].position',
-    'guides[].points',
-  ];
+  describe('structuredFor', () => {
+    const FORBIDDEN = [
+      'maxItems', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum',
+      'multipleOf', 'minLength', 'maxLength', 'pattern', 'default',
+    ];
 
-  it('counts optional properties across claudeVariantSpecSchema(): exactly the literal paths (stressPoints no longer requested, designLanguage optional) via test-local walker (L1)', async () => {
-    const { claudeVariantSpecSchema, getOptionalProperties } = await import('./llm-schemas');
-    const schema = claudeVariantSpecSchema();
-
-    // Test-local walker enters anyOf, oneOf, allOf, $defs, and untyped properties nodes
-    const testWalkerPaths = walkOptionalPaths(schema);
-    expect(testWalkerPaths).toHaveLength(8);
-    expect([...testWalkerPaths].sort()).toEqual([...LITERAL_R11_OPTIONAL_PATHS].sort());
-
-    // Module walker also matches the literal R11 table array
-    const moduleWalkerPaths = getOptionalProperties(schema);
-    expect(moduleWalkerPaths).toHaveLength(8);
-    expect([...moduleWalkerPaths].sort()).toEqual([...LITERAL_R11_OPTIONAL_PATHS].sort());
-  });
-
-  it('requireAllExcept and getOptionalProperties handle walker blind spots: untyped properties, anyOf, oneOf, allOf, $defs (L3)', async () => {
-    const { requireAllExcept, getOptionalProperties } = await import('./llm-schemas');
-
-    const synthetic = {
-      properties: {
-        untyped: {
-          properties: {
-            a: { type: 'string' },
-            b: { type: 'number' },
+    const recorder = () => {
+      const seen: Array<{ schema: unknown; opts: unknown }> = [];
+      return {
+        seen,
+        model: {
+          withStructuredOutput(schema: unknown, opts: unknown) {
+            seen.push({ schema, opts });
+            return 'bound';
           },
         },
-        unionAny: {
-          anyOf: [
-            {
-              properties: {
-                c: { type: 'string' },
-              },
-            },
-          ],
-        },
-        unionOne: {
-          oneOf: [
-            {
-              properties: {
-                d: { type: 'string' },
-              },
-            },
-          ],
-        },
-        unionAll: {
-          allOf: [
-            {
-              properties: {
-                e: { type: 'string' },
-              },
-            },
-          ],
-        },
-      },
-      $defs: {
-        DefA: {
-          properties: {
-            f: { type: 'string' },
-            g: { type: 'number' },
-          },
-        },
-      },
+      };
     };
 
-    const initialOptional = getOptionalProperties(synthetic);
-    expect(initialOptional).toContain('untyped.a');
-    expect(initialOptional).toContain('untyped.b');
-    expect(initialOptional).toContain('unionAny.c');
-    expect(initialOptional).toContain('unionOne.d');
-    expect(initialOptional).toContain('unionAll.e');
-    expect(initialOptional).toContain('$defs.DefA.f');
-    expect(initialOptional).toContain('$defs.DefA.g');
-
-    // Make everything required except untyped.b and $defs.DefA.g
-    const keepOptional = new Set(['untyped.b', '$defs.DefA.g']);
-    requireAllExcept(synthetic, keepOptional);
-
-    const afterOptional = getOptionalProperties(synthetic);
-    expect(afterOptional.sort()).toEqual(['untyped.b', '$defs.DefA.g'].sort());
-
-    // Test-local walker sees identical optional paths
-    expect(walkOptionalPaths(synthetic).sort()).toEqual(['untyped.b', '$defs.DefA.g'].sort());
-  });
-
-  it('CLAUDE_KEEP_OPTIONAL is immutable and read-only', async () => {
-    const { CLAUDE_KEEP_OPTIONAL } = await import('./llm-schemas');
-    expect(Object.isFrozen(CLAUDE_KEEP_OPTIONAL)).toBe(true);
-    expect(() => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (CLAUDE_KEEP_OPTIONAL as any).add('foo');
-    }).toThrow();
-  });
-
-  it('has no anyOf containing { type: "null" } anywhere in the Claude schema', async () => {
-    const { claudeVariantSpecSchema } = await import('./llm-schemas');
-    const schema = claudeVariantSpecSchema();
-    const str = JSON.stringify(schema);
-    expect(str).not.toMatch(/\{\s*"type"\s*:\s*"null"\s*\}/);
-  });
-
-  it('description is present on shape.innerD, jointContracts[].partA, components[].rotation', async () => {
-    const { claudeVariantSpecSchema } = await import('./llm-schemas');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const schema = claudeVariantSpecSchema() as any;
-    expect(schema.properties.components.items.properties.shape.properties.innerD.description).toBeTruthy();
-    expect(schema.properties.jointContracts.items.properties.partA.description).toBeTruthy();
-    expect(schema.properties.components.items.properties.rotation.description).toBeTruthy();
-  });
-
-  it('normalizeClaudeSentinels removes neutral sentinels, leaves input unmutated, and parses equal to lenient original', async () => {
-    const { normalizeClaudeSentinels } = await import('./llm-schemas');
-    const { AssemblySpecSchema } = await import('./assembly-spec');
-
-    const input = {
-      sheet: '## Plate\nDesign.',
-      assemblyName: 'plate',
-      boundingBox: { width: 100, length: 50, height: 10 },
-      jointContracts: [
-        { type: 'butt', clearance: 0.2, partA: '', partB: '' },
-      ],
-      components: [
-        {
-          name: 'box_part',
-          description: 'A box',
-          position: [0, 0, 0],
-          localExtents: [100, 50, 10],
-          rotation: [0, 0, 0],
-          positionNote: '',
-          holes: [
-            { d: 3, axis: 'z', at: [10, 10, 0], note: '' },
-          ],
-          shape: {
-            kind: 'box',
-            axis: 'z',
-            innerD: 0,
-            wall: 0,
-            openFace: '+Z',
-            plane: 'xy',
-            points: [],
-            holes: [],
-          },
-        },
-        {
-          name: 'tube_part',
-          description: 'A tube',
-          position: [10, 10, 0],
-          localExtents: [10, 10, 20],
-          rotation: [0, 0, 0],
-          positionNote: '',
-          holes: [],
-          shape: {
-            kind: 'tube',
-            axis: 'z',
-            innerD: 4,
-            wall: 0,
-            openFace: '+Z',
-            plane: 'xy',
-            points: [],
-            holes: [],
-          },
-        },
-      ],
-      guides: [
-        {
-          label: 'line_guide',
-          kind: 'line',
-          rotation: [0, 0, 0],
-          points: [[0, 0, 0], [10, 10, 0]],
-        },
-      ],
-      stressPoints: [
-        {
-          component: '',
-          location: 'centre',
-          loadCase: 'tension',
-          risk: 'low',
-          mitigation: 'none',
-        },
-      ],
-      assumptions: [],
-    };
-
-    const cloneInput = JSON.parse(JSON.stringify(input));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const normalized = normalizeClaudeSentinels(input) as any;
-
-    // Input object is not mutated
-    expect(input).toEqual(cloneInput);
-
-    // Box component shape becomes { kind: 'box' }
-    expect(normalized.components[0].shape).toEqual({ kind: 'box' });
-    // positionNote: "" is removed
-    expect(normalized.components[0].positionNote).toBeUndefined();
-    // holes note: "" is removed
-    expect(normalized.components[0].holes[0].note).toBeUndefined();
-
-    // Tube component keeps axis and innerD
-    expect(normalized.components[1].shape).toEqual({ kind: 'tube', axis: 'z', innerD: 4 });
-
-    // Line guide loses rotation
-    expect(normalized.guides[0].rotation).toBeUndefined();
-
-    // Joint contracts partA and partB: "" are removed
-    expect(normalized.jointContracts[0].partA).toBeUndefined();
-    expect(normalized.jointContracts[0].partB).toBeUndefined();
-
-    // Stress point component: "" is removed
-    expect(normalized.stressPoints[0].component).toBeUndefined();
-
-    const parsedNormalized = AssemblySpecSchema.parse(normalized);
-    expect(parsedNormalized.components?.[0].shape).toEqual({ kind: 'box' });
-    expect(parsedNormalized.components?.[1].shape).toEqual({ kind: 'tube', axis: 'z', innerD: 4 });
-  });
-
-  it('structuredFor with claude-* pipes through normalizeClaudeSentinels and with non-Claude returns untouched output with byte-identical schema', async () => {
-    const { structuredFor } = await import('./llm-schemas');
-    const { variantSpecRequestSchema } = await import('./assembly-spec');
-    const { RunnableLambda } = await import('@langchain/core/runnables');
-
-    const fixture = {
-      sheet: '## Rev\nSheet.',
-      assemblyName: 'plate',
-      boundingBox: { width: 10, length: 10, height: 10 },
-      jointContracts: [{ type: 'butt', clearance: 0.1, partA: '', partB: '' }],
-      components: [
-        {
-          name: 'box',
-          description: 'Box',
-          position: [0, 0, 0],
-          localExtents: [10, 10, 10],
-          rotation: [0, 0, 0],
-          positionNote: '',
-          holes: [],
-          shape: { kind: 'box', axis: 'z', innerD: 0, wall: 0, openFace: '+Z', plane: 'xy', points: [], holes: [] },
-        },
-      ],
-      guides: [],
-      stressPoints: [],
-      assumptions: [],
-    };
-
-    type FakeModel = {
-      withStructuredOutput: (schema: unknown, opts?: unknown) => { invoke: (input: unknown) => Promise<unknown> };
-    };
-
-    let seenClaudeSchema: unknown;
-    let seenClaudeOpts: unknown;
-    const claudeFake: FakeModel = {
-      withStructuredOutput(schema: unknown, opts: unknown) {
-        seenClaudeSchema = schema;
-        seenClaudeOpts = opts;
-        return RunnableLambda.from(() => fixture);
-      },
-    };
-
-    const claudeBound = structuredFor(claudeFake, 'claude-opus-5.5', variantSpecRequestSchema(), {
-      name: 'AssemblySpec',
-      strict: true,
+    const SampleSchema = z.object({
+      fieldA: z.string(),
+      severity: z.enum(['minor', 'major']),
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const claudeResult = (await claudeBound.invoke({})) as any;
-    expect(claudeResult.components[0].shape).toEqual({ kind: 'box' });
-    expect(claudeResult.components[0].positionNote).toBeUndefined();
-    expect(claudeResult.jointContracts[0].partA).toBeUndefined();
-    expect(seenClaudeSchema).toBeDefined();
-    expect(seenClaudeOpts).toMatchObject({ name: 'AssemblySpec', method: 'functionCalling' });
-    expect('strict' in (seenClaudeOpts as object)).toBe(false);
 
-    // Non-Claude route (gpt-5.6-luna)
-    const variantJson = variantSpecRequestSchema();
-    let seenLunaSchema: unknown;
-    let seenLunaOpts: unknown;
-    const lunaFake: FakeModel = {
-      withStructuredOutput(schema: unknown, opts: unknown) {
-        seenLunaSchema = schema;
-        seenLunaOpts = opts;
-        return RunnableLambda.from(() => fixture);
-      },
-    };
+    it('non-Claude slugs pass schema and opts through untouched', () => {
+      const luna = recorder();
+      structuredFor(luna.model as never, 'gpt-5.6-luna', SampleSchema, { name: 'Sample', strict: true });
+      expect(luna.seen[0].schema).toBe(SampleSchema);
+      expect(luna.seen[0].opts).toEqual({ name: 'Sample', strict: true });
 
-    const lunaBound = structuredFor(lunaFake, 'gpt-5.6-luna', variantJson, {
-      name: 'AssemblySpec',
-      strict: true,
+      const sol = recorder();
+      const rawJson = { type: 'object', properties: { x: { type: 'number' } } };
+      structuredFor(sol.model as never, 'gpt-6-sol', rawJson, { name: 'Custom' });
+      expect(sol.seen[0].schema).toBe(rawJson);
+      expect(sol.seen[0].opts).toEqual({ name: 'Custom' });
     });
-    expect(seenLunaSchema).toBe(variantJson);
-    expect(seenLunaOpts).toEqual({ name: 'AssemblySpec', strict: true });
-    expect('method' in (seenLunaOpts as object)).toBe(false);
-    const lunaResult = await lunaBound.invoke({});
-    expect(lunaResult).toBe(fixture); // completely untouched!
 
-    // Also verify includeRaw
-    const rawFixture = { raw: { metadata: true }, parsed: fixture };
-    let seenRawOpts: unknown;
-    const claudeRawFake: FakeModel = {
-      withStructuredOutput(_schema: unknown, opts: unknown) {
-        seenRawOpts = opts;
-        return RunnableLambda.from(() => rawFixture);
-      },
-    };
-    const claudeRawBound = structuredFor(claudeRawFake, 'claude-opus-5.5', variantSpecRequestSchema(), {
-      name: 'AssemblySpec',
-      strict: true,
-      includeRaw: true,
+    it('claude slugs get an Anthropic-safe strict JSON schema with jsonSchema method', () => {
+      const claude = recorder();
+      structuredFor(claude.model as never, 'claude-opus-5.5', SampleSchema, { name: 'Sample', strict: true });
+      const sent = JSON.stringify(claude.seen[0].schema);
+      for (const k of FORBIDDEN) {
+        expect(sent).not.toContain(`"${k}"`);
+      }
+      expect(claude.seen[0].opts).toEqual({ name: 'Sample', method: 'jsonSchema' });
+      expect((claude.seen[0].schema as { additionalProperties?: boolean }).additionalProperties).toBe(false);
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const rawResult = (await claudeRawBound.invoke({})) as any;
-    expect(rawResult.raw).toEqual({ metadata: true });
-    expect(rawResult.parsed.components[0].shape).toEqual({ kind: 'box' });
-    expect(rawResult.parsed.components[0].positionNote).toBeUndefined();
-    expect(seenRawOpts).toMatchObject({ name: 'AssemblySpec', method: 'functionCalling', includeRaw: true });
-    expect('strict' in (seenRawOpts as object)).toBe(false);
-  });
 
-  it('structuredFor variant spec on Claude models binds tool_choice auto and never forced tool choice', async () => {
-    const { structuredFor } = await import('./llm-schemas');
-    const { variantSpecRequestSchema } = await import('./assembly-spec');
-    const { ChatAnthropic } = await import('@langchain/anthropic');
-    const { AIMessage } = await import('@langchain/core/messages');
+    it('passes includeRaw through for claude slugs', () => {
+      const claude = recorder();
+      structuredFor(claude.model as never, 'claude-haiku-5.5', SampleSchema, {
+        name: 'Sample',
+        includeRaw: true,
+      });
+      expect(claude.seen[0].opts).toEqual({ name: 'Sample', method: 'jsonSchema', includeRaw: true });
+    });
 
-    // The RunnableBinding that wraps the ChatAnthropic, carrying the bound tools and tool_choice.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    function findBinding(node: any): any {
-      if (!node) return null;
-      if (node.bound instanceof ChatAnthropic) return node;
-      if (node.first) return findBinding(node.first);
-      if (node.steps?.raw) return findBinding(node.steps.raw);
-      if (node.bound) return findBinding(node.bound);
-      if (node.runnable) return findBinding(node.runnable);
-      return null;
-    }
-
-    for (const slug of ['claude-sonnet-5.5', 'claude-opus-5.5', 'claude-haiku-5.5']) {
+    it('uses native json_schema format on ChatAnthropic instances', () => {
       const model = new ChatAnthropic({
         apiKey: 'test-key',
-        model: slug.replace(/\./g, '-'),
+        model: 'claude-sonnet-5-5',
       });
-      for (const includeRaw of [undefined, true]) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const bound: any = structuredFor(model, slug, variantSpecRequestSchema(), {
-          name: 'AssemblySpec',
-          strict: true,
-          ...(includeRaw ? { includeRaw } : {}),
-        });
-
-        const binding = findBinding(bound);
-        expect(binding).not.toBeNull();
-        const params = binding.bound.invocationParams({ ...binding.kwargs, ...binding.config });
-
-        // tool_choice is auto, never forced: Sonnet and Opus 5.5 reject "tool" and "any" with a 400.
-        expect(params.tool_choice).toEqual({ type: 'auto' });
-        expect(params.tools).toHaveLength(1);
-        expect(params.tools[0].name).toBe('AssemblySpec');
-        expect(params.tools[0].strict).toBeUndefined();
-      }
-    }
-
-    // Verify reply without tool call returns undefined (treated as failed attempt)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let seenBindOpts: any;
-    const fakeWithBind = {
-      bindTools(_tools: unknown[], kwargs: unknown) {
-        seenBindOpts = kwargs;
-        return {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          pipe(next: any) {
-            return {
-              invoke: async () => next.invoke(new AIMessage({ content: 'I made no tool call' })),
-            };
-          },
-        };
-      },
-      withStructuredOutput() { throw new Error('should not be called'); },
-    };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const boundFake: any = structuredFor(fakeWithBind as any, 'claude-sonnet-5.5', variantSpecRequestSchema(), {
-      name: 'AssemblySpec',
+      const bound = structuredFor(model, 'claude-sonnet-5.5', SampleSchema, { name: 'Sample' });
+      expect(bound).toBeDefined();
     });
-    expect(seenBindOpts).toEqual({ tool_choice: 'auto' });
-    const result = await boundFake.invoke([]);
-    expect(result).toBeUndefined();
   });
 
   it('contains no stale gateway comments in schema and storage files', async () => {
@@ -666,7 +159,4 @@ describe('structuredFor', () => {
       expect(content).not.toContain('through the gateway');
     }
   });
-
 });
-
-

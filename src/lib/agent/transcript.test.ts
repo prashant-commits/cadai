@@ -7,18 +7,26 @@ import {
 } from './transcript';
 
 describe('transcript markers', () => {
-  it('round-trips sections and gates', () => {
+  it('round-trips sections', () => {
     const nodes: TranscriptNode[] = [
-      { kind: 'section', id: 'architectNode', label: 'Mechanical Architect', status: 'ok', body: 'Bounding box: 62 x 40 x 18 mm' },
-      { kind: 'gate', id: 'g1' },
-      { kind: 'section', id: 'drafterNode', label: 'Parametric Drafter', status: 'warn', body: 'wrote 2 modules' },
+      { kind: 'section', id: 'designerNode', label: 'Mechanical Designer', status: 'ok', body: 'Bounding box: 62 x 40 x 18 mm' },
+      { kind: 'section', id: 'checkNode', label: 'Verifier', status: 'warn', body: 'wrote 2 modules' },
     ];
     expect(parseTranscript(serializeTranscript(nodes))).toEqual(nodes);
   });
 
+  it('skips legacy gate markers without throwing', () => {
+    const src = '<!--s:a|A|ok-->body<!--/s-->\n<!--gate:legacy-gate-1-->\n<!--s:b|B|ok-->body2<!--/s-->';
+    const parsed = parseTranscript(src);
+    expect(parsed).toEqual([
+      { kind: 'section', id: 'a', label: 'A', status: 'ok', body: 'body' },
+      { kind: 'section', id: 'b', label: 'B', status: 'ok', body: 'body2' },
+    ]);
+  });
+
   it('round-trips a section whose body contains a fenced code block', () => {
     const nodes: TranscriptNode[] = [
-      { kind: 'section', id: 'drafterNode', label: 'Drafter', status: 'ok', body: '```openscad\ncube([1,2,3]);\n```' },
+      { kind: 'section', id: 'designerNode', label: 'Designer', status: 'ok', body: '```python\nBox(1, 2, 3)\n```' },
     ];
     expect(parseTranscript(serializeTranscript(nodes))).toEqual(nodes);
   });

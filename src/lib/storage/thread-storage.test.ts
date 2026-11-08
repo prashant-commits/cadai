@@ -390,22 +390,14 @@ describe('thread-storage', () => {
     });
   });
 
-  it('round-trips a message carrying a transcript, gates and status', async () => {
+  it('round-trips a message carrying a transcript and status', async () => {
     const t = thread();
     await upsertThread(t);
     t.messages.push({
       id: 'assistant-1',
       role: 'assistant',
       content: 'Built bracket_body, 62 x 40 x 18 mm.',
-      transcript: '<!--s:architectNode|Architect|ok-->Bounding box: 62 x 40 x 18 mm<!--/s-->',
-      gates: {
-        g1: {
-          payload: { kind: 'spec', spec: null, contract: null, revisionCount: 0 },
-          status: 'approved',
-          decision: { action: 'approve', comment: 'looks right' },
-          decidedAt: 1_700_000_000_000,
-        },
-      },
+      transcript: '<!--s:designerNode|Designer|ok-->Bounding box: 62 x 40 x 18 mm<!--/s-->',
       status: 'complete',
       runId: 'run-abc',
       timestamp: Date.now(),
@@ -415,9 +407,7 @@ describe('thread-storage', () => {
     const { threads } = await loadAllThreads();
     const msg = threads.find((th) => th.id === t.id)!.messages.find((m) => m.id === 'assistant-1')!;
 
-    expect(msg.transcript).toContain('architectNode');
-    expect(msg.gates!.g1.status).toBe('approved');
-    expect(msg.gates!.g1.decision!.comment).toBe('looks right');
+    expect(msg.transcript).toContain('designerNode');
     expect(msg.status).toBe('complete');
     expect(msg.runId).toBe('run-abc');
   });
@@ -435,7 +425,6 @@ describe('thread-storage', () => {
 
     expect(msg.content).toBe('old message');
     expect(msg.transcript).toBeUndefined();
-    expect(msg.gates).toBeUndefined();
     expect(msg.status).toBeUndefined();
   });
 });

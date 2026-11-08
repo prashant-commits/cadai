@@ -12,20 +12,14 @@ export type SectionStatus = 'running' | 'ok' | 'warn' | 'error' | 'skipped';
 
 export interface TranscriptSection {
   kind: 'section';
-  /** The graph node this section reports on, e.g. `architectNode`. */
+  /** The graph node this section reports on, e.g. `designerNode`. */
   id: string;
   label: string;
   status: SectionStatus;
   body: string;
 }
 
-export interface TranscriptGate {
-  kind: 'gate';
-  /** Key into ChatMessage.gates. The payload never lives in the markdown. */
-  id: string;
-}
-
-export type TranscriptNode = TranscriptSection | TranscriptGate;
+export type TranscriptNode = TranscriptSection;
 
 /** `|` and `>` would end a marker field early, so they cannot survive raw. */
 function encodeField(s: string): string {
@@ -48,11 +42,7 @@ export function escapeMarkers(text: string): string {
 
 export function serializeTranscript(nodes: TranscriptNode[]): string {
   return nodes
-    .map((n) =>
-      n.kind === 'gate'
-        ? `<!--gate:${encodeField(n.id)}-->`
-        : `<!--s:${encodeField(n.id)}|${encodeField(n.label)}|${n.status}-->${n.body}<!--/s-->`
-    )
+    .map((n) => `<!--s:${encodeField(n.id)}|${encodeField(n.label)}|${n.status}-->${n.body}<!--/s-->`)
     .join('\n');
 }
 
@@ -66,16 +56,16 @@ export function parseTranscript(src: string): TranscriptNode[] {
   // rather than returning nothing.
   for (const m of src.matchAll(NODE_RE)) {
     if (m[5] !== undefined) {
-      out.push({ kind: 'gate', id: decodeField(m[5]) });
-    } else {
-      out.push({
-        kind: 'section',
-        id: decodeField(m[1]),
-        label: decodeField(m[2]),
-        status: m[3] as SectionStatus,
-        body: m[4],
-      });
+      // Legacy gate marker: skip without pushing a node
+      continue;
     }
+    out.push({
+      kind: 'section',
+      id: decodeField(m[1]),
+      label: decodeField(m[2]),
+      status: m[3] as SectionStatus,
+      body: m[4],
+    });
   }
   return out;
 }

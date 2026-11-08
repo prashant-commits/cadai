@@ -149,7 +149,6 @@ function toMessageRow(threadId: string, message: ChatMessage): MessageRow {
     content: message.content,
     image: message.image,
     transcript: message.transcript,
-    gates: message.gates,
     status: message.status,
     runId: message.runId,
     timestamp: message.timestamp,
@@ -179,7 +178,6 @@ async function assembleThread(
       };
       if (m.image !== undefined) message.image = m.image;
       if (m.transcript !== undefined) message.transcript = m.transcript;
-      if (m.gates !== undefined) message.gates = m.gates;
       if (m.status !== undefined) message.status = m.status;
       if (m.runId !== undefined) message.runId = m.runId;
 

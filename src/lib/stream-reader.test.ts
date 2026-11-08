@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { readStream, streamMessagePatch, type StreamState } from './stream-reader';
-import { readExpiresAt, readOpenedAt } from './chat/rehydrate';
 import { parseTranscript, serializeTranscript } from './agent/transcript';
 import type { StreamEvent } from './agent/stream-events';
 
@@ -32,31 +31,6 @@ describe('readStream', () => {
       { kind: 'section', id: 'architectNode', label: 'Architect', status: 'ok', body: 'Bounding box: 62 x 40 x 18 mm' },
     ]);
     expect(final.summary).toBe('Built it.');
-  });
-
-  it('records a gate and marks the run as awaiting input', async () => {
-    const payload = { kind: 'spec', spec: null, contract: null, revisionCount: 0 } as const;
-    const { final } = await run([
-      { t: 'section', id: 'architectNode', label: 'Architect', state: 'open' },
-      { t: 'delta', text: 'spec' },
-      { t: 'section', id: 'architectNode', state: 'close', status: 'ok' },
-      { t: 'gate', id: 'g1', runId: 'run-1', payload },
-    ]);
-    expect(final.awaitingInput).toBe(true);
-    expect(final.runId).toBe('run-1');
-    expect(final.gates.g1.status).toBe('open');
-    expect(readOpenedAt(final.gates.g1)).toEqual(expect.any(Number));
-    expect(readExpiresAt(final.gates.g1)).toBeUndefined();
-    expect(final.nodes.at(-1)).toEqual({ kind: 'gate', id: 'g1' });
-  });
-
-  it('keeps a server expiresAt on the gate record', async () => {
-    const payload = { kind: 'spec', spec: null, contract: null, revisionCount: 0 } as const;
-    const expiresAt = 1_700_000_000_000;
-    const { final } = await run([
-      { t: 'gate', id: 'g1', runId: 'run-1', payload, expiresAt } as StreamEvent,
-    ]);
-    expect(readExpiresAt(final.gates.g1)).toBe(expiresAt);
   });
 
   it('keeps later sections intact when a delta contains a comment marker', async () => {
@@ -143,13 +117,10 @@ describe('readStream', () => {
     expect(patch.status).toBe('error');
     expect(patch.content).toBe(`**Error:** ${message}`);
     expect(patch.content?.trim()).not.toBe('');
-    expect(patch.gates).toBeUndefined();
 
     const finished = streamMessagePatch({
       nodes: [],
-      gates: {},
       summary: 'Built it.',
-      awaitingInput: false,
     });
     expect(finished.status).toBe('complete');
     expect(finished.content).toBe('Built it.');
@@ -157,5 +128,5 @@ describe('readStream', () => {
 });
 
 function serializeOf(s: StreamState) {
-  return s.nodes.map((n) => ('body' in n ? n.body : '')).join('');
+  return s.nodes.map((n) => n.body).join('');
 }
