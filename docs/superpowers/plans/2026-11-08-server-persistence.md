@@ -1,107 +1,110 @@
-# Designer-only app with server-side persistence: implementation plan (v4)
+# Designer-only app with server-side persistence: implementation plan (v5)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:**
-- Designer mode (designer + live reviewer) becomes the ONLY mode; the old pipelines are removed.
-- A follow-up edits the design the user is looking at.
-- Threads, messages, runs, designs and artifacts live on the server, in Postgres and an S3-compatible object store.
-- The browser reconnects, stops and reloads from server state.
-- The backend is host-agnostic (not Vercel). Branch task/dz becomes the new main.
+- Designer mode (designer + live reviewer) is the only mode.
+- A follow-up edits exactly what the user sees: the viewed version plus their slider and code edits.
+- Threads, messages, runs, designs and artifacts live in Postgres and an object store. The browser reconnects, stops and reloads from server state.
+- The backend is host-agnostic. task/dz becomes the new main.
 
 **Architecture:**
-- **Graph:** `START → designerTriage? → designerNode | designerAnswer → designerCheck → respondToUser`.
-- **No gates anywhere.** Nothing pauses, so each run uses its own in-memory checkpointer, discarded when the run ends; there is NO durable LangGraph checkpointer.
-- **The server owns history.** The client sends only the new message, the thread id, the version it views, its pins and the model.
-- **The save is the run's single atomic commit point.** Every store is selected by an explicit knob; the defaults are local files.
+- **Graph:** `START → designerTriage? → designerNode | designerAnswer → designerCheck → commit`.
+  - The graph is compiled WITHOUT a checkpointer, because nothing pauses.
+- **One database layer, two engines:** `Db` with PGlite (embedded Postgres) for local dev, tests and evals, and `pg` for servers. The schema, SQL and store code are the same for both.
+- **One run store:** it replaces `LocalRunStore` and owns run status and events.
+- **One commit transaction per run** writes the version, the reply, the result event and the status. Every terminal path writes a reply.
+- **Object store:** local filesystem or S3-compatible.
 
 **Tech stack:**
-- Next.js 16 (read `node_modules/next/dist/docs/`; `proxy.ts` replaces middleware; cookies cannot be set after streaming starts);
-- LangGraph JS 1.4 (MemorySaver per run);
-- `pg`;
-- `@aws-sdk/client-s3`;
-- build123d geo service;
+- Next.js 16 (read `node_modules/next/dist/docs/` before proxy, route or streaming code);
+- LangGraph JS 1.4;
+- `@electric-sql/pglite`, `pg`, `@aws-sdk/client-s3` (all new dependencies);
+- the build123d geo service;
 - Anthropic API only.
 
-**Spec (user decisions, 2026-11-08):**
-- **Designer mode is the only mode:** remove the old pipelines and clean up the graph; this branch becomes the new main.
-- **Storage:**
-  - Postgres;
-  - an object store;
-  - the full schema;
-  - `run_events` is a reconnect buffer only;
+**Spec:**
+- **User decisions, 2026-11-08:**
+  - designer-only, task/dz becomes main;
+  - Postgres plus an object store, the full schema;
+  - `run_events` is a reconnect buffer;
   - persist before done;
-  - blob retention follows the design version.
-- **Hosting:** the backend is NOT on Vercel; the host is decided later.
-- **Design rules:**
-  - no accept gate;
-  - no floor (z = 0) rule;
-  - slider ranges parked, named dimensions kept.
+  - blob retention follows the design;
+  - not on Vercel; host-agnostic;
+  - no accept gate; no floor rule; slider ranges parked;
+  - PGlite for local and tests (accepted from review).
+- **Reviews folded in:**
+  - v1 and v2 (Opus);
+  - v3 and v4 (Opus, Gemini, Grok, in `.cadai/tasks/reviews/`), cited `4O`/`4G`/`4K` + id for v4.
 
-**Review provenance:**
-- Opus v1 and v2 (`review-plan-persistence*.md`);
-- v3 by Opus, Gemini and Grok (`review-plan-v3-{opus,gemini,grok}.md`), cited as O/G/K + id, e.g. `K-H3`.
-- The user's PostgresSaver request lapses because nothing pauses after Phase 0. The `checkpoints` tables are not created (`O-H5`, `G-H3`, `K-H10`).
-
-**Bugs from the user's runs:**
-1. follow-ups lose the design, and a second edit reverts the first (eval ms1);
+**Bugs this fixes:**
+1. follow-ups lose the design, and a second edit reverts the first;
 2. designer model text streams into the chat;
 3. the model rewrites the prelude;
 4. questions start new designs.
 
 ## Global Constraints
-- **UI text:** fixed phrases or server-rendered markdown only. Never raw model text, code, tool JSON or tracebacks (the R2 tests). Designer nodes are in `STRUCTURED_NODES` and tagged `nostream`.
-- **Config** from env:
-  - `DATABASE_URL`, `DATABASE_URL_MIGRATE`, `PG_POOL_MAX`;
-  - `S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`;
-  - `SWEEP_SECRET`, `CADAI_RUN_MAX_MS`.
-  Never print secrets.
-- **Knobs:** `CADAI_STORE=local|postgres` (threads, messages, runs, designs) and `CADAI_ARTIFACT_STORE=local|s3`. Both default to local and double as rollback switches.
-- **Anthropic API only.** No `temperature`. Use the JSON-schema method rather than forced `tool_choice`.
+- **UI text:** fixed phrases or server-rendered markdown only. Never raw model text, code, JSON or tracebacks (the R2 tests). Designer nodes go in `STRUCTURED_NODES` and are tagged `nostream`.
+- **Config:**
+  - `CADAI_DB=pglite|postgres` (default `pglite`, data dir `<CADAI_RUN_DIR>/pglite`);
+  - `DATABASE_URL`, `DATABASE_URL_MIGRATE`, `PG_POOL_MAX` (default 10);
+  - `CADAI_ARTIFACT_STORE=local|s3`;
+  - `S3_*`;
+  - `SWEEP_SECRET`;
+  - `CADAI_RUN_MAX_MS` (default 900 000; it must exceed the designer budget plus one retry plus check; `4O-M1`).
+  - Never print secrets.
+- **Anthropic API only.** No `temperature`. Use JSON-schema output, never forced `tool_choice`. A model refusal becomes the fixed reply "I can't help with that request." (`4O-M14`).
 - **Owner:**
-  - `proxy.ts` mints `cadai_owner` on page loads and `/api/*`;
-  - the value must be UUID-shaped, else it is re-minted;
-  - the proxy ALSO sets it on the forwarded request (`K-H1`, `G-H2`, `O-M7`) and strips any incoming `x-cadai-owner`;
-  - routes fail closed only when it is still missing;
-  - `ownerKey = sha256(cookie)`, and the owner lives on `threads` only;
-  - another owner's id returns 404.
-- **Thread ids:** server mode accepts only UUID thread ids. Non-UUID ids (the `thread-<ms>` scheme) are legacy (`K-H5`, `O-M5`).
+  - `proxy.ts` mints a UUID `cadai_owner` cookie on page loads and `/api/*`;
+  - it sets the cookie on the response AND on the forwarded request (`NextResponse.next({ request: { headers } })`) and strips `x-cadai-owner`;
+  - `ownerKeyFrom(request)` returns `sha256(cookie)`, or `null` → 401;
+  - the owner lives on `threads` only.
+  - **Route matrix (`4G-F4`, `4O-H7`, `4K-M2`):**
+    - every route resolves its object to a thread and checks `owner_key`; a mismatch is 404;
+    - the routes: `POST /api/chat`, `GET /api/runs/:id`, `GET /api/runs/:id/events`, `POST /api/runs/:id/cancel`, `GET /api/threads`, `GET|DELETE /api/threads/:id`, `GET /api/artifacts/:id`, `POST /api/compile` (owner-scoped, not persisted);
+    - `/api/mcp` and `/api/chat/resume` are deleted.
+- **Ids:** server threads are UUIDs. A non-UUID thread id is legacy, which means a fixed phrase and no build.
 - **Security:**
   - `checkPythonScript` runs before every `runBrep`;
-  - a replayed body is re-checked and framed as data;
-  - the 256 KiB cap stays;
-  - `/api/mcp` is removed or disabled in Phase 0.
-- **Deadline:** `CADAI_RUN_MAX_MS` (default 600 000) bounds the whole run. Every run ends with a terminal status. A dead process is reaped by heartbeat.
+  - stored bodies are re-checked on load and framed as data;
+  - pins are numeric only and written by safe substitution of existing `name = <number>` lines, never by string interpolation (`4O-M7`);
+  - attachments: PNG/JPEG/WebP, sniffed by magic bytes, at most 5 MB each and 4 per message (`4K-M7`).
+- **No floor rule.** Slider ranges stay parked.
 - **Machine:** 7.6 GB RAM and 2 CPUs. `--maxWorkers=2`, one vitest at a time, nothing in /tmp.
 
-## Schema (`db/migrations/0001_init.sql`; additive-only afterwards)
+## Schema (`db/migrations/0001_init.sql`, run on PGlite and Postgres alike; additive-only afterwards)
 ```sql
 create table threads   (id uuid primary key, owner_key text not null, title text,
+                        active_run_id text,                               -- one active run per thread (4*-concurrency)
                         created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
                         archived_at timestamptz);
-create index on threads(owner_key, updated_at desc);
+create index on threads(owner_key, updated_at desc) where archived_at is null;
 create table runs      (id text primary key, thread_id uuid not null references threads(id),
-                        status text not null,                 -- running | done | failed | cancelled
-                        model text, created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
-                        heartbeat_at timestamptz, deadline_at timestamptz, last_seq int not null default 0,
-                        cancel_requested boolean not null default false, error jsonb,
-                        cost_usd numeric(10,4) not null default 0, wall_ms int, turns int,
-                        base_version int, design_version int, follow_up_kind text, save_status text, ended_at timestamptz);
+                        status text not null,                -- running | done | failed | cancelled
+                        model text, base_version int,        -- the version this run started from (staleParent)
+                        created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+                        heartbeat_at timestamptz not null default now(), deadline_at timestamptz not null,
+                        last_seq int not null default 0, cancel_requested boolean not null default false,
+                        error jsonb, cost_usd numeric(10,4) not null default 0, wall_ms int, turns int,
+                        design_version int, follow_up_kind text, ended_at timestamptz);
 create index on runs(thread_id, created_at desc);
-create index on runs(status, heartbeat_at);                    -- reaper
-create table run_events(run_id text not null references runs(id) on delete cascade, seq int not null,
-                        ts timestamptz not null default now(), type text not null, payload jsonb not null,  -- refs only
+create index on runs(status, heartbeat_at) where status = 'running';
+create table run_events(run_id text not null references runs(id), seq int not null,
+                        ts timestamptz not null default now(), type text not null, payload jsonb not null,
                         primary key(run_id, seq));
 create table messages  (id uuid primary key default gen_random_uuid(), thread_id uuid not null references threads(id),
-                        seq int not null, role text not null, kind text,
+                        seq int not null, role text not null, kind text not null,
+                        -- user: request|edit|question|unknown ; assistant: result|answer|error|cancelled|nochange
                         content text not null, run_id text references runs(id), design_version int,
-                        attachments jsonb not null default '[]',  -- artifact ids of user images
                         created_at timestamptz not null default now(), unique(thread_id, seq));
+create table message_attachments(message_id uuid not null references messages(id), owner_key text not null,
+                        artifact_id text not null, primary key(message_id, artifact_id));    -- indexed, no JSONB scan (4G-F9)
 create table designs   (thread_id uuid not null references threads(id), version int not null, parent_version int,
-                        run_id text not null references runs(id),
+                        origin text not null,                -- designer | user_edit
+                        run_id text references runs(id),     -- null for user_edit versions
                         base_request text not null, edits jsonb not null default '[]',
                         body text not null, prelude_version text not null,
-                        summary text not null, facts jsonb not null, flags jsonb not null,
+                        summary text not null, facts jsonb, flags jsonb not null default '[]',
                         stl_artifact text, step_artifact text, created_at timestamptz not null default now(),
                         primary key(thread_id, version));
 create index on designs(run_id);
@@ -111,355 +114,307 @@ create table artifacts (owner_key text not null, id text not null, thread_id uui
 create index on artifacts(thread_id);
 create index on artifacts(created_at);
 ```
-**Retention** (`O-H4`, `K-H8`, `G-F6`):
-- `runs` rows are never deleted. They are small, and designs and messages reference them, so no foreign key ever cascades.
-- `run_events` are deleted 10 min after `ended_at`.
-- An artifact is **referenced** when it is in `designs.stl_artifact`, `designs.step_artifact`, or any `messages.attachments`. Unreferenced artifacts are deleted after 24 h.
-- Archived threads: their artifacts and rows are deleted 30 days after `archived_at`.
 
-## Run lifecycle (one place, every task follows it)
-**Commit:**
-1. one transaction:
-   - lock the thread row;
-   - insert the design version (when there is one) and the assistant message;
-   - `UPDATE runs SET design_version=$v, status='done' WHERE id=$r AND status='running' AND design_version IS NULL`.
-   If 0 rows update, roll back and drop the result (`O-H1`, `K-H3`).
-2. write the result event (carrying `designVersion`) to `run_events`.
+## Run lifecycle (normative; every task follows it)
+**Start (one transaction):**
+- `claim`: create the thread for this owner if absent; another owner → 404; legacy id → phrase.
+- If `threads.active_run_id` points at a `running` run, return 409 with the fixed phrase "A design is still being built in this thread." (`4O-M5`, `4G-F8`, `4K-M8`).
+- Insert the run, with `base_version` = the viewed version or latest, and `deadline_at`.
+- Set `active_run_id`.
+- Append the user message with `kind='unknown'`; triage updates it.
+- Nothing is written before the 404/409 checks (`4O-M14`).
 
-**Terminal transitions:**
-- `cancelled` and `failed` (from Stop, an error, the deadline or the reaper) apply only `WHERE status='running' AND design_version IS NULL`.
-- Run cleanup never deletes an artifact; only the sweep deletes, and only unreferenced ones.
+**User edits first (`4O-H6`, `4K-M4`):**
+- If the request carries `editedBody` (a code-editor edit) or `pinnedParams` that differ from the viewed version, the server saves a `user_edit` version (parent = viewed, re-checked by the guardrail, pins applied by safe substitution) in the start transaction.
+- `base_version` becomes that version.
 
-**Branches** (`K-H4`, `G-F10`, `O-M3`):
-| `followUpKind` | Prior design | `designRequest` | Writes |
+**Branches:**
+| Triage | Base | Graph path | Commit writes |
 | --- | --- | --- | --- |
-| none (first message) | — | the latest message | a design version |
-| `edit` | the viewed version (else latest) with pins applied | `base_request` + edits | a design version |
-| `new` | none | the latest message | a design version, `parent_version` null |
-| `question` | — | — | an assistant message (`kind=answer`) only |
+| first message | — | designer → check | version + reply `result` |
+| `edit` | `base_version` | designer (edit) → check | version + reply `result`; reply `nochange` when the body is unchanged |
+| `new` | none | designer (fresh) → check | version (`parent_version` null) + reply `result` |
+| `question` | `base_version` (read-only) | answer | reply `answer` only |
+| check fails twice (one retry as an edit with the failures, `4O-M2`, `4K-M1`) | — | — | reply `error` ("Built, but it failed checks: …"), no version |
+| refusal / unusable model output | — | — | reply `error` (fixed phrase), no version |
+| triage error | — | treat as `edit` (`4K-M6`) | — |
 
-- A failed build writes an assistant message (`kind=error`) and no version.
-- An edit that changes nothing writes a message saying so ("No change was needed"), not a new version.
+**Commit (one transaction, `4O-H3`, `4K-H2`, `4G-F6`):**
+1. Lock the thread row.
+2. `UPDATE runs SET status='done', design_version=…, ended_at=now(), last_seq=last_seq+1 WHERE id=$r AND status='running' RETURNING last_seq`. 0 rows → roll back and stop; Stop, the deadline or the reaper got there first.
+3. Insert the design version (when there is one): `version = max+1`, `staleParent` = `max(version) > runs.base_version` measured inside this transaction (`4O-M4`, `4K-H3`).
+4. Insert the assistant reply.
+5. Insert the `result` run_event at the returned `last_seq`, carrying `designVersion`.
+6. Clear `threads.active_run_id`.
 
-**`staleParent`** (`K-M3`): true only when a version newer than this run's `base_version` was saved by ANOTHER run after this run loaded its base. An intentional edit of an older version is not stale.
+**Terminal (one transaction, same guard `status='running'`), for Stop, an error, the deadline or the reaper:**
+- set `cancelled` or `failed`;
+- insert a reply (`cancelled` or `error`, fixed phrase);
+- insert the terminal event;
+- clear `active_run_id` (`4O-H4`).
 
-**Pins** (`K-M2`, `O-M4`):
-- applied to the viewed version's named dimensions before the edit;
-- pose parameters (`*_deg`, `*_travel`) are never pins;
-- a pinned name that no longer exists is dropped with a note.
+**Reaper:** at startup and every 60 s it terminates `running` runs whose `heartbeat_at` is older than 90 s or whose `deadline_at` has passed. This is the guarantee on any host; SIGTERM handling is best-effort (`4O-M9`, `4K-H5`).
 
----
+**Streaming:** live events are appended through the run store. A reconnecting client reads `run_events` after its cursor, then follows. After done, `GET /api/threads/:id` returns the messages and versions, so missing events never lose the result.
 
-## Phase 0: designer-only cleanup (first, sequential)
+**Retention (`4O-H5`, `4G-F3`, `4K-H4`, `4O-M11`):**
+- `run_events` of runs ended more than 10 min ago are deleted.
+- Unreferenced artifacts older than 24 h are deleted. Referenced means `designs.stl_artifact`, `designs.step_artifact` and `message_attachments`.
+- Runs and messages are kept while their thread lives.
+- A `DELETE` thread archives it.
+- 30 days after archiving, ONE transaction purges in foreign-key order: run_events → message_attachments → messages → designs → artifacts (rows, then objects after commit) → runs → threads.
+- The local run TTL that deletes runs and artifacts today is removed.
 
-### Task 0a: Remove the old pipelines from the server
-**Remove:**
-- the architect, drafter, one-shot and agentic builds: `nodes/{architect-build,brep-build,brep-agent-build,validate-brep}.ts`;
-- spec, sheets and the sheet reviewer (`architect-prompts`, `assembly-spec`, `spec-*`, `place-assembly`, `placement-audit`, `hole-audit`, `nesting-audit`, `param-sweep`, …);
-- the spec and accept gates (`gate-policy`, `acceptGate`, `interrupt()`), `api/chat/resume`, and the OpenSCAD kernel (`engine/openscad-bridge.ts`, `scad-compiler.ts`, the `openscad-wasm` dep);
-- the old eval matrix pieces that only served those (`eval/generation/*`, except what `eval/designer` imports);
-- `api/mcp` (or disable it behind a knob);
-- `CADAI_PIPELINE`, `CADAI_KERNEL` and `CADAI_BUILD_MODE`.
-
-**Keep:**
-- the designer, reviewer and triage modules, plus `designerCheck`;
-- `brep-runner`, `body-check`, the cheat sheet and the geo service;
-- the run store, artifact store, stream bridge and stream events;
-- `respondToUser`, and the `compile` route for user code edits (build123d);
-- model routing and `stl-renderer`.
+## Phase 0: designer-only cleanup
+### Task 0a: Import map and keep list (the user gives go/no-go)
+**Files:** create `docs/superpowers/plans/2026-11-08-phase0-import-map.md`.
 
 **Method:**
-- Remove from the graph first (one designer path), then delete modules that nothing imports anymore. Use `tsc` plus an unused-file pass such as `npx knip` or `ts-prune`, which may run via npx without being added to deps.
-- Move shared helpers that still have users (e.g. `estimateCostUsd` and `applyParameterOverrides` from `brep-agent-build.ts`) into `designer/` first.
-- [ ] **Step 1: Write the failing test** `the graph has exactly the designer nodes`, by inspecting the compiled graph's nodes.
-- [ ] **Step 2: Run it.** Expected: FAIL.
-- [ ] **Step 3: Remove, then fix imports.** Delete the tests of removed modules.
-- [ ] **Step 4: Gate.** `tsc`, then the full vitest suite (the remaining tests pass), then a live smoke of 1 designer build via the eval runner (about $0.15).
-- [ ] **Step 5: Commit** `refactor: designer is the only mode; remove old pipelines, gates and OpenSCAD`.
+- Run `npx dependency-cruiser` or `madge`, via npx with no dependency added, from these entries:
+  - `src/app/api/chat/route.ts`;
+  - `src/app/api/compile/route.ts`;
+  - `src/app/api/runs/**`;
+  - `src/app/api/artifacts/**`;
+  - `src/app/page.tsx` and every component it renders;
+  - `eval/designer/**`.
+- Restrict the server graph to the designer path, then list:
+  1. KEEP: everything reachable from the designer path, the viewer, the compile path, sliders, pins, the print panel and STEP;
+  2. EXTRACT: kept modules that import a module to be removed (for example `measurements.ts` and `llm-schemas.ts` importing `assembly-spec`, `4G-F2`), with the exact symbols to move;
+  3. REMOVE: the rest;
+  4. the `package.json` scripts and deps to drop (`openscad-wasm`, dead eval scripts, `4G-F11`).
+- [ ] **Step 1: Produce the map.**
+- [ ] **Step 2: Stop and ask the user to approve the KEEP, EXTRACT and REMOVE lists.**
 
-### Task 0b: Remove the old UI paths
-Needs Task 0a.
+### Task 0b: Extract, then remove server paths
+Needs 0a approved.
+- [ ] **Step 1: Move the EXTRACT symbols** into designer- or domain-named modules. Gate with `tsc` + vitest.
+- [ ] **Step 2: Rewire the graph** to the designer path only, compiled without a checkpointer.
+- [ ] **Step 3: Delete** the REMOVE list and its tests; delete `/api/chat/resume` and `/api/mcp`.
+- [ ] **Step 4: Gate:** tsc, vitest, `next build`, and 1 live designer build via the eval runner.
+- [ ] **Step 5: Commit** `refactor: designer is the only mode`.
 
-**Remove:** the spec, sheet, variant and gate UI under `src/components/design/**` and the gate handling in `chat-panel.tsx`; the store fields only they used; and `print-analysis` (if it is OpenSCAD-only; verify first).
+### Task 0c: Remove the old UI paths
+Needs 0b.
 
-**Change:** the editor language is Python/build123d only.
+Remove the spec, sheet, variant and gate UI. KEEP the viewer, compile, sliders, pins, the print panel and STEP, as the map says (`4O-H1`, `4K-H1`).
+- [ ] **Step 1: Write the failing test** `a designer run renders end to end, and slider moves recompile through /api/compile` (a component test).
+- [ ] **Step 2: Remove.**
+- [ ] **Step 3: Gate:** tsc, vitest, eslint, `next build`.
+- [ ] **Step 4: Commit** `refactor(ui): remove spec, sheet and gate UI`.
 
-**Keep:** the chat, the viewer, sliders (named dimensions with no ranges show as fixed values), the code editor and STEP download.
-- [ ] **Step 1: Write the failing test** `chat renders a designer run end to end with no gate UI` (a component test with a mocked stream).
-- [ ] **Step 2: Run it.** Expected: FAIL.
-- [ ] **Step 3: Remove.**
-- [ ] **Step 4: Gate.** `tsc`, vitest, eslint, and `next build`.
-- [ ] **Step 5: Commit** `refactor(ui): remove spec, sheet and gate UI`.
+## Phase A: features on PGlite (the full lifecycle, locally)
+**Order:**
+- A0 ∥ {A1 → A2} ∥ A3;
+- then A4 → A5 → A6;
+- then A7 ∥ A8 ∥ A9.
 
-## Phase A: fixes and local persistence (no database)
-**Order (`K-Tasks`, `O-M11`, `G-F14`):**
-- the lanes A0, {A1 → A2} and {A3} run in parallel;
-- then A4 → A5 → A6 → A7;
-- then A8 and A9 in parallel.
-
-### Task A0: Owner identity (moved from Phase B; `O-H3`, `G-F1`, `K-H7`)
-**Files:** create `src/proxy.ts` and `src/lib/owner.ts`. Test: `src/lib/owner.test.ts`, `src/proxy.test.ts`.
-
-**Produces:** `ownerKeyFrom(request: Request): string | null`. It reads the cookie the proxy set on the forwarded request and returns `sha256(uuid)`.
+### Task A0: Owner identity and the route matrix
+**Files:** `src/proxy.ts` and `src/lib/owner.ts`, plus owner checks on every existing route in the matrix. Test: `proxy.test.ts`, `owner.test.ts`, route tests.
 - [ ] **Step 1: Write the failing tests:**
-  - `the first request with no cookie gets a minted UUID that the same request's route can read`;
+  - `the first request without a cookie: its own route reads the minted owner`;
   - `a non-UUID cookie is re-minted`;
   - `x-cadai-owner is stripped`;
-  - `a page load also mints`.
+  - `no owner → 401`;
+  - `another owner's run is 404 on status, events and cancel, and the same for artifacts`.
 - [ ] **Step 2: Run them.** Expected: FAIL.
-- [ ] **Step 3: Implement.** Follow `next/dist/docs` for proxy and `NextResponse.next({ request: { headers } })`.
+- [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run them.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(security): proxy-minted owner identity`.
+- [ ] **Step 5: Commit.**
 
 ### Task A1: Designer model text never streams (bug 2)
-**Files:** `designer/run-designer.ts:153` (`tags: ['nostream']`) and `stream-bridge.ts:35` (add `designerNode`, `designerTriage` and `designerAnswer` to `STRUCTURED_NODES`). Test: `graph-no-raw-output.test.ts`.
-- [ ] **Step 1: Write the failing test** `designer mode streams no designer model text`.
+`run-designer.ts:153` gets `tags: ['nostream']`; `STRUCTURED_NODES` gets the designer nodes.
+- [ ] **Step 1: Write the failing test** `no designer model text in deltas`.
 - [ ] **Step 2: Run it.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run it.** Expected: PASS.
 - [ ] **Step 5: Commit.**
 
 ### Task A2: The model writes only the body (bug 3)
-Runs after A1 (same file).
+After A1 (same file).
+- **Produces:** `toBody`, `withGeneratedPrelude` and `PRELUDE_VERSION`.
+- **Tests:**
+  - a copied prelude without a sentinel is stripped;
+  - a modified prelude is replaced;
+  - the model is shown the body only;
+  - finish accepts its own body;
+  - a body-only first run passes.
+- **Prompt:** "Write only the design code; the tool adds the prelude; `_round`/`_bevel` are available."
+- [ ] **Steps:** write the tests, see them fail, implement, see them pass, commit.
 
-**Files:** `designer/{tools,prompt,run-designer}.ts`. Test: `tools.test.ts`.
-
-**Produces:** `toBody(script)` (after the sentinel; or, with none, leading prelude lines removed via `stripPrelude`), `withGeneratedPrelude(script)` and `PRELUDE_VERSION`.
-- [ ] **Step 1: Write the failing tests:**
-  - `a copied prelude without a sentinel is stripped`;
-  - `a modified prelude is replaced`;
-  - `the model is shown the body only`;
-  - `finish accepts the model's own body`;
-  - `a body-only first run passes the guardrail`.
-- [ ] **Step 2: Run them.** Expected: FAIL.
-- [ ] **Step 3: Implement.** Normalize the finish comparison and the `scriptBaseKey` input with `toBody`. Prompt: "Write only the design code; the tool adds the prelude. The helpers `_round` and `_bevel` are available."
-- [ ] **Step 4: Run them.** Expected: PASS.
-- [ ] **Step 5: Commit.**
-
-### Task A3: Store interfaces and local implementations
-**Files:** create `src/lib/persist/{types,index}.ts` and `src/lib/persist/local/*.ts`. Test: `src/lib/persist/local/*.test.ts`.
+### Task A3: Database layer and stores (`4O-M12`)
+**Files:** `src/lib/db/{db,pglite,pg,migrate}.ts`, `db/migrations/0001_init.sql`, `src/lib/persist/*.ts`, and `src/lib/runs/run-store.ts` (replace `LocalRunStore` with `DbRunStore` implementing the existing `RunStore` contract, plus the lifecycle methods). Test: everything on in-memory PGlite.
 
 **Produces:**
-- `ThreadStore`:
-  - `claim(threadId, ownerKey): 'ok' | 'not_owner' | 'legacy'` (a non-UUID id is `legacy`);
-  - `get`;
-  - `list(ownerKey)`;
-  - `archive`.
-- `RunRecordStore`: `create`, `commit(...)` per the lifecycle, and `terminate(runId, status, error)` with the guard.
-- `DesignStore`: `get(thread, version)`, `latest`, `list`.
-- `MessageStore`: `append` (seq under the thread lock), `setKind`, `list`.
-- `DesignVersion` with `baseRequest`, `edits`, `body` and `preludeVersion`.
-- The local implementation uses JSONL plus a per-thread lock file under `<CADAI_RUN_DIR>/threads/<uuid>/`.
+- `Db { query, transaction(fn) }`;
+- `ThreadStore` (`claim`, `get`, `list`, `archive`);
+- `DesignStore` (`get`, `latest`, `list`, `saveUserEdit`);
+- `MessageStore` (`list`, `setKind`);
+- `DbRunStore` (`start`, `commit`, `terminate`, `append`, `eventsSince`, `heartbeat`, `reap`, plus the existing contract);
+- `migrate()` uses an advisory lock, applied at boot for PGlite and as a deploy step for Postgres.
 - [ ] **Step 1: Write the failing tests:**
-  - `claim: ok, then not_owner for another owner, then legacy for thread-<ms>`;
-  - `commit is atomic and refuses when the run is no longer running`;
-  - `terminate does nothing after a commit`;
-  - `concurrent appends get distinct seq`;
-  - `list and get hide other owners`.
+  - `start refuses a second active run with 409`;
+  - `commit is atomic and refused after terminate`;
+  - `terminate does nothing after commit`;
+  - `concurrent message seq`;
+  - `staleParent inside the transaction`;
+  - `the reaper terminates stale runs with a reply`;
+  - `purge in FK order`;
+  - `stores hide other owners`;
+  - `migrate twice concurrently`.
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run them.** Expected: PASS.
 - [ ] **Step 5: Commit.**
 
 ### Task A4: Triage, answers and the branch table (bug 4)
-**Files:** create `designer/{triage,answer}.ts`. Modify `graph.ts` and `graph-route.ts` (`designerTriage` when a prior design exists; then a pure sync route) and `designer/node.ts` (the branch table above; remove `acceptedDesignerScript`). Test: `triage.test.ts`, `graph-designer.test.ts`.
+**Files:** `designer/{triage,answer}.ts`, the graph routing, and `designer/node.ts` (the branch table; `acceptedDesignerScript` removed).
 - [ ] **Step 1: Write the failing tests:**
-  - the classifier cases (`"make it 20 mm taller"`, `"can you add a cable hole?"`, `"what is this?"`, `"now make me a lamp"`, and a classifier error);
-  - `a question writes only an answer message and no version`;
-  - `new starts fresh with parent_version null`;
-  - `a second edit builds on the first edit` (the ms1 regression).
+  - the classifier cases (taller, cable hole, what is this, new lamp, error → edit);
+  - `a question writes only an answer`;
+  - `new has parent_version null`;
+  - `a second edit builds on the first` (the ms1 regression);
+  - `a retry then failure → error reply, no version`;
+  - `a refusal → fixed reply`.
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run them.** Expected: PASS.
 - [ ] **Step 5: Commit.**
 
-### Task A5: Server-owned history, the viewed version, pins and commit (bug 1)
-**Files:** `api/chat/route.ts`, `graph.ts` (state `threadId`, `runId`, `ownerKey`, `priorDesign`, `designRequest`, `baseVersion`, per `G-F7`), `designer/node.ts`, `designer/prompt.ts`, and `respondToUser` (commit). Test: `graph-designer.test.ts`, `api/chat/route.test.ts`.
+### Task A5: Chat route on the lifecycle: server history, viewed version, user edits, attachments to the model
+**Files:** `api/chat/route.ts`, the graph state (`threadId`, `runId`, `ownerKey`, `baseVersion`, `designRequest`, `attachments`), `designer/prompt.ts` and `stream-events.ts` (`designVersion` on `result`, `4G-F10`).
 
-**Request:** `{ threadId: uuid, message, attachments?, viewingVersion?, pinnedParams?, model? }`.
-
-**Route:**
-- `claim`:
-  - `not_owner` → 404;
-  - `legacy` → the fixed phrase "This conversation was saved only in this browser; start a new one to continue." with no build.
-- Then append the user message.
-- **Loading the base:**
-  - an explicit `viewingVersion` that is not found → a fixed phrase and no build (`K-H5`);
-  - a store throw → a fixed retryable error.
-- **Replay guard** on the loaded body.
-- **History:** the server builds the history from `messages`.
-- **Commit** per the lifecycle, including the labels.
+**Request:** `{ threadId, message, attachments?, viewingVersion?, pinnedParams?, editedBody?, model? }`. The server builds the history from `messages`. Attachment images go into the designer's first message as image blocks (`4K-H6`).
 - [ ] **Step 1: Write the failing tests:**
-  - `an edit of v2 while v3 exists edits v2 with pins and is not stale`;
-  - `a concurrent save makes the later one stale-labelled`;
-  - `server history is used and client history ignored`;
-  - `a failed replay guard starts fresh`;
-  - `a store throw is a fixed error`;
-  - `the commit precedes the result event`;
-  - `legacy thread → phrase`;
-  - `another owner → 404`.
+  - `an edit while viewing v2 (v3 exists) edits v2 and is not stale`;
+  - `pins create a user_edit version that the designer then edits`;
+  - `an editor body is guarded and saved as user_edit`;
+  - `a malicious pin value is rejected`;
+  - `server history only`;
+  - `an attachment reaches the designer as an image`;
+  - `a 409 while a run is active`;
+  - `a legacy id → phrase`;
+  - `the result event carries designVersion`.
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run them.** Expected: PASS.
 - [ ] **Step 5: Commit.**
 
-### Task A6: Artifacts at designerCheck and user attachments (`K-H8`, `G-F8`)
-**Files:**
-- `designer/check.ts` and `runs/externalize.ts`;
-- `runs/artifact-store.ts`: the owner-scoped `put(ownerKey, runId, kind, bytes)` and `get(ownerKey, id)`; random ids; `delete(ownerKey, id)`;
-- `api/chat/route.ts`: attachments become artifacts with a 5 MB cap and image kinds only;
-- `api/artifacts/[id]`: owner-checked.
-
-Test: `check-artifacts.test.ts`, `artifact-store.test.ts`.
+### Task A6: Artifacts, owner-scoped (local object store now)
+**Files:** `designer/check.ts`, `runs/externalize.ts`, `runs/artifact-store.ts` (`put(ownerKey, …)`, `get(ownerKey, id)`, `delete`; random ids), `src/lib/storage/object-store.ts` (interface + local filesystem), and attachments upload.
 - [ ] **Step 1: Write the failing tests:**
-  - `STL and STEP become owner-scoped artifacts and state holds refs only`;
-  - `a failing object store fails the run with a fixed error and never inlines the mesh into run_events`;
-  - `an uploaded image becomes an attachment ref`;
-  - `another owner's artifact is 404`.
+  - `STL and STEP become owner-scoped refs at designerCheck`;
+  - `an object-store failure → fixed error, never inlines the mesh`;
+  - `identical bytes, two owners → distinct ids`;
+  - `attachment type sniffing and size cap`;
+  - `compile results are not persisted` (`4O-M8`).
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run them.** Expected: PASS.
 - [ ] **Step 5: Commit.**
 
-### Task A7: Deadline, terminal status, reaper and per-run checkpointer (`O-H5`, `O-M8`, `K-H9`, `G-F3`, `G-F12`)
-**Files:** `runs/stream-run.ts`, `agent/checkpointer.ts` (the module becomes `newRunCheckpointer(): MemorySaver`, discarded at run end; delete `FileCheckpointSaver`), `graph.ts` (compile per run, or pass the checkpointer per invoke), and the route `maxDuration` exports (remove them, or set them from config). Test: `stream-run.test.ts`.
+### Task A7: Deadline and budgets
+**Files:** `runs/stream-run.ts` and `designer/run-designer.ts` (budgets derived from the remaining deadline). Remove the route `maxDuration` exports.
 - [ ] **Step 1: Write the failing tests:**
-  - `a run past CADAI_RUN_MAX_MS ends failed with a fixed message`;
-  - `a stale heartbeat is reaped to failed unless committed`;
-  - `the checkpointer is released after the run; heap holds no run state` (count instances);
-  - `Stop before commit → cancelled; Stop after commit → done`.
+  - `the designer budget fits inside the remaining deadline`;
+  - `deadline → failed with a reply`;
+  - `Stop before commit → cancelled with a reply; Stop after commit → done`.
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run them.** Expected: PASS.
 - [ ] **Step 5: Commit.**
 
-### Task A8: The eval runner takes the app path (`O-L3`, `O-L6`)
-**Files:** `eval/designer/runner.ts` and probe fixes in `eval/designer/sets/iterative.json`: the box divider becomes `dimensionAppears` or `reviewer`. Report sequences per step in `report.ts`. Test: `runner.test.ts`, `report.test.ts`.
-- [ ] **Step 1: Write the failing tests:**
-  - `each follow-up is a fresh run with only the new message and viewingVersion`;
-  - `meshes are read via artifact refs`;
-  - `sequence cost and time are reported per step`;
-  - `a safe adversarial refusal is not a hard-check failure`.
-- [ ] **Step 2: Run them.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run them.** Expected: PASS.
-- [ ] **Step 5: Commit.**
+### Task A8: The eval runner takes the app path
+**Files:** `eval/designer/{runner,report}.ts` and `sets/iterative.json`.
 
-### Task A9: Client: server threads, reconnect, Stop and versions (v2 H4, `K-H2`, `G-F4`, `G-F5`, `O-M6`, `O-M9`)
-**Files:**
-- `chat-panel.tsx`, `app-store.ts` and `src/lib/client/server-thread.ts`;
-- the routes `GET /api/threads` (list), `GET /api/threads/:id` (messages, versions, `activeRunId`, `lastSeq`) and `DELETE /api/threads/:id` (archive).
+**Changes:**
+- the runner uses PGlite and the app's request contract;
+- the box-divider probe changes;
+- the report gives per-step cost and time for sequences;
+- a safe refusal is not a hard-check failure (`4O-M3`).
+- [ ] **Steps:** write the tests, see them fail, implement, see them pass, commit.
 
-Test: component, store and route tests.
+### Task A9: Client
+**Files:** `chat-panel.tsx`, `app-store.ts` and `src/lib/client/server-thread.ts`. This is a large task, so split it into A9a (threads and reconnect) and A9b (versions, pins and editor) (`4O-M13`).
 
 **Behaviour:**
-- New thread ids are `crypto.randomUUID()`.
-- The thread list and the thread come from the server; IndexedDB is a cache, and legacy threads stay local-only with a banner.
-- On load: when `activeRunId` is set, reconnect with `/api/runs/:id/events?after=<lastSeq>`; otherwise show the final state.
-- A Stop button.
-- A version list that sets `viewingVersion`.
-- The request sends only the new contract.
+- UUID ids;
+- the thread list and thread come from the server, with IndexedDB as a cache and legacy threads kept local with a banner;
+- on load, with `activeRunId`, reconnect at `/api/runs/:id/events?after=<lastSeq>`;
+- Stop;
+- a version list sets `viewingVersion`;
+- send `pinnedParams` and `editedBody` when they differ from the viewed version;
+- 409 → the fixed phrase.
 - [ ] **Step 1: Write the failing tests:**
-  - `a cold reload mid-build finds activeRunId and resumes after lastSeq`;
-  - `reload after done shows the final design`;
-  - `Stop cancels`;
-  - `selecting v2 then sending edits v2`;
-  - `a legacy thread shows the banner and makes no server call`;
-  - `new ids are UUIDs`.
+  - `cold reload mid-build resumes`;
+  - `reload after done`;
+  - `Stop`;
+  - `v2 selected → edit v2`;
+  - `slider move then edit sends pins`;
+  - `editor change then edit sends editedBody`;
+  - `409 phrase`;
+  - `legacy banner`.
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run them.** Expected: PASS.
 - [ ] **Step 5: Commit.**
 
-## Phase B: Postgres and object storage (host-agnostic)
-Order: B1, then {B2, B3} in parallel, then B4 (`K-H7`, `G-F9`).
+## Phase B: server engines (host-agnostic)
+### Task B1: The `pg` engine
+`src/lib/db/pg.ts`:
+- a pool of `PG_POOL_MAX` with `connectionTimeoutMillis` 5 s and `statement_timeout`, `idle_in_transaction_session_timeout` and `lock_timeout` each 15 s;
+- a client is never held across a model or geo call;
+- event tailing uses LISTEN/NOTIFY with one listener connection per process, instead of polling per client (`4O-M10`).
 
-### Task B1: Pool, migrations and Postgres stores (`O-M1`, `K-M1`, `G-F11`)
-**Files:** `db/migrations/0001_init.sql` (the schema above), `scripts/db-migrate.ts`, `src/lib/db/pool.ts` and `src/lib/persist/postgres/*.ts` (the A3 interfaces plus the `RunStore` contract). Test: gated on `DATABASE_URL_TEST`, with a schema per run.
-
-**Behaviour:**
-- **`getPool()`:**
-  - lazy;
-  - `max` from `PG_POOL_MAX` (default 5);
-  - `connectionTimeoutMillis` 5 s, `statement_timeout` 15 s, `idle_in_transaction_session_timeout` 15 s;
-  - never hold a client across a model or geo call.
-- **`db-migrate`:** `pg_advisory_lock`, ordered SQL files and a migrations table. It is an explicit deploy step.
-- **Polling** every 1–2 s in Postgres mode.
-- [ ] **Step 1: Write the failing tests:**
-  - every A3 store test, run against Postgres;
-  - `commit under concurrency`;
-  - `events page across instances`;
-  - `the reaper`;
-  - `migrate is idempotent under concurrency`;
-  - `a DB timeout fails fast with the fixed error`.
-- [ ] **Step 2: Run them.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run them.** Expected: PASS. The full suite stays green in local mode.
-- [ ] **Step 5: Commit.**
+**Tests:** every A3 test, run on real Postgres (gated on `DATABASE_URL_TEST`), plus `100 tailing clients use at most 2 connections`.
+- [ ] **Steps:** write the tests, see them fail, implement, see them pass, commit.
 
 ### Task B2: S3-compatible object store
-**Files:** `src/lib/storage/{object-store,s3-object-store}.ts`, with selection in `artifact-store.ts`. Test: a mocked client, plus a live test gated on `S3_TEST_BUCKET`.
+`src/lib/storage/s3-object-store.ts` (keys `a/<ownerKey>/<id>.<kind>`; put, get streamed, delete). **Tests:** a mocked client, plus a live test gated on `S3_TEST_BUCKET`.
+- [ ] **Steps:** write the tests, see them fail, implement, see them pass, commit.
 
-**Behaviour:** object key `a/<ownerKey>/<id>.<kind>`; `put`, `get` (streamed) and `delete`; a size cap.
-- [ ] **Step 1: Write the failing tests:**
-  - `put/get/delete round-trip`;
-  - `another owner's get is undefined`;
-  - `identical bytes from two owners get distinct ids`.
-- [ ] **Step 2: Run them.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run them.** Expected: PASS.
-- [ ] **Step 5: Commit.**
-
-### Task B3: Generic-host streaming and shutdown (`O-M2`, `K-M1`)
-**Files:** `runs/stream-run.ts` and the events route.
-
-**Behaviour:**
+### Task B3: Streaming on a generic host
 - an SSE comment keep-alive every 15 s;
 - `X-Accel-Buffering: no` and `Cache-Control: no-transform`;
-- a client disconnect does not stop the run;
-- SIGTERM stops accepting new runs, waits up to the deadline for running runs, then marks the rest failed.
-- [ ] **Step 1: Write the failing tests:**
-  - `keep-alives are emitted`;
-  - `a disconnect leaves the run running`;
-  - `SIGTERM drains`.
-- [ ] **Step 2: Run them.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run them.** Expected: PASS.
-- [ ] **Step 5: Commit.**
+- a client disconnect never stops the run.
 
-### Task B4: Sweep (`K-M4`, `O-H4`, `K-H8`)
-**Files:** `scripts/sweep.ts` and `src/app/api/internal/sweep/route.ts`.
-- **Auth:** `Authorization: Bearer`. Compare lengths before `timingSafeEqual`, and return 401 when `SWEEP_SECRET` is unset.
-- **Scheduler:** the host's. No in-request sweep.
-- **Deletes** exactly the Retention list above.
-- [ ] **Step 1: Write the failing tests:**
-  - `referenced artifacts, including message attachments, survive`;
-  - `unreferenced artifacts older than 24 h are deleted from the store and the table`;
-  - `run_events go 10 min after the end`;
-  - `runs are never deleted`;
-  - `401 without the secret, with a wrong-length secret, and when the secret is unset`.
-- [ ] **Step 2: Run them.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run them.** Expected: PASS.
-- [ ] **Step 5: Commit.**
+**Tests:** keep-alives are emitted, and a disconnect leaves the run running.
+- [ ] **Steps:** write the tests, see them fail, implement, see them pass, commit.
+
+### Task B4: Sweep
+`scripts/sweep.ts` plus `POST /api/internal/sweep`:
+- Bearer auth; compare lengths before `timingSafeEqual`; 401 when the secret is unset;
+- the host's scheduler runs it;
+- it executes the Retention section exactly.
+
+**Tests:**
+- referenced artifacts (designs and attachments) survive;
+- orphans are deleted after 24 h;
+- run_events are deleted after 10 min;
+- the archive purge runs in FK order;
+- 401 cases.
+- [ ] **Steps:** write the tests, see them fail, implement, see them pass, commit.
 
 ---
 
 ## Execution and checks
 - **Order:**
-  1. Phase 0 (0a → 0b).
-  2. Phase A (A0 ∥ {A1 → A2} ∥ A3, then A4 → A5 → A6 → A7, then A8 ∥ A9).
-  3. Phase B (B1, then B2 ∥ B3, then B4).
+  1. 0a, then the user's go/no-go, then 0b → 0c.
+  2. A0 ∥ {A1 → A2} ∥ A3.
+  3. A4 → A5 → A6.
+  4. A7 ∥ A8 ∥ A9.
+  5. B1 ∥ B2 ∥ B3, then B4.
 - **Gate per lane:**
-  - `npx tsc --noEmit`;
+  - tsc;
   - vitest `--maxWorkers=2`, once;
   - eslint on changed files.
 - **End checks:**
   - **Browser smoke:**
-    - build, edit, a second edit, and an edit of an older version;
-    - a question and a new object;
-    - refresh mid-build, and reload after done;
+    - build, edit, a second edit;
+    - an edit of an older version, slider moves then an edit, a code edit then an edit;
+    - a question, a new object;
+    - refresh mid-build, reload after done;
     - Stop before and after the commit;
-    - a second tab;
-    - a legacy thread.
-  - **Eval:** re-run ms0 and ms1 through the app-path runner (about $3), compared with the earlier ms0/ms1.
+    - a second tab (409);
+    - a legacy thread;
+    - an attachment.
+  - **Eval:** re-run ms0 + ms1 through the app-path runner (about $3).
