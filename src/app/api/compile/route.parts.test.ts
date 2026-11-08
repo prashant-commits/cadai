@@ -16,6 +16,7 @@ beforeEach(() => {
 function post(body: unknown) {
   return POST(new NextRequest('http://localhost:3000/api/compile', {
     method: 'POST',
+    headers: { cookie: 'cadai_owner=550e8400-e29b-41d4-a716-446655440000' },
     body: JSON.stringify(body),
   }));
 }

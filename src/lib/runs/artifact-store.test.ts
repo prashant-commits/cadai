@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { LocalArtifactStore, getArtifactStore, isArtifactId } from './artifact-store';
+import { RUN_DIR_NOT_WRITABLE } from './config';
 import { LocalRunStore } from './run-store';
 
 const dirs: string[] = [];
@@ -205,5 +206,14 @@ describe('LocalArtifactStore', () => {
     await s.put('r1', 'svg', 'same');
     await expect(s.put('r2', 'png', 'same')).rejects.toThrow(/already exists as svg/);
     await expect(s.put('r3', 'svg', 'same')).resolves.toBeDefined();
+  });
+
+  it('an unwritable artifact dir fails with RUN_DIR_NOT_WRITABLE', () => {
+    const base = tmp();
+    const blocker = path.join(base, 'file.txt');
+    fs.writeFileSync(blocker, 'not a dir');
+    expect(() => new LocalArtifactStore(path.join(blocker, 'artifacts'))).toThrow(
+      RUN_DIR_NOT_WRITABLE
+    );
   });
 });

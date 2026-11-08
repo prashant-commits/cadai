@@ -1,10 +1,9 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import type { Readable } from 'stream';
 import type { ArtifactRef } from '@/lib/contract/run-contract';
-import { artifactStoreDir, artifactStoreKind } from './config';
+import { artifactStoreDir, artifactStoreKind, RUN_DIR_NOT_WRITABLE } from './config';
 import { getRunStore, isSafeRunId, onRunRemoved, runTtlMs } from './run-store';
 
 export type ArtifactKind = ArtifactRef['kind'];
@@ -37,24 +36,22 @@ const errCode = (e: unknown) => (e as NodeJS.ErrnoException)?.code;
 const rand = () => Math.random().toString(36).slice(2);
 const urlFor = (id: string) => `/api/artifacts/${id}`;
 
-let warnedFallback = false;
-
-/** `preferred` if it can be created and written, else os.tmpdir()/cadai-runs/artifacts (warns once). */
+/** `preferred` if its subdirectories can be created and written, else throws `RUN_DIR_NOT_WRITABLE`. */
 function writableRoot(preferred: string): string {
-  const prepare = (root: string) => {
-    for (const sub of ['blobs', 'holders', 'runs', 'trash']) fs.mkdirSync(path.join(/*turbopackIgnore: true*/ root, sub), { recursive: true });
-    fs.accessSync(root, fs.constants.W_OK);
-    return root;
-  };
   try {
-    return prepare(preferred);
-  } catch (e) {
-    const fallback = path.join(os.tmpdir(), 'cadai-runs', 'artifacts');
-    if (!warnedFallback) {
-      warnedFallback = true;
-      console.warn(`Artifact store directory ${preferred} is not writable (${errCode(e) ?? e}); using ${fallback}.`);
+    for (const sub of ['blobs', 'holders', 'runs', 'trash']) {
+      fs.mkdirSync(path.join(/*turbopackIgnore: true*/ preferred, sub), { recursive: true });
     }
-    return prepare(fallback);
+    fs.accessSync(preferred, fs.constants.W_OK);
+    const probe = path.join(
+      preferred,
+      `.probe-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+    fs.writeFileSync(probe, 'probe', 'utf8');
+    fs.unlinkSync(probe);
+    return preferred;
+  } catch {
+    throw new Error(`${RUN_DIR_NOT_WRITABLE} (${preferred})`);
   }
 }
 

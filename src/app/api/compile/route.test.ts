@@ -1,12 +1,14 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterAll } from 'vitest';
 import { NextRequest } from 'next/server';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import { getArtifactStore } from '@/lib/runs/artifact-store';
+import * as crypto from 'crypto';
 import * as brepRunner from '@/lib/engine/brep-runner';
 import { withGeneratedPrelude } from '@/lib/brep/prelude';
+import { getObjectStore } from '@/lib/storage/object-store';
+import { getDb, closeDb } from '@/lib/db/db';
 import { POST } from './route';
+
+const TEST_OWNER_UUID = crypto.randomUUID();
+const OWNER_COOKIE = `cadai_owner=${TEST_OWNER_UUID}`;
 
 const VALID_CODE = `
 from build123d import Box
@@ -16,52 +18,52 @@ result = Box(10, 10, 10)
 const EMPTY_CODE = `   `;
 
 describe('/api/compile API Route', () => {
-  it('returns inline stl AND artifact refs that resolve to the same bytes', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadai-compile-'));
-    process.env.CADAI_RUN_DIR = dir;
-    try {
-      const res = await POST(new NextRequest('http://localhost:3000/api/compile', { method: 'POST', body: JSON.stringify({ code: VALID_CODE }) }));
-      const data = await res.json();
-      expect(data.stl).toContain('facet normal');
-      expect(data.artifacts.stl).toMatchObject({ kind: 'stl', bytes: Buffer.byteLength(data.stl) });
-      const got = await getArtifactStore().get(data.artifacts.stl.id);
-      const chunks: Buffer[] = [];
-      for await (const c of got!.stream) chunks.push(c as Buffer);
-      expect(Buffer.concat(chunks).toString('utf-8')).toBe(data.stl);
-      // held by a synthetic compile-<sha> run, which the same code reuses
-      const runs = fs.readdirSync(path.join(dir, 'artifacts', 'runs'));
-      expect(runs).toHaveLength(1);
-      expect(runs[0]).toMatch(/^compile-[0-9a-f]{24}$/);
-      const again = await (await POST(new NextRequest('http://localhost:3000/api/compile', { method: 'POST', body: JSON.stringify({ code: VALID_CODE }) }))).json();
-      expect(again.artifacts.stl.id).toBe(data.artifacts.stl.id);
-    } finally {
-      delete process.env.CADAI_RUN_DIR;
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+  afterAll(async () => {
+    await closeDb();
   });
 
-  it('M2: the compile byte cap evicts the least recently used compile run', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadai-compile-cap-'));
-    process.env.CADAI_RUN_DIR = dir;
-    try {
-      const compile = async (code: string) => (await (await POST(new NextRequest('http://localhost:3000/api/compile', { method: 'POST', body: JSON.stringify({ code }) }))).json());
-      const first = await compile('from build123d import Box\nresult = Box(1, 1, 1)\n');
-      const firstBytes = (first.artifacts.stl?.bytes ?? 0) + (first.artifacts.step?.bytes ?? 0);
-      process.env.CADAI_COMPILE_ARTIFACT_MAX_BYTES = String(firstBytes + 10); // room for one
-      const second = await compile('from build123d import Box\nresult = Box(2, 2, 2)\n');
-      expect(await getArtifactStore().get(second.artifacts.stl.id)).toBeDefined();
-      expect(await getArtifactStore().get(first.artifacts.stl.id)).toBeUndefined();
-      expect(second.stl).toContain('facet normal'); // inline is unaffected
-    } finally {
-      delete process.env.CADAI_RUN_DIR;
-      delete process.env.CADAI_COMPILE_ARTIFACT_MAX_BYTES;
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+  it('no owner cookie → 401', async () => {
+    const req = new NextRequest('http://localhost:3000/api/compile', {
+      method: 'POST',
+      body: JSON.stringify({ code: VALID_CODE }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(401);
+  });
+
+  it('compile writes no artifact', async () => {
+    const objectStore = getObjectStore();
+    const objectStoreSpy = vi.spyOn(objectStore, 'put');
+    const db = getDb();
+    const beforeCount = Number(
+      (await db.query(`SELECT count(*)::int as c FROM artifacts`)).rows[0].c
+    );
+
+    const req = new NextRequest('http://localhost:3000/api/compile', {
+      method: 'POST',
+      headers: { cookie: OWNER_COOKIE },
+      body: JSON.stringify({ code: VALID_CODE }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+
+    expect(data.stl).toContain('facet normal');
+    expect(data.artifacts).toBeUndefined();
+    expect(objectStoreSpy).not.toHaveBeenCalled();
+
+    const afterCount = Number(
+      (await db.query(`SELECT count(*)::int as c FROM artifacts`)).rows[0].c
+    );
+    expect(afterCount).toBe(beforeCount);
   });
 
   it('returns 400 for empty code defaulting to build123d', async () => {
     const req = new NextRequest('http://localhost:3000/api/compile', {
       method: 'POST',
+      headers: { cookie: OWNER_COOKIE },
       body: JSON.stringify({ code: EMPTY_CODE }),
     });
 
@@ -75,6 +77,7 @@ describe('/api/compile API Route', () => {
   it('asks for build123d code when that language is requested and the body is empty', async () => {
     const req = new NextRequest('http://localhost:3000/api/compile', {
       method: 'POST',
+      headers: { cookie: OWNER_COOKIE },
       body: JSON.stringify({ code: EMPTY_CODE, language: 'build123d' }),
     });
     const res = await POST(req);
@@ -88,7 +91,10 @@ describe('/api/compile API Route', () => {
     const req = new NextRequest('http://localhost:3000/api/compile', {
       method: 'POST',
       body: '{',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        cookie: OWNER_COOKIE,
+        'content-type': 'application/json',
+      },
     });
     const res = await POST(req);
     expect(res.status).toBe(400);
@@ -112,6 +118,7 @@ describe('/api/compile API Route', () => {
       // 1. body-only request with preludeVersion: '1'
       const req1 = new NextRequest('http://localhost:3000/api/compile', {
         method: 'POST',
+        headers: { cookie: OWNER_COOKIE },
         body: JSON.stringify({ code: body, preludeVersion: '1' }),
       });
       const res1 = await POST(req1);
@@ -121,6 +128,7 @@ describe('/api/compile API Route', () => {
       // 2. body-only request with no preludeVersion
       const req2 = new NextRequest('http://localhost:3000/api/compile', {
         method: 'POST',
+        headers: { cookie: OWNER_COOKIE },
         body: JSON.stringify({ code: body }),
       });
       const res2 = await POST(req2);
@@ -131,6 +139,7 @@ describe('/api/compile API Route', () => {
       const sentinelScript = withGeneratedPrelude(body, '1');
       const req3 = new NextRequest('http://localhost:3000/api/compile', {
         method: 'POST',
+        headers: { cookie: OWNER_COOKIE },
         body: JSON.stringify({ code: sentinelScript }),
       });
       const res3 = await POST(req3);
@@ -141,6 +150,7 @@ describe('/api/compile API Route', () => {
       spy.mockClear();
       const req4 = new NextRequest('http://localhost:3000/api/compile', {
         method: 'POST',
+        headers: { cookie: OWNER_COOKIE },
         body: JSON.stringify({ code: body, preludeVersion: 'nope' }),
       });
       const res4 = await POST(req4);
