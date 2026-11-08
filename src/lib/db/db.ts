@@ -25,7 +25,13 @@ interface TxStore {
   open: boolean;
 }
 
-const txStorage = new AsyncLocalStorage<TxStore>();
+declare global {
+  var __cadaiDb: Db | undefined;
+  var __cadaiTxStorage: AsyncLocalStorage<TxStore> | undefined;
+}
+
+const txStorage: AsyncLocalStorage<TxStore> =
+  (globalThis.__cadaiTxStorage ??= new AsyncLocalStorage<TxStore>());
 
 export function assertNotInTransaction(): void {
   const store = txStorage.getStore();
@@ -65,10 +71,6 @@ export async function withTxRetry<T>(fn: () => Promise<T>): Promise<T> {
     }
   }
   throw new Error('Unreachable');
-}
-
-declare global {
-  var __cadaiDb: Db | undefined;
 }
 
 export function getDb(): Db {

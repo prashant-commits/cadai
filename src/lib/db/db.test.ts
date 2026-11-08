@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { getDb, closeDb } from './db';
 import { createPgliteDb } from './pglite';
 import { migrate } from './migrate';
@@ -163,5 +163,20 @@ describe('Db (PGlite)', () => {
     } finally {
       await db.close();
     }
+  });
+
+  it('the transaction guard works across two copies of the db module', async () => {
+    vi.resetModules();
+    const A = await import('@/lib/db/db');
+    vi.resetModules();
+    const B = await import('@/lib/db/db');
+    expect(A).not.toBe(B);
+
+    expect(() => B.requireTransaction()).toThrow('store method requires a transaction');
+
+    await A.getDb().transaction(async () => {
+      expect(() => B.requireTransaction()).not.toThrow();
+      expect(() => B.assertNotInTransaction()).toThrow('db.query inside a transaction');
+    });
   });
 });
