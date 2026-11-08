@@ -1,0 +1,501 @@
+{
+  "byPrompt": {
+    "hinged_lid_box": [
+      {
+        "arm": "pipeline-abv2",
+        "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-02-15-401Z-hinged_lid_box.py",
+        "scriptPath": "eval/designer/baselines/pipeline-abv2/hinged_lid_box.py"
+      },
+      {
+        "arm": "dd1-designer",
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/designer/hinged_lid_box/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/designer/hinged_lid_box/model.py"
+      },
+      {
+        "arm": "dd1-reviewer",
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/reviewer/hinged_lid_box/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/reviewer/hinged_lid_box/model.py"
+      }
+    ],
+    "snap_fit_case": [
+      {
+        "arm": "pipeline-abv2",
+        "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-02-15-481Z-snap_fit_case.py",
+        "scriptPath": "eval/designer/baselines/pipeline-abv2/snap_fit_case.py"
+      }
+    ],
+    "desk_clamp_tilted_post": [
+      {
+        "arm": "pipeline-abv2",
+        "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-04-06-493Z-desk_clamp_tilted_post.py",
+        "scriptPath": "eval/designer/baselines/pipeline-abv2/desk_clamp_tilted_post.py"
+      }
+    ],
+    "hex_grid_organizer": [
+      {
+        "arm": "pipeline-abv2",
+        "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-04-43-236Z-hex_grid_organizer.py",
+        "scriptPath": "eval/designer/baselines/pipeline-abv2/hex_grid_organizer.py"
+      }
+    ],
+    "pipe_tee": [
+      {
+        "arm": "pipeline-abv2",
+        "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-06-14-565Z-pipe_tee.py",
+        "scriptPath": "eval/designer/baselines/pipeline-abv2/pipe_tee.py"
+      }
+    ],
+    "gear_blanks_on_plate": [
+      {
+        "arm": "pipeline-abv2",
+        "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-06-32-852Z-gear_blanks_on_plate.py",
+        "scriptPath": "eval/designer/baselines/pipeline-abv2/gear_blanks_on_plate.py"
+      }
+    ],
+    "curved_wall_arm": [
+      {
+        "arm": "pipeline-abv2",
+        "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-07-19-804Z-curved_wall_arm.py",
+        "scriptPath": "eval/designer/baselines/pipeline-abv2/curved_wall_arm.py"
+      }
+    ],
+    "drawer_on_rails": [
+      {
+        "arm": "pipeline-abv2",
+        "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-08-00-258Z-drawer_on_rails.py",
+        "scriptPath": "eval/designer/baselines/pipeline-abv2/drawer_on_rails.py"
+      },
+      {
+        "arm": "dd1-designer",
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/designer/drawer_on_rails/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/designer/drawer_on_rails/model.py"
+      },
+      {
+        "arm": "dd1-reviewer",
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/reviewer/drawer_on_rails/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/reviewer/drawer_on_rails/model.py"
+      }
+    ],
+    "angled_lamp_mount": [
+      {
+        "arm": "pipeline-abv2",
+        "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-08-30-094Z-angled_lamp_mount.py",
+        "scriptPath": "eval/designer/baselines/pipeline-abv2/angled_lamp_mount.py"
+      }
+    ],
+    "stackable_crate": [
+      {
+        "arm": "pipeline-abv2",
+        "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-10-20-702Z-stackable_crate.py",
+        "scriptPath": "eval/designer/baselines/pipeline-abv2/stackable_crate.py"
+      },
+      {
+        "arm": "dd1-designer",
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/designer/stackable_crate/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/designer/stackable_crate/model.py"
+      },
+      {
+        "arm": "dd1-reviewer",
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/reviewer/stackable_crate/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/reviewer/stackable_crate/model.py"
+      }
+    ],
+    "headphone_saddle_stand": [
+      {
+        "arm": "pipeline-abv2",
+        "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-10-23-508Z-headphone_saddle_stand.py",
+        "scriptPath": "eval/designer/baselines/pipeline-abv2/headphone_saddle_stand.py"
+      },
+      {
+        "arm": "dd1-designer",
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/designer/headphone_saddle_stand/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/designer/headphone_saddle_stand/model.py"
+      },
+      {
+        "arm": "dd1-reviewer",
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/reviewer/headphone_saddle_stand/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/reviewer/headphone_saddle_stand/model.py"
+      }
+    ],
+    "adjustable_shelf_bracket": [
+      {
+        "arm": "pipeline-abv2",
+        "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-11-40-645Z-adjustable_shelf_bracket.py",
+        "scriptPath": "eval/designer/baselines/pipeline-abv2/adjustable_shelf_bracket.py"
+      }
+    ],
+    "phone_tablet_dock": [
+      {
+        "arm": "pipeline-abv2",
+        "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-12-16-241Z-phone_tablet_dock.py",
+        "scriptPath": "eval/designer/baselines/pipeline-abv2/phone_tablet_dock.py"
+      },
+      {
+        "arm": "dd1-designer",
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/designer/phone_tablet_dock/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/designer/phone_tablet_dock/model.py"
+      },
+      {
+        "arm": "dd1-reviewer",
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/reviewer/phone_tablet_dock/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/reviewer/phone_tablet_dock/model.py"
+      }
+    ],
+    "user_dock": [
+      {
+        "arm": "dd1-designer",
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/designer/user_dock/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/designer/user_dock/model.py"
+      },
+      {
+        "arm": "dd1-reviewer",
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/reviewer/user_dock/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/reviewer/user_dock/model.py"
+      },
+      {
+        "arm": "cc_dock",
+        "source": "/home/claude/work/cadai/.cadai/scratch/argon/cc_dock.stl",
+        "stlPath": "eval/designer/baselines/references/cc_dock.stl"
+      },
+      {
+        "arm": "cc_dock_open",
+        "source": "/home/claude/work/cadai/.cadai/scratch/argon/cc_dock_open.stl",
+        "stlPath": "eval/designer/baselines/references/cc_dock_open.stl"
+      },
+      {
+        "arm": "argon_dock",
+        "source": "/home/claude/work/cadai/.cadai/scratch/argon/argon_dock.stl",
+        "stlPath": "eval/designer/baselines/references/argon_dock.stl"
+      },
+      {
+        "arm": "argon_dock_open",
+        "source": "/home/claude/work/cadai/.cadai/scratch/argon/argon_dock_open.stl",
+        "stlPath": "eval/designer/baselines/references/argon_dock_open.stl"
+      }
+    ],
+    "dock": [
+      {
+        "arm": "cc_dock",
+        "source": "/home/claude/work/cadai/.cadai/scratch/argon/cc_dock.stl",
+        "stlPath": "eval/designer/baselines/references/cc_dock.stl"
+      },
+      {
+        "arm": "cc_dock_open",
+        "source": "/home/claude/work/cadai/.cadai/scratch/argon/cc_dock_open.stl",
+        "stlPath": "eval/designer/baselines/references/cc_dock_open.stl"
+      },
+      {
+        "arm": "argon_dock",
+        "source": "/home/claude/work/cadai/.cadai/scratch/argon/argon_dock.stl",
+        "stlPath": "eval/designer/baselines/references/argon_dock.stl"
+      },
+      {
+        "arm": "argon_dock_open",
+        "source": "/home/claude/work/cadai/.cadai/scratch/argon/argon_dock_open.stl",
+        "stlPath": "eval/designer/baselines/references/argon_dock_open.stl"
+      }
+    ]
+  },
+  "pipeline-abv2": {
+    "hinged_lid_box": {
+      "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-02-15-401Z-hinged_lid_box.py",
+      "scriptPath": "eval/designer/baselines/pipeline-abv2/hinged_lid_box.py"
+    },
+    "snap_fit_case": {
+      "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-02-15-481Z-snap_fit_case.py",
+      "scriptPath": "eval/designer/baselines/pipeline-abv2/snap_fit_case.py"
+    },
+    "desk_clamp_tilted_post": {
+      "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-04-06-493Z-desk_clamp_tilted_post.py",
+      "scriptPath": "eval/designer/baselines/pipeline-abv2/desk_clamp_tilted_post.py"
+    },
+    "hex_grid_organizer": {
+      "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-04-43-236Z-hex_grid_organizer.py",
+      "scriptPath": "eval/designer/baselines/pipeline-abv2/hex_grid_organizer.py"
+    },
+    "pipe_tee": {
+      "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-06-14-565Z-pipe_tee.py",
+      "scriptPath": "eval/designer/baselines/pipeline-abv2/pipe_tee.py"
+    },
+    "gear_blanks_on_plate": {
+      "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-06-32-852Z-gear_blanks_on_plate.py",
+      "scriptPath": "eval/designer/baselines/pipeline-abv2/gear_blanks_on_plate.py"
+    },
+    "curved_wall_arm": {
+      "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-07-19-804Z-curved_wall_arm.py",
+      "scriptPath": "eval/designer/baselines/pipeline-abv2/curved_wall_arm.py"
+    },
+    "drawer_on_rails": {
+      "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-08-00-258Z-drawer_on_rails.py",
+      "scriptPath": "eval/designer/baselines/pipeline-abv2/drawer_on_rails.py"
+    },
+    "angled_lamp_mount": {
+      "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-08-30-094Z-angled_lamp_mount.py",
+      "scriptPath": "eval/designer/baselines/pipeline-abv2/angled_lamp_mount.py"
+    },
+    "stackable_crate": {
+      "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-10-20-702Z-stackable_crate.py",
+      "scriptPath": "eval/designer/baselines/pipeline-abv2/stackable_crate.py"
+    },
+    "headphone_saddle_stand": {
+      "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-10-23-508Z-headphone_saddle_stand.py",
+      "scriptPath": "eval/designer/baselines/pipeline-abv2/headphone_saddle_stand.py"
+    },
+    "adjustable_shelf_bracket": {
+      "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-11-40-645Z-adjustable_shelf_bracket.py",
+      "scriptPath": "eval/designer/baselines/pipeline-abv2/adjustable_shelf_bracket.py"
+    },
+    "phone_tablet_dock": {
+      "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-12-16-241Z-phone_tablet_dock.py",
+      "scriptPath": "eval/designer/baselines/pipeline-abv2/phone_tablet_dock.py"
+    }
+  },
+  "dd1": {
+    "designer": {
+      "drawer_on_rails": {
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/designer/drawer_on_rails/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/designer/drawer_on_rails/model.py"
+      },
+      "headphone_saddle_stand": {
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/designer/headphone_saddle_stand/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/designer/headphone_saddle_stand/model.py"
+      },
+      "hinged_lid_box": {
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/designer/hinged_lid_box/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/designer/hinged_lid_box/model.py"
+      },
+      "phone_tablet_dock": {
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/designer/phone_tablet_dock/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/designer/phone_tablet_dock/model.py"
+      },
+      "stackable_crate": {
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/designer/stackable_crate/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/designer/stackable_crate/model.py"
+      },
+      "user_dock": {
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/designer/user_dock/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/designer/user_dock/model.py"
+      }
+    },
+    "reviewer": {
+      "drawer_on_rails": {
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/reviewer/drawer_on_rails/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/reviewer/drawer_on_rails/model.py"
+      },
+      "headphone_saddle_stand": {
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/reviewer/headphone_saddle_stand/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/reviewer/headphone_saddle_stand/model.py"
+      },
+      "hinged_lid_box": {
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/reviewer/hinged_lid_box/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/reviewer/hinged_lid_box/model.py"
+      },
+      "phone_tablet_dock": {
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/reviewer/phone_tablet_dock/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/reviewer/phone_tablet_dock/model.py"
+      },
+      "stackable_crate": {
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/reviewer/stackable_crate/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/reviewer/stackable_crate/model.py"
+      },
+      "user_dock": {
+        "source": "/home/claude/work/wt-dd1/eval/designer/out/reviewer/user_dock/model.py",
+        "scriptPath": "eval/designer/baselines/dd1/reviewer/user_dock/model.py"
+      }
+    }
+  },
+  "references": {
+    "cc_dock": {
+      "source": "/home/claude/work/cadai/.cadai/scratch/argon/cc_dock.stl",
+      "stlPath": "eval/designer/baselines/references/cc_dock.stl"
+    },
+    "cc_dock_open": {
+      "source": "/home/claude/work/cadai/.cadai/scratch/argon/cc_dock_open.stl",
+      "stlPath": "eval/designer/baselines/references/cc_dock_open.stl"
+    },
+    "argon_dock": {
+      "source": "/home/claude/work/cadai/.cadai/scratch/argon/argon_dock.stl",
+      "stlPath": "eval/designer/baselines/references/argon_dock.stl"
+    },
+    "argon_dock_open": {
+      "source": "/home/claude/work/cadai/.cadai/scratch/argon/argon_dock_open.stl",
+      "stlPath": "eval/designer/baselines/references/argon_dock_open.stl"
+    }
+  },
+  "hinged_lid_box": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-02-15-401Z-hinged_lid_box.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/hinged_lid_box.py"
+  },
+  "pipeline-abv2:hinged_lid_box": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-02-15-401Z-hinged_lid_box.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/hinged_lid_box.py"
+  },
+  "snap_fit_case": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-02-15-481Z-snap_fit_case.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/snap_fit_case.py"
+  },
+  "pipeline-abv2:snap_fit_case": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-02-15-481Z-snap_fit_case.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/snap_fit_case.py"
+  },
+  "desk_clamp_tilted_post": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-04-06-493Z-desk_clamp_tilted_post.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/desk_clamp_tilted_post.py"
+  },
+  "pipeline-abv2:desk_clamp_tilted_post": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-04-06-493Z-desk_clamp_tilted_post.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/desk_clamp_tilted_post.py"
+  },
+  "hex_grid_organizer": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-04-43-236Z-hex_grid_organizer.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/hex_grid_organizer.py"
+  },
+  "pipeline-abv2:hex_grid_organizer": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-04-43-236Z-hex_grid_organizer.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/hex_grid_organizer.py"
+  },
+  "pipe_tee": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-06-14-565Z-pipe_tee.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/pipe_tee.py"
+  },
+  "pipeline-abv2:pipe_tee": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-06-14-565Z-pipe_tee.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/pipe_tee.py"
+  },
+  "gear_blanks_on_plate": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-06-32-852Z-gear_blanks_on_plate.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/gear_blanks_on_plate.py"
+  },
+  "pipeline-abv2:gear_blanks_on_plate": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-06-32-852Z-gear_blanks_on_plate.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/gear_blanks_on_plate.py"
+  },
+  "curved_wall_arm": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-07-19-804Z-curved_wall_arm.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/curved_wall_arm.py"
+  },
+  "pipeline-abv2:curved_wall_arm": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-07-19-804Z-curved_wall_arm.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/curved_wall_arm.py"
+  },
+  "drawer_on_rails": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-08-00-258Z-drawer_on_rails.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/drawer_on_rails.py"
+  },
+  "pipeline-abv2:drawer_on_rails": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-08-00-258Z-drawer_on_rails.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/drawer_on_rails.py"
+  },
+  "angled_lamp_mount": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-08-30-094Z-angled_lamp_mount.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/angled_lamp_mount.py"
+  },
+  "pipeline-abv2:angled_lamp_mount": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-08-30-094Z-angled_lamp_mount.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/angled_lamp_mount.py"
+  },
+  "stackable_crate": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-10-20-702Z-stackable_crate.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/stackable_crate.py"
+  },
+  "pipeline-abv2:stackable_crate": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-10-20-702Z-stackable_crate.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/stackable_crate.py"
+  },
+  "headphone_saddle_stand": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-10-23-508Z-headphone_saddle_stand.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/headphone_saddle_stand.py"
+  },
+  "pipeline-abv2:headphone_saddle_stand": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-10-23-508Z-headphone_saddle_stand.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/headphone_saddle_stand.py"
+  },
+  "adjustable_shelf_bracket": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-11-40-645Z-adjustable_shelf_bracket.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/adjustable_shelf_bracket.py"
+  },
+  "pipeline-abv2:adjustable_shelf_bracket": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-11-40-645Z-adjustable_shelf_bracket.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/adjustable_shelf_bracket.py"
+  },
+  "phone_tablet_dock": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-12-16-241Z-phone_tablet_dock.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/phone_tablet_dock.py"
+  },
+  "pipeline-abv2:phone_tablet_dock": {
+    "source": "/home/claude/work/wt-ab2/eval/results/matrix-ab-v2/ab-v2-agent-s1-claude-sonnet-5.5-2026-11-07T20-12-16-241Z-phone_tablet_dock.py",
+    "scriptPath": "eval/designer/baselines/pipeline-abv2/phone_tablet_dock.py"
+  },
+  "dd1-designer:drawer_on_rails": {
+    "source": "/home/claude/work/wt-dd1/eval/designer/out/designer/drawer_on_rails/model.py",
+    "scriptPath": "eval/designer/baselines/dd1/designer/drawer_on_rails/model.py"
+  },
+  "dd1-reviewer:drawer_on_rails": {
+    "source": "/home/claude/work/wt-dd1/eval/designer/out/reviewer/drawer_on_rails/model.py",
+    "scriptPath": "eval/designer/baselines/dd1/reviewer/drawer_on_rails/model.py"
+  },
+  "dd1-designer:headphone_saddle_stand": {
+    "source": "/home/claude/work/wt-dd1/eval/designer/out/designer/headphone_saddle_stand/model.py",
+    "scriptPath": "eval/designer/baselines/dd1/designer/headphone_saddle_stand/model.py"
+  },
+  "dd1-reviewer:headphone_saddle_stand": {
+    "source": "/home/claude/work/wt-dd1/eval/designer/out/reviewer/headphone_saddle_stand/model.py",
+    "scriptPath": "eval/designer/baselines/dd1/reviewer/headphone_saddle_stand/model.py"
+  },
+  "dd1-designer:hinged_lid_box": {
+    "source": "/home/claude/work/wt-dd1/eval/designer/out/designer/hinged_lid_box/model.py",
+    "scriptPath": "eval/designer/baselines/dd1/designer/hinged_lid_box/model.py"
+  },
+  "dd1-reviewer:hinged_lid_box": {
+    "source": "/home/claude/work/wt-dd1/eval/designer/out/reviewer/hinged_lid_box/model.py",
+    "scriptPath": "eval/designer/baselines/dd1/reviewer/hinged_lid_box/model.py"
+  },
+  "dd1-designer:phone_tablet_dock": {
+    "source": "/home/claude/work/wt-dd1/eval/designer/out/designer/phone_tablet_dock/model.py",
+    "scriptPath": "eval/designer/baselines/dd1/designer/phone_tablet_dock/model.py"
+  },
+  "dd1-reviewer:phone_tablet_dock": {
+    "source": "/home/claude/work/wt-dd1/eval/designer/out/reviewer/phone_tablet_dock/model.py",
+    "scriptPath": "eval/designer/baselines/dd1/reviewer/phone_tablet_dock/model.py"
+  },
+  "dd1-designer:stackable_crate": {
+    "source": "/home/claude/work/wt-dd1/eval/designer/out/designer/stackable_crate/model.py",
+    "scriptPath": "eval/designer/baselines/dd1/designer/stackable_crate/model.py"
+  },
+  "dd1-reviewer:stackable_crate": {
+    "source": "/home/claude/work/wt-dd1/eval/designer/out/reviewer/stackable_crate/model.py",
+    "scriptPath": "eval/designer/baselines/dd1/reviewer/stackable_crate/model.py"
+  },
+  "dd1-designer:user_dock": {
+    "source": "/home/claude/work/wt-dd1/eval/designer/out/designer/user_dock/model.py",
+    "scriptPath": "eval/designer/baselines/dd1/designer/user_dock/model.py"
+  },
+  "dd1-reviewer:user_dock": {
+    "source": "/home/claude/work/wt-dd1/eval/designer/out/reviewer/user_dock/model.py",
+    "scriptPath": "eval/designer/baselines/dd1/reviewer/user_dock/model.py"
+  },
+  "references:cc_dock": {
+    "source": "/home/claude/work/cadai/.cadai/scratch/argon/cc_dock.stl",
+    "stlPath": "eval/designer/baselines/references/cc_dock.stl"
+  },
+  "references:cc_dock_open": {
+    "source": "/home/claude/work/cadai/.cadai/scratch/argon/cc_dock_open.stl",
+    "stlPath": "eval/designer/baselines/references/cc_dock_open.stl"
+  },
+  "references:argon_dock": {
+    "source": "/home/claude/work/cadai/.cadai/scratch/argon/argon_dock.stl",
+    "stlPath": "eval/designer/baselines/references/argon_dock.stl"
+  },
+  "references:argon_dock_open": {
+    "source": "/home/claude/work/cadai/.cadai/scratch/argon/argon_dock_open.stl",
+    "stlPath": "eval/designer/baselines/references/argon_dock_open.stl"
+  },
+  "user_dock": {
+    "source": "/home/claude/work/cadai/.cadai/scratch/argon/cc_dock.stl",
+    "stlPath": "eval/designer/baselines/references/cc_dock.stl"
+  },
+  "dock": {
+    "source": "/home/claude/work/cadai/.cadai/scratch/argon/cc_dock.stl",
+    "stlPath": "eval/designer/baselines/references/cc_dock.stl"
+  }
+}

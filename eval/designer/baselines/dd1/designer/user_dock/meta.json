@@ -1,0 +1,19 @@
+{
+  "id": "user_dock",
+  "arm": "designer",
+  "finished": true,
+  "capped": false,
+  "cap_reason": null,
+  "turns": 10,
+  "run_script_calls": 2,
+  "renders": 3,
+  "finish_rejections": 4,
+  "cost": 0.0781,
+  "wall_time_s": 40.2,
+  "reviewer_flags": [],
+  "reviewer_flags_summary": {
+    "blocking": 0,
+    "major": 0,
+    "minor": 0
+  }
+}

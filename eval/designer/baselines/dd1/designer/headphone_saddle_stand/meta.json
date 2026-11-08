@@ -1,0 +1,19 @@
+{
+  "id": "headphone_saddle_stand",
+  "arm": "designer",
+  "finished": true,
+  "capped": false,
+  "cap_reason": null,
+  "turns": 8,
+  "run_script_calls": 4,
+  "renders": 3,
+  "finish_rejections": 2,
+  "cost": 0.0811,
+  "wall_time_s": 35.6,
+  "reviewer_flags": [],
+  "reviewer_flags_summary": {
+    "blocking": 0,
+    "major": 0,
+    "minor": 0
+  }
+}

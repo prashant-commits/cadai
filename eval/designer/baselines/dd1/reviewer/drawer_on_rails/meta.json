@@ -1,0 +1,92 @@
+{
+  "id": "drawer_on_rails",
+  "arm": "reviewer",
+  "finished": true,
+  "capped": false,
+  "cap_reason": null,
+  "turns": 6,
+  "run_script_calls": 3,
+  "renders": 3,
+  "finish_rejections": 1,
+  "cost": 0.1354,
+  "wall_time_s": 66,
+  "reviewer_flags": [
+    {
+      "round": 2,
+      "severity": "major",
+      "issue": "The drawer does not engage the rails. The rails are 6 mm wide, 5 mm tall, and sit at z≈20–25 at x=±69. The drawer body is 143 mm wide with a bottom near z≈19–59, so it spans past the rail tops with no visible groove or ledge. In the front view the rails (orange and green) sit below the drawer, not under it, and nothing guides or supports the drawer.",
+      "why_it_matters": "The drawer would rest on or hang from nothing. It has no defined sliding support or lateral guidance, so the core slide function is not delivered."
+    },
+    {
+      "round": 2,
+      "severity": "major",
+      "issue": "The drawer is 130 mm deep in a shell only 120 mm deep, and the rails are 117 mm long. At 50 mm travel the drawer is cantilevered, with only about 80 mm of its 130 mm length inside the shell. Closed, the drawer front protrudes about 10 mm, or sits much further forward, instead of being flush. The 143 mm drawer width against 144 mm of inner width (150 minus two 3 mm walls) also leaves no room for the rails.",
+      "why_it_matters": "The drawer cannot close flush. The overlap with the rails and walls is geometrically ambiguous, and the unsupported drawer will tip when opened. The stated 0.5 mm per side clearance is not realized with rails present."
+    },
+    {
+      "round": 2,
+      "severity": "minor",
+      "issue": "The shell centroid (Y≈69.8, Z≈39.8) and a volume of 191605 mm³ suggest a closed box with a thick back. The front view shows a dark panel above and below the drawer opening, which could mean a front wall that blocks the drawer. The handle is a thin 30 mm bar on small posts.",
+      "why_it_matters": "A front wall with an unclear opening, or a flimsy handle, may hamper use and printing or assembly."
+    },
+    {
+      "round": 3,
+      "severity": "blocking",
+      "issue": "The drawer is 143 mm wide, but the shell's interior is only 144 mm (150 − 2×3 mm walls), and the rails sit inside that. The drawer sides sit at about ±71.5 mm, which overlaps the rails (x≈±66 to ±72). The drawer is also 40 mm tall, with its base at z≈19 and the rails' top at z≈25. The drawer body therefore passes through the rails instead of riding on them. The rail clearance is not 0.5 mm per side.",
+      "why_it_matters": "The drawer cannot slide on the rails as specified. It either collides with the rails or is wedged in place, and the 0.5 mm side-clearance requirement is not met."
+    },
+    {
+      "round": 3,
+      "severity": "major",
+      "issue": "The front view shows the drawer face spanning almost the whole shell width, with the orange and green rail ends visible outside the drawer, at its bottom corners. The rails are not inside a cavity that clips the drawer. The drawer sits above the rail tops and not between them, so rail support and guidance are unclear.",
+      "why_it_matters": "The drawer has no real guiding or retaining geometry, so it can wobble or tilt, and the rail engagement does not work as a slide."
+    },
+    {
+      "round": 3,
+      "severity": "minor",
+      "issue": "The drawer is 127 mm deep, longer than the 120 mm shell. Its centroid is at y≈-5.8, so it is already partly out when 'closed'. The drawer front is 6 mm thick and the handle is a thin small bar. With 50 mm travel and rails only 116 mm long, the engagement margin is small.",
+      "why_it_matters": "The closed pose is not flush, the drawer sticks out of the shell, and the handle is fragile, so the unit looks and behaves unfinished."
+    },
+    {
+      "round": 5,
+      "severity": "major",
+      "issue": "The drawer does not ride on the rails. It is 143 mm wide and the shell interior is 144 mm (150 − 2×3 wall), so the drawer's side walls sit in the same space as the rails, which stand 6 mm proud of the wall. The drawer bottom is at about Z=19 and the rail tops are at 25, so the rails should collide with the drawer sides. The interference check reports none, so the drawer likely has no grooves or runners to engage the rails. In the front view the rails are visible as small blocks below the drawer, not under it.",
+      "why_it_matters": "The drawer is not supported or guided by the rails as requested. It either floats with no engagement or would jam, and the 0.5 mm side clearance is not actually between the drawer and the rails."
+    },
+    {
+      "round": 5,
+      "severity": "major",
+      "issue": "The drawer is shown pulled out about 60 mm, with the drawer centroid at Y≈-16. The rails run Y 0–116, so a 127 mm deep drawer would still overlap the rails by about 67 mm. However, the rail sits at Z 20–25 and the drawer's lower part has no visible runner, so the retained engagement is nominal only. There is also no stop to limit travel, so the drawer can be pulled completely out.",
+      "why_it_matters": "With no stop and no actual engagement, the drawer can tip or fall out when opened."
+    },
+    {
+      "round": 5,
+      "severity": "minor",
+      "issue": "The drawer front (143 x 40) is smaller than the 144 x ~74 opening, and the drawer sits low with a large gap above it. The pull handle is a thin horizontal bar about 30 mm wide, protruding about 10 mm on small stubs.",
+      "why_it_matters": "The thin handle is a weak point that could break under repeated pulling, and the large gap above the drawer looks unfinished."
+    },
+    {
+      "round": 6,
+      "severity": "major",
+      "issue": "The drawer is not supported by the rails. Rails are 6 mm wide and 5 mm tall, spanning z 20–25, with centroids at x=±69. The drawer is 143 mm wide, only 7 mm narrower than the 150 mm shell. With 3 mm walls, the interior is 144 mm wide, which leaves 0.5 mm per side. The drawer body therefore occupies the rail zone (x≈±66–72), and the rails sit in the drawer's walls or below its floor. The drawer's Z span is about 19–59, so its bottom (~z 19) overlaps the rail height. No ledge, groove, or bearing surface is evident, so the sliding interface is ambiguous or unmodeled.",
+      "why_it_matters": "The drawer may be resting on or colliding with the rails instead of sliding on them. It could bind, or have no real guided support, so the slide function is unproven."
+    },
+    {
+      "round": 6,
+      "severity": "major",
+      "issue": "The drawer is 127 mm deep and the shell is 120 mm deep, so the drawer is longer than the shell. The rails are 116 mm long. At the 60 mm travel shown, only about 67 mm of the drawer stays inside, and the rails are about 6 mm shorter than the cavity depth. The drawer's rear travel stop is missing.",
+      "why_it_matters": "Without a stop, the drawer can be pulled completely out. Its engagement with the short rails is marginal, so it may tip down when extended."
+    },
+    {
+      "round": 6,
+      "severity": "minor",
+      "issue": "The handle is a thin small bar (about 30 mm wide) that protrudes from the 6 mm front panel. It looks only lightly attached and is small relative to the 143 mm drawer front. The closed-pose front view shows the drawer front nearly flush, with very little finger clearance beneath the bar.",
+      "why_it_matters": "The handle may be fragile and awkward to grip, which weakens the pull function."
+    }
+  ],
+  "reviewer_flags_summary": {
+    "blocking": 1,
+    "major": 7,
+    "minor": 4
+  }
+}

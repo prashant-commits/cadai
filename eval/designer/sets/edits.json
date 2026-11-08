@@ -1,0 +1,152 @@
+[
+  {
+    "id": "edit_phone_stand",
+    "set": "edits",
+    "request": "An angled phone stand with a 75 x 90 mm backrest and a supporting bottom lip.",
+    "followUps": [
+      {
+        "text": "Make it 20 mm taller.",
+        "kind": "edit",
+        "probe": {
+          "kind": "spanChange",
+          "axis": "z",
+          "deltaMm": 20,
+          "tolerance": 2
+        }
+      },
+      {
+        "text": "Add a 14 mm wide cable hole through the bottom lip.",
+        "kind": "edit",
+        "probe": {
+          "kind": "reviewer",
+          "question": "Is there a cable pass-through hole or slot cut into the bottom lip?"
+        }
+      }
+    ]
+  },
+  {
+    "id": "edit_desk_organizer",
+    "set": "edits",
+    "request": "A desk organizer tray 180 x 100 x 35 mm with two rectangular compartments.",
+    "followUps": [
+      {
+        "text": "Make it 30% wider along the X axis.",
+        "kind": "edit",
+        "probe": {
+          "kind": "spanChange",
+          "axis": "x",
+          "ratio": 1.3,
+          "tolerance": 3
+        }
+      },
+      {
+        "text": "Round the outside vertical corners with a 10 mm radius.",
+        "kind": "edit",
+        "probe": {
+          "kind": "reviewer",
+          "question": "Are the exterior vertical corners noticeably rounded with smooth fillets?"
+        }
+      }
+    ]
+  },
+  {
+    "id": "edit_hinged_box",
+    "set": "edits",
+    "request": "A storage box 100 x 70 x 40 mm with a flat lid attached by pin hinges.",
+    "followUps": [
+      {
+        "text": "Add a front lift handle tab on the lid.",
+        "kind": "edit",
+        "probe": {
+          "kind": "reviewer",
+          "question": "Does the front edge of the lid have a protruding lift tab or finger handle?"
+        }
+      },
+      {
+        "text": "Make the box 15 mm deeper along the Y axis.",
+        "kind": "edit",
+        "probe": {
+          "kind": "spanChange",
+          "axis": "y",
+          "deltaMm": 15,
+          "tolerance": 2
+        }
+      }
+    ]
+  },
+  {
+    "id": "edit_small_enclosure",
+    "set": "edits",
+    "request": "A two-piece project enclosure 90 x 60 x 25 mm with a base box and snap-on lid.",
+    "followUps": [
+      {
+        "text": "Make it 10 mm taller.",
+        "kind": "edit",
+        "probe": {
+          "kind": "spanChange",
+          "axis": "z",
+          "deltaMm": 10,
+          "tolerance": 2
+        }
+      },
+      {
+        "text": "Add a separate mounting bracket that attaches to the rear.",
+        "kind": "edit",
+        "probe": {
+          "kind": "newPart",
+          "label": "bracket"
+        }
+      }
+    ]
+  },
+  {
+    "id": "edit_monitor_riser",
+    "set": "edits",
+    "request": "A monitor riser shelf 300 x 200 x 80 mm with open storage underneath.",
+    "followUps": [
+      {
+        "text": "Make the riser 40 mm wider.",
+        "kind": "edit",
+        "probe": {
+          "kind": "spanChange",
+          "axis": "x",
+          "deltaMm": 40,
+          "tolerance": 2
+        }
+      },
+      {
+        "text": "Add two circular cable management pass-through grommets through the rear of the top surface.",
+        "kind": "edit",
+        "probe": {
+          "kind": "reviewer",
+          "question": "Are there two circular cable pass-through holes through the rear of the top shelf surface?"
+        }
+      }
+    ]
+  },
+  {
+    "id": "edit_pen_holder",
+    "set": "edits",
+    "request": "A cylindrical pen holder 70 mm in diameter and 90 mm tall with a weighted solid base.",
+    "followUps": [
+      {
+        "text": "Make it 20 mm taller.",
+        "kind": "edit",
+        "probe": {
+          "kind": "spanChange",
+          "axis": "z",
+          "deltaMm": 20,
+          "tolerance": 2
+        }
+      },
+      {
+        "text": "Add a separate snap-on organizing collar with 4 divider slots.",
+        "kind": "edit",
+        "probe": {
+          "kind": "newPart",
+          "label": "collar|divider"
+        }
+      }
+    ]
+  }
+]

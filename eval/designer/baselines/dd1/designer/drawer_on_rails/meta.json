@@ -1,0 +1,19 @@
+{
+  "id": "drawer_on_rails",
+  "arm": "designer",
+  "finished": true,
+  "capped": false,
+  "cap_reason": null,
+  "turns": 6,
+  "run_script_calls": 3,
+  "renders": 3,
+  "finish_rejections": 1,
+  "cost": 0.0964,
+  "wall_time_s": 34,
+  "reviewer_flags": [],
+  "reviewer_flags_summary": {
+    "blocking": 0,
+    "major": 0,
+    "minor": 0
+  }
+}

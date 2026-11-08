@@ -1,0 +1,128 @@
+{
+  "id": "phone_tablet_dock",
+  "arm": "reviewer",
+  "finished": true,
+  "capped": false,
+  "cap_reason": null,
+  "turns": 10,
+  "run_script_calls": 3,
+  "renders": 4,
+  "finish_rejections": 3,
+  "cost": 0.2503,
+  "wall_time_s": 124.5,
+  "reviewer_flags": [
+    {
+      "round": 2,
+      "severity": "blocking",
+      "issue": "The lid is not a flat closed cover. It stands vertically (7 x 47.5 bounding box, centroid Z about 63.6) and is held open or locked upright beside the box. In the right view it is a thin vertical plate above the hinge. It does not lie over the box top, so the storage box stays uncovered.",
+      "why_it_matters": "The lid is supposed to cover the storage box and rotate closed on its hinges. In this pose it covers nothing, and the hinge geometry may not allow it to reach the closed position."
+    },
+    {
+      "round": 2,
+      "severity": "major",
+      "issue": "The tablet slot is wrong. The two walls are very thin (about 2 mm) sheets that are tall in Z and run along Y. They are not 70 wide by 60 tall walls with a 14 mm gap. The slot is also open-ended, with no back or base stop, and sits on the right half close to the storage box. A 12 mm tablet would stand almost vertically with weak support.",
+      "why_it_matters": "Thin freestanding walls can flex or snap under tablet load, so the tablet is not held stably."
+    },
+    {
+      "round": 2,
+      "severity": "major",
+      "issue": "The phone cradle looks undersized and mis-shaped. The backrest leans back about 70° from the base and appears as a thin slab, which is plausible, but the lip is split into two small blocks by the cable slot. The slot looks like a small notch and does not clearly pass through the backrest. The cradle also overlaps the front of the storage box region and the body bounding box is 111 mm tall.",
+      "why_it_matters": "The cable slot may not clear a charging plug, and a phone may not sit securely at the lip."
+    },
+    {
+      "round": 5,
+      "severity": "major",
+      "issue": "The tablet slot walls look wrong. In the front view the walls are very thin (about 2 mm) and they stand apart in the picture. The spec asks for a 14 mm gap between inner faces, but the 70 mm wide, 60 mm tall walls look thin and flimsy. Also, the walls are about 60 mm tall but sit at the front-to-back span of the base, so they run along Y instead of holding a tablet upright. A tablet standing in the slot would have very little support.",
+      "why_it_matters": "A tablet needs sturdy walls to stay upright, and thin walls could bend or break under its weight."
+    },
+    {
+      "round": 5,
+      "severity": "major",
+      "issue": "The phone backrest leans the wrong way for the dock. In the right view it leans back, but it is a thin plate that sits on top of a solid block. The block sits at the cradle location and is as tall as the backrest's foot. The front lip is broken into two pieces by the cable slot, and the slot does not clearly cut through the backrest. The cradle does not read as a proper phone support.",
+      "why_it_matters": "If the cable slot is not cut through the backrest and lip, the charging cable cannot pass, and the phone may not sit at the intended angle."
+    },
+    {
+      "round": 5,
+      "severity": "minor",
+      "issue": "The lid hinge pins are 4 mm and sit outside the back edge of the box, with the lid centroid near Z 40. The lid is 7 mm thick, not 4 mm as specified, and it is 47.5 deep, not 40, because hinge knuckles are merged into it. Only a small hinge detail is visible, and the lid may not clear the box when it rotates.",
+      "why_it_matters": "The lid may not swing freely, and the lid dimensions differ from the request."
+    },
+    {
+      "round": 7,
+      "severity": "blocking",
+      "issue": "The lid is shown standing nearly upright, leaning back about 70° from horizontal, and its bounding box (20.4 deep x 45.5 tall) confirms this. It is not lying flat over the 160x40 box. Because the facts table lists no interferences only in this pose, the closed-pose check says nothing about the closed state. The lid appears to be modelled in an open or incorrectly oriented pose, so the box is uncovered.",
+      "why_it_matters": "The lid has to cover the box when closed. An open box with a lid held vertical does not meet the brief, and the hinge's closed fit and clearance cannot be verified."
+    },
+    {
+      "round": 7,
+      "severity": "major",
+      "issue": "The tablet slot looks wrong. The two walls are thin slivers, about 2 mm thick in the front view, and they sit mid-base. In the top view they run along Y as long strips, so their 70 mm width runs front-to-back. They are also much shorter than the 60 mm tall, 70 wide spec suggests. The gap between them appears narrower than the required 14 mm, and the slot does not clearly sit on the right half. The walls are also unsupported, tall and flimsy.",
+      "why_it_matters": "A 12 mm tablet may not fit, and walls this thin would be fragile or unprintable. The tablet would not be held upright."
+    },
+    {
+      "round": 7,
+      "severity": "major",
+      "issue": "The phone cradle is a plain slab leaning back with two small lip blocks at its foot. The cable slot is not clearly cut through both the lip and the backrest. The backrest is also very tall at 111 mm and thin at 6 mm, and it leans at the base edge with little support, so it could tip or flex.",
+      "why_it_matters": "The cable cannot pass if the slot is not through-cut. A tall, thin, unsupported backrest makes the phone dock unstable."
+    },
+    {
+      "round": 8,
+      "severity": "blocking",
+      "issue": "The lid is shown rotated open about 70° (leaning back, 45 mm tall) and is not in the closed pose. In the top view it sits behind the box rather than covering the 160x40 opening. The facts table reports the lid as 20.4 deep and 45.5 tall, not the flat 40 deep x 4 thick part, so it does not cover the compartments in the displayed pose.",
+      "why_it_matters": "The lid's closed state cannot be verified. A 'None' interference result for the closed pose is meaningless if the lid is modeled or posed open. Pens and cables are not covered."
+    },
+    {
+      "round": 8,
+      "severity": "major",
+      "issue": "The tablet walls look wrong. The front view shows two very thin plates (about 2 mm) that stand slightly taller than the box. The top view shows them as thin slivers well short of 70 mm wide. The gap between them looks like roughly 14 mm, but the walls appear to sit loose beside the storage box with no base for a 12 mm tablet. They look too flimsy and short to hold a tablet upright.",
+      "why_it_matters": "A tablet would not be held stably, and thin tall walls are fragile when printed."
+    },
+    {
+      "round": 8,
+      "severity": "major",
+      "issue": "The phone cradle backrest leans back as a plate that appears to start above the base. The right view shows a large solid block under it, 110+ mm wide, and the front view shows a large box. The cradle looks like a solid mass or enclosed pocket rather than a thin 6 mm leaning plate with a front lip. The cable slot is barely visible and appears only as a small notch at the lip.",
+      "why_it_matters": "The cradle geometry does not match the spec and wastes material. The cable slot may not pass through the backrest, so the charging cable cannot be routed."
+    },
+    {
+      "round": 9,
+      "severity": "major",
+      "issue": "The backrest leans back 70° from the base plane, which is a shallow recline. The right view shows it rising to about 111 mm, and the facts table gives a part height of 111.4 mm. A 110 mm slab at 70° would reach only about 103 mm. The backrest also looks like a thin, detached plank that rises above and behind the lip block. It looks poorly joined to the base and lip, and the lip and cable slot are hard to read in the views.",
+      "why_it_matters": "A phone needs to rest against a backrest that is connected to the base and set at the intended angle. If the plank is not properly joined or is mis-sized, the cradle will not hold the phone."
+    },
+    {
+      "round": 9,
+      "severity": "major",
+      "issue": "The tablet walls look like thin plates, about 2 mm thick, set 14 mm apart. In the front view they stand about 60 mm tall. The first wall sits about 8 mm from the box wall, and the pair sits against the open storage box. Tablet access from above is unclear. The thin walls are also unsupported and may be fragile.",
+      "why_it_matters": "A tablet in a slot between very thin, tall walls may tip or flex the walls. The walls can also fail to hold the tablet steadily."
+    },
+    {
+      "round": 9,
+      "severity": "minor",
+      "issue": "The hinge pin protrudes beyond the box's back edge and the lid overhangs it. The lid is 7 mm thick including its knuckles, and the body extends 127.5 mm in Y. The pin sits at Z=40, which is above the 38 mm top of base plus box. The lid's rotation clearance against the box edge is hard to verify from the views.",
+      "why_it_matters": "If the pin axis is mispositioned, the lid may bind or fail to swing open cleanly."
+    },
+    {
+      "round": 10,
+      "severity": "major",
+      "issue": "The phone backrest leans back 70° from the base plane, which is close to upright. The right view shows it as a thin plate rising above the top of a block that fills the phone area. The facts table gives a body height of 111.4 mm, and 110·sin70° would be about 103 mm plus the 8 mm base. The cradle also shows a solid mass up to about 60 mm. The 12 mm lip is split into two stubs, so the cable slot is not a clear 10 mm × 15 mm cut through both lip and backrest. The phone may not seat properly, and the cable path is doubtful.",
+      "why_it_matters": "A 70° recline with a lip that is split and obstructed may not hold or support a phone. The cable cannot reach the phone's port if the slot is blocked."
+    },
+    {
+      "round": 10,
+      "severity": "major",
+      "issue": "The tablet walls look like thin plates about 2 mm thick and 60 mm tall. In the front view they sit about 14 mm apart, but the spec gap of 14 mm is measured on the inner faces. The walls are also freestanding on the base with little footprint. Their position near the box front leaves the slot only about 70 mm deep, so a tablet leans against them with little support.",
+      "why_it_matters": "A heavy tablet would load the thin walls sideways and could tip them or the whole dock. The tablet gap and its 1 mm clearance on each side are not verifiable from the geometry."
+    },
+    {
+      "round": 10,
+      "severity": "minor",
+      "issue": "The storage box does not visibly show its four compartments. The lid sits at about z=40 with a total thickness of 7 mm, but the box is only 30 mm tall plus the 8 mm base. The pins at y=124 sit beyond the box's back edge, and the hinge knuckles are barely visible in the renders.",
+      "why_it_matters": "If the knuckles are not properly interleaved, or the lid thickness and pin position are off, the lid may not rotate cleanly, and the dividers cannot be confirmed."
+    }
+  ],
+  "reviewer_flags_summary": {
+    "blocking": 3,
+    "major": 12,
+    "minor": 3
+  }
+}

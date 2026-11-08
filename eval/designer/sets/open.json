@@ -1,0 +1,62 @@
+[
+  {
+    "id": "user_dock",
+    "set": "open",
+    "request": "A desk dock that holds a phone and a tablet upright, with hidden storage for cables and a lid. Minimal, soft rounded look, feels like one object."
+  },
+  {
+    "id": "key_holder",
+    "set": "open",
+    "request": "A minimalist wall-mounted key holder with dedicated hooks for multiple keyrings and a small top ledge for mail or sunglasses."
+  },
+  {
+    "id": "desk_organizer",
+    "set": "open",
+    "request": "A compact desk organizer with stepped compartments for notebooks, sticky notes, and stationery items to keep a clean workspace."
+  },
+  {
+    "id": "jewelry_box",
+    "set": "open",
+    "request": "An elegant jewelry box with a hinged lid, a partitioned tray for rings and earrings, and a lower drawer for bracelets."
+  },
+  {
+    "id": "headphone_stand",
+    "set": "open",
+    "request": "A sleek desktop headphone stand featuring a curved cradle to support over-ear headphones without denting the headband cushion."
+  },
+  {
+    "id": "lamp_base",
+    "set": "open",
+    "request": "A modern weighted base for a desk lamp, featuring a central socket mount and an integrated groove to route the power cord neatly."
+  },
+  {
+    "id": "plant_pot_saucer",
+    "set": "open",
+    "request": "A small geometric succulent pot with integrated drainage holes and a matching nested saucer to catch runoff water."
+  },
+  {
+    "id": "cable_organizer",
+    "set": "open",
+    "request": "A desktop cable management block with flexible routing channels to keep charging cables separated and prevent them from sliding off the table."
+  },
+  {
+    "id": "phone_stand",
+    "set": "open",
+    "request": "A sturdy angled phone stand designed for hands-free video calls, with an opening at the base to connect a charging cable."
+  },
+  {
+    "id": "soap_dish",
+    "set": "open",
+    "request": "A self-draining bathroom soap dish with an elevated ribbed surface and a spout that channels excess water directly into the sink."
+  },
+  {
+    "id": "wall_shelf_hooks",
+    "set": "open",
+    "request": "An entryway floating wall shelf featuring integrated coat and bag hooks along the bottom edge, designed for clean hidden wall mounting."
+  },
+  {
+    "id": "pen_holder",
+    "set": "open",
+    "request": "A cylindrical desktop pen holder with an angled rim and internal dividing fins to keep pens, pencils, and styluses upright."
+  }
+]
