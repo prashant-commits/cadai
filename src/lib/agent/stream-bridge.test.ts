@@ -203,67 +203,6 @@ describe('bridgeGraphStream', () => {
     });
   });
 
-  it('closes architectBuild as retrying after an audit failure and emits a retry when it runs again', async () => {
-    await withAttempts('3', async () => {
-      const out = await bridge([
-        ['updates', { architectNode: { pipeline: 'architect', kernel: 'openscad' } }],
-        ['updates', { architectBuild: { attemptCount: 1, buildFallbacks: 0 } }],
-        ['updates', {
-          validateCode: {
-            isValid: false,
-            failureKind: 'semantic',
-            semanticFailures: 1,
-            specViolations: [{ severity: 'error', message: 'arm is short', kind: 'bbox' }],
-          },
-        }],
-        ['updates', { architectBuild: { attemptCount: 2 } }],
-      ]);
-      const buildClose = out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'architectBuild');
-      expect(buildClose).toMatchObject({ status: 'ok', attempt: 1 });
-      if (buildClose?.t === 'section' && buildClose.state === 'close') expect(buildClose.summary).toBeUndefined();
-      const validateClose = out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'validateCode');
-      expect(validateClose).toMatchObject({ status: 'failed', summary: 'arm is short', attempt: 1 });
-      expect(out.find((e) => e.t === 'retry')).toEqual({
-        t: 'retry',
-        step: 'architectBuild',
-        attempt: 2,
-        maxAttempts: 3,
-        reason: 'arm is short',
-      });
-      const reopened = out.filter((e): e is Extract<StreamEvent, { t: 'section'; state: 'open' }> =>
-        e.t === 'section' && e.state === 'open' && e.id === 'architectBuild');
-      expect(reopened.map((e) => e.attempt)).toEqual([1, 2]);
-    });
-  });
-
-  it('routes a brep audit failure back to brepBuild from real update shapes', async () => {
-    await withAttempts('3', async () => {
-      const out = await bridge([
-        ['updates', { architectNode: { pipeline: 'architect', kernel: 'brep' } }],
-        ['updates', { brepBuild: { attemptCount: 1, buildFallbacks: 0 } }],
-        ['updates', {
-          validateBrep: {
-            isValid: false,
-            failureKind: 'compile',
-            compileFailures: 1,
-            specViolations: [{ severity: 'error', message: 'build123d script failed: name missing' }],
-          },
-        }],
-        ['updates', { brepBuild: { attemptCount: 2 } }],
-      ]);
-      expect(out.find((e) => e.t === 'retry')).toMatchObject({
-        t: 'retry',
-        step: 'brepBuild',
-        attempt: 2,
-        maxAttempts: 3,
-        reason: 'build123d script failed: name missing',
-      });
-      expect(out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'brepBuild')).toMatchObject({
-        status: 'ok',
-        attempt: 1,
-      });
-    });
-  });
 
   it('closes an architect self-check as retrying and forwards the retry event', async () => {
     const out = await bridge([
@@ -351,35 +290,6 @@ describe('bridgeGraphStream', () => {
     });
   });
 
-  it('repairs an invalid audit that has no extractable message while attempts remain', async () => {
-    await withAttempts('3', async () => {
-      const out = await bridge([
-        ['updates', { architectNode: { pipeline: 'architect', kernel: 'brep' } }],
-        ['updates', { brepBuild: { attemptCount: 1 } }],
-        ['updates', { validateBrep: { isValid: false, failureKind: 'semantic', semanticFailures: 1 } }],
-        ['updates', { brepBuild: { attemptCount: 2 } }],
-      ]);
-      expect(out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'brepBuild')).toMatchObject({
-        status: 'ok',
-        attempt: 1,
-      });
-      expect(out.find((e) => e.t === 'retry')).toMatchObject({ step: 'brepBuild', attempt: 2, maxAttempts: 3 });
-    });
-  });
-
-  it('resumes an accept-gate revise on the brep build, not fixCode', async () => {
-    const out = await bridge([
-      ['updates', { acceptGate: { gateAction: 'revise', acceptRevisionCount: 1, maxAttempts: 2 } }],
-      ['updates', { brepBuild: { attemptCount: 2 } }],
-      ['updates', { validateBrep: { isValid: true, failureKind: 'none' } }],
-    ], { state: { pipeline: 'architect', kernel: 'brep', attemptCount: 1 } });
-    expect(out.find((e) => e.t === 'retry')).toMatchObject({ step: 'brepBuild', attempt: 2, maxAttempts: 2 });
-    expect(out.filter((e) => e.t === 'retry' && e.step === 'fixCode')).toEqual([]);
-    expect(out.find((e) => e.t === 'section' && e.state === 'open' && e.id === 'brepBuild')).toMatchObject({
-      attempt: 2,
-      index: 5,
-    });
-  });
 
   it('times a silent build from its task start and finish, and closes it before the next open', async () => {
     await withAttempts('1', async () => {
@@ -467,29 +377,6 @@ describe('bridgeGraphStream', () => {
     expect(retries.map((e) => e.t === 'retry' ? e.attempt : 0)).toEqual([2, 3, 2]);
   });
 
-  it('closes architectNode ok when it finishes and announces the reviewer loop with a retry', async () => {
-    const out = await bridge([
-      ['custom', { t: 'delta', text: 'spec', node: 'architectNode' }],
-      ['updates', { specIllustrator: { illustrated: true } }],
-      ['updates', {
-        specReviewer: {
-          specVariants: [{ needsRevision: true, review: { findings: [{ severity: 'major', issue: 'wall thin' }] } }],
-        },
-      }],
-      ['updates', { architectNode: { pipeline: 'architect' } }],
-    ]);
-    const closeAt = out.findIndex((e) => e.t === 'section' && e.state === 'close' && e.id === 'architectNode');
-    const illustratorAt = out.findIndex((e) => e.t === 'section' && e.state === 'open' && e.id === 'specIllustrator');
-    const reviewerAt = out.findIndex((e) => e.t === 'section' && e.state === 'open' && e.id === 'specReviewer');
-    const retryAt = out.findIndex((e) => e.t === 'retry');
-    expect(out[closeAt]).toMatchObject({ status: 'ok', attempt: 1 });
-    expect(closeAt).toBeLessThan(illustratorAt);
-    expect(illustratorAt).toBeLessThan(reviewerAt);
-    expect(reviewerAt).toBeLessThan(retryAt);
-    const architectOpens = out.filter((e) => e.t === 'section' && e.state === 'open' && e.id === 'architectNode');
-    expect(architectOpens.map((e) => e.t === 'section' && e.state === 'open' ? e.attempt : 0)).toEqual([1, 2]);
-    expect(out[retryAt]).toMatchObject({ t: 'retry', step: 'architectNode', attempt: 2, reason: 'wall thin' });
-  });
 
   it('strips absolute paths from a thrown internal summary and keeps the original error', async () => {
     const out: StreamEvent[] = [];
@@ -534,78 +421,6 @@ describe('bridgeGraphStream', () => {
     });
   });
 
-  it('streams the illustrator while the architect is already closed, before the reviewer runs', async () => {
-    const out: StreamEvent[] = [];
-    let illustratorOpenBeforeReviewer = false;
-    let architectClosedOk = false;
-    async function* gen() {
-      yield ['tasks', { name: 'architectNode', input: {} }];
-      yield ['custom', { t: 'delta', text: 'brief', node: 'architectNode' }];
-      yield ['updates', { architectNode: { pipeline: 'architect', kernel: 'brep' } }];
-      yield ['tasks', { name: 'architectNode', result: {} }];
-      yield ['tasks', { name: 'specIllustrator', input: {} }];
-      yield ['custom', { t: 'delta', text: 'Sheet A drawn', node: 'specIllustrator' }];
-      architectClosedOk = out.some((e) => e.t === 'section' && e.state === 'close' && e.id === 'architectNode' && e.status === 'ok');
-      illustratorOpenBeforeReviewer = out.some((e) => e.t === 'section' && e.state === 'open' && e.id === 'specIllustrator');
-      const illustratorDelta = out.some((e) => e.t === 'delta' && e.text === 'Sheet A drawn');
-      if (!illustratorDelta) illustratorOpenBeforeReviewer = false;
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      yield ['tasks', { name: 'specReviewer', input: {} }];
-      yield ['updates', { specReviewer: { specVariants: [{ needsRevision: true, review: { findings: [{ severity: 'major', issue: 'overlap' }] } }] } }];
-      yield ['tasks', { name: 'specReviewer', result: {} }];
-      yield ['tasks', { name: 'architectNode', input: {} }];
-    }
-    await bridgeGraphStream(gen(), 'run-1', (event) => out.push(event));
-    expect(architectClosedOk).toBe(true);
-    expect(illustratorOpenBeforeReviewer).toBe(true);
-    const reviewerAt = out.findIndex((e) => e.t === 'section' && e.state === 'open' && e.id === 'specReviewer');
-    const retryAt = out.findIndex((e) => e.t === 'retry');
-    const secondOpen = out.findIndex((e) => e.t === 'section' && e.state === 'open' && e.id === 'architectNode' && e.attempt === 2);
-    expect(reviewerAt).toBeGreaterThanOrEqual(0);
-    expect(retryAt).toBeGreaterThan(reviewerAt);
-    expect(secondOpen).toBe(retryAt + 1);
-    expect(out[retryAt]).toMatchObject({ step: 'architectNode', attempt: 2 });
-  });
-
-  it('opens one architect section per attempt when a reviewer loop and a self-check both retry', async () => {
-    const out = await bridge([
-      ['tasks', { name: 'architectNode', input: {} }],
-      ['updates', { architectNode: { pipeline: 'architect' } }],
-      ['tasks', { name: 'architectNode', result: {} }],
-      ['tasks', { name: 'specReviewer', input: {} }],
-      ['updates', { specReviewer: { specVariants: [{ needsRevision: true, review: { findings: [{ severity: 'major', issue: 'overlap' }] } }] } }],
-      ['tasks', { name: 'specReviewer', result: {} }],
-      ['tasks', { name: 'architectNode', input: {} }],
-      ['custom', { t: 'retry', step: 'architectNode', attempt: 2, maxAttempts: 3, reason: 'self-check', node: 'architectNode' }],
-      ['custom', { t: 'delta', text: 'x', node: 'architectNode' }],
-    ]);
-    const opens = out.filter((e) => e.t === 'section' && e.state === 'open' && e.id === 'architectNode');
-    const attempts = opens.map((e) => e.t === 'section' && e.state === 'open' ? e.attempt : 0);
-    expect(attempts).toEqual([1, 2, 3]);
-    expect(new Set(attempts).size).toBe(attempts.length);
-    const retries = out.filter((e) => e.t === 'retry' && e.step === 'architectNode');
-    expect(retries.map((e) => e.t === 'retry' ? e.attempt : 0)).toEqual([2, 3]);
-    const selfCheckClose = out.filter((e) => e.t === 'section' && e.state === 'close' && e.id === 'architectNode' && e.attempt === 2);
-    expect(selfCheckClose).toHaveLength(1);
-    expect(selfCheckClose[0]).toMatchObject({ status: 'retrying' });
-  });
-
-  it('counts reviewer retries when seeding a resumed architect attempt', async () => {
-    const out = await bridge([
-      ['updates', { specGate: { gateAction: 'revise', gateFeedback: 'taller', specRevisionCount: 1 } }],
-      ['updates', { architectNode: { pipeline: 'architect' } }],
-    ], {
-      state: {
-        pipeline: 'architect',
-        assemblySpec: { components: [] },
-        specRevisionCount: 0,
-        specVariants: [{ id: 'A', retries: 2, needsRevision: false }],
-      },
-    });
-    expect(out.find((e) => e.t === 'retry' && e.step === 'architectNode')).toMatchObject({ attempt: 4 });
-    expect(out.find((e) => e.t === 'section' && e.state === 'open' && e.id === 'architectNode')).toMatchObject({ attempt: 4 });
-    expect(out.filter((e) => e.t === 'retry' && e.step === 'specGate')).toEqual([]);
-  });
 
   it('does not emit a retry when a gate is shown again', async () => {
     await withAttempts('2', async () => {

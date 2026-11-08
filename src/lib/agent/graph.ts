@@ -452,6 +452,14 @@ export const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => null,
   }),
+  gateAction: Annotation<'approve' | 'revise' | 'cancel' | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  gateFeedback: Annotation<string | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
   specBrief: Annotation<SpecBrief | null>({
     reducer: (_, y) => y,
     default: () => null,

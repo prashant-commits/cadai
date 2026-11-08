@@ -1,7 +1,6 @@
 import { NextRequest } from 'next/server';
 import { HumanMessage, AIMessage } from '@langchain/core/messages';
-import { createCadAgent } from '@/lib/agent/graph';
-import { runCheckpointKey } from '@/lib/agent/checkpointer';
+import { createDesignerAgent } from '@/lib/agent/designer/graph';
 import { getRunStore } from '@/lib/runs/run-store';
 import { streamRun } from '@/lib/runs/stream-run';
 import { errorResponse } from '@/lib/runs/api-error';
@@ -48,17 +47,10 @@ export async function POST(req: NextRequest) {
       }
     });
 
-    // One checkpoint per RUN, not per chat thread. The checkpointer is here to
-    // let interrupt() survive the gap between this request and /api/chat/resume
-    // - it is not the conversation store. Keying it on threadId made turn N
-    // resume turn N-1's state, replaying every earlier spec, code listing and
-    // validation report into the next prompt on top of the history the client
-    // already re-sends. See runCheckpointKey().
     // The runId is minted here, before any work, so the client can stop or
     // reconnect to the run from its first event (`{ t: 'run' }`).
     const runId = randomUUID();
     const chatThreadId = typeof threadId === 'string' && threadId ? threadId : runId;
-    const checkpointKey = runCheckpointKey(chatThreadId, runId);
     await getRunStore().create({ runId, threadId: chatThreadId });
 
     // Hoisted so onFinally can flush it. The factory swallows its own
@@ -75,14 +67,15 @@ export async function POST(req: NextRequest) {
       runId,
       threadId: chatThreadId,
       resumed: false,
-      checkpointKey,
+      // streamRun requires checkpointKey until Step 4 simplifies it
+      checkpointKey: runId,
       failLabel: 'Agent execution failed',
       invoke: async (signal) => {
-        const agent = createCadAgent(effectiveModel);
+        const agent = createDesignerAgent(effectiveModel);
         return agent.stream(
           { messages: lcMessages, designContract: designContract ?? null },
           {
-            configurable: { thread_id: checkpointKey },
+            configurable: { thread_id: chatThreadId },
             recursionLimit: graphRecursionLimit(),
             streamMode: ['updates', 'messages', 'custom', 'tasks'],
             callbacks: langfuseHandler ? [langfuseHandler] : undefined,

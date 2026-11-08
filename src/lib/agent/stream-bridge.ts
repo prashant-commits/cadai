@@ -5,8 +5,19 @@ import type { StreamEvent } from './stream-events';
 import type { SectionStatus } from './transcript';
 import { checkpointTtlMs } from './checkpointer';
 import type { AgentStateType } from './designer/state';
-import { nextStep } from './graph-route';
+import { routeAfterDesignerCheck } from './designer/graph';
 import { contentText } from './message-text';
+
+function nextStep(node: string, state: AgentStateType, _model = ''): string | null {
+  switch (node) {
+    case 'START':
+      return 'designerNode';
+    case 'designerCheck':
+      return routeAfterDesignerCheck(state);
+    default:
+      return null;
+  }
+}
 
 /** Human labels for graph nodes. An unlisted node falls back to its own id when it produces output. */
 export const NODE_LABELS: Record<string, string> = {
@@ -191,7 +202,7 @@ export async function bridgeGraphStream(
   }
 
   function applyRoute(node: string, partial: Record<string, unknown>) {
-    const next = nextStep(node, box.state as unknown as Parameters<typeof nextStep>[1], '');
+    const next = nextStep(node, box.state, '');
     const reason = oneLine(sanitizeText(routeReason(node, partial, box.state)));
     const revisits = Boolean(next && !GATES.has(next) && (runs.get(next) ?? 0) > 0 && next !== node);
     if (next && revisits) {

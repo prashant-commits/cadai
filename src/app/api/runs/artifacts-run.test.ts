@@ -8,7 +8,7 @@ import { getRunStore } from '@/lib/runs/run-store';
 import { getArtifactStore } from '@/lib/runs/artifact-store';
 
 const createAgent = vi.hoisted(() => vi.fn());
-vi.mock('@/lib/agent/graph', () => ({ createCadAgent: createAgent }));
+vi.mock('@/lib/agent/designer/graph', () => ({ createDesignerAgent: createAgent }));
 
 import { POST as chat } from '../chat/route';
 import { POST as resume } from '../chat/resume/route';

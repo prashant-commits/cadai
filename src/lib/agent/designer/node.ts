@@ -63,11 +63,6 @@ export function createDesignerNode(deps: DesignerNodeDeps = {}) {
       editRequest = state.designerCheckFailures;
       request = firstText;
       isCheckRetry = true;
-    } else if (state.gateAction === 'revise' && state.gateFeedback) {
-      // Human revision from acceptGate
-      priorScript = state.currentCode;
-      editRequest = state.gateFeedback;
-      request = firstText;
     } else if (state.acceptedDesignerScript) {
       // Follow-up edit from user
       priorScript = state.acceptedDesignerScript;

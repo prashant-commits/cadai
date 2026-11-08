@@ -92,14 +92,6 @@ export const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => 0,
   }),
-  gateAction: Annotation<'approve' | 'revise' | 'cancel' | null>({
-    reducer: (_, y) => y,
-    default: () => null,
-  }),
-  gateFeedback: Annotation<string | null>({
-    reducer: (_, y) => y,
-    default: () => null,
-  }),
 });
 
 export type AgentStateType = typeof AgentState.State;

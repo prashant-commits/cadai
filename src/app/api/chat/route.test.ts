@@ -6,7 +6,7 @@ import { NextRequest } from 'next/server';
 import { DEFAULT_MODEL } from '@/lib/agent/models';
 
 const createAgent = vi.hoisted(() => vi.fn());
-vi.mock('@/lib/agent/graph', () => ({ createCadAgent: createAgent }));
+vi.mock('@/lib/agent/designer/graph', () => ({ createDesignerAgent: createAgent }));
 
 import { POST } from './route';
 

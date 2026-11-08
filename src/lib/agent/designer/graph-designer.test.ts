@@ -1,9 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
-import { Command, isInterrupted } from '@langchain/langgraph';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { HumanMessage } from '@langchain/core/messages';
-import { getCheckpointer, runCheckpointKey } from '../checkpointer';
-import { createCadAgent, resolvePipeline } from '../graph';
-import type { AgentStateType } from '../graph';
+import { createDesignerAgent } from './graph';
+import type { AgentStateType } from './state';
 import type { DesignerResult, RunDesignerFn } from './types';
 import type { BrepResult } from '../../engine/brep-runner';
 
@@ -18,20 +16,6 @@ vi.mock('@langchain/anthropic', () => {
     bindTools() { return this; }
   }
   return { ChatAnthropic: vi.fn().mockImplementation(function () { return new FakeChatModel(); }) };
-});
-
-const keys: string[] = [];
-let counter = 0;
-const newKey = () => {
-  const k = runCheckpointKey(`dz-${Date.now()}`, `run-${counter++}`);
-  keys.push(k);
-  return k;
-};
-
-afterAll(async () => {
-  for (const k of keys) {
-    await getCheckpointer().deleteThread(k);
-  }
 });
 
 const mockStlAscii = 'solid model\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 10 0 0\nvertex 0 10 0\nendloop\nendfacet\nendsolid model';
@@ -87,22 +71,12 @@ describe('designer mode graph wiring', () => {
     });
     const runBrepMock = vi.fn().mockResolvedValue(mockSuccessBrep);
 
-    const agent = createCadAgent('gpt-6-sol', {
+    const agent = createDesignerAgent('gpt-6-sol', {
       runDesigner: runDesignerMock,
       runBrep: runBrepMock,
     });
 
-    const key = newKey();
-    const config = { configurable: { thread_id: key } };
-
-    let result = await agent.invoke({ messages: [new HumanMessage('make a 10mm cube')] }, config);
-
-    // Accept gate interrupt
-    if (isInterrupted(result)) {
-      result = await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
-    }
-
-    const state = (await agent.getState(config)).values as AgentStateType;
+    const state = (await agent.invoke({ messages: [new HumanMessage('make a 10mm cube')] })) as AgentStateType;
 
     expect(state.pipeline).toBe('designer');
     expect(state.kernel).toBe('brep');
@@ -131,29 +105,23 @@ describe('designer mode graph wiring', () => {
     });
     const runBrepMock = vi.fn().mockResolvedValue(mockSuccessBrep);
 
-    const agent = createCadAgent('gpt-6-sol', {
+    const agent = createDesignerAgent('gpt-6-sol', {
       runDesigner: runDesignerMock,
       runBrep: runBrepMock,
     });
 
-    const key = newKey();
-    const config = { configurable: { thread_id: key } };
-
     // Turn 1
-    let res1 = await agent.invoke({ messages: [new HumanMessage('make a 10mm cube')] }, config);
-    if (isInterrupted(res1)) {
-      res1 = await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
-    }
+    const res1 = (await agent.invoke({ messages: [new HumanMessage('make a 10mm cube')] })) as AgentStateType;
 
     expect(runDesignerMock).toHaveBeenCalledTimes(1);
     expect(runDesignerMock.mock.calls[0][0].priorScript).toBeUndefined();
 
     // Turn 2: Follow-up
     turn = 2;
-    let res2 = await agent.invoke({ messages: [new HumanMessage('make it 20mm')] }, config);
-    if (isInterrupted(res2)) {
-      res2 = await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
-    }
+    await agent.invoke({
+      messages: [...(res1.messages ?? []), new HumanMessage('make it 20mm')],
+      acceptedDesignerScript: res1.acceptedDesignerScript,
+    });
 
     expect(runDesignerMock).toHaveBeenCalledTimes(2);
     const [secondInput] = runDesignerMock.mock.calls[1];
@@ -185,18 +153,12 @@ describe('designer mode graph wiring', () => {
     };
     const runBrepMock = vi.fn().mockResolvedValue(failingBrep);
 
-    const agent = createCadAgent('gpt-6-sol', {
+    const agent = createDesignerAgent('gpt-6-sol', {
       runDesigner: runDesignerMock,
       runBrep: runBrepMock,
     });
 
-    const key = newKey();
-    const config = { configurable: { thread_id: key } };
-
-    let res = await agent.invoke({ messages: [new HumanMessage('make a part')] }, config);
-    if (isInterrupted(res)) {
-      res = await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
-    }
+    const state = (await agent.invoke({ messages: [new HumanMessage('make a part')] })) as AgentStateType;
 
     // Check failed on v1, retried with v2, failed on v2, ended with honest message
     expect(runDesignerMock).toHaveBeenCalledTimes(2);
@@ -207,7 +169,6 @@ describe('designer mode graph wiring', () => {
     expect(secondInput.priorScript).toBe('script_v1');
     expect(secondInput.editRequest).toContain('disconnected parts: floating_boss');
 
-    const state = (await agent.getState(config)).values as AgentStateType;
     expect(state.isValid).toBe(false);
     expect(state.explanation).toMatch(/^Built, but failed checks: disconnected parts: floating_boss/);
     expect(state.explanation).not.toContain('did not compile');
@@ -226,20 +187,13 @@ describe('designer mode graph wiring', () => {
     };
     const runBrepMock = vi.fn().mockResolvedValue(compileFailBrep);
 
-    const agent = createCadAgent('gpt-6-sol', {
+    const agent = createDesignerAgent('gpt-6-sol', {
       runDesigner: runDesignerMock,
       runBrep: runBrepMock,
     });
 
-    const key = newKey();
-    const config = { configurable: { thread_id: key } };
+    const state = (await agent.invoke({ messages: [new HumanMessage('make a part')] })) as AgentStateType;
 
-    let res = await agent.invoke({ messages: [new HumanMessage('make a part')] }, config);
-    if (isInterrupted(res)) {
-      res = await agent.invoke(new Command({ resume: { action: 'approve' } }), config);
-    }
-
-    const state = (await agent.getState(config)).values as AgentStateType;
     expect(state.isValid).toBe(false);
     expect(state.explanation).toContain('The script did not compile: NameError: name Box is not defined');
     expect(state.explanation).not.toContain('Built, but failed checks:');
@@ -254,23 +208,16 @@ describe('designer mode graph wiring', () => {
       throw Object.assign(new Error('The run was stopped.'), { name: 'AbortError' });
     });
 
-    const agent = createCadAgent('gpt-6-sol', {
+    const agent = createDesignerAgent('gpt-6-sol', {
       runDesigner: runDesignerMock,
       runBrep: vi.fn(),
     });
 
-    const key = newKey();
     await expect(
       agent.invoke(
         { messages: [new HumanMessage('make a part')] },
-        { configurable: { thread_id: key }, signal: controller.signal }
+        { signal: controller.signal }
       )
     ).rejects.toThrow();
-  });
-
-  it('leaves the architect and drafter pipelines unchanged when CADAI_PIPELINE is unset or drafter', () => {
-    expect(resolvePipeline({})).toBe('architect');
-    expect(resolvePipeline({ CADAI_PIPELINE: 'drafter' })).toBe('drafter');
-    expect(resolvePipeline({ CADAI_PIPELINE: 'designer' })).toBe('designer');
   });
 });
