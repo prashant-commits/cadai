@@ -13,6 +13,7 @@ import { escapeMarkers } from '../transcript';
 import { UnusableReplyError } from '../llm-schemas';
 import { BUILD_FAILED, REFUSAL } from '../../persist/phrases';
 import type { UserKind } from '../../persist/types';
+import { designerWallBudgetMs } from './budget';
 
 export interface DesignerNodeDeps {
   runDesigner?: RunDesignerFn;
@@ -100,11 +101,17 @@ export function createDesignerNode(deps: DesignerNodeDeps = {}) {
             config?.writer?.({ t: 'delta', node: 'designerNode', text: escapeMarkers(text) });
           }
         }
+      } else if (e.kind === 'cost') {
+        config?.writer?.({ t: 'cost', usd: e.usd });
       }
     };
 
     const review = process.env.CADAI_REVIEWER === 'off' ? undefined : resolved.makeReviewer();
     const userKind: UserKind = state.triageKind === 'edit' ? 'edit' : 'request';
+
+    const rawDeadline = (config?.configurable as { deadlineAt?: unknown } | undefined)?.deadlineAt;
+    const deadlineAt = typeof rawDeadline === 'number' && Number.isFinite(rawDeadline) ? rawDeadline : undefined;
+    const wallMs = designerWallBudgetMs(deadlineAt);
 
     let result: DesignerResult;
     try {
@@ -113,6 +120,7 @@ export function createDesignerNode(deps: DesignerNodeDeps = {}) {
         signal: config?.signal,
         onEvent,
         model: deps.model,
+        wallMs,
       });
 
       if (config?.signal?.aborted) {

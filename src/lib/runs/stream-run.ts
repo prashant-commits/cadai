@@ -39,6 +39,7 @@ export interface StreamRunOptions {
   runId: string;
   threadId: string;
   ownerKey: string;
+  deadlineAt: number;
   /** Starts the graph stream with modes including 'values'; must pass `signal`. Yields [mode, chunk] tuples. */
   invoke: (signal: AbortSignal) => Promise<AsyncIterable<unknown>>;
   onFinally?: () => Promise<void>;
@@ -95,6 +96,18 @@ export function streamRun(o: StreamRunOptions): Response {
   );
 
   const controller = registerRun(o.runId);
+
+  let deadlineHit = false;
+  let deadlineTimer: NodeJS.Timeout | undefined;
+  if (typeof o.deadlineAt === 'number') {
+    const delay = Math.max(0, o.deadlineAt - Date.now());
+    deadlineTimer = setTimeout(() => {
+      if (!controller.signal.aborted) {
+        deadlineHit = true;
+        controller.abort();
+      }
+    }, delay);
+  }
 
   const writeClient = (payload: Record<string, unknown>) => {
     if (clientGone) return;
@@ -325,7 +338,7 @@ export function streamRun(o: StreamRunOptions): Response {
           delete (design as { step?: string }).step;
           plan = {
             ...outcome,
-            costUsd: costTotal > 0 ? costTotal : (outcome.costUsd ?? 0),
+            costUsd: costTotal,
             design,
           };
         } else {
@@ -335,7 +348,7 @@ export function streamRun(o: StreamRunOptions): Response {
             userKind: outcome.userKind,
             wallMs: outcome.wallMs,
             turns: outcome.turns,
-            costUsd: costTotal > 0 ? costTotal : (outcome.costUsd ?? 0),
+            costUsd: costTotal,
           };
         }
 
@@ -363,7 +376,11 @@ export function streamRun(o: StreamRunOptions): Response {
       // No outcome
       if (controller.signal.aborted && !storeOutage) {
         // Step 2
-        await terminateAndFinish('cancelled', 'cancelled');
+        if (deadlineHit) {
+          await terminateAndFinish('failed', 'deadline');
+        } else {
+          await terminateAndFinish('cancelled', 'cancelled');
+        }
       } else if (storeOutage) {
         // Step 3
         await terminateAndFinish('failed', 'internal');
@@ -380,6 +397,7 @@ export function streamRun(o: StreamRunOptions): Response {
       console.error('Run ending failed:', e);
       await replayAndClose(lastSeq);
     } finally {
+      if (deadlineTimer) clearTimeout(deadlineTimer);
       clearInterval(beatTimer);
       unregisterRun(o.runId, controller);
       try {

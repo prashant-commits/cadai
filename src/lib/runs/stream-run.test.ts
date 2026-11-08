@@ -5,7 +5,7 @@ import { DbRunStore } from '@/lib/runs/db-run-store';
 import { abortRun } from '@/lib/runs/run-control';
 import { streamRun } from './stream-run';
 import { reapOnce } from '@/lib/persist/loop';
-import { BUILD_FAILED, SAVE_FAILED, STOPPED } from '@/lib/persist/phrases';
+import { BUILD_FAILED, DEADLINE, SAVE_FAILED, STOPPED } from '@/lib/persist/phrases';
 import type { RunOutcome } from '@/lib/persist/types';
 
 function makeOwner() {
@@ -17,6 +17,7 @@ function makeOwner() {
 async function createTestRun(db: Db, ownerKey: string) {
   const threadId = crypto.randomUUID();
   const runId = `run_${crypto.randomUUID()}`;
+  const deadlineAt = Date.now() + 900_000;
   await db.query(
     `INSERT INTO threads(id, owner_key, active_run_id) VALUES ($1, $2, $3)`,
     [threadId, ownerKey, runId]
@@ -25,7 +26,7 @@ async function createTestRun(db: Db, ownerKey: string) {
     `INSERT INTO runs(id, thread_id, status, deadline_at) VALUES ($1, $2, 'running', now() + interval '15 minutes')`,
     [runId, threadId]
   );
-  return { threadId, runId };
+  return { threadId, runId, deadlineAt };
 }
 
 async function readAllEvents(res: Response): Promise<Record<string, unknown>[]> {
@@ -51,7 +52,7 @@ describe('streamRun', () => {
   it('every event is stored before the end event; exactly one end event', async () => {
     const db = getDb();
     const owner = makeOwner();
-    const { threadId, runId } = await createTestRun(db, owner.key);
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
 
     const outcome: RunOutcome = {
       replyKind: 'result',
@@ -66,6 +67,7 @@ describe('streamRun', () => {
       runId,
       threadId,
       ownerKey: owner.key,
+      deadlineAt,
       invoke: async () =>
         (async function* () {
           yield ['custom', { t: 'section', id: 'designerNode', label: 'Designer', state: 'open' }];
@@ -98,7 +100,7 @@ describe('streamRun', () => {
   it('completed wins over a late local abort', async () => {
     const db = getDb();
     const owner = makeOwner();
-    const { threadId, runId } = await createTestRun(db, owner.key);
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
 
     const outcome: RunOutcome = {
       replyKind: 'result',
@@ -126,6 +128,7 @@ describe('streamRun', () => {
       runId,
       threadId,
       ownerKey: owner.key,
+      deadlineAt,
       invoke: async (signal) => {
         return (async function* () {
           yield ['values', { outcome }];
@@ -154,7 +157,7 @@ describe('streamRun', () => {
 
     const db = getDb();
     const owner = makeOwner();
-    const { threadId, runId } = await createTestRun(db, owner.key);
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
 
     const outcome: RunOutcome = {
       replyKind: 'result',
@@ -175,6 +178,7 @@ describe('streamRun', () => {
         runId,
         threadId,
         ownerKey: owner.key,
+        deadlineAt,
         invoke: async () =>
           (async function* () {
             // Yield nothing for ~1s
@@ -201,7 +205,7 @@ describe('streamRun', () => {
 
     const db = getDb();
     const owner = makeOwner();
-    const { threadId, runId } = await createTestRun(db, owner.key);
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
 
     let heartbeatCount = 0;
     const fakeStore = {
@@ -228,6 +232,7 @@ describe('streamRun', () => {
       runId,
       threadId,
       ownerKey: owner.key,
+      deadlineAt,
       deps: { store: fakeStore as typeof DbRunStore },
       invoke: async () =>
         (async function* () {
@@ -248,7 +253,7 @@ describe('streamRun', () => {
 
     const db = getDb();
     const owner = makeOwner();
-    const { threadId, runId } = await createTestRun(db, owner.key);
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
 
     let commitCalls = 0;
     const fakeStore = {
@@ -275,6 +280,7 @@ describe('streamRun', () => {
       runId,
       threadId,
       ownerKey: owner.key,
+      deadlineAt,
       deps: { store: fakeStore as typeof DbRunStore },
       invoke: async () =>
         (async function* () {
@@ -293,7 +299,7 @@ describe('streamRun', () => {
   it('commit committed:false replays the winner\'s end', async () => {
     const db = getDb();
     const owner = makeOwner();
-    const { threadId, runId } = await createTestRun(db, owner.key);
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
 
     const outcome: RunOutcome = {
       replyKind: 'result',
@@ -308,6 +314,7 @@ describe('streamRun', () => {
       runId,
       threadId,
       ownerKey: owner.key,
+      deadlineAt,
       invoke: async () =>
         (async function* () {
           // Terminate the run from outside before returning outcome
@@ -331,7 +338,7 @@ describe('streamRun', () => {
 
     const db = getDb();
     const owner = makeOwner();
-    const { threadId, runId } = await createTestRun(db, owner.key);
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
 
     let appendFails = 2;
     const fakeStore = {
@@ -349,6 +356,7 @@ describe('streamRun', () => {
       runId,
       threadId,
       ownerKey: owner.key,
+      deadlineAt,
       deps: { store: fakeStore as typeof DbRunStore },
       invoke: async () =>
         (async function* () {
@@ -369,7 +377,7 @@ describe('streamRun', () => {
 
     const db = getDb();
     const owner = makeOwner();
-    const { threadId, runId } = await createTestRun(db, owner.key);
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
 
     let appendCalls = 0;
     const fakeStore = {
@@ -408,6 +416,7 @@ describe('streamRun', () => {
       runId,
       threadId,
       ownerKey: owner.key,
+      deadlineAt,
       deps: { store: fakeStore as typeof DbRunStore },
       invoke: async () =>
         (async function* () {
@@ -432,7 +441,7 @@ describe('streamRun', () => {
 
     const db = getDb();
     const owner = makeOwner();
-    const { threadId, runId } = await createTestRun(db, owner.key);
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
 
     let appendCalls = 0;
     const fakeStore = {
@@ -450,6 +459,7 @@ describe('streamRun', () => {
       runId,
       threadId,
       ownerKey: owner.key,
+      deadlineAt,
       deps: { store: fakeStore as typeof DbRunStore },
       invoke: async () =>
         (async function* () {
@@ -470,7 +480,7 @@ describe('streamRun', () => {
 
     const db = getDb();
     const owner = makeOwner();
-    const { threadId, runId } = await createTestRun(db, owner.key);
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
 
     let signalAborted = false;
     let terminatedAt = 0;
@@ -480,6 +490,7 @@ describe('streamRun', () => {
       runId,
       threadId,
       ownerKey: owner.key,
+      deadlineAt,
       invoke: async (signal) => {
         signal.addEventListener('abort', () => {
           abortAt = Date.now();
@@ -515,7 +526,7 @@ describe('streamRun', () => {
   it('a client disconnect does not abort the run', async () => {
     const db = getDb();
     const owner = makeOwner();
-    const { threadId, runId } = await createTestRun(db, owner.key);
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
 
     let abortedLocally = false;
 
@@ -543,6 +554,7 @@ describe('streamRun', () => {
       runId,
       threadId,
       ownerKey: owner.key,
+      deadlineAt,
       invoke: async (signal) => {
         signal.addEventListener('abort', () => {
           abortedLocally = true;
@@ -571,12 +583,13 @@ describe('streamRun', () => {
   it('a graph throw → BUILD_FAILED', async () => {
     const db = getDb();
     const owner = makeOwner();
-    const { threadId, runId } = await createTestRun(db, owner.key);
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
 
     const res = streamRun({
       runId,
       threadId,
       ownerKey: owner.key,
+      deadlineAt,
       invoke: async () =>
         (async function* () {
           throw new Error('Graph execution exploded');
@@ -594,7 +607,7 @@ describe('streamRun', () => {
   it('a mesh upload failure → SAVE_FAILED, no version', async () => {
     const db = getDb();
     const owner = makeOwner();
-    const { threadId, runId } = await createTestRun(db, owner.key);
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
 
     const outcome: RunOutcome = {
       replyKind: 'result',
@@ -621,6 +634,7 @@ describe('streamRun', () => {
       runId,
       threadId,
       ownerKey: owner.key,
+      deadlineAt,
       deps: {
         putArtifact: async () => {
           throw new Error('Upload to S3 failed');
@@ -647,7 +661,7 @@ describe('streamRun', () => {
   it('outcome never reaches the client', async () => {
     const db = getDb();
     const owner = makeOwner();
-    const { threadId, runId } = await createTestRun(db, owner.key);
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
 
     const SECRET_BODY = 'secret_cad_script_body_xyz';
     const outcome: RunOutcome = {
@@ -674,6 +688,7 @@ describe('streamRun', () => {
       runId,
       threadId,
       ownerKey: owner.key,
+      deadlineAt,
       invoke: async () =>
         (async function* () {
           yield ['values', { outcome }];
@@ -685,5 +700,174 @@ describe('streamRun', () => {
     expect(rawText).not.toContain('"outcome"');
     expect(rawText).not.toContain('"replyMarkdown"');
     expect(rawText).toContain('Clean summary');
+  });
+
+  it('deadline → the owner aborts and terminates with DEADLINE', async () => {
+    const db = getDb();
+    const owner = makeOwner();
+    const { threadId, runId } = await createTestRun(db, owner.key);
+    const deadlineAt = Date.now() + 100;
+
+    const res = streamRun({
+      runId,
+      threadId,
+      ownerKey: owner.key,
+      deadlineAt,
+      invoke: async (signal) =>
+        (async function* () {
+          if (!signal.aborted) {
+            await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+          }
+        })(),
+    });
+
+    const events = await readAllEvents(res);
+    const endEvent = events.at(-1);
+    expect(endEvent).toMatchObject({
+      t: 'end',
+      status: 'failed',
+      reply: { kind: 'error', markdown: DEADLINE },
+    });
+
+    const run = await DbRunStore.get(db, runId);
+    expect(run?.status).toBe('failed');
+    expect(run?.error?.code).toBe('deadline');
+  });
+
+  it('Stop before the deadline still ends cancelled', async () => {
+    const db = getDb();
+    const owner = makeOwner();
+    const { threadId, runId } = await createTestRun(db, owner.key);
+    const deadlineAt = Date.now() + 100;
+
+    const res = streamRun({
+      runId,
+      threadId,
+      ownerKey: owner.key,
+      deadlineAt,
+      invoke: async () =>
+        (async function* () {
+          abortRun(runId);
+          await new Promise((r) => setTimeout(r, 120));
+        })(),
+    });
+
+    const events = await readAllEvents(res);
+    expect(events.at(-1)).toMatchObject({
+      t: 'end',
+      status: 'cancelled',
+      reply: { kind: 'cancelled', markdown: STOPPED },
+    });
+
+    const run = await DbRunStore.get(db, runId);
+    expect(run?.status).toBe('cancelled');
+    expect(run?.error?.code).toBe('cancelled');
+  });
+
+  it('an outcome at the deadline still commits', async () => {
+    const db = getDb();
+    const owner = makeOwner();
+    const { threadId, runId } = await createTestRun(db, owner.key);
+    const deadlineAt = Date.now() + 50;
+
+    const outcome: RunOutcome = {
+      replyKind: 'result',
+      replyMarkdown: 'Finished in time',
+      userKind: 'request',
+      costUsd: 0.01,
+      wallMs: 10,
+      turns: 1,
+    };
+
+    const res = streamRun({
+      runId,
+      threadId,
+      ownerKey: owner.key,
+      deadlineAt,
+      invoke: async () =>
+        (async function* () {
+          yield ['values', { outcome }];
+          await new Promise((r) => setTimeout(r, 80));
+        })(),
+    });
+
+    const events = await readAllEvents(res);
+    expect(events.at(-1)).toMatchObject({
+      t: 'end',
+      status: 'done',
+    });
+
+    const run = await DbRunStore.get(db, runId);
+    expect(run?.status).toBe('done');
+  });
+
+  it('a cancelled run records its cost', async () => {
+    const db = getDb();
+    const owner = makeOwner();
+    const { threadId, runId } = await createTestRun(db, owner.key);
+
+    const res = streamRun({
+      runId,
+      threadId,
+      ownerKey: owner.key,
+      deadlineAt: Date.now() + 900_000,
+      invoke: async (signal) =>
+        (async function* () {
+          yield ['custom', { t: 'cost', usd: 0.0123 }];
+          yield ['custom', { t: 'cost', usd: 0.0200 }];
+          abortRun(runId);
+          if (!signal.aborted) {
+            await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+          }
+        })(),
+    });
+
+    const events = await readAllEvents(res);
+    expect(events.at(-1)).toMatchObject({
+      t: 'end',
+      status: 'cancelled',
+    });
+
+    const run = await DbRunStore.get(db, runId);
+    expect(run?.status).toBe('cancelled');
+    expect(Number(run?.costUsd?.toFixed(4))).toBe(0.0323);
+  });
+
+  it('commit records the streamed cost total', async () => {
+    const db = getDb();
+    const owner = makeOwner();
+    const { threadId, runId } = await createTestRun(db, owner.key);
+
+    const outcome: RunOutcome = {
+      replyKind: 'result',
+      replyMarkdown: 'Done',
+      userKind: 'request',
+      costUsd: 0.99,
+      wallMs: 10,
+      turns: 1,
+    };
+
+    const res = streamRun({
+      runId,
+      threadId,
+      ownerKey: owner.key,
+      deadlineAt: Date.now() + 900_000,
+      invoke: async () =>
+        (async function* () {
+          yield ['custom', { t: 'cost', usd: 0.02 }];
+          yield ['custom', { t: 'cost', usd: 0.03 }];
+          yield ['values', { outcome }];
+        })(),
+    });
+
+    const events = await readAllEvents(res);
+    expect(events.at(-1)).toMatchObject({
+      t: 'end',
+      status: 'done',
+    });
+
+    const run = await DbRunStore.get(db, runId);
+    expect(run?.status).toBe('done');
+    expect(Number(run?.costUsd?.toFixed(2))).toBe(0.05);
   });
 });

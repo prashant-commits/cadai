@@ -93,17 +93,20 @@ export class LocalObjectStore implements ObjectStore {
   }
 }
 
-const storeCache = new Map<string, LocalObjectStore>();
+declare global {
+  var __cadaiObjectStores: Map<string, LocalObjectStore> | undefined;
+  var __cadaiDefaultObjectStore: ObjectStore | undefined;
+}
 
-let defaultObjectStore: ObjectStore | undefined;
+const storeCache = (globalThis.__cadaiObjectStores ??= new Map<string, LocalObjectStore>());
 
 export function setObjectStore(store: ObjectStore | undefined): void {
-  defaultObjectStore = store;
+  globalThis.__cadaiDefaultObjectStore = store;
 }
 
 export function getObjectStore(): ObjectStore {
-  if (defaultObjectStore) {
-    return defaultObjectStore;
+  if (globalThis.__cadaiDefaultObjectStore) {
+    return globalThis.__cadaiDefaultObjectStore;
   }
 
   const raw = (process.env.CADAI_ARTIFACT_STORE ?? 'local').trim().toLowerCase();

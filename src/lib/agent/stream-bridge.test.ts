@@ -215,4 +215,9 @@ describe('bridgeGraphStream', () => {
     expect(sectionIds).not.toContain('designerCheck');
     expect(sectionIds).not.toContain('designerAnswer');
   });
+
+  it("a custom cost event passes through as {t:'cost'}", async () => {
+    const out = await bridge([['custom', { t: 'cost', usd: 0.0123 }]]);
+    expect(out).toEqual([{ t: 'cost', usd: 0.0123 }]);
+  });
 });

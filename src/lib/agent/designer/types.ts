@@ -77,7 +77,8 @@ export interface DesignerInput {
 export type DesignerEvent =
   | { kind: 'step'; text: string }              // "Built the model (3 parts)", "Rendered 4 views", "Revising: …"
   | { kind: 'review'; flags: ReviewFlag[]; final: boolean }
-  | { kind: 'note'; text: string };             // budget/cap notes
+  | { kind: 'note'; text: string }              // budget/cap notes
+  | { kind: 'cost'; usd: number };
 
 export interface DesignerDeps {
   /** Omit to run without a reviewer. */
@@ -86,6 +87,7 @@ export interface DesignerDeps {
   onEvent?: (e: DesignerEvent) => void;
   /** Model id; default is the app default (Sonnet 5.5 on feat/brep). */
   model?: string;
+  wallMs?: number;
 }
 
 export interface DesignerResult {

@@ -33,9 +33,27 @@ import type {
   RunDesignerFn,
 } from './types';
 
+import {
+  CHECK_RESERVE_MS,
+  COMMIT_RESERVE_MS,
+  designerWallBudgetMs,
+  MAX_WALL_MS,
+  MIN_DESIGNER_WALL_MS,
+  MIN_RETRY_LEFT_MS,
+} from './budget';
+
+export {
+  CHECK_RESERVE_MS,
+  COMMIT_RESERVE_MS,
+  designerWallBudgetMs,
+  MAX_WALL_MS,
+  MIN_DESIGNER_WALL_MS,
+  MIN_RETRY_LEFT_MS,
+};
+
 export const MAX_TURNS = 18;
 export const MAX_COST_USD = 1.5;
-export const MAX_WALL_MS = 420_000;
+
 /** One geometry run never waits longer than this (it is also clipped to the wall time left). */
 export const RUN_TIMEOUT_MS = 120_000;
 /** Blocking reviewer flags reject `finish` this many times per build; after that the finish is accepted. */
@@ -47,8 +65,9 @@ const POSE_TOLERANCE = 0.1;
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 export const runDesigner: RunDesignerFn = async (input: DesignerInput, deps: DesignerDeps): Promise<DesignerResult> => {
+  const wallMs = deps.wallMs ?? MAX_WALL_MS;
   const startedAt = Date.now();
-  const deadline = startedAt + MAX_WALL_MS;
+  const deadline = startedAt + wallMs;
   const isEdit = !!(input.priorScript && input.editRequest);
   const minRunScripts = isEdit ? 1 : 2;
   const reviewRequest = isEdit ? `${input.request}\n\nFollow-up edit: ${input.editRequest}` : input.request;
@@ -58,7 +77,7 @@ export const runDesigner: RunDesignerFn = async (input: DesignerInput, deps: Des
 
   // The wall cap also aborts an in-flight model call or geometry run.
   const wall = new AbortController();
-  const wallTimer = setTimeout(() => wall.abort(), MAX_WALL_MS);
+  const wallTimer = setTimeout(() => wall.abort(), wallMs);
   const signal = deps.signal ? AbortSignal.any([deps.signal, wall.signal]) : wall.signal;
 
   const emit = (e: DesignerEvent) => {
@@ -146,7 +165,11 @@ export const runDesigner: RunDesignerFn = async (input: DesignerInput, deps: Des
     try {
       const reviewImages = referenceImages.length > 0 ? [...referenceImages, ...images] : images;
       const out = await deps.review({ request: reviewRequest, images: reviewImages, facts, final, signal, buildId: input.buildId });
-      costUsd += Number.isFinite(out.costUsd) ? out.costUsd : 0;
+      const reviewerCost = Number.isFinite(out.costUsd) ? out.costUsd : 0;
+      costUsd += reviewerCost;
+      if (Number.isFinite(reviewerCost) && reviewerCost > 0) {
+        emit({ kind: 'cost', usd: reviewerCost });
+      }
       flags = (out.flags ?? []).slice(0, 3);
     } catch {
       flags = []; // a failed review is no review: the designer carries on
@@ -182,7 +205,11 @@ export const runDesigner: RunDesignerFn = async (input: DesignerInput, deps: Des
         }
         break;
       }
-      costUsd += estimateCostUsd(modelSlug, replyUsage(reply));
+      const modelCost = estimateCostUsd(modelSlug, replyUsage(reply));
+      costUsd += modelCost;
+      if (Number.isFinite(modelCost) && modelCost > 0) {
+        emit({ kind: 'cost', usd: modelCost });
+      }
 
       const stop = unusableStop(reply);
       if (stop) {

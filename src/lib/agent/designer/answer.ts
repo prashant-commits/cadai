@@ -158,6 +158,9 @@ export function createDesignerAnswer(deps: DesignerAnswerDeps = {}) {
       }
 
       const costUsd = callResult.costUsd ?? 0;
+      if (Number.isFinite(costUsd) && costUsd > 0) {
+        config?.writer?.({ t: 'cost', usd: costUsd });
+      }
       const stop = unusableStop(callResult.raw);
       if (stop === 'refusal') {
         return {

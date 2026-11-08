@@ -149,6 +149,7 @@ describe('Runs API routes', () => {
         runId,
         threadId,
         ownerKey: owner.key,
+        deadlineAt: Date.now() + 900_000,
         invoke: async (signal) =>
           (async function* () {
             yield ['custom', { t: 'delta', text: 'working...' }];
@@ -204,6 +205,7 @@ describe('Runs API routes', () => {
         runId,
         threadId,
         ownerKey: owner.key,
+        deadlineAt: Date.now() + 900_000,
         invoke: async () =>
           (async function* () {
             yield ['custom', { t: 'delta', text: 'building...' }];

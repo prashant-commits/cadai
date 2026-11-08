@@ -167,7 +167,12 @@ export async function bridgeGraphStream(
 
       if (mode === 'custom') {
         const event = payload as CustomPayload;
-        if (event.t === 'delta') {
+        if (event.t === 'cost') {
+          const usd = (event as { usd?: unknown }).usd;
+          if (typeof usd === 'number' && Number.isFinite(usd) && usd >= 0) {
+            send({ t: 'cost', usd });
+          }
+        } else if (event.t === 'delta') {
           const node = event.node ?? 'agent';
           enter(node);
           if (box.current?.id === node) {

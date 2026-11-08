@@ -23,7 +23,6 @@ import { withGeneratedPrelude, toBody } from '@/lib/brep/prelude';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   const ownerKey = ownerKeyFrom(req);
@@ -196,6 +195,12 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    const run = await DbRunStore.get(db, r.runId);
+    if (!run) {
+      throw new Error(`Run ${r.runId} not found after start`);
+    }
+    const deadlineAt = run.deadlineAt;
+
     const input = await loadRunInput(
       db,
       ownerKey,
@@ -230,9 +235,10 @@ export async function POST(req: NextRequest) {
       runId: r.runId,
       threadId,
       ownerKey,
+      deadlineAt,
       invoke: (signal) =>
         createDesignerAgent(effectiveModel).stream(graphInput, {
-          configurable: { ownerKey, threadId, runId: r.runId },
+          configurable: { ownerKey, threadId, runId: r.runId, deadlineAt },
           recursionLimit: graphRecursionLimit(),
           streamMode: ['updates', 'messages', 'custom', 'tasks', 'values'],
           callbacks: langfuseHandler ? [langfuseHandler] : undefined,

@@ -9,6 +9,7 @@ import { toBody, PRELUDE_VERSION } from '../../brep/prelude';
 import { formatFlags } from './reviewer';
 import type { ReviewFlag } from './types';
 import { firstHumanText, latestHumanText } from './message-utils';
+import { MIN_RETRY_LEFT_MS } from './budget';
 
 export function codeLabel(s: unknown): string {
   const str = String(s ?? '')
@@ -273,7 +274,11 @@ export function createDesignerCheck(deps: DesignerCheckDeps = {}) {
     // Failed checks!
     const failuresText = failures.join('; ');
 
-    if (retryCount === 0) {
+    const rawDeadline = (config?.configurable as { deadlineAt?: unknown } | undefined)?.deadlineAt;
+    const deadlineAt = typeof rawDeadline === 'number' && Number.isFinite(rawDeadline) ? rawDeadline : undefined;
+    const hasEnoughTime = deadlineAt === undefined || deadlineAt - Date.now() >= MIN_RETRY_LEFT_MS;
+
+    if (retryCount === 0 && hasEnoughTime) {
       // First failure: route back to designerNode ONCE as an edit carrying the failures for the model
       return {
         isValid: false,

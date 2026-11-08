@@ -1027,6 +1027,51 @@ describe('DbRunStore', () => {
     expect(staleList2).not.toContain(runId);
   });
 
+  it('the reaper waits deadline_at + 60 s', async () => {
+    const db = getDb();
+    const threadId = crypto.randomUUID();
+    const ownerKey = `owner_${crypto.randomUUID()}`;
+
+    const startRes = await db.transaction(async (q) => {
+      return DbRunStore.start(q, makeStartInput({ threadId, ownerKey }));
+    });
+    if (startRes.replay) throw new Error('Expected replay=false');
+    const runId = startRes.runId;
+
+    // Fresh heartbeat, deadline_at is now() - 30 s:
+    await db.query(
+      `UPDATE runs SET heartbeat_at = now(), deadline_at = now() - interval '30 seconds' WHERE id = $1`,
+      [runId]
+    );
+
+    // reap returns false and the run stays running
+    const reap1 = await db.transaction(async (q) => DbRunStore.reap(q, runId));
+    expect(reap1).toBe(false);
+
+    const runFresh = await DbRunStore.get(db, runId);
+    expect(runFresh?.status).toBe('running');
+
+    // set deadline_at = now() - 61 s:
+    await db.query(
+      `UPDATE runs SET heartbeat_at = now(), deadline_at = now() - interval '61 seconds' WHERE id = $1`,
+      [runId]
+    );
+
+    // reap ends it with error.code 'deadline' and the DEADLINE reply
+    const reap2 = await db.transaction(async (q) => DbRunStore.reap(q, runId));
+    expect(reap2).toBe(true);
+
+    const runReaped = await DbRunStore.get(db, runId);
+    expect(runReaped?.status).toBe('failed');
+    expect(runReaped?.error).toEqual({ code: 'deadline' });
+
+    const msgs = await db.query(
+      `SELECT * FROM messages WHERE run_id = $1 AND role = 'assistant'`,
+      [runId]
+    );
+    expect(msgs.rows[0].content).toBe(DEADLINE);
+  });
+
   it('sweep keeps referenced artifacts, queues object keys, skips locked rows', async () => {
     const db = getDb();
     const now = 1700000000000; // epoch ms

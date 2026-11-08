@@ -4,7 +4,14 @@ import { checkPythonScript, GENERATED_PRELUDE, MAX_SCRIPT_BYTES, PRELUDE_SENTINE
 import type { BrepResult } from '../../engine/brep-runner';
 import { runBrep } from '../../engine/brep-runner';
 import { getChatModel } from '../model-provider';
-import { MAX_COST_USD, MAX_TURNS, runDesigner } from './run-designer';
+import {
+  MAX_COST_USD,
+  MAX_TURNS,
+  MAX_WALL_MS,
+  MIN_DESIGNER_WALL_MS,
+  designerWallBudgetMs,
+  runDesigner,
+} from './run-designer';
 import type { DesignerEvent, ReviewFn, ReviewFlag, ReviewInput } from './types';
 import { DESIGNER_SYSTEM_PROMPT } from './prompt';
 import { withGeneratedPrelude } from '../../brep/prelude';
@@ -529,5 +536,51 @@ describe('body-only model interface', () => {
     const res = await node(state);
     expect(res.outcome?.replyKind).toBe('error');
     expect(res.outcome?.replyMarkdown).toBe(REFUSAL);
+  });
+
+  it('the designer budget fits inside the remaining deadline', async () => {
+    const now = 1_000_000;
+    expect(designerWallBudgetMs(now + 900_000, now)).toBe(MAX_WALL_MS);
+    expect(designerWallBudgetMs(now + 400_000, now)).toBe(250_000);
+    expect(designerWallBudgetMs(now + 160_000, now)).toBe(MIN_DESIGNER_WALL_MS);
+    expect(designerWallBudgetMs(undefined, now)).toBe(MAX_WALL_MS);
+
+    let curr = 1_000_000;
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => curr);
+    try {
+      installModel(() => {
+        curr += 40_000;
+        return reply([run(PLAIN)]);
+      });
+      const res = await runDesigner({ request: 'a box' }, { wallMs: 50_000 });
+      expect(res.capped).toBe('wall');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('run-designer emits a cost event after every model and reviewer call', async () => {
+    const events: DesignerEvent[] = [];
+    installModel([
+      reply([run(PLAIN), render()]),
+      reply([run(PLAIN)]),
+    ]);
+    const mockReview: ReviewFn = vi.fn().mockResolvedValue({
+      flags: [],
+      costUsd: 0.05,
+    });
+
+    const result = await runDesigner(
+      { request: 'a box' },
+      {
+        review: mockReview,
+        onEvent: (e) => events.push(e),
+      }
+    );
+
+    const costEvents = events.filter((e): e is { kind: 'cost'; usd: number } => e.kind === 'cost');
+    expect(costEvents.length).toBe(3);
+    const sum = costEvents.reduce((acc, ev) => acc + ev.usd, 0);
+    expect(Number(sum.toFixed(6))).toBe(Number(result.costUsd.toFixed(6)));
   });
 });

@@ -11,10 +11,12 @@ export interface OwnerArtifactsDeps {
   objectStore?: ObjectStore;
 }
 
-let defaultDeps: OwnerArtifactsDeps | undefined;
+declare global {
+  var __cadaiOwnerArtifactDeps: OwnerArtifactsDeps | undefined;
+}
 
 export function setOwnerArtifactsDeps(deps: OwnerArtifactsDeps | undefined): void {
-  defaultDeps = deps;
+  globalThis.__cadaiOwnerArtifactDeps = deps;
 }
 
 export function newArtifactId(): string {
@@ -30,8 +32,8 @@ export async function put(
   opts?: { threadId?: string; runId?: string },
   deps?: OwnerArtifactsDeps
 ): Promise<string> {
-  const db = deps?.db ?? defaultDeps?.db ?? getDb();
-  const objectStore = deps?.objectStore ?? defaultDeps?.objectStore ?? getObjectStore();
+  const db = deps?.db ?? globalThis.__cadaiOwnerArtifactDeps?.db ?? getDb();
+  const objectStore = deps?.objectStore ?? globalThis.__cadaiOwnerArtifactDeps?.objectStore ?? getObjectStore();
 
   const id = newArtifactId();
   const objectKey = `${kind}/${id}`;
@@ -77,8 +79,8 @@ export async function openStream(
   id: string,
   deps?: OwnerArtifactsDeps
 ): Promise<{ row: ArtifactRow; stream: Readable } | null> {
-  const db = deps?.db ?? defaultDeps?.db ?? getDb();
-  const objectStore = deps?.objectStore ?? defaultDeps?.objectStore ?? getObjectStore();
+  const db = deps?.db ?? globalThis.__cadaiOwnerArtifactDeps?.db ?? getDb();
+  const objectStore = deps?.objectStore ?? globalThis.__cadaiOwnerArtifactDeps?.objectStore ?? getObjectStore();
 
   const row = await get(db, ownerKey, id);
   if (!row) {

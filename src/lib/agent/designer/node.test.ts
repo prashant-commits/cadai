@@ -297,4 +297,41 @@ describe('designerNode', () => {
 
     await expect(node(createMockState(), { signal: liveController.signal } as never)).rejects.toThrow();
   });
+
+  it("the designer node forwards cost events as custom {t:'cost'}", async () => {
+    const runDesignerMock = vi.fn().mockImplementation(async (_input, deps) => {
+      deps.onEvent?.({ kind: 'cost', usd: 0.042 });
+      return mockResult;
+    });
+
+    const node = createDesignerNode({
+      runDesigner: runDesignerMock,
+      makeReviewer: vi.fn().mockReturnValue(vi.fn().mockResolvedValue({ flags: [], costUsd: 0 })),
+    });
+
+    const writerMock = vi.fn();
+    const state = createMockState();
+    await node(state, { writer: writerMock });
+
+    expect(writerMock).toHaveBeenCalledWith({ t: 'cost', usd: 0.042 });
+  });
+
+  it('the designer node passes a wall budget from deadlineAt', async () => {
+    const runDesignerMock = vi.fn().mockResolvedValue(mockResult);
+
+    const node = createDesignerNode({
+      runDesigner: runDesignerMock,
+      makeReviewer: vi.fn().mockReturnValue(vi.fn().mockResolvedValue({ flags: [], costUsd: 0 })),
+    });
+
+    const now = Date.now();
+    const state = createMockState();
+    // deadlineAt is now + 400_000 -> remaining - 150_000 = 250_000
+    await node(state, { configurable: { deadlineAt: now + 400_000 } });
+
+    expect(runDesignerMock).toHaveBeenCalledTimes(1);
+    const [, deps] = runDesignerMock.mock.calls[0];
+    expect(deps.wallMs).toBeGreaterThanOrEqual(249_000);
+    expect(deps.wallMs).toBeLessThanOrEqual(250_000);
+  });
 });

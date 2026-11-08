@@ -76,6 +76,7 @@ describe('artifacts-run', () => {
       runId,
       threadId,
       ownerKey: owner.key,
+      deadlineAt: Date.now() + 900_000,
       invoke: async () =>
         (async function* () {
           yield ['values', { outcome }];

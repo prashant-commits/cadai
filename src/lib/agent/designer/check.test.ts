@@ -334,4 +334,39 @@ describe('designerCheck', () => {
 
     await expect(check(createMockState(), { signal: controller.signal } as never)).rejects.toThrow();
   });
+
+  it('a retry never starts with under 60 s left', async () => {
+    const failBrep: BrepResult = {
+      ok: false,
+      error: 'SyntaxError: bad syntax',
+      parts: [],
+      solids: 0,
+      ms: 20,
+    };
+
+    const check = createDesignerCheck({
+      runBrep: vi.fn().mockResolvedValue(failBrep),
+      checkPythonScript: vi.fn().mockReturnValue({ ok: true }),
+    });
+
+    const now = Date.now();
+
+    // With deadlineAt = now + 59_000: does not retry, takes final-failure path
+    const state0 = createMockState({ designerRetryCount: 0 });
+    const result0 = await check(state0, {
+      configurable: { deadlineAt: now + 59_000 },
+    });
+    expect(result0.designerCheckCompleted).toBe(true);
+    expect(result0.outcome).toBeDefined();
+    expect(result0.outcome?.replyKind).toBe('error');
+
+    // With deadlineAt = now + 61_000: does retry
+    const state1 = createMockState({ designerRetryCount: 0 });
+    const result1 = await check(state1, {
+      configurable: { deadlineAt: now + 61_000 },
+    });
+    expect(result1.designerCheckCompleted).toBe(false);
+    expect(result1.designerRetryCount).toBe(1);
+    expect(result1.outcome).toBeUndefined();
+  });
 });

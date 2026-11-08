@@ -6,7 +6,6 @@ import { SSE_HEADERS, sse, toWire } from '@/lib/runs/stream-run';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 300;
 
 function pollMs(): number {
   const n = Number(process.env.CADAI_TAIL_POLL_MS ?? 150);

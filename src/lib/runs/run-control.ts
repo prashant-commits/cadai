@@ -3,7 +3,11 @@
  * that stops the graph. Cross-process cancel terminates the run in the database;
  * the owning instance detects this via heartbeat or append and aborts locally.
  */
-const controllers = new Map<string, AbortController>();
+declare global {
+  var __cadaiRunControllers: Map<string, AbortController> | undefined;
+}
+
+const controllers = (globalThis.__cadaiRunControllers ??= new Map<string, AbortController>());
 
 export function registerRun(runId: string): AbortController {
   const c = new AbortController();
