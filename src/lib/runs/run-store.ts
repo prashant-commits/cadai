@@ -1,8 +1,7 @@
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import type { ApiError, RunInfo, RunStatus } from '@/lib/contract/run-contract';
-import { runStoreDir, runStoreKind } from './config';
+import { RUN_DIR_NOT_WRITABLE, runStoreDir, runStoreKind } from './config';
 
 /** An event as stored: the payload plus its envelope. */
 export type StoredEvent = { seq: number; ts: number } & Record<string, unknown>;
@@ -124,24 +123,16 @@ const toInfo = (meta: Meta, lastSeq: number): RunInfo => {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const errCode = (e: unknown) => (e as NodeJS.ErrnoException)?.code;
 
-let warnedFallback = false;
-
-/** `preferred` if its subdirectories can be created and written, else os.tmpdir()/cadai-runs (warns once). */
+/** `preferred` if its subdirectories can be created and written, else throws `RUN_DIR_NOT_WRITABLE`. */
 function writableRoot(preferred: string): string {
-  const prepare = (root: string) => {
-    for (const sub of ['runs', 'events', 'cancel', 'locks']) fs.mkdirSync(path.join(/*turbopackIgnore: true*/ root, sub), { recursive: true });
-    fs.accessSync(root, fs.constants.W_OK);
-    return root;
-  };
   try {
-    return prepare(preferred);
-  } catch (e) {
-    const fallback = path.join(os.tmpdir(), 'cadai-runs');
-    if (!warnedFallback) {
-      warnedFallback = true;
-      console.warn(`Run store directory ${preferred} is not writable (${errCode(e) ?? e}); using ${fallback}.`);
+    for (const sub of ['runs', 'events', 'cancel', 'locks']) {
+      fs.mkdirSync(path.join(/*turbopackIgnore: true*/ preferred, sub), { recursive: true });
     }
-    return prepare(fallback);
+    fs.accessSync(preferred, fs.constants.W_OK);
+    return preferred;
+  } catch {
+    throw new Error(`${RUN_DIR_NOT_WRITABLE} (${preferred})`);
   }
 }
 

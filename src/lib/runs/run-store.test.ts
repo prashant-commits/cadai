@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { LocalRunStore, getRunStore } from './run-store';
+import { RUN_DIR_NOT_WRITABLE } from './config';
 
 const dirs: string[] = [];
 const tmp = () => {
@@ -223,20 +224,11 @@ describe('review fixes', () => {
     expect(spy).toHaveBeenCalledTimes(2);
   });
 
-  it('F6: an unwritable directory falls back to os.tmpdir()/cadai-runs with one warning', async () => {
+  it('F6: an unwritable directory fails with RUN_DIR_NOT_WRITABLE', async () => {
     const base = tmp();
     const blocker = path.join(base, 'file');
     fs.writeFileSync(blocker, 'not a dir');
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const s = new LocalRunStore(path.join(blocker, 'runs'));
-    expect(s.dir).toBe(path.join(os.tmpdir(), 'cadai-runs'));
-    const id = `fallback-${Date.now()}`;
-    await s.create({ runId: id, threadId: 't' });
-    expect(await s.get(id)).toBeDefined();
-    new LocalRunStore(path.join(blocker, 'again'));
-    expect(warn.mock.calls.filter((c) => String(c[0]).includes('not writable'))).toHaveLength(1);
-    warn.mockRestore();
-    for (const kind of ['runs', 'events']) fs.rmSync(path.join(s.dir, kind, `${id}.json${kind === 'events' ? 'l' : ''}`), { force: true });
+    expect(() => new LocalRunStore(path.join(blocker, 'runs'))).toThrow(RUN_DIR_NOT_WRITABLE);
   });
 
   it('F7: a running run with no heartbeat for CADAI_RUN_LOST_MS is failed by the next reader, with a stored error event', async () => {

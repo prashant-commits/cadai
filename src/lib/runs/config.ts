@@ -1,4 +1,4 @@
-import * as os from 'os';
+import * as fs from 'fs';
 import * as path from 'path';
 
 /**
@@ -17,13 +17,30 @@ export function runStoreKind(): RunStoreKind {
   throw new Error(`Unsupported CADAI_RUN_STORE "${raw}". Only "local" is implemented.`);
 }
 
-/** CADAI_RUN_DIR, or `<cwd>/.cadai/runs` (`<tmp>/cadai/runs` on Vercel, where cwd is read-only). */
+export const RUN_DIR_NOT_WRITABLE =
+  'The run directory is not writable. Set CADAI_RUN_DIR to a writable directory.';
+
+/** CADAI_RUN_DIR, or `<cwd>/.cadai/runs`. */
 export function runStoreDir(): string {
   const configured = process.env.CADAI_RUN_DIR?.trim();
   if (configured) return path.resolve(/*turbopackIgnore: true*/ configured);
-  return process.env.VERCEL
-    ? path.join(os.tmpdir(), 'cadai', 'runs')
-    : path.join(/*turbopackIgnore: true*/ process.cwd(), '.cadai', 'runs');
+  return path.join(/*turbopackIgnore: true*/ process.cwd(), '.cadai', 'runs');
+}
+
+export function assertRunDirWritable(dir = runStoreDir()): string {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.accessSync(dir, fs.constants.W_OK);
+    const probe = path.join(
+      dir,
+      `.probe-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+    fs.writeFileSync(probe, 'probe', 'utf8');
+    fs.unlinkSync(probe);
+    return dir;
+  } catch {
+    throw new Error(`${RUN_DIR_NOT_WRITABLE} (${dir})`);
+  }
 }
 
 export type ArtifactStoreKind = 'local';
