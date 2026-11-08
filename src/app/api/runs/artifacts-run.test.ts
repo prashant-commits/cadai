@@ -10,7 +10,6 @@ const createAgent = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/agent/designer/graph', () => ({ createDesignerAgent: createAgent }));
 
 import { POST as chat } from '../chat/route';
-import { POST as cancelRun } from './[runId]/cancel/route';
 import { GET as getArtifact } from '../artifacts/[id]/route';
 
 const saved = { ...process.env };

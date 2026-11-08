@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { HumanMessage } from '@langchain/core/messages';
 import { createDesignerCheck } from './check';
-import type { AgentStateType } from '../graph';
+import type { AgentStateType } from './state';
 import type { BrepResult } from '../../engine/brep-runner';
 
 function createMockState(overrides: Partial<AgentStateType> = {}): AgentStateType {

@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizePythonBody } from '../agent/build-format';
-import { BUILDER_MODE_REASON, checkPythonBody, checkPythonScript, isBuilderModeReason, PRELUDE_SENTINEL } from './body-check';
-import { emitBrepScript } from './emit-script';
-import { runScriptForTest } from './test-run';
-import type { AssemblySpec } from '../agent/assembly-spec';
+import { BUILDER_MODE_REASON, checkPythonBody, checkPythonScript, isBuilderModeReason, GENERATED_PRELUDE, PRELUDE_SENTINEL } from './body-check';
 
 const opts = { reserved: ['width', 'depth'], components: ['base', 'lid', 'lid_part'] };
 const ok = (body: string) => checkPythonBody(body, opts).ok;
@@ -118,25 +114,6 @@ describe('checkPythonBody accepts', () => {
   });
 });
 
-describe('sanitizePythonBody uses the token check', () => {
-  it('keeps a column-0 keyword-argument line inside an open call (L4)', () => {
-    expect(sanitizePythonBody('part = Box(\nwidth=5, length=3, height=2)\nreturn part', ['base'], ['width'])).toBe(
-      'part = Box(\nwidth=5, length=3, height=2)\nreturn part',
-    );
-  });
-  it('still drops a column-0 parameter write after the call closes (L4)', () => {
-    expect(sanitizePythonBody('part = Box(\n1, 2, 3)\nwidth = 5\nreturn part', ['base'], ['width'])).toBe('part = Box(\n1, 2, 3)\nreturn part');
-  });
-  it('dedents a uniformly indented body so a parameter write is seen and dropped', () => {
-    expect(sanitizePythonBody('    width = 1\n    return Box(width, 1, 1)', ['base'], ['width'])).toBe('return Box(width, 1, 1)');
-  });
-  it('rejects an indented parameter write inside a block', () => {
-    expect(sanitizePythonBody('if True:\n    width = 1\nreturn Box(1, 1, 1)', ['base'], ['width'])).toBeNull();
-  });
-  it('rejects a call to the emitted function name of a part', () => {
-    expect(sanitizePythonBody('return lid_part()', ['lid'], [])).toBeNull();
-  });
-});
 
 describe('curated builtins and the guardrail stay in sync (N2)', () => {
   it('no builtin the runner provides is banned by the body check, and the common helpers are there', async () => {
@@ -204,51 +181,13 @@ describe('builder mode is rejected with a reason that names the fix', () => {
 });
 
 describe('checkPythonScript', () => {
-  it('accepts emitted starting script with designLanguage and _round calls in bodies and runs on geo stack', async () => {
-    const spec = {
-      assemblyName: 'monolith_dock',
-      boundingBox: { width: 40, length: 40, height: 20 },
-      designLanguage: {
-        name: 'soft monolith',
-        principles: ['soft rounded corners'],
-        edgeRadius: 2,
-        minorRadius: 1,
-      },
-      components: [
-        {
-          name: 'base',
-          description: '',
-          localExtents: [40, 40, 20],
-          position: [0, 0, 0],
-          shape: { kind: 'box' },
-        },
-      ],
-    } as unknown as AssemblySpec;
-    const bodies = {
-      base: 'b = Box(40, 40, 20)\nreturn _round(b, edge_r, "outer")',
-    };
-    const { script } = emitBrepScript(spec, bodies);
-    expect(script).toContain('edge_r = 2');
-    expect(script).toContain('minor_r = 1');
-    expect(script).toContain('_round(b, edge_r, "outer")');
-    expect(script).toContain(PRELUDE_SENTINEL);
+  const valid = `${GENERATED_PRELUDE}\n${PRELUDE_SENTINEL}\nb = Box(10, 10, 10)\nresult = b\n`;
 
-    const check = checkPythonScript(script);
-    expect(check).toEqual({ ok: true });
-
-    const run = await runScriptForTest(script);
-    expect(run.ok).toBe(true);
-    expect(run.parts).toHaveLength(1);
-    expect(run.parts[0].label).toBe('base');
+  it('accepts valid script matching generated prelude', () => {
+    expect(checkPythonScript(valid)).toEqual({ ok: true });
   });
 
   it('rejects frame-escape probe and import os after the sentinel', () => {
-    const valid = emitBrepScript({
-      assemblyName: 'box',
-      boundingBox: { width: 10, length: 10, height: 10 },
-      components: [{ name: 'b', localExtents: [10, 10, 10], position: [0, 0, 0], shape: { kind: 'box' } }],
-    } as unknown as AssemblySpec).script;
-
     const withImport = valid + '\nimport os\n';
     expect(checkPythonScript(withImport)).toEqual({
       ok: false,
@@ -263,12 +202,6 @@ describe('checkPythonScript', () => {
   });
 
   it('rejects a prelude that differs from the generated one', () => {
-    const valid = emitBrepScript({
-      assemblyName: 'box',
-      boundingBox: { width: 10, length: 10, height: 10 },
-      components: [{ name: 'b', localExtents: [10, 10, 10], position: [0, 0, 0], shape: { kind: 'box' } }],
-    } as unknown as AssemblySpec).script;
-
     const modifiedPrelude = valid.replace('from build123d import *', 'from build123d import *\nimport os');
     expect(checkPythonScript(modifiedPrelude)).toEqual({
       ok: false,

@@ -546,20 +546,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (updatedThread) void upsertThread(updatedThread);
   },
 
-  setThreadContract: (contract, threadId) => {
+  setThreadContract: (_contract, threadId) => {
+    void _contract;
     const targetId = threadId || get().activeThreadId;
     const { threads } = get();
     const targetThread = threads.find((t) => t.id === targetId);
     if (!targetThread) return;
 
-    // The client owns standing constraints and pins - the user edits those
-    // locally and they are already POSTed on every turn. Only `spec` and its
-    // approval stamp are authoritative from the server, so merge rather than
-    // replace, or a slider pinned mid-run would be clobbered on completion.
-    const updatedContract: DesignContract = {
-      ...(targetThread.designContract ?? { standing: {}, pinnedParams: {} }),
-      spec: contract.spec,
-      specApprovedAt: contract.specApprovedAt,
+    // The client owns standing constraints and pins; since the spec left the
+    // contract, the server's copy carries nothing authoritative, so it is not
+    // merged.
+    const updatedContract: DesignContract = targetThread.designContract ?? {
+      standing: {},
+      pinnedParams: {},
     };
 
     const updatedThreads = threads.map((t) =>

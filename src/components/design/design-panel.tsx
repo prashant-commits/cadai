@@ -146,28 +146,7 @@ export function DesignPanel() {
           
           {openSections.intent && (
             <div className="p-3 border-t border-slate-800 space-y-3">
-              {contract?.spec ? (
-                <div className="space-y-3">
-                  {contract.spec.components && contract.spec.components.length > 0 && (
-                    <div className="space-y-1">
-                      <h5 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Parts</h5>
-                      <ul className="text-xs text-slate-300 space-y-1 list-disc list-inside">
-                        {contract.spec.components.map((p: any, i: number) => <li key={i}>{p.description}</li>)}
-                      </ul>
-                    </div>
-                  )}
-                  {contract.spec.assumptions && contract.spec.assumptions.length > 0 && (
-                    <div className="space-y-1">
-                      <h5 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Assumptions</h5>
-                      <ul className="text-xs text-amber-200/80 space-y-1 list-disc list-inside">
-                        {contract.spec.assumptions.map((a: any, i: number) => <li key={i}>{a.field}: {a.value} - {a.rationale}</li>)}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <p className="text-xs text-slate-500 italic">No approved design intent yet.</p>
-              )}
+              <p className="text-xs text-slate-500 italic">No approved design intent yet.</p>
             </div>
           )}
         </section>

@@ -6,7 +6,7 @@ import type { AgentStateType } from './designer/state';
 import { routeAfterDesignerCheck } from './designer/graph';
 import { contentText } from './message-text';
 
-function nextStep(node: string, state: AgentStateType, _model = ''): string | null {
+function nextStep(node: string, state: AgentStateType): string | null {
   switch (node) {
     case 'START':
       return 'designerNode';
@@ -71,8 +71,6 @@ interface PendingRetry {
   reason: string;
 }
 
-export interface BridgeOptions {}
-
 /**
  * Translates langgraph's [mode, payload] tuples into the client's event union.
  *
@@ -85,7 +83,6 @@ export async function bridgeGraphStream(
   chunks: AsyncIterable<unknown>,
   runId: string,
   emit: (event: StreamEvent) => void,
-  _options?: BridgeOptions,
 ): Promise<void> {
   const box = {
     current: null as Section | null,
@@ -195,7 +192,7 @@ export async function bridgeGraphStream(
   }
 
   function applyRoute(node: string, partial: Record<string, unknown>) {
-    const next = nextStep(node, box.state, '');
+    const next = nextStep(node, box.state);
     const reason = oneLine(sanitizeText(routeReason(node, partial, box.state)));
     const revisits = Boolean(next && !GATES.has(next) && (runs.get(next) ?? 0) > 0 && next !== node);
     if (next && revisits) {

@@ -1,12 +1,7 @@
 import * as THREE from 'three';
 import { AssemblySpec } from '../lib/agent/assembly-spec';
-import type { DesignContract as DesignerContract, ModelInfo, SpecViolation } from './designer';
+import type { DesignContract, ModelInfo, SpecViolation } from './designer';
 export * from './designer';
-
-export interface DesignContract extends DesignerContract {
-  spec?: AssemblySpec;                // approved intent
-  specApprovedAt?: number;
-}
 
 import type { VariantId, VariantReview } from '../lib/agent/spec-variants';
 export type { VariantId, VariantReview };

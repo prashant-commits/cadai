@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { HumanMessage } from '@langchain/core/messages';
 import { createDesignerNode } from './node';
-import type { AgentStateType } from '../graph';
+import type { AgentStateType } from './state';
 import type { DesignerResult, DesignerEvent, ReviewFlag } from './types';
 
 function createMockState(overrides: Partial<AgentStateType> = {}): AgentStateType {

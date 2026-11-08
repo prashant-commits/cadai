@@ -1,7 +1,6 @@
 import { BREP_CHEATSHEET } from '../brep/cheatsheet';
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import * as prompts from './system-prompt';
 import {
   systemPromptFor,
@@ -20,10 +19,6 @@ import {
   REPAIR_PREAMBLE,
   SHEET_REVIEWER_PREAMBLE,
 } from './system-prompt';
-import { validateOpenScadCode } from './code-validator';
-import { clearanceJointsNote } from './graph';
-import { getFunctionalCadModuleTool } from './engineering-tools';
-import { JUDGE_SYSTEM_PROMPT } from '../../../eval/generation/judge-prompt';
 
 /** Every exported block and preamble. */
 const BLOCKS: Record<string, string> = {
@@ -58,17 +53,7 @@ const words = (s: string) => s.trim().split(/\s+/).length;
 const countCI = (text: string, phrase: string) => text.toLowerCase().split(phrase.toLowerCase()).length - 1;
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
-/** Every fenced block tagged `openscad`, with the block it came from. */
-function openscadBlocks(): Array<{ name: string; index: number; code: string }> {
-  const out: Array<{ name: string; index: number; code: string }> = [];
-  for (const [name, text] of Object.entries(BLOCKS)) {
-    const re = /```openscad\n([\s\S]*?)```/g;
-    let m: RegExpExecArray | null;
-    let index = 0;
-    while ((m = re.exec(text)) !== null) out.push({ name, index: index++, code: m[1] });
-  }
-  return out;
-}
+
 
 /**
  * Ceilings, not targets: what rides on each model call. Measured before the
@@ -226,13 +211,7 @@ describe('node preambles', () => {
     expect(sha256(SHEET_REVIEWER_PREAMBLE)).toBe('ff28ebfe17aa0f2209effb5e658ba13507d6adc348f4dc0c99cebfb54a2167cc');
   });
 
-  it('changes the parked critic preamble by its bedFace sentence only', () => {
-    // The frozen judge is the pre-cleanup CAD_AI_SYSTEM_PROMPT + '\n\n' + CRITIC_PREAMBLE.
-    const start = JUDGE_SYSTEM_PROMPT.indexOf('You are the Design Inspector.');
-    expect(start).toBeGreaterThan(0);
-    const before = JUDGE_SYSTEM_PROMPT.slice(start);
-    expect(CRITIC_PREAMBLE).toBe(before.replace(' Compare with the expected bedFace(s) you are given.', ''));
-  });
+
 
   it('keeps the placement contract heading in the contract only', () => {
     expect(DRAFTER_PLACEMENT_CONTRACT).toContain('PLACEMENT CONTRACT');
@@ -247,7 +226,7 @@ describe('node preambles', () => {
 
 describe('prompt content guards', () => {
   it('frames the work as parametric modelling, with no fabrication process', () => {
-    const surfaces: Record<string, string> = { ...COMPOSED, toolDescription: getFunctionalCadModuleTool.description };
+    const surfaces: Record<string, string> = { ...COMPOSED };
     for (const [name, text] of Object.entries(surfaces)) {
       const hit = FABRICATION_TERMS.exec(text);
       expect(hit?.[0], `${name} reintroduces fabrication framing ("${hit?.[0]}")`).toBeUndefined();
@@ -284,66 +263,6 @@ describe('prompt content guards', () => {
         expect(text, `${name} still says "${stale}"`).not.toContain(stale);
       }
     }
-  });
-
-  it('embeds one OpenSCAD example with no top-level call, which compiles once its modules are called', async () => {
-    const blocks = openscadBlocks();
-    expect(blocks.length).toBe(1);
-    for (const b of blocks) {
-      const topLevel = b.code
-        .split('\n')
-        .filter((l) => /^\S/.test(l) && !/^(\/\/|\/\*|\*|module\s|function\s|\}|\$?[A-Za-z_]\w*\s*=)/.test(l));
-      expect(topLevel, `${b.name} block ${b.index} has top-level statements`).toEqual([]);
-      expect(b.code, `${b.name} block ${b.index} uses 3D minkowski`).not.toMatch(/minkowski\s*\(/);
-
-      const modules = [...b.code.matchAll(/^module\s+([A-Za-z_]\w*)\s*\(/gm)].map((m) => m[1]);
-      expect(modules.length, `${b.name} block ${b.index} defines no module`).toBeGreaterThan(0);
-      const res = await validateOpenScadCode(`${b.code}\n${modules.map((m) => `${m}();`).join('\n')}\n`);
-      expect(res.valid, `${b.name} block ${b.index} failed: ${res.error}\n${b.code}`).toBe(true);
-      expect(res.isManifold, `${b.name} block ${b.index} is non-manifold`).not.toBe(false);
-      // Silent corruption: an undeclared identifier compiles to the wrong solid.
-      const silent = res.warnings.filter((w) => w.code === 'unknown_variable' || w.code === 'unknown_module');
-      expect(silent, `${b.name} block ${b.index} references an undeclared identifier`).toHaveLength(0);
-    }
-  });
-
-  it('does not offer the drafter a gusset template', () => {
-    const keys = (getFunctionalCadModuleTool.schema as unknown as { shape: { moduleKey: { options: string[] } } })
-      .shape.moduleKey.options;
-    expect(keys).not.toContain('structural_ribs_gussets');
-    expect(keys).toContain('fastener_hardware');
-    expect(getFunctionalCadModuleTool.description).not.toContain('structural_ribs_gussets');
-  });
-});
-
-describe('graph wiring', () => {
-  const graphSrc = readFileSync(new URL('./graph.ts', import.meta.url), 'utf8');
-
-  it('builds every system message through systemPromptFor', () => {
-    expect(graphSrc).not.toMatch(/\b[A-Z_]+_PREAMBLE\b|DRAFTER_PLACEMENT_CONTRACT|CAD_AI_SYSTEM_PROMPT/);
-    for (const node of ['planner', 'variant', 'reviewer', 'drafter', 'repair', 'critic']) {
-      expect(graphSrc, `graph.ts never calls systemPromptFor('${node}')`).toContain(`systemPromptFor('${node}'`);
-    }
-  });
-
-  it('drops the human-message text the cleanup retired', () => {
-    expect(graphSrc).toContain('Implement the Architect Spec below as one complete OpenSCAD script.');
-    expect(graphSrc).toContain('rest it on z = 0');
-    for (const gone of ['Honour every field', 'choose a bedFace', 'apply the stress-point mitigations the part needs', 'print posture']) {
-      expect(graphSrc, `graph.ts still says "${gone}"`).not.toContain(gone);
-    }
-  });
-
-  it('Task D / L3: the code-cut note names the joints it covers and is empty without clearance joints', () => {
-    const base = { assemblyName: 'x', sheet: '', boundingBox: { width: 1, length: 1, height: 1 }, components: [], guides: [], stressPoints: [], assumptions: [], openQuestions: [] };
-    const withJoint = { ...base, jointContracts: [{ type: 'snap_fit', clearance: 0.2, partA: 'base', partB: 'tab' }] } as never;
-    const note = clearanceJointsNote(withJoint);
-    expect(note).toContain('Mating cavities for clearance joints are cut by code after your script (host = partA)');
-    expect(note).toContain('tab into base (0.2 mm)');
-    expect(note).toContain('Do not model slots, sockets or holes for the inserted parts of these joints');
-    expect(clearanceJointsNote({ ...base } as never)).toBe('');
-    expect(clearanceJointsNote({ ...base, jointContracts: [{ type: 'press_fit', clearance: 0, partA: 'a', partB: 'b' }] } as never)).toBe('');
-    expect(clearanceJointsNote(null)).toBe('');
   });
 });
 

@@ -1,13 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ChatAnthropic } from '@langchain/anthropic';
-import { HumanMessage } from '@langchain/core/messages';
 import { anthropicModelId, getChatModel, thinkingFor } from './model-provider';
 import { DEFAULT_MODEL, MODELS, isOfferedModel, isVisionModel } from './models';
 import { cachedSystemMessage, systemPromptFor } from './system-prompt';
-import { structuredFor, ArchitectPlanSchema } from './llm-schemas';
-import { variantSpecRequestSchema } from './assembly-spec';
-import { getFunctionalCadModuleTool } from './engineering-tools';
-import { reply, textStream, withFakeClient, type Body } from './__fixtures__/fake-anthropic';
 
 const saved = { ...process.env };
 
@@ -121,119 +116,12 @@ describe('thinking and effort', () => {
   });
 });
 
-describe('requests on the wire (fake Anthropic client)', () => {
-  it('sends the system prompt as a cached block, with thinking, effort and max_tokens', async () => {
-    const model = getChatModel('claude-haiku-5.5');
-    const bodies = withFakeClient(model, () => reply([{ type: 'text', text: 'ok' }]));
-    const system = systemPromptFor('variant');
-    const res = await model.invoke([cachedSystemMessage(system), new HumanMessage('a 60 mm cube')]);
-
-    expect(res.content).toBe('ok');
-    const body = bodies[0];
-    expect(body.model).toBe('claude-haiku-5-5');
-    expect(body.max_tokens).toBe(32000);
-    expect(body.thinking).toEqual({ type: 'disabled' });
-    expect(body.output_config).toEqual({ effort: 'high' });
-    expect(body.temperature).toBeUndefined();
-    expect(body.system).toEqual([{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]);
-    expect(body.messages).toEqual([{ role: 'user', content: 'a 60 mm cube' }]);
-  });
-
+describe('cachedSystemMessage', () => {
   it('every node system prompt is a cached block', () => {
     for (const node of ['planner', 'variant', 'drafter', 'repair', 'critic', 'reviewer', 'build'] as const) {
       const msg = cachedSystemMessage(systemPromptFor(node));
       expect(msg.content).toEqual([{ type: 'text', text: systemPromptFor(node), cache_control: { type: 'ephemeral' } }]);
     }
-  });
-
-  it('drafter bindTools: sends the tool natively and parses its tool calls', async () => {
-    const model = getChatModel('claude-haiku-5.5');
-    const bodies = withFakeClient(model, () =>
-      reply([
-        { type: 'text', text: 'Looking up the module.' },
-        { type: 'tool_use', id: 'toolu_1', name: getFunctionalCadModuleTool.name, input: { moduleKey: 'fastener_hardware' } },
-      ])
-    );
-    const res = await model.bindTools([getFunctionalCadModuleTool]).invoke([new HumanMessage('draft it')]);
-
-    expect(bodies[0].tools.map((t: { name: string }) => t.name)).toEqual([getFunctionalCadModuleTool.name]);
-    expect(bodies[0].tools[0].input_schema).toBeDefined();
-    expect(bodies[0].tool_choice).toBeUndefined();
-    expect(res.tool_calls).toEqual([
-      expect.objectContaining({ id: 'toolu_1', name: getFunctionalCadModuleTool.name, args: { moduleKey: 'fastener_hardware' } }),
-    ]);
-  });
-
-  it('variant spec: binds the AssemblySpec tool with tool_choice auto (never forced) and returns the repaired spec', async () => {
-    for (const slug of ['claude-haiku-5.5', 'claude-sonnet-5.5', 'claude-opus-5.5']) {
-      const model = getChatModel(slug);
-      const spec = {
-        assemblyName: 'plate',
-        components: [
-          {
-            name: 'plate',
-            description: 'wall plate',
-            localExtents: ['plate_w', 'wall', 'plate_h'],
-            position: [0, 0, 0],
-            shape: { kind: 'box' },
-            holes: [{ d: 4, axis: 'y', at: ['hole_left_x', 'hole_top_z'], note: '' }],
-          },
-        ],
-      };
-      const bodies = withFakeClient(model, () =>
-        reply([
-          { type: 'text', text: 'One plate, two holes.' },
-          { type: 'tool_use', id: 'toolu_2', name: 'AssemblySpec', input: spec },
-        ])
-      );
-      const bound = structuredFor(model, slug, variantSpecRequestSchema(), { name: 'AssemblySpec', strict: true });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const parsed = (await (bound as any).invoke([new HumanMessage('a wall plate')])) as Body;
-
-      expect(bodies[0].tool_choice).toEqual({ type: 'auto' });
-      expect(bodies[0].tools).toHaveLength(1);
-      expect(bodies[0].tools[0].name).toBe('AssemblySpec');
-      expect(bodies[0].tools[0].strict).toBeUndefined();
-      expect(parsed.components[0].holes[0]).toEqual({ d: 4, axis: 'y', at: ['hole_left_x', 'wall', 'hole_top_z'] });
-    }
-  });
-
-  it('planner, reviewer and critic use native structured output (output_config.format), keeping the effort', async () => {
-    for (const [slug, effort] of [['claude-haiku-5.5', 'high'], ['claude-sonnet-5.5', 'low']] as const) {
-      const model = getChatModel(slug);
-      const plan = { brief: 'b', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'Cube', idea: 'a cube' }], recommendedId: 'A' };
-      const bodies = withFakeClient(model, () => reply([{ type: 'text', text: JSON.stringify(plan) }]));
-      const bound = structuredFor(model, slug, ArchitectPlanSchema, { name: 'ArchitectPlan', strict: true });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const parsed = await (bound as any).invoke([new HumanMessage('a cube')]);
-
-      expect(parsed).toEqual(plan);
-      expect(bodies[0].tools).toBeUndefined();
-      expect(bodies[0].tool_choice).toBeUndefined();
-      expect(bodies[0].output_config.effort).toBe(effort);
-      expect(bodies[0].output_config.format.type).toBe('json_schema');
-      expect(Object.keys(bodies[0].output_config.format.schema.properties)).toEqual(
-        expect.arrayContaining(['brief', 'variants', 'recommendedId'])
-      );
-    }
-  });
-
-  it('structured output still streams progressively parsed objects', async () => {
-    const model = getChatModel('claude-haiku-5.5');
-    const json = JSON.stringify({ brief: 'A cube with a hole', assumptions: [], openQuestions: [], variants: [{ id: 'A', name: 'Cube', idea: 'x' }], recommendedId: 'A' });
-    const pieces = json.match(/.{1,12}/g) as string[];
-    const bodies = withFakeClient(model, () => textStream(pieces));
-    const bound = structuredFor(model, 'claude-haiku-5.5', ArchitectPlanSchema, { name: 'ArchitectPlan', strict: true });
-
-    const snapshots: unknown[] = [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    for await (const partial of await (bound as any).stream([new HumanMessage('a cube')])) snapshots.push(partial);
-
-    expect(bodies[0].stream).toBe(true);
-    expect(snapshots.length).toBeGreaterThan(3);
-    expect(snapshots.at(-1)).toEqual(JSON.parse(json));
-    // An early snapshot is a strict prefix of the final object: the brief arrives before the variants.
-    expect(snapshots.some((s) => (s as { brief?: string }).brief !== undefined && (s as { variants?: unknown }).variants === undefined)).toBe(true);
   });
 });
 

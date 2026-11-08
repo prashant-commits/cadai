@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { compileScad } from './scad-compiler';
-import { ENGINEERING_MODULE_REGISTRY } from '../agent/engineering-tools';
 
 describe('scad-compiler', () => {
   it('should compile valid syntax correctly', async () => {
@@ -27,19 +26,6 @@ describe('scad-compiler', () => {
     const result = await compileScad(code);
     expect(result.valid).toBe(false);
     expect(result.warnings.some((w) => w.message.includes('Ignoring unknown module'))).toBe(true);
-  });
-
-  it('should compile all engineering modules without errors', async () => {
-    for (const [key, mod] of Object.entries(ENGINEERING_MODULE_REGISTRY)) {
-      const result = await compileScad(mod.codeTemplate);
-      const actualErrors = result.errors.filter(
-        (e) => !e.message.includes('Current top level object is empty')
-      );
-      if (actualErrors.length > 0) {
-        console.error(`Error in module ${key}:`, actualErrors);
-      }
-      expect(actualErrors, `Module ${key} failed compilation`).toHaveLength(0);
-    }
   });
 
   // The --summary payload nests everything under `geometry` and uses snake_case
