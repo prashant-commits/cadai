@@ -290,7 +290,8 @@ describe('POST /api/chat lifecycle', () => {
     await db.query(`INSERT INTO threads(id, owner_key) VALUES ($1, $2)`, [threadId, owner.key]);
     await db.query(
       `INSERT INTO designs(thread_id, version, parent_version, origin, base_request, body, prelude_version, summary)
-       VALUES ($1, 1, null, 'designer', 'make box', 'box = Box(10, 10, 10)', '1', 'Initial Box')`,
+       VALUES ($1, 1, null, 'designer', 'make box', 'box = Box(10, 10, 10)', '1', 'Initial Box'),
+              ($1, 2, 1,    'designer', 'make box', 'box = Box(10, 10, 20)', '1', 'Taller Box')`,
       [threadId]
     );
 
@@ -309,13 +310,13 @@ describe('POST /api/chat lifecycle', () => {
     const callInput = runDesignerMock.mock.calls[0][0];
     expect(callInput.priorScript).toBe('box = Box(10, 10, 10)');
 
-    // Verify committed v2 has parentVersion: 1
-    const v2Res = await db.query(
-      `SELECT version, parent_version FROM designs WHERE thread_id = $1 AND version = 2`,
+    // Verify committed v3 has parentVersion: 1
+    const v3Res = await db.query(
+      `SELECT version, parent_version FROM designs WHERE thread_id = $1 AND version = 3`,
       [threadId]
     );
-    expect(v2Res.rows).toHaveLength(1);
-    expect(Number(v2Res.rows[0].parent_version)).toBe(1);
+    expect(v3Res.rows).toHaveLength(1);
+    expect(Number(v3Res.rows[0].parent_version)).toBe(1);
   });
 
   it('an attachment through the chat route reaches the designer', async () => {

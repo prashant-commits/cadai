@@ -58,13 +58,19 @@ export async function runInTxGuard<T>(fn: () => Promise<T>): Promise<T> {
   });
 }
 
+export const txRetryState = {
+  retryCount: 0,
+  maxAttempts: 3,
+};
+
 export async function withTxRetry<T>(fn: () => Promise<T>): Promise<T> {
-  const MAX_ATTEMPTS = 3;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  const maxAttempts = txRetryState.maxAttempts;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       return await fn();
     } catch (err: unknown) {
-      if ((err as { code?: string })?.code === '40P01' && attempt < MAX_ATTEMPTS) {
+      if ((err as { code?: string })?.code === '40P01' && attempt < maxAttempts) {
+        txRetryState.retryCount++;
         continue;
       }
       throw err;

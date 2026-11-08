@@ -9,6 +9,7 @@ import {
   reapOnce,
   sweepOnce,
   shouldStartLoop,
+  startLoop,
   stopLoop,
 } from './loop';
 
@@ -324,5 +325,78 @@ describe('Reaper and sweep loop', () => {
     );
     expect(pending2.rows).toHaveLength(0);
     expect(deletedKeys).toContain(objKey);
+  });
+
+  it('register() with VITEST set does not create __cadaiReaper', async () => {
+    const origRuntime = process.env.NEXT_RUNTIME;
+    const origVitest = process.env.VITEST;
+    try {
+      process.env.NEXT_RUNTIME = 'nodejs';
+      process.env.VITEST = 'true';
+      delete globalThis.__cadaiReaper;
+      await register();
+      expect(globalThis.__cadaiReaper).toBeUndefined();
+    } finally {
+      stopLoop();
+      if (origRuntime !== undefined) process.env.NEXT_RUNTIME = origRuntime;
+      else delete process.env.NEXT_RUNTIME;
+      if (origVitest !== undefined) process.env.VITEST = origVitest;
+      else delete process.env.VITEST;
+    }
+  });
+
+  it('with CADAI_DB=postgres and an injected db, startLoop does not call bootSweep', async () => {
+    const origDb = process.env.CADAI_DB;
+    const bootSweepSpy = vi.spyOn(loop, 'bootSweep').mockResolvedValue(0 as never);
+    try {
+      process.env.CADAI_DB = 'postgres';
+      delete globalThis.__cadaiReaper;
+      const fakeDb = {} as never;
+      const fakeStore = {} as never;
+      await startLoop({ db: fakeDb, store: fakeStore });
+      expect(bootSweepSpy).not.toHaveBeenCalled();
+    } finally {
+      stopLoop();
+      bootSweepSpy.mockRestore();
+      if (origDb !== undefined) process.env.CADAI_DB = origDb;
+      else delete process.env.CADAI_DB;
+    }
+  });
+
+  it('timers: advancing 60 s calls reapOnce, 10 min calls sweepOnce, timers unrefd', async () => {
+    vi.useFakeTimers();
+    const origDb = process.env.CADAI_DB;
+    const reapSpy = vi.spyOn(loop, 'reapOnce').mockResolvedValue([] as never);
+    const sweepSpy = vi.spyOn(loop, 'sweepOnce').mockResolvedValue(undefined as never);
+    try {
+      process.env.CADAI_DB = 'postgres';
+      delete globalThis.__cadaiReaper;
+      const fakeDb = {} as never;
+      const fakeStore = {} as never;
+      const handle = await startLoop({ db: fakeDb, store: fakeStore });
+
+      expect(handle.reapTimer?.hasRef()).toBe(false);
+      expect(handle.sweepTimer?.hasRef()).toBe(false);
+
+      expect(reapSpy).not.toHaveBeenCalled();
+      expect(sweepSpy).not.toHaveBeenCalled();
+
+      // Advance 60s
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(reapSpy).toHaveBeenCalledTimes(1);
+      expect(sweepSpy).not.toHaveBeenCalled();
+
+      // Advance to 10 min total (another 540_000 ms)
+      await vi.advanceTimersByTimeAsync(540_000);
+      expect(reapSpy).toHaveBeenCalledTimes(10);
+      expect(sweepSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      stopLoop();
+      reapSpy.mockRestore();
+      sweepSpy.mockRestore();
+      vi.useRealTimers();
+      if (origDb !== undefined) process.env.CADAI_DB = origDb;
+      else delete process.env.CADAI_DB;
+    }
   });
 });

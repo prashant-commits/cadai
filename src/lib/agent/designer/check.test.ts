@@ -217,8 +217,12 @@ describe('designerCheck', () => {
     expect(result.outcome).toBeDefined();
     expect(result.outcome?.replyKind).toBe('error');
     expect(result.outcome?.replyMarkdown.startsWith(FAILED_CHECKS)).toBe(true);
+    expect(result.outcome?.replyMarkdown).toContain('`isolated`');
     expect(result.outcome?.design).toBeDefined();
     expect(result.outcome?.design?.flags).toContain('failed_checks');
+    expect(result.outcome?.design?.stl).toContain('facet normal');
+    expect(result.outcome?.design?.step).toBe('STEP-DATA');
+    expect(result.outcome?.design?.body).toBe(toBody(state.currentCode));
   });
 
   it('check fails twice without a mesh → error reply, no version', async () => {

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, vi, afterEach, afterAll } from 'vitest';
 import * as crypto from 'crypto';
 import { NextRequest } from 'next/server';
 import { getDb, closeDb, type Db } from '@/lib/db/db';
@@ -58,6 +58,10 @@ const reqCancel = (runId: string, cookie?: string) =>
   );
 
 describe('Runs API routes', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   afterAll(async () => {
     await closeDb();
   });
@@ -234,6 +238,175 @@ describe('Runs API routes', () => {
       .map((l) => JSON.parse(l.trim().slice(6)));
 
     expect(tailEvents.length).toBeGreaterThanOrEqual(2);
+    expect(tailEvents.at(-1)?.t).toBe('end');
+    expect(tailEvents.at(-1)?.status).toBe('done');
+  });
+
+  it('cancel on locally owned run is abort-only and completed wins', async () => {
+    const db = getDb();
+    const owner = makeOwner();
+    const { threadId, runId } = await createTestRun(db, owner.key);
+
+    const outcome: RunOutcome = {
+      replyKind: 'result',
+      replyMarkdown: 'Done Box with Design',
+      userKind: 'request',
+      design: {
+        parentVersion: null,
+        origin: 'designer',
+        baseRequest: 'box',
+        edits: [],
+        body: 'box = Box(10, 10, 10)',
+        preludeVersion: '1',
+        summary: 'Box',
+        facts: null,
+        flags: [],
+      },
+      costUsd: 0.05,
+      wallMs: 100,
+      turns: 1,
+    };
+
+    function makeLatch() {
+      let resolve: () => void;
+      const promise = new Promise<void>((r) => {
+        resolve = r;
+      });
+      return {
+        wait: () => promise,
+        open: () => resolve(),
+      };
+    }
+
+    const entered = makeLatch();
+    const release = makeLatch();
+
+    const streamPromise = (async () => {
+      const sseRes = streamRun({
+        runId,
+        threadId,
+        ownerKey: owner.key,
+        deadlineAt: Date.now() + 900_000,
+        invoke: async () =>
+          (async function* () {
+            yield ['values', { outcome }];
+            entered.open();
+            await release.wait();
+          })(),
+      });
+      return sseRes.text();
+    })();
+
+    // Wait until generator has yielded values with outcome
+    await entered.wait();
+
+    // Call cancel route: must return 202
+    const cancelRes = await reqCancel(runId, owner.cookie);
+    expect(cancelRes.status).toBe(202);
+
+    // Release generator latch
+    release.open();
+
+    const text = await streamPromise;
+    const events = text
+      .split('\n\n')
+      .filter((l) => l.trim().startsWith('data: '))
+      .map((l) => JSON.parse(l.trim().slice(6)));
+
+    const endEvent = events.at(-1);
+    expect(endEvent).toMatchObject({
+      t: 'end',
+      status: 'done',
+    });
+
+    const run = await DbRunStore.get(db, runId);
+    expect(run?.status).toBe('done');
+    expect(run?.designVersion).toBe(1);
+
+    const designs = await db.query(`SELECT version FROM designs WHERE thread_id = $1`, [threadId]);
+    expect(designs.rows).toHaveLength(1);
+    expect(Number(designs.rows[0].version)).toBe(1);
+  });
+
+  it('events tail: commit lands after status was read as running and before drain → last event is end', async () => {
+    const db = getDb();
+    const owner = makeOwner();
+    const { runId } = await createTestRun(db, owner.key);
+
+    let getCalls = 0;
+    const origGet = DbRunStore.getForOwner;
+
+    vi.spyOn(DbRunStore, 'getForOwner').mockImplementation(async (...args) => {
+      getCalls++;
+      const res = await origGet(...args);
+      if (getCalls === 2 && res?.status === 'running') {
+        // Commit after status was read as running and before drain
+        await db.transaction((q) =>
+          DbRunStore.commit(q, runId, {
+            replyKind: 'result',
+            replyMarkdown: 'Done Box',
+            userKind: 'request',
+            costUsd: 0.01,
+            wallMs: 100,
+            turns: 1,
+          })
+        );
+      }
+      return res;
+    });
+
+    const tailRes = await reqEvents(runId, '?after=0', owner.cookie);
+    expect(tailRes.status).toBe(200);
+
+    const tailText = await tailRes.text();
+    const tailEvents = tailText
+      .split('\n\n')
+      .filter((l) => l.trim().startsWith('data: '))
+      .map((l) => JSON.parse(l.trim().slice(6)));
+
+    expect(tailEvents.length).toBeGreaterThanOrEqual(1);
+    expect(tailEvents.at(-1)?.t).toBe('end');
+    expect(tailEvents.at(-1)?.status).toBe('done');
+  });
+
+  it('events tail: commit lands after drain but before next status read → tail loops once more and delivers end', async () => {
+    const db = getDb();
+    const owner = makeOwner();
+    const { runId } = await createTestRun(db, owner.key);
+
+    let drainCalls = 0;
+    const origEventsSince = DbRunStore.eventsSince;
+
+    vi.spyOn(DbRunStore, 'eventsSince').mockImplementation(async (...args) => {
+      drainCalls++;
+      if (drainCalls === 1) {
+        // First drain returns empty, then commit lands before next status read
+        const res = await origEventsSince(...args);
+        await db.transaction((q) =>
+          DbRunStore.commit(q, runId, {
+            replyKind: 'result',
+            replyMarkdown: 'Done Box',
+            userKind: 'request',
+            costUsd: 0.01,
+            wallMs: 100,
+            turns: 1,
+          })
+        );
+        return res;
+      }
+      return origEventsSince(...args);
+    });
+
+    const tailRes = await reqEvents(runId, '?after=0', owner.cookie);
+    expect(tailRes.status).toBe(200);
+
+    const tailText = await tailRes.text();
+    const tailEvents = tailText
+      .split('\n\n')
+      .filter((l) => l.trim().startsWith('data: '))
+      .map((l) => JSON.parse(l.trim().slice(6)));
+
+    expect(tailEvents.length).toBeGreaterThanOrEqual(1);
     expect(tailEvents.at(-1)?.t).toBe('end');
     expect(tailEvents.at(-1)?.status).toBe('done');
   });

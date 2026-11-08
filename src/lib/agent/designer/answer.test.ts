@@ -103,6 +103,31 @@ describe('designerAnswer', () => {
     expect(makeFence('code with ````nested````')).toBe('`````');
   });
 
+  it('invokes the model with nostream tag', async () => {
+    let capturedConfig: { tags?: string[] } | undefined;
+    const fakeChatModel = {
+      withStructuredOutput: () => ({
+        withConfig: (config: { tags?: string[] }) => {
+          capturedConfig = config;
+          return {
+            invoke: async () => ({
+              parsed: { answer: 'Safe answer' },
+              raw: { response_metadata: { stop_reason: 'stop' } },
+            }),
+          };
+        },
+      }),
+    };
+
+    const answerNode = createDesignerAnswer({
+      getChatModel: () => fakeChatModel,
+    });
+
+    const state = createMockState();
+    await answerNode(state);
+    expect(capturedConfig?.tags).toEqual(['nostream']);
+  });
+
   it('defaultAnswer frames base body with longer fences when body has backticks', async () => {
     let capturedMessage = '';
     const fakeChatModel = {

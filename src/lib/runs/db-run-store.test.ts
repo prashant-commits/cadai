@@ -541,6 +541,65 @@ describe('DbRunStore', () => {
     expect(countDesigns).toBe(4);
   });
 
+  it('thread with v1..v3: start with viewingVersion 1 uses v1 not latest', async () => {
+    const db = getDb();
+    const threadId = crypto.randomUUID();
+    const ownerKey = `owner_${crypto.randomUUID()}`;
+
+    await db.query(`INSERT INTO threads(id, owner_key) VALUES ($1, $2)`, [threadId, ownerKey]);
+    await db.query(
+      `INSERT INTO designs(thread_id, version, parent_version, origin, base_request, edits, body, prelude_version, summary)
+       VALUES ($1, 1, null, 'designer', 'make box 1', '[]'::jsonb, 'w = 10  # [0:100] W\nh = 10', 'p1', 'v1'),
+              ($1, 2, 1,    'designer', 'make box 2', '[]'::jsonb, 'w = 20  # [0:100] W\nh = 20', 'p1', 'v2'),
+              ($1, 3, 2,    'designer', 'make box 3', '[]'::jsonb, 'w = 30  # [0:100] W\nh = 30', 'p1', 'v3')`,
+      [threadId]
+    );
+
+    // Case A: start without pins gives run.base_version === 1
+    const resA = await db.transaction(async (q) => {
+      return DbRunStore.start(q, makeStartInput({
+        threadId,
+        ownerKey,
+        viewingVersion: 1,
+      }));
+    });
+    expect(resA.replay).toBe(false);
+    if (resA.replay) throw new Error('Expected replay=false');
+    expect(resA.baseVersion).toBe(1);
+
+    const runA = await DbRunStore.get(db, resA.runId);
+    expect(runA?.baseVersion).toBe(1);
+
+    // Commit runA to free active_run_id
+    await db.transaction(async (q) => {
+      await DbRunStore.commit(q, resA.runId, {
+        replyKind: 'result',
+        replyMarkdown: 'Done A',
+        userKind: 'request',
+        costUsd: 0,
+        wallMs: 0,
+        turns: 1,
+      });
+    });
+
+    // Case B: with pins, user_edit version has parent_version === 1 and body derived from v1
+    const resB = await db.transaction(async (q) => {
+      return DbRunStore.start(q, makeStartInput({
+        threadId,
+        ownerKey,
+        viewingVersion: 1,
+        pinnedParams: { w: 15 },
+      }));
+    });
+    expect(resB.replay).toBe(false);
+    if (resB.replay) throw new Error('Expected replay=false');
+    expect(resB.baseVersion).toBe(4);
+
+    const v4 = (await db.query(`SELECT * FROM designs WHERE thread_id = $1 AND version = 4`, [threadId])).rows[0];
+    expect(Number(v4.parent_version)).toBe(1);
+    expect(v4.body).toBe('w = 15  # [0:100] W\nh = 10');
+  });
+
   it('start sets the title once', async () => {
     const db = getDb();
     const threadId = crypto.randomUUID();

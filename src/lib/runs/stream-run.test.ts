@@ -151,6 +151,108 @@ describe('streamRun', () => {
     expect(run?.designVersion).toBe(1);
   });
 
+  it('completed wins: generator yields values with outcome, calls abortRun, then throws AbortError', async () => {
+    const db = getDb();
+    const owner = makeOwner();
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+
+    const outcome: RunOutcome = {
+      replyKind: 'result',
+      replyMarkdown: 'Completed successfully',
+      userKind: 'request',
+      design: {
+        parentVersion: null,
+        origin: 'designer',
+        baseRequest: 'box',
+        edits: [],
+        body: 'box = Box(10, 10, 10)',
+        preludeVersion: '1',
+        summary: 'Box',
+        facts: null,
+        flags: [],
+      },
+      costUsd: 0.05,
+      wallMs: 100,
+      turns: 1,
+    };
+
+    const res = streamRun({
+      runId,
+      threadId,
+      ownerKey: owner.key,
+      deadlineAt,
+      invoke: async (signal) =>
+        (async function* () {
+          yield ['values', { outcome }];
+          expect(abortRun(runId)).toBe(true);
+          expect(signal.aborted).toBe(true);
+          throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+        })(),
+    });
+
+    const events = await readAllEvents(res);
+    const endEvent = events.at(-1) as { t: string; status: string; designVersion?: number };
+    expect(endEvent).toMatchObject({
+      t: 'end',
+      status: 'done',
+    });
+    expect(endEvent.designVersion).toBe(1);
+
+    const run = await DbRunStore.get(db, runId);
+    expect(run?.status).toBe('done');
+    expect(run?.designVersion).toBe(1);
+  });
+
+  it('completed wins: generator yields values with outcome, then throws a non-abort error', async () => {
+    const db = getDb();
+    const owner = makeOwner();
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+
+    const outcome: RunOutcome = {
+      replyKind: 'result',
+      replyMarkdown: 'Completed successfully',
+      userKind: 'request',
+      design: {
+        parentVersion: null,
+        origin: 'designer',
+        baseRequest: 'box',
+        edits: [],
+        body: 'box = Box(10, 10, 10)',
+        preludeVersion: '1',
+        summary: 'Box',
+        facts: null,
+        flags: [],
+      },
+      costUsd: 0.05,
+      wallMs: 100,
+      turns: 1,
+    };
+
+    const res = streamRun({
+      runId,
+      threadId,
+      ownerKey: owner.key,
+      deadlineAt,
+      invoke: async () =>
+        (async function* () {
+          yield ['values', { outcome }];
+          throw new Error('Graph non-abort crash');
+        })(),
+    });
+
+    const events = await readAllEvents(res);
+    const endEvent = events.at(-1) as { t: string; status: string; designVersion?: number };
+    expect(endEvent).toMatchObject({
+      t: 'end',
+      status: 'done',
+    });
+    expect(endEvent.designVersion).toBe(1);
+
+    const run = await DbRunStore.get(db, runId);
+    expect(run?.status).toBe('done');
+    expect(run?.designVersion).toBe(1);
+  });
+
   it('a silent designer call outlives the stale threshold', async () => {
     process.env.CADAI_HEARTBEAT_MS = '50';
     process.env.CADAI_STALE_MS = '300';
@@ -202,6 +304,7 @@ describe('streamRun', () => {
 
   it('the heartbeat stops when streamRun exits after a thrown commit', async () => {
     process.env.CADAI_COMMIT_RETRY_MS = '100';
+    process.env.CADAI_HEARTBEAT_MS = '20';
 
     const db = getDb();
     const owner = makeOwner();
@@ -240,12 +343,259 @@ describe('streamRun', () => {
         })(),
     });
 
-    await readAllEvents(res);
+    const events = await readAllEvents(res);
     const countAtClose = heartbeatCount;
+    expect(countAtClose).toBeGreaterThan(0);
 
-    // Wait 200ms and verify heartbeat is no longer called
-    await new Promise((r) => setTimeout(r, 200));
+    // Wait 100ms and verify heartbeat is no longer called
+    await new Promise((r) => setTimeout(r, 100));
     expect(heartbeatCount).toBe(countAtClose);
+
+    const last = events.at(-1) as { t: string; status: string; reply: { markdown: string } };
+    expect(last).toMatchObject({
+      t: 'end',
+      status: 'failed',
+      reply: { markdown: SAVE_FAILED },
+    });
+
+    const run = await DbRunStore.get(db, runId);
+    expect(run?.status).toBe('failed');
+    expect(run?.error).toEqual({ code: 'internal' });
+  });
+
+  it('commit retries exhausted terminates with internal and gives SAVE_FAILED', async () => {
+    process.env.CADAI_COMMIT_RETRY_MS = '50';
+
+    const db = getDb();
+    const owner = makeOwner();
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+
+    const fakeStore = {
+      ...DbRunStore,
+      commit: async () => {
+        throw new Error('Permanent commit failure');
+      },
+    };
+
+    const outcome: RunOutcome = {
+      replyKind: 'result',
+      replyMarkdown: 'Outcome',
+      userKind: 'request',
+      costUsd: 0.01,
+      wallMs: 10,
+      turns: 1,
+    };
+
+    const res = streamRun({
+      runId,
+      threadId,
+      ownerKey: owner.key,
+      deadlineAt,
+      deps: { store: fakeStore as typeof DbRunStore },
+      invoke: async () =>
+        (async function* () {
+          yield ['values', { outcome }];
+        })(),
+    });
+
+    const events = await readAllEvents(res);
+    const last = events.at(-1) as { t: string; status: string; reply: { markdown: string } };
+    expect(last).toMatchObject({
+      t: 'end',
+      status: 'failed',
+      reply: { markdown: SAVE_FAILED },
+    });
+
+    const run = await DbRunStore.get(db, runId);
+    expect(run?.status).toBe('failed');
+    expect(run?.error).toEqual({ code: 'internal' });
+  });
+
+  it('commit and terminate both throw, and eventsSince throws too → unstored SAVE_FAILED fallback', async () => {
+    process.env.CADAI_COMMIT_RETRY_MS = '50';
+
+    const db = getDb();
+    const owner = makeOwner();
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+
+    const fakeStore = {
+      ...DbRunStore,
+      commit: async () => {
+        throw new Error('Forced commit failure');
+      },
+      terminate: async () => {
+        throw new Error('Forced terminate failure');
+      },
+      eventsSince: async () => {
+        throw new Error('Forced eventsSince failure');
+      },
+    };
+
+    const outcome: RunOutcome = {
+      replyKind: 'result',
+      replyMarkdown: 'Outcome',
+      userKind: 'request',
+      costUsd: 0.01,
+      wallMs: 10,
+      turns: 1,
+    };
+
+    const res = streamRun({
+      runId,
+      threadId,
+      ownerKey: owner.key,
+      deadlineAt,
+      deps: { store: fakeStore as typeof DbRunStore },
+      invoke: async () =>
+        (async function* () {
+          yield ['values', { outcome }];
+        })(),
+    });
+
+    const events = await readAllEvents(res);
+    const endEvents = events.filter((e) => e.t === 'end');
+    expect(endEvents).toHaveLength(1);
+    expect(endEvents[0]).toMatchObject({
+      t: 'end',
+      status: 'failed',
+      reply: { markdown: SAVE_FAILED },
+    });
+  });
+
+  it('heartbeat errors never end the run', async () => {
+    process.env.CADAI_HEARTBEAT_MS = '20';
+
+    const db = getDb();
+    const owner = makeOwner();
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+
+    const fakeStore = {
+      ...DbRunStore,
+      heartbeat: async () => {
+        throw new Error('Transient heartbeat failure');
+      },
+    };
+
+    const outcome: RunOutcome = {
+      replyKind: 'result',
+      replyMarkdown: 'Completed successfully',
+      userKind: 'request',
+      costUsd: 0.01,
+      wallMs: 150,
+      turns: 1,
+    };
+
+    let signalAborted = false;
+
+    const res = streamRun({
+      runId,
+      threadId,
+      ownerKey: owner.key,
+      deadlineAt,
+      deps: { store: fakeStore as typeof DbRunStore },
+      invoke: async (signal) =>
+        (async function* () {
+          await new Promise((r) => setTimeout(r, 150));
+          signalAborted = signal.aborted;
+          yield ['values', { outcome }];
+        })(),
+    });
+
+    const events = await readAllEvents(res);
+    expect(signalAborted).toBe(false);
+    expect(events.at(-1)).toMatchObject({
+      t: 'end',
+      status: 'done',
+    });
+
+    const run = await DbRunStore.get(db, runId);
+    expect(run?.status).toBe('done');
+  });
+
+  it('append returning 0 aborts the graph within one tick and replays winners end', async () => {
+    const db = getDb();
+    const owner = makeOwner();
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+
+    let signalAborted = false;
+
+    const res = streamRun({
+      runId,
+      threadId,
+      ownerKey: owner.key,
+      deadlineAt,
+      invoke: async (signal) =>
+        (async function* () {
+          // Wait for first event (run) to be processed
+          await new Promise((r) => setTimeout(r, 30));
+
+          // Terminate the run from outside
+          await db.transaction((q) =>
+            DbRunStore.terminate(q, runId, 'cancelled', 'cancelled')
+          );
+
+          // Yield a delta so append is called and returns 0
+          yield ['custom', { t: 'delta', text: 'hello' }];
+
+          // Wait a tick for append to process and abort
+          await new Promise((r) => setTimeout(r, 30));
+          signalAborted = signal.aborted;
+        })(),
+    });
+
+    const events = await readAllEvents(res);
+    expect(signalAborted).toBe(true);
+    expect(events.at(-1)).toMatchObject({
+      t: 'end',
+      status: 'cancelled',
+      reply: { kind: 'cancelled', markdown: STOPPED },
+    });
+  });
+
+  it('heartbeat writes accumulated running cost total to database', async () => {
+    process.env.CADAI_HEARTBEAT_MS = '20';
+
+    const db = getDb();
+    const owner = makeOwner();
+    const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+
+    const outcome: RunOutcome = {
+      replyKind: 'result',
+      replyMarkdown: 'Finished',
+      userKind: 'request',
+      costUsd: 0.042,
+      wallMs: 100,
+      turns: 1,
+    };
+
+    let observedCostUsd: number | null = null;
+    let observedStatus: string | null = null;
+
+    const res = streamRun({
+      runId,
+      threadId,
+      ownerKey: owner.key,
+      deadlineAt,
+      invoke: async () =>
+        (async function* () {
+          // Emit cost event
+          yield ['custom', { t: 'cost', usd: 0.042 }];
+
+          // Wait for two heartbeats (~50ms)
+          await new Promise((r) => setTimeout(r, 60));
+
+          // Read while run is still running
+          const row = (await db.query(`SELECT status, cost_usd FROM runs WHERE id = $1`, [runId])).rows[0];
+          observedStatus = String(row.status);
+          observedCostUsd = Number(row.cost_usd);
+
+          yield ['values', { outcome }];
+        })(),
+    });
+
+    await readAllEvents(res);
+    expect(observedStatus).toBe('running');
+    expect(observedCostUsd).toBeCloseTo(0.042, 3);
   });
 
   it('commit throws, then succeeds on retry', async () => {

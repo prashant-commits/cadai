@@ -110,6 +110,20 @@ describe('run-input', () => {
     expect(loaded.baseRequest).toBe('second base request');
     expect(loaded.baseEdits).toEqual(['v2 edit 1', 'v2 edit 2']);
 
+    // Verify loadRunInput with baseVersion = 1 returns v1's body, request and edits when v2 exists
+    const loadedV1 = await loadRunInput(
+      db,
+      ownerA,
+      threadId,
+      1,
+      [],
+      { objectStore }
+    );
+    expect(loadedV1.baseVersion).toBe(1);
+    expect(loadedV1.baseBody).toBe('body v1');
+    expect(loadedV1.baseRequest).toBe('first base request');
+    expect(loadedV1.baseEdits).toEqual(['v1 edit']);
+
     // Verify attachment round-tripped bytes in order
     expect(loaded.attachments).toEqual([
       {

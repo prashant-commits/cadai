@@ -95,6 +95,12 @@ describe('designerTriage', () => {
     expect(opts.temperature).toBeUndefined();
     expect(opts.tool_choice).toBeUndefined();
     expect(recorded.tags).toContain('nostream');
+
+    const msgs = recorded.invokedWith as Array<{ content: string }>;
+    expect(msgs).toHaveLength(2);
+    expect(msgs[1].content).toBe('make it 20 mm taller');
+    const schema = recorded.schema as { properties: { label: { enum: string[] } } };
+    expect(schema.properties.label.enum).toEqual(['edit', 'new', 'question']);
   });
 
   it('classifier: "add a cable hole" → edit', async () => {

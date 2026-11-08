@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, afterAll } from 'vitest';
 import * as crypto from 'crypto';
 import { createPgDb } from '@/lib/db/pg';
 import { migrate } from '@/lib/db/migrate';
@@ -12,7 +12,7 @@ import {
   type CommitPlan,
 } from '@/lib/persist/types';
 import { STOPPED } from '@/lib/persist/phrases';
-import type { Db } from '@/lib/db/db';
+import { txRetryState, type Db } from '@/lib/db/db';
 import type { Pool } from 'pg';
 
 function latch(): { promise: Promise<void>; open: () => void } {
@@ -43,6 +43,11 @@ describe('DbRunStore (Postgres concurrency)', () => {
 
   afterAll(async () => {
     await db.close();
+  });
+
+  afterEach(() => {
+    txRetryState.retryCount = 0;
+    txRetryState.maxAttempts = 3;
   });
 
   const makeStartInput = (overrides?: Partial<StartInput>): StartInput => ({
@@ -875,5 +880,142 @@ describe('DbRunStore (Postgres concurrency)', () => {
 
     const runsRes = await db.query(`SELECT * FROM runs WHERE thread_id = $1`, [threadId]);
     expect(runsRes.rows).toHaveLength(0);
+  });
+
+  it('lock-order probe: commit locks threads before runs', async () => {
+    txRetryState.maxAttempts = 1;
+    txRetryState.retryCount = 0;
+
+    const threadId = crypto.randomUUID();
+    const ownerKey = `owner_${crypto.randomUUID()}`;
+    const runId = `run_${crypto.randomUUID()}`;
+
+    await db.query(`INSERT INTO threads(id, owner_key, active_run_id) VALUES ($1, $2, $3)`, [threadId, ownerKey, runId]);
+    await db.query(
+      `INSERT INTO runs(id, thread_id, status, deadline_at) VALUES ($1, $2, 'running', now() + interval '15 minutes')`,
+      [runId, threadId]
+    );
+
+    // 1. tx1 holds SELECT ... FROM threads WHERE id=$t FOR UPDATE
+    const client1 = await db.pool.connect();
+    await client1.query('BEGIN');
+    await client1.query(`SELECT id FROM threads WHERE id = $1 FOR UPDATE`, [threadId]);
+
+    // 2. Start commit on tx2. It must block.
+    const commitPlan: CommitPlan = {
+      replyKind: 'result',
+      replyMarkdown: 'Done',
+      userKind: 'request',
+      costUsd: 0.01,
+      wallMs: 10,
+      turns: 1,
+    };
+    const tx2 = db.transaction((q) => DbRunStore.commit(q, runId, commitPlan));
+    expect(await isPending(tx2, 200)).toBe(true);
+
+    // 3. While tx2 is blocked, tx3 runs SELECT ... FROM runs WHERE id=$r FOR UPDATE NOWAIT.
+    // It must succeed, proving commit took no runs lock before blocking on the thread.
+    const client3 = await db.pool.connect();
+    try {
+      await client3.query('BEGIN');
+      const r3 = await client3.query(`SELECT id FROM runs WHERE id = $1 FOR UPDATE NOWAIT`, [runId]);
+      expect(r3.rows).toHaveLength(1);
+      await client3.query('COMMIT');
+    } finally {
+      client3.release();
+    }
+
+    // Release tx1 so tx2 can finish
+    await client1.query('ROLLBACK');
+    client1.release();
+
+    const res = await tx2;
+    expect(res.committed).toBe(true);
+    expect(txRetryState.retryCount).toBe(0);
+  });
+
+  it('lock-order probe: terminate locks threads before runs', async () => {
+    txRetryState.maxAttempts = 1;
+    txRetryState.retryCount = 0;
+
+    const threadId = crypto.randomUUID();
+    const ownerKey = `owner_${crypto.randomUUID()}`;
+    const runId = `run_${crypto.randomUUID()}`;
+
+    await db.query(`INSERT INTO threads(id, owner_key, active_run_id) VALUES ($1, $2, $3)`, [threadId, ownerKey, runId]);
+    await db.query(
+      `INSERT INTO runs(id, thread_id, status, deadline_at) VALUES ($1, $2, 'running', now() + interval '15 minutes')`,
+      [runId, threadId]
+    );
+
+    // 1. tx1 holds SELECT ... FROM threads WHERE id=$t FOR UPDATE
+    const client1 = await db.pool.connect();
+    await client1.query('BEGIN');
+    await client1.query(`SELECT id FROM threads WHERE id = $1 FOR UPDATE`, [threadId]);
+
+    // 2. Start terminate on tx2. It must block.
+    const tx2 = db.transaction((q) => DbRunStore.terminate(q, runId, 'cancelled', 'cancelled'));
+    expect(await isPending(tx2, 200)).toBe(true);
+
+    // 3. While tx2 is blocked, tx3 runs SELECT ... FROM runs WHERE id=$r FOR UPDATE NOWAIT.
+    const client3 = await db.pool.connect();
+    try {
+      await client3.query('BEGIN');
+      const r3 = await client3.query(`SELECT id FROM runs WHERE id = $1 FOR UPDATE NOWAIT`, [runId]);
+      expect(r3.rows).toHaveLength(1);
+      await client3.query('COMMIT');
+    } finally {
+      client3.release();
+    }
+
+    await client1.query('ROLLBACK');
+    client1.release();
+
+    const res = await tx2;
+    expect(res.ended).toBe(true);
+    expect(txRetryState.retryCount).toBe(0);
+  });
+
+  it('lock-order probe: reap locks threads before runs', async () => {
+    txRetryState.maxAttempts = 1;
+    txRetryState.retryCount = 0;
+
+    const threadId = crypto.randomUUID();
+    const ownerKey = `owner_${crypto.randomUUID()}`;
+    const runId = `run_${crypto.randomUUID()}`;
+
+    await db.query(`INSERT INTO threads(id, owner_key, active_run_id) VALUES ($1, $2, $3)`, [threadId, ownerKey, runId]);
+    await db.query(
+      `INSERT INTO runs(id, thread_id, status, deadline_at, heartbeat_at)
+       VALUES ($1, $2, 'running', now() + interval '15 minutes', now() - interval '200 seconds')`,
+      [runId, threadId]
+    );
+
+    // 1. tx1 holds SELECT ... FROM threads WHERE id=$t FOR UPDATE
+    const client1 = await db.pool.connect();
+    await client1.query('BEGIN');
+    await client1.query(`SELECT id FROM threads WHERE id = $1 FOR UPDATE`, [threadId]);
+
+    // 2. Start reap on tx2. It must block.
+    const tx2 = db.transaction((q) => DbRunStore.reap(q, runId));
+    expect(await isPending(tx2, 200)).toBe(true);
+
+    // 3. While tx2 is blocked, tx3 runs SELECT ... FROM runs WHERE id=$r FOR UPDATE NOWAIT.
+    const client3 = await db.pool.connect();
+    try {
+      await client3.query('BEGIN');
+      const r3 = await client3.query(`SELECT id FROM runs WHERE id = $1 FOR UPDATE NOWAIT`, [runId]);
+      expect(r3.rows).toHaveLength(1);
+      await client3.query('COMMIT');
+    } finally {
+      client3.release();
+    }
+
+    await client1.query('ROLLBACK');
+    client1.release();
+
+    const res = await tx2;
+    expect(res).toBe(true);
+    expect(txRetryState.retryCount).toBe(0);
   });
 });
