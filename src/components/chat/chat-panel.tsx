@@ -5,11 +5,10 @@ import { useAppStore } from '@/store/app-store';
 import { MessageBubble } from './message-bubble';
 import { ChatInput } from './chat-input';
 import { ThreadDrawer } from './thread-drawer';
-import { readStream, streamMessagePatch } from '@/lib/stream-reader';
+import { readStream } from '@/lib/stream-reader';
 import { serializeTranscript } from '@/lib/agent/transcript';
 import { freezeStreamingMessages } from '@/lib/chat/chat-messages';
-import { compileModel } from '@/lib/engine/build123d-client';
-import { parseStlToGeometry } from '@/lib/engine/geometry-utils';
+import { applyStreamResult } from './apply-stream-result';
 import { ChatMessage } from '@/types';
 import {
   FolderKanban,
@@ -33,10 +32,6 @@ export function ChatPanel() {
     createNewThread,
     renameThread,
     initializeFromStorage,
-    setCode,
-    setCompileResult,
-    setThreadContract,
-    setCompileStatus,
     updateMessage,
   } = useAppStore();
 
@@ -113,36 +108,7 @@ export function ChatPanel() {
         updateMessage(messageId, { transcript: serializeTranscript(state.nodes) }, targetThreadId);
       },
       onDone: async (state) => {
-        updateMessage(messageId, streamMessagePatch(state), targetThreadId);
-
-        if (state.error) {
-          setIsGenerating(false);
-          setGeneratingThreadId(null);
-          return;
-        }
-
-        if (state.designContract) setThreadContract(state.designContract, targetThreadId);
-
-        if (state.code) {
-          setCode(state.code, targetThreadId);
-          if (state.stl && state.stl.includes('facet normal')) {
-            const { geometry, modelInfo } = parseStlToGeometry(state.stl);
-            setCompileResult(
-              { success: true, stlContent: state.stl, geometry, modelInfo, compileTimeMs: 0, step: state.step, language: state.language },
-              targetThreadId
-            );
-          } else {
-            if (useAppStore.getState().activeThreadId === targetThreadId) setCompileStatus('compiling');
-            const res = await compileModel(state.code);
-            if (state.step && !res.step) res.step = state.step;
-            setCompileResult(res, targetThreadId);
-          }
-        } else if (state.step) {
-          setCompileResult({ success: true, step: state.step, language: state.language }, targetThreadId);
-        }
-
-        setIsGenerating(false);
-        setGeneratingThreadId(null);
+        await applyStreamResult(state, targetThreadId, messageId);
       },
     });
   };

@@ -30,7 +30,7 @@ const MAX_TEXT = 400;
 const CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F]/g;
 
 /** Object schema: Anthropic's json_schema format rejects a top-level array. */
-const ReviewerReplySchema = z.object({
+export const ReviewerReplySchema = z.object({
   flags: z
     .array(
       z.object({
