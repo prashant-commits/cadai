@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { NextRequest } from 'next/server';
 import { POST as compileRoutePOST } from '@/app/api/compile/route';
 import { runBrep } from '@/lib/engine/brep-runner';
+import { withGeneratedPrelude, toBody } from '@/lib/brep/prelude';
 import { useAppStore } from '@/store/app-store';
 import { DB_NAME } from '@/lib/storage/db-schema';
 import { __resetDbForTests } from '@/lib/storage/thread-storage';
@@ -268,7 +269,7 @@ describe('0c component test: designer run and slider recompilation', () => {
 
     // Mocked runBrep received the updated code
     expect(runBrep).toHaveBeenCalledTimes(1);
-    expect(runBrep).toHaveBeenCalledWith(compileBody.code);
+    expect(runBrep).toHaveBeenCalledWith(withGeneratedPrelude(toBody(compileBody.code)));
 
     // Store has new compile status and recompiled mesh reached stlContent/geometry
     const finalState = useAppStore.getState();

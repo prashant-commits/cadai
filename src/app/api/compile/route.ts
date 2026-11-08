@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { runBrep, type BrepPart } from '@/lib/engine/brep-runner';
 import { checkPythonScript, MAX_SCRIPT_BYTES } from '@/lib/brep/body-check';
+import { hasPreludeSentinel, withGeneratedPrelude, toBody, PRELUDE_VERSION, PRELUDES } from '@/lib/brep/prelude';
 import type { PartInfo, ResultArtifacts } from '@/lib/contract/run-contract';
 import { badRequest, compileStatus, errorBody, fromBrep } from '@/lib/contract/api-error';
 import { getArtifactStore } from '@/lib/runs/artifact-store';
@@ -70,15 +71,27 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(errorBody(badRequest('build123d code is required.')), { status: 400 });
     }
 
-    if (Buffer.byteLength(code, 'utf-8') > MAX_SCRIPT_BYTES) {
+    let finalCode: string;
+    if (hasPreludeSentinel(code)) {
+      finalCode = code;
+    } else {
+      const requestedVersion = (body as { preludeVersion?: unknown })?.preludeVersion;
+      const version = typeof requestedVersion === 'string' ? requestedVersion : (requestedVersion === undefined ? PRELUDE_VERSION : 'invalid');
+      if (!(version in PRELUDES)) {
+        return NextResponse.json(errorBody(badRequest('Unknown prelude version.')), { status: 400 });
+      }
+      finalCode = withGeneratedPrelude(toBody(code), version);
+    }
+
+    if (Buffer.byteLength(finalCode, 'utf-8') > MAX_SCRIPT_BYTES) {
       return NextResponse.json(errorBody(badRequest('script too large')), { status: 400 });
     }
 
-    const check = checkPythonScript(code);
+    const check = checkPythonScript(finalCode);
     if (!check.ok) {
       return NextResponse.json(errorBody(badRequest(check.reason)), { status: 400 });
     }
-    const result = await runBrep(code);
+    const result = await runBrep(finalCode);
     if (!result.ok) {
       const err = fromBrep(result.error || 'build123d compilation failed.', result.failure);
       return NextResponse.json(errorBody(err), { status: compileStatus(err) });
@@ -96,7 +109,7 @@ export async function POST(req: NextRequest) {
       compileTimeMs: result.ms,
       language: 'build123d',
       parts: partInfo(result.parts ?? []),
-      ...(await compileArtifacts(code, stlAscii, result.step)),
+      ...(await compileArtifacts(finalCode, stlAscii, result.step)),
     });
   } catch (err: unknown) {
     const wrapped = err instanceof SyntaxError

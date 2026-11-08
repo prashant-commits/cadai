@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
+import { withGeneratedPrelude, toBody } from '@/lib/brep/prelude';
 
 const runBrep = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/engine/brep-runner', () => ({ runBrep }));
@@ -51,7 +52,7 @@ describe('/api/compile build123d contract', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.language).toBe('build123d');
-    expect(runBrep).toHaveBeenCalledWith(B123D);
+    expect(runBrep).toHaveBeenCalledWith(withGeneratedPrelude(toBody(B123D)));
   });
 
   it('rejects language: openscad with 400 bad_request before calling runBrep', async () => {

@@ -1,5 +1,6 @@
 import { HumanMessage, ToolMessage, type AIMessage, type BaseMessage } from '@langchain/core/messages';
-import { checkPythonScript, GENERATED_PRELUDE, PRELUDE_SENTINEL } from '../../brep/body-check';
+import { checkPythonScript } from '../../brep/body-check';
+import { toBody, withGeneratedPrelude } from '../../brep/prelude';
 import { runBrep, type BrepResult } from '../../engine/brep-runner';
 import { unusableStop } from '../llm-schemas';
 import { DEFAULT_MODEL, isOfferedModel } from '../models';
@@ -78,7 +79,8 @@ export const runDesigner: RunDesignerFn = async (input: DesignerInput, deps: Des
   let reviewRejections = 0;
   let pendingRevision = false;
 
-  const startingScript = `${GENERATED_PRELUDE}\n\n${PRELUDE_SENTINEL}\n\n`;
+  const startingBody = isEdit ? toBody(input.priorScript as string) : '';
+  const startingScript = withGeneratedPrelude(startingBody);
   let lastScript = isEdit ? (input.priorScript as string) : startingScript;
   let lastOkScript = isEdit ? (input.priorScript as string) : '';
   let lastPassingScript = '';
@@ -96,7 +98,7 @@ export const runDesigner: RunDesignerFn = async (input: DesignerInput, deps: Des
 
   const conversation: BaseMessage[] = [
     cachedSystemMessage(DESIGNER_SYSTEM_PROMPT),
-    new HumanMessage({ content: [{ type: 'text', text: buildFirstUserMessage(input, startingScript) }] }),
+    new HumanMessage({ content: [{ type: 'text', text: buildFirstUserMessage(input, startingBody) }] }),
   ];
   let cachedMsg: BaseMessage | null = null;
 
@@ -189,7 +191,9 @@ export const runDesigner: RunDesignerFn = async (input: DesignerInput, deps: Des
         }
 
         if (call.name === 'run_script') {
-          const script = typeof call.args?.script === 'string' ? call.args.script : lastScript;
+          const rawArg = typeof call.args?.script === 'string' ? call.args.script : (lastScript ? toBody(lastScript) : '');
+          const body = toBody(rawArg);
+          const script = withGeneratedPrelude(body);
           runScriptCount++;
           rendersSinceRun = 0;
           lastScript = script;
@@ -283,7 +287,7 @@ export const runDesigner: RunDesignerFn = async (input: DesignerInput, deps: Des
           };
 
           const finishScript = typeof call.args?.script === 'string' ? call.args.script.trim() : '';
-          if (finishScript && finishScript !== lastScript.trim()) {
+          if (finishScript && toBody(finishScript).trim() !== toBody(lastScript).trim()) {
             reject('the script was modified in the finish call. Geometry changes must go through run_script and be checked with render before finishing.');
             continue;
           }

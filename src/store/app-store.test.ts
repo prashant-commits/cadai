@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { useAppStore } from './app-store';
 import { DB_NAME } from '@/lib/storage/db-schema';
 import { __resetDbForTests, loadAllThreads } from '@/lib/storage/thread-storage';
+import { PRELUDE_SENTINEL } from '@/lib/brep/prelude';
 
 function deleteDatabase(): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -231,6 +232,14 @@ describe('useAppStore thread scoping & progress isolation', () => {
 
       const { threads } = await loadAllThreads();
       expect(threads.some((t) => t.id === threadId)).toBe(false);
+    });
+
+    it('sliders parse the body only', () => {
+      const fullScript = `stray = 5  # [0:1:10] x\n\n${PRELUDE_SENTINEL}\n\nwidth = 10  # [1:1:20] w\nresult = Box(width, 10, 10)`;
+      useAppStore.getState().setCode(fullScript);
+      const params = useAppStore.getState().params;
+      expect(params.some((p) => p.name === 'width')).toBe(true);
+      expect(params.some((p) => p.name === 'stray')).toBe(false);
     });
   });
 });

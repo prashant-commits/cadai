@@ -14,6 +14,7 @@ import {
 } from '@/lib/storage/thread-storage';
 import { applyContract } from '@/lib/design/contract';
 import { parseParams } from '@/lib/design/parse-params';
+import { toBody } from '@/lib/brep/prelude';
 import { setParamValue } from '@/lib/design/write-params';
 import { compileModel } from '@/lib/engine/build123d-client';
 import { DEFAULT_MODEL } from '@/lib/agent/models';
@@ -126,7 +127,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeThreadId: active.id,
       messages: active.messages,
       code: initialCode,
-      params: parseParams(initialCode),
+      params: parseParams(toBody(initialCode)),
       stlContent: active.stlContent || null,
       modelInfo: active.modelInfo || null,
       step: active.step || null,
@@ -160,7 +161,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeThreadId: newThread.id,
       messages: newThread.messages,
       code: newThread.code,
-      params: parseParams(newThread.code),
+      params: parseParams(toBody(newThread.code)),
       geometry: null,
       stlContent: null,
       modelInfo: null,
@@ -184,7 +185,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeThreadId: target.id,
       messages: target.messages,
       code: initialCode,
-      params: parseParams(initialCode),
+      params: parseParams(toBody(initialCode)),
       geometry: null, // will recompile on mount/switch
       stlContent: target.stlContent || null,
       modelInfo: target.modelInfo || null,
@@ -215,7 +216,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeThreadId: newActive.id,
       messages: newActive.messages,
       code: initialCode,
-      params: parseParams(initialCode),
+      params: parseParams(toBody(initialCode)),
       geometry: null,
       stlContent: newActive.stlContent || null,
       modelInfo: newActive.modelInfo || null,
@@ -321,7 +322,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       } else {
         // User manual edit: do not apply contract. Instead, update pins to match hand-typed values.
-        const parsedParams = parseParams(code);
+        const parsedParams = parseParams(toBody(code));
         let contractUpdated = false;
         const newPinnedParams = { ...(newContract.pinnedParams || {}) };
 
@@ -339,7 +340,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
 
-    const currentParams = parseParams(finalCode);
+    const currentParams = parseParams(toBody(finalCode));
 
     const updatedThreads = threads.map((t) =>
       t.id === targetId ? { ...t, code: finalCode, designContract: newContract, updatedAt: Date.now() } : t
@@ -595,7 +596,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     set({
       code: DEFAULT_CODE,
-      params: parseParams(DEFAULT_CODE),
+      params: parseParams(toBody(DEFAULT_CODE)),
       contractDiff: null,
       geometry: null,
       stlContent: null,
