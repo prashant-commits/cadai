@@ -56,9 +56,9 @@ describe('toApiError', () => {
     expect(toApiError(Object.assign(new Error('Recursion limit of 25 reached'), { name: 'GraphRecursionError' })).code).toBe('internal');
   });
 
-  it('maps an OpenSCAD compile failure to compile_failed', () => {
-    const api = toApiError(compileFailed('Parser error in file /in.scad'));
-    expect(api).toMatchObject({ code: 'compile_failed', message: 'Parser error in file /in.scad' });
+  it('maps a compile failure to compile_failed', () => {
+    const api = toApiError(compileFailed('Parser error in file /in.py'));
+    expect(api).toMatchObject({ code: 'compile_failed', message: 'Parser error in file /in.py' });
   });
 
   it('classifies a runBrep error string as unreachable, service timeout, or script failure', () => {
@@ -92,15 +92,15 @@ describe('toApiError', () => {
     expect(api.message).not.toBe('Traceback (most recent call last):');
   });
 
-  it('uses the first OpenSCAD ERROR line, not the generic last line', () => {
+  it('uses the first ERROR line, not the generic last line', () => {
     const api = toApiError(compileFailed('ERROR: Parser error in line 3\nERROR: second\nERROR: third'));
     expect(api).toMatchObject({ code: 'compile_failed', message: 'ERROR: Parser error in line 3' });
     expect(api.detail).toContain('ERROR: second');
     expect(api.detail).toContain('ERROR: third');
-    const compiler = toApiError(compileFailed("ERROR: Parser error: syntax error in file /in.scad, line 2\nCan't parse file '/in.scad'!"));
-    expect(compiler.message).toBe('ERROR: Parser error: syntax error in file /in.scad, line 2');
+    const compiler = toApiError(compileFailed("ERROR: Parser error: syntax error in file /in.py, line 2\nCan't parse file '/in.py'!"));
+    expect(compiler.message).toBe('ERROR: Parser error: syntax error in file /in.py, line 2');
     expect(compiler.message).not.toContain("Can't parse");
-    expect(compiler.detail).toContain("Can't parse file '/in.scad'!");
+    expect(compiler.detail).toContain("Can't parse file '/in.py'!");
   });
 
   it('classifies provider timeouts, connection errors, and user aborts from class and code', () => {
@@ -139,7 +139,7 @@ describe('toApiError', () => {
     expect(sanitizeText('on 2026/11/07')).toBe('on 2026/11/07');
     expect(sanitizeText('see https://api.anthropic.com/v1/messages')).toBe('see https://api.anthropic.com/v1/messages');
     expect(sanitizeText('File "geo/cadai_geo/runner.py", line 3')).toContain('geo/cadai_geo/runner.py');
-    expect(sanitizeText('Parser error in file /in.scad, line 2')).toContain('/in.scad');
+    expect(sanitizeText('Parser error in file /in.py, line 2')).toContain('/in.py');
     expect(sanitizeText("open '/tmp/cadai/model.py'")).toBe("open '[path]'");
     expect(sanitizeText('at /home/claude/work/wt-r2/src/x.ts')).not.toMatch(/\/home\//);
     expect(sanitizeText('at /home/claude/work/wt-r2/src/x.ts')).toContain('[home]');
@@ -198,7 +198,7 @@ describe('toApiError', () => {
   });
 
   it('builds an ErrorBody whose error string matches apiError.message', () => {
-    const body = errorBody(compileFailed('OpenSCAD compilation failed.'));
+    const body = errorBody(compileFailed('The script did not compile.'));
     expect(body.error).toBe(body.apiError.message);
     expect(body.apiError.code).toBe('compile_failed');
   });

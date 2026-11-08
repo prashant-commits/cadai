@@ -26,8 +26,8 @@ export function anthropicModelId(slug: string): string {
 }
 
 /**
- * The concrete class, not BaseChatModel: the drafter and repair nodes call
- * bindTools(), which BaseChatModel declares as optional and so cannot be
+ * The concrete class, not BaseChatModel: the designer and reviewer nodes call
+ * methods like bindTools(), which BaseChatModel declares as optional and so cannot be
  * invoked without a cast.
  */
 export type CadChatModel = ChatAnthropic;
@@ -65,8 +65,8 @@ export function effortLevel(): EffortLevel {
 }
 
 /**
- * CADAI_BUILD_THINKING: `off` or `adaptive` for the code-writing build nodes
- * (brepBuild, architectBuild, fixCode). Unset or invalid: inherits CADAI_THINKING.
+ * CADAI_BUILD_THINKING: `off` or `adaptive` for code-writing nodes (designer).
+ * Unset or invalid: inherits CADAI_THINKING.
  */
 export function buildThinkingMode(): ThinkingMode {
   return envChoice('CADAI_BUILD_THINKING', THINKING_MODES, thinkingMode());
@@ -97,7 +97,7 @@ const MAX_TOKENS_THINKING_OFF = 32_000;
 const MAX_TOKENS_THINKING_ON = 64_000;
 
 /**
- * `build` is the code-writing nodes (brepBuild, architectBuild, fixCode), which read
+ * `build` is code-writing nodes (designer), which read
  * CADAI_BUILD_THINKING / CADAI_BUILD_EFFORT and inherit the global setting when those
  * are unset. Every other caller passes no role and gets the global setting.
  */

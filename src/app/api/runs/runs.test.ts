@@ -51,7 +51,7 @@ const graphOf = (chunks: unknown[]) => ({
       for (const c of chunks) yield c;
     })(),
 });
-const delta = (text: string) => ['custom', { t: 'delta', text, node: 'architectNode' }];
+const delta = (text: string) => ['custom', { t: 'delta', text, node: 'designerNode' }];
 const result = (summary: string) => ['custom', { t: 'result', summary, node: 'respondToUser' }];
 
 /** Graph that blocks until its signal aborts, like a long LLM call. */
@@ -372,15 +372,15 @@ describe('review fixes (routes)', () => {
 
 
   it('F11: a graph error event keeps its message on the failed RunInfo', async () => {
-    createAgent.mockReturnValue(graphOf([['custom', { t: 'error', message: 'OpenSCAD failed to compile part X', node: 'validateCode' }]]));
+    createAgent.mockReturnValue(graphOf([['custom', { t: 'error', message: 'The script failed to compile part X', node: 'designerNode' }]]));
     const events = parse(await (await startChat()).text());
     const err = events.find((e) => e.t === 'error')!;
-    expect(err.message).toBe('OpenSCAD failed to compile part X');
+    expect(err.message).toBe('The script failed to compile part X');
     expect(err.apiError).toMatchObject({
       code: 'internal',
       message: 'Something went wrong on the server.',
     });
-    expect(err.apiError.detail).toContain('OpenSCAD failed to compile part X');
+    expect(err.apiError.detail).toContain('The script failed to compile part X');
     const info = await getRunStore().get(events[0].runId);
     expect(info).toMatchObject({ status: 'failed', error: err.apiError });
   });

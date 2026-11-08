@@ -15,7 +15,7 @@ export interface ScadParam {
  *
  * These are modelling constraints, not fabrication settings. Nozzle diameter,
  * layer height, material and a support-free overhang limit used to live here
- * and fed straight into the Architect's and Drafter's prompts, where they
+ * and fed straight into generation prompts, where they
  * pulled the models into 3D-printing reasoning nobody had asked for: they
  * would size walls from a nozzle, re-orient parts to dodge an overhang, and
  * otherwise alter the requested geometry to satisfy a process this pipeline

@@ -27,7 +27,7 @@ export function AppHeader() {
               Agentic 3D
             </span>
           </div>
-          <p className="text-[11px] text-slate-400 font-mono">Parametric OpenSCAD & FDM Print Tuning</p>
+          <p className="text-[11px] text-slate-400 font-mono">Parametric build123d & FDM Print Tuning</p>
         </div>
       </div>
 
@@ -35,7 +35,7 @@ export function AppHeader() {
       <div className="hidden md:flex items-center gap-2 px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-xs">
         <Cpu className="w-3.5 h-3.5 text-slate-400" />
         <span className="text-slate-400">Engine:</span>
-        <span className="font-medium text-slate-200">OpenSCAD WASM</span>
+        <span className="font-medium text-slate-200">build123d</span>
         <span className="text-slate-600">•</span>
         <span className="text-slate-400">Units:</span>
         <span className="font-semibold text-cyan-400 font-mono">mm</span>

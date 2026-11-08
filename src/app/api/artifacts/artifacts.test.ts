@@ -26,7 +26,6 @@ describe('GET /api/artifacts/:id', () => {
     ['step', 'model/step'],
     ['svg', 'image/svg+xml'],
     ['png', 'image/png'],
-    ['scad', 'text/plain; charset=utf-8'],
     ['py', 'text/plain; charset=utf-8'],
   ] as const)('serves %s as %s with cache headers', async (kind, type) => {
     const ref = await getArtifactStore().put('r1', kind, `payload-${kind}`);

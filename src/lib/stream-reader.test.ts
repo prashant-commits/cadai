@@ -21,42 +21,42 @@ async function run(events: StreamEvent[]) {
 describe('readStream', () => {
   it('accumulates deltas into the open section', async () => {
     const { final } = await run([
-      { t: 'section', id: 'architectNode', label: 'Architect', state: 'open' },
+      { t: 'section', id: 'designerNode', label: 'designerNode', state: 'open' },
       { t: 'delta', text: 'Bounding box: ' },
       { t: 'delta', text: '62 x 40 x 18 mm' },
-      { t: 'section', id: 'architectNode', state: 'close', status: 'ok' },
+      { t: 'section', id: 'designerNode', state: 'close', status: 'ok' },
       { t: 'result', summary: 'Built it.' },
     ]);
     expect(final.nodes).toEqual([
-      { kind: 'section', id: 'architectNode', label: 'Architect', status: 'ok', body: 'Bounding box: 62 x 40 x 18 mm' },
+      { kind: 'section', id: 'designerNode', label: 'designerNode', status: 'ok', body: 'Bounding box: 62 x 40 x 18 mm' },
     ]);
     expect(final.summary).toBe('Built it.');
   });
 
   it('keeps later sections intact when a delta contains a comment marker', async () => {
     const { final } = await run([
-      { t: 'section', id: 'architectNode', label: 'Mechanical Architect', state: 'open' },
+      { t: 'section', id: 'designerNode', label: 'designerNode', state: 'open' },
       { t: 'delta', text: 'before <!-- notes --> after <!--/s--> tail' },
-      { t: 'section', id: 'architectNode', state: 'close', status: 'ok' },
-      { t: 'section', id: 'specIllustrator', label: 'Concept Sheets', state: 'open' },
+      { t: 'section', id: 'designerNode', state: 'close', status: 'ok' },
+      { t: 'section', id: 'designerCheck', label: 'designerCheck', state: 'open' },
       { t: 'delta', text: 'drawn' },
-      { t: 'section', id: 'specIllustrator', state: 'close', status: 'ok' },
+      { t: 'section', id: 'designerCheck', state: 'close', status: 'ok' },
     ]);
     const parsed = parseTranscript(serializeTranscript(final.nodes));
     expect(parsed.map((node) => node.id)).toEqual([
-      'architectNode',
-      'specIllustrator',
+      'designerNode',
+      'designerCheck',
     ]);
-    const architect = parsed[0];
-    if (architect.kind !== 'section') throw new Error('expected a section');
+    const designer = parsed[0];
+    if (designer.kind !== 'section') throw new Error('expected a section');
     // Stored as an entity. The browser renders it back as a literal `<!-- notes -->`.
-    expect(architect.body).toContain('&lt;!-- notes -->');
-    expect(architect.body).toContain('tail');
-    expect(architect.body).not.toContain('<!--');
-    const sheets = parsed[1];
-    if (sheets.kind !== 'section') throw new Error('expected a section');
-    expect(sheets.label).toBe('Concept Sheets');
-    expect(sheets.body).toBe('drawn');
+    expect(designer.body).toContain('&lt;!-- notes -->');
+    expect(designer.body).toContain('tail');
+    expect(designer.body).not.toContain('<!--');
+    const check = parsed[1];
+    if (check.kind !== 'section') throw new Error('expected a section');
+    expect(check.label).toBe('designerCheck');
+    expect(check.body).toBe('drawn');
   });
 
   it('emits an update per delta so the UI can render progressively', async () => {
@@ -111,7 +111,7 @@ describe('readStream', () => {
   });
 
   it('turns an error event into an error message instead of a blank complete', async () => {
-    const message = 'This paused run expired (no decision within 24 h). Send the request again.';
+    const message = 'The build ran out of time. Try a simpler request or send it again.';
     const { final } = await run([{ t: 'error', message }]);
     const patch = streamMessagePatch(final);
     expect(patch.status).toBe('error');

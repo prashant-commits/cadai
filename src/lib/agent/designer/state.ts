@@ -48,11 +48,11 @@ export const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => 'none',
   }),
-  pipeline: Annotation<'drafter' | 'architect' | 'designer' | null>({
+  pipeline: Annotation<'designer' | null>({
     reducer: (_, y) => y,
     default: () => null,
   }),
-  kernel: Annotation<'openscad' | 'brep' | null>({
+  kernel: Annotation<'brep' | null>({
     reducer: (_, y) => y,
     default: () => null,
   }),

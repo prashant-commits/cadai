@@ -15,7 +15,7 @@ export function CadModel({ geometry }: CadModelProps) {
   const { camera, controls } = useThree();
 
   // Compute bounding box, center offset, and dimensions
-  const { offset, maxDim, center } = useMemo(() => {
+  const { offset, maxDim } = useMemo(() => {
     geometry.computeVertexNormals();
     geometry.computeBoundingBox();
     const bbox = geometry.boundingBox || new THREE.Box3();
@@ -29,7 +29,6 @@ export function CadModel({ geometry }: CadModelProps) {
       // Offset so the model is centered on XY, and bottom rests on Z=0
       offset: [-c.x, -c.y, -bbox.min.z] as [number, number, number],
       maxDim: max,
-      center: c,
     };
   }, [geometry]);
 
@@ -54,14 +53,15 @@ export function CadModel({ geometry }: CadModelProps) {
     camera.position.set(distance * 0.85, distance * 0.85, distance * 1.1);
     camera.lookAt(0, targetY, 0);
 
-    if (controls && (controls as any).target) {
-      (controls as any).target.set(0, targetY, 0);
-      (controls as any).update();
+    const orbit = controls as unknown as { target?: THREE.Vector3; update?: () => void } | null;
+    if (orbit?.target) {
+      orbit.target.set(0, targetY, 0);
+      orbit.update?.();
     }
   }, [geometry, maxDim, camera, controls]);
 
   return (
-    // Rotate -90° around X so OpenSCAD's vertical Z-axis aligns with Three.js vertical Y-axis
+    // Rotate -90° around X so the CAD model's vertical Z-axis aligns with Three.js vertical Y-axis
     <group rotation={[-Math.PI / 2, 0, 0]}>
       <group position={offset}>
         {/* Solid Shaded Model Mesh */}

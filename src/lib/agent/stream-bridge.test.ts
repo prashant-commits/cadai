@@ -1,20 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { bridgeGraphStream } from './stream-bridge';
+import { bridgeGraphStream, NODE_LABELS } from './stream-bridge';
 import type { StreamEvent } from './stream-events';
 
 async function bridge(chunks: unknown[]) {
   const out: StreamEvent[] = [];
   await bridgeGraphStream((async function* () { yield* chunks; })(), 'run-1', (e) => out.push(e));
   return out;
-}
-
-function withAttempts(value: string | undefined, run: () => Promise<void>) {
-  const previous = process.env.CADAI_MAX_ATTEMPTS;
-  process.env.CADAI_MAX_ATTEMPTS = value;
-  return run().finally(() => {
-    if (previous === undefined) delete process.env.CADAI_MAX_ATTEMPTS;
-    else process.env.CADAI_MAX_ATTEMPTS = previous;
-  });
 }
 
 function opened(id: string, label: string, index: number, attempt = 1) {
@@ -43,16 +34,20 @@ function closed(id: string, attempt = 1, extra: Record<string, unknown> = {}) {
 }
 
 describe('bridgeGraphStream', () => {
-  it('opens a section on the first delta for a node and labels it', async () => {
-    const out = await bridge([['custom', { t: 'delta', text: 'hi', node: 'architectNode' }]]);
-    expect(out[0]).toEqual(opened('architectNode', 'Mechanical Architect', 0));
+  it('exports NODE_LABELS with only respondToUser', () => {
+    expect(NODE_LABELS).toEqual({ respondToUser: 'Result' });
+  });
+
+  it('opens a section on the first delta for a node and labels it with its fallback id', async () => {
+    const out = await bridge([['custom', { t: 'delta', text: 'hi', node: 'designerNode' }]]);
+    expect(out[0]).toEqual(opened('designerNode', 'designerNode', 0));
     expect(out[1]).toEqual({ t: 'delta', text: 'hi' });
   });
 
   it('does not reopen a section for a second delta from the same node', async () => {
     const out = await bridge([
-      ['custom', { t: 'delta', text: 'a', node: 'architectNode' }],
-      ['custom', { t: 'delta', text: 'b', node: 'architectNode' }],
+      ['custom', { t: 'delta', text: 'a', node: 'designerNode' }],
+      ['custom', { t: 'delta', text: 'b', node: 'designerNode' }],
     ]);
     // Exactly one OPEN. A trailing close is correct and is asserted separately.
     expect(out.filter((e) => e.t === 'section' && e.state === 'open')).toHaveLength(1);
@@ -60,34 +55,34 @@ describe('bridgeGraphStream', () => {
 
   it('closes the open section when a different node starts', async () => {
     const out = await bridge([
-      ['custom', { t: 'delta', text: 'a', node: 'architectNode' }],
-      ['custom', { t: 'delta', text: 'b', node: 'drafterNode' }],
+      ['custom', { t: 'delta', text: 'a', node: 'designerNode' }],
+      ['custom', { t: 'delta', text: 'b', node: 'designerCheck' }],
     ]);
-    expect(out[2]).toEqual(closed('architectNode'));
-    expect(out[3]).toEqual(opened('drafterNode', 'Parametric Drafter', 6));
+    expect(out[2]).toEqual(closed('designerNode'));
+    expect(out[3]).toEqual(opened('designerCheck', 'designerCheck', 1));
   });
 
   it('turns model token chunks into deltas under their own node', async () => {
     const out = await bridge([
-      ['messages', [{ content: 'Hel' }, { langgraph_node: 'drafterNode' }]],
-      ['messages', [{ content: 'lo' }, { langgraph_node: 'drafterNode' }]],
+      ['messages', [{ content: 'Hel' }, { langgraph_node: 'designerNode' }]],
+      ['messages', [{ content: 'lo' }, { langgraph_node: 'designerNode' }]],
     ]);
     expect(out.filter((e) => e.t === 'delta')).toEqual([{ t: 'delta', text: 'Hel' }, { t: 'delta', text: 'lo' }]);
   });
 
   it('streams the text blocks of content-block chunks (native Anthropic tool or thinking calls), not thinking or tool input', async () => {
     const out = await bridge([
-      ['messages', [{ content: [{ index: 0, type: 'thinking', thinking: 'secret' }] }, { langgraph_node: 'drafterNode' }]],
-      ['messages', [{ content: [{ index: 1, type: 'text', text: 'Hel' }] }, { langgraph_node: 'drafterNode' }]],
-      ['messages', [{ content: [{ index: 1, type: 'text', text: 'lo' }] }, { langgraph_node: 'drafterNode' }]],
-      ['messages', [{ content: [{ index: 2, type: 'input_json_delta', input: '{"a"' }] }, { langgraph_node: 'drafterNode' }]],
+      ['messages', [{ content: [{ index: 0, type: 'thinking', thinking: 'secret' }] }, { langgraph_node: 'designerNode' }]],
+      ['messages', [{ content: [{ index: 1, type: 'text', text: 'Hel' }] }, { langgraph_node: 'designerNode' }]],
+      ['messages', [{ content: [{ index: 1, type: 'text', text: 'lo' }] }, { langgraph_node: 'designerNode' }]],
+      ['messages', [{ content: [{ index: 2, type: 'input_json_delta', input: '{"a"' }] }, { langgraph_node: 'designerNode' }]],
     ]);
     expect(out.filter((e) => e.t === 'delta')).toEqual([{ t: 'delta', text: 'Hel' }, { t: 'delta', text: 'lo' }]);
   });
 
   it('passes a result event straight through and closes any open section', async () => {
     const out = await bridge([
-      ['custom', { t: 'delta', text: 'a', node: 'drafterNode' }],
+      ['custom', { t: 'delta', text: 'a', node: 'designerNode' }],
       ['custom', { t: 'result', summary: 'Built it.', node: 'respondToUser' }],
     ]);
     expect(out.at(-1)).toEqual({ t: 'result', summary: 'Built it.' });
@@ -100,230 +95,28 @@ describe('bridgeGraphStream', () => {
   });
 
   it('closes the trailing section when the stream ends', async () => {
-    const out = await bridge([['custom', { t: 'delta', text: 'a', node: 'drafterNode' }]]);
-    expect(out.at(-1)).toEqual(closed('drafterNode'));
+    const out = await bridge([['custom', { t: 'delta', text: 'a', node: 'designerNode' }]]);
+    expect(out.at(-1)).toEqual(closed('designerNode'));
     const close = out.at(-1) as { startedAt?: number; endedAt?: number; durationMs?: number };
     const open = out[0] as { startedAt: number };
     expect(close.endedAt).toBeGreaterThanOrEqual(open.startedAt);
     expect(close.durationMs).toBeGreaterThanOrEqual(0);
   });
 
-  it('drops raw messages-mode tokens from structured-output nodes', async () => {
-    const out = await bridge([
-      ['messages', [{ content: '{"assemblyName":' }, { langgraph_node: 'architectNode' }]],
-      ['custom', { t: 'delta', text: '**spec**', node: 'architectNode' }],
-    ]);
-    expect(out.filter((e) => e.t === 'delta')).toEqual([{ t: 'delta', text: '**spec**' }]);
-  });
-
-  it('drops raw @body tokens from architectBuild', async () => {
-    const out = await bridge([
-      ['messages', [{ content: '@body box\ncube([40, 40, 40]);\n@end' }, { langgraph_node: 'architectBuild' }]],
-    ]);
-    expect(out.filter((e) => e.t === 'delta')).toEqual([]);
-    expect(out.filter((e) => e.t === 'section')).toEqual([]);
-  });
-
-  it.each([
-    ['brepBuild', '@body box\nreturn Box(40, 40, 40)\n@end'],
-    ['validateBrep', '[Validation Report]\nValidation Result: Failed'],
-  ])('drops raw %s output', async (node, content) => {
-    const out = await bridge([['messages', [{ content }, { langgraph_node: node }]]]);
-    expect(out.filter((e) => e.t === 'delta')).toEqual([]);
-    expect(out.filter((e) => e.t === 'section')).toEqual([]);
-  });
-
-  it('closes failed with a one-line summary when the node update has an error-severity result', async () => {
-    const out = await bridge([
-      ['custom', { t: 'delta', text: 'checking', node: 'validateCode' }],
-      ['updates', {
-        validateCode: {
-          isValid: false,
-          failureKind: 'semantic',
-          attemptCount: 1,
-          maxAttempts: 1,
-          specViolations: [{ severity: 'error', message: 'lip clashes\nand more detail' }, { severity: 'warning', message: 'thin wall' }],
-        },
-      }],
-    ]);
-    const close = out.find((e) => e.t === 'section' && e.state === 'close');
-    expect(close).toMatchObject({
-      t: 'section',
-      id: 'validateCode',
-      state: 'close',
-      status: 'failed',
-      summary: 'lip clashes',
-      attempt: 1,
-    });
-  });
-
   it('closes the open section as failed when the stream throws', async () => {
     const out: StreamEvent[] = [];
     const chunks = (async function* () {
-      yield ['custom', { t: 'delta', text: 'a', node: 'drafterNode' }];
+      yield ['custom', { t: 'delta', text: 'a', node: 'designerNode' }];
       throw new Error('node exploded\nstack line');
     })();
     await expect(bridgeGraphStream(chunks, 'run-1', (e) => out.push(e))).rejects.toThrow('node exploded');
     expect(out.at(-1)).toMatchObject({
       t: 'section',
-      id: 'drafterNode',
+      id: 'designerNode',
       state: 'close',
       status: 'failed',
       summary: 'Something went wrong on the server.',
       attempt: 1,
-    });
-  });
-
-
-  it('closes an architect self-check as retrying and forwards the retry event', async () => {
-    const out = await bridge([
-      ['custom', { t: 'delta', text: 'planning', node: 'architectNode' }],
-      ['custom', {
-        t: 'retry',
-        step: 'architectNode',
-        attempt: 2,
-        maxAttempts: 3,
-        reason: 'spec is self-inconsistent',
-        node: 'architectNode',
-      }],
-      ['custom', { t: 'delta', text: 'again', node: 'architectNode' }],
-    ]);
-    expect(out[2]).toMatchObject({
-      t: 'section',
-      id: 'architectNode',
-      state: 'close',
-      status: 'retrying',
-      summary: 'spec is self-inconsistent',
-      attempt: 1,
-    });
-    expect(out[3]).toEqual({
-      t: 'retry',
-      step: 'architectNode',
-      attempt: 2,
-      maxAttempts: 3,
-      reason: 'spec is self-inconsistent',
-    });
-    expect(out[4]).toEqual(opened('architectNode', 'Mechanical Architect', 0, 2));
-    expect(out[5]).toEqual({ t: 'delta', text: 'again' });
-  });
-
-  it('does not retry a validation failure once the attempt budget is spent', async () => {
-    await withAttempts('1', async () => {
-      const out = await bridge([
-        ['updates', { architectNode: { pipeline: 'architect', kernel: 'openscad' } }],
-        ['updates', { architectBuild: { attemptCount: 1 } }],
-        ['updates', {
-          validateCode: {
-            isValid: false,
-            failureKind: 'semantic',
-            semanticFailures: 1,
-            specViolations: [{ severity: 'error', message: 'arm is short', kind: 'bbox' }],
-          },
-        }],
-        ['updates', { architectBuild: { attemptCount: 2 } }],
-      ]);
-      expect(out.filter((e) => e.t === 'retry')).toEqual([]);
-      expect(out.find((e) => e.t === 'section' && e.id === 'architectBuild' && e.state === 'close')).toMatchObject({
-        status: 'ok',
-        attempt: 1,
-      });
-      expect(out.find((e) => e.t === 'section' && e.id === 'validateCode' && e.state === 'close')).toMatchObject({
-        status: 'failed',
-        summary: 'arm is short',
-      });
-    });
-  });
-
-  it('closes an exhausted brep audit as failed and does not keep a pending retry', async () => {
-    await withAttempts('1', async () => {
-      const out = await bridge([
-        ['updates', { architectNode: { pipeline: 'architect', kernel: 'brep' } }],
-        ['updates', { brepBuild: { attemptCount: 1, buildFallbacks: 0 } }],
-        ['updates', {
-          validateBrep: {
-            isValid: false,
-            failureKind: 'semantic',
-            semanticFailures: 1,
-            specViolations: [{ severity: 'error', message: 'too thin', kind: 'bbox' }],
-          },
-        }],
-        ['updates', { brepBuild: { attemptCount: 2 } }],
-      ]);
-      expect(out.filter((e) => e.t === 'retry')).toEqual([]);
-      expect(out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'brepBuild')).toMatchObject({
-        status: 'ok',
-        attempt: 1,
-      });
-      expect(out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'validateBrep')).toMatchObject({
-        status: 'failed',
-        summary: 'too thin',
-      });
-    });
-  });
-
-
-  it('times a silent build from its task start and finish, and closes it before the next open', async () => {
-    await withAttempts('1', async () => {
-      const out: StreamEvent[] = [];
-      async function* gen() {
-        yield ['tasks', { id: 'b', name: 'brepBuild', input: { attemptCount: 0, pipeline: 'architect', kernel: 'brep' }, triggers: [] }];
-        yield ['updates', { brepBuild: { attemptCount: 1 } }];
-        yield ['tasks', { id: 'b', name: 'brepBuild', result: { attemptCount: 1 } }];
-        yield ['tasks', { id: 'v', name: 'validateBrep', input: { attemptCount: 1, pipeline: 'architect', kernel: 'brep' }, triggers: [] }];
-        await new Promise((resolve) => setTimeout(resolve, 300));
-        yield ['updates', {
-          validateBrep: {
-            isValid: false,
-            failureKind: 'semantic',
-            semanticFailures: 1,
-            specViolations: [{ severity: 'error', message: 'too thin', kind: 'bbox' }],
-          },
-        }];
-        yield ['tasks', { id: 'v', name: 'validateBrep', result: { isValid: false } }];
-      }
-      await bridgeGraphStream(gen(), 'run-1', (event) => out.push(event));
-      const brep = out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'brepBuild');
-      const validate = out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'validateBrep');
-      expect(brep).toMatchObject({ status: 'ok', attempt: 1, durationMs: expect.any(Number) });
-      expect(validate).toMatchObject({ durationMs: expect.any(Number) });
-      if (brep?.t === 'section' && brep.state === 'close' && validate?.t === 'section' && validate.state === 'close') {
-        expect(brep.durationMs).toBeLessThan(100);
-        expect(validate.durationMs).toBeGreaterThanOrEqual(250);
-      }
-      const brepCloseAt = out.findIndex((e) => e.t === 'section' && e.state === 'close' && e.id === 'brepBuild');
-      const validateOpenAt = out.findIndex((e) => e.t === 'section' && e.state === 'open' && e.id === 'validateBrep');
-      expect(brepCloseAt).toBeGreaterThanOrEqual(0);
-      expect(brepCloseAt).toBeLessThan(validateOpenAt);
-    });
-  });
-
-  it('does not emit a retry for the first fixCode run', async () => {
-    await withAttempts('3', async () => {
-      const out = await bridge([
-        ['updates', { architectNode: { pipeline: 'drafter', kernel: 'openscad' } }],
-        ['custom', { t: 'delta', text: 'x', node: 'drafterNode' }],
-        ['updates', { drafterNode: { attemptCount: 1 } }],
-        ['updates', {
-          validateCode: {
-            isValid: false,
-            failureKind: 'compile',
-            compileFailures: 1,
-            validation: { valid: false, errors: [{ severity: 'error', message: 'syntax' }] },
-          },
-        }],
-        ['custom', { t: 'delta', text: 'fix', node: 'fixCode' }],
-        ['updates', { fixCode: { attemptCount: 2 } }],
-        ['updates', { validateCode: { isValid: true, failureKind: 'none' } }],
-      ]);
-      expect(out.filter((e) => e.t === 'retry')).toEqual([]);
-      expect(out.find((e) => e.t === 'section' && e.state === 'open' && e.id === 'fixCode')).toMatchObject({ attempt: 1 });
-    });
-  });
-
-  it('closes a bypassed visual critic as skipped', async () => {
-    const out = await bridge([['updates', { visualCritic: {} }]]);
-    expect(out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'visualCritic')).toMatchObject({
-      status: 'skipped',
     });
   });
 
@@ -332,27 +125,10 @@ describe('bridgeGraphStream', () => {
     expect(out.filter((e) => e.t === 'section')).toEqual([]);
   });
 
-  it('keeps one architect section across parallel variant retries', async () => {
-    const out = await bridge([
-      ['custom', { t: 'delta', text: 'planning', node: 'architectNode' }],
-      ['custom', { t: 'retry', step: 'architectNode', attempt: 2, maxAttempts: 3, reason: 'schema', variantId: 'A', node: 'architectNode' }],
-      ['custom', { t: 'retry', step: 'architectNode', attempt: 3, maxAttempts: 3, reason: 'schema', variantId: 'B', node: 'architectNode' }],
-      ['custom', { t: 'retry', step: 'architectNode', attempt: 2, maxAttempts: 3, reason: 'schema', variantId: 'A', node: 'architectNode' }],
-    ]);
-    const opens = out.filter((e) => e.t === 'section' && e.state === 'open');
-    expect(opens).toHaveLength(1);
-    expect(opens[0]).toMatchObject({ id: 'architectNode', attempt: 1 });
-    expect(out.find((e) => e.t === 'section' && e.state === 'close')).toMatchObject({ id: 'architectNode', attempt: 1 });
-    const retries = out.filter((e) => e.t === 'retry');
-    expect(retries.map((e) => e.t === 'retry' ? e.variantId : '')).toEqual(['A', 'B', 'A']);
-    expect(retries.map((e) => e.t === 'retry' ? e.attempt : 0)).toEqual([2, 3, 2]);
-  });
-
-
   it('strips absolute paths from a thrown internal summary and keeps the original error', async () => {
     const out: StreamEvent[] = [];
     const chunks = (async function* () {
-      yield ['custom', { t: 'delta', text: 'a', node: 'drafterNode' }];
+      yield ['custom', { t: 'delta', text: 'a', node: 'designerNode' }];
       throw new Error("ENOENT: no such file or directory, open '/home/claude/work/wt-r2/.cadai/x.sqlite'");
     })();
     await expect(bridgeGraphStream(chunks, 'run-1', (event) => out.push(event))).rejects.toThrow(/ENOENT/);
@@ -372,7 +148,7 @@ describe('bridgeGraphStream', () => {
   it('keeps the original stream error when emitting the close throws', async () => {
     let calls = 0;
     const chunks = (async function* () {
-      yield ['custom', { t: 'delta', text: 'a', node: 'drafterNode' }];
+      yield ['custom', { t: 'delta', text: 'a', node: 'designerNode' }];
       throw new Error('node exploded');
     })();
     await expect(bridgeGraphStream(chunks, 'run-1', () => {
@@ -383,7 +159,7 @@ describe('bridgeGraphStream', () => {
 
   it('puts apiError on a custom error event and keeps message', async () => {
     const out = await bridge([
-      ['custom', { t: 'error', message: 'overloaded', node: 'architectNode' }],
+      ['custom', { t: 'error', message: 'overloaded', node: 'designerNode' }],
     ]);
     expect(out.at(-1)).toMatchObject({
       t: 'error',
@@ -392,48 +168,19 @@ describe('bridgeGraphStream', () => {
     });
   });
 
-
-  it('does not fail the architect section when the illustrator throws', async () => {
-    const out: StreamEvent[] = [];
-    const chunks = (async function* () {
-      yield ['tasks', { name: 'architectNode', input: {} }];
-      yield ['custom', { t: 'delta', text: 'brief', node: 'architectNode' }];
-      yield ['updates', { architectNode: { pipeline: 'architect' } }];
-      yield ['tasks', { name: 'architectNode', result: {} }];
-      yield ['tasks', { name: 'specIllustrator', input: {} }];
-      yield ['custom', { t: 'delta', text: 'sheet', node: 'specIllustrator' }];
-      throw new Error('render crashed at /home/claude/work/wt-r2/src/x.ts');
-    })();
-    await expect(bridgeGraphStream(chunks, 'run-1', (event) => out.push(event))).rejects.toThrow(/render crashed/);
-    const architect = out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'architectNode');
-    expect(architect).toMatchObject({ status: 'ok', attempt: 1 });
-    if (architect?.t === 'section' && architect.state === 'close') expect(architect.summary).toBeUndefined();
-    expect(out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'specIllustrator')).toMatchObject({
-      status: 'failed',
-      summary: 'Something went wrong on the server.',
-    });
-    const illustrator = out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'specIllustrator');
-    if (illustrator?.t === 'section' && illustrator.state === 'close') {
-      expect(illustrator.summary).not.toMatch(/render crashed/);
-      expect(illustrator.summary).not.toMatch(/\/home\//);
-    }
-  });
-
   it('closes an open section as skipped when the user aborts, without the abort text', async () => {
     const out: StreamEvent[] = [];
     const chunks = (async function* () {
-      yield ['tasks', { name: 'brepBuild', input: { attemptCount: 0, pipeline: 'architect', kernel: 'brep' } }];
-      yield ['updates', { brepBuild: { attemptCount: 1 } }];
-      yield ['tasks', { name: 'brepBuild', result: { attemptCount: 1 } }];
-      yield ['tasks', { name: 'validateBrep', input: { attemptCount: 1 } }];
+      yield ['custom', { t: 'delta', text: 'start', node: 'designerNode' }];
+      yield ['custom', { t: 'delta', text: 'check', node: 'designerCheck' }];
       throw Object.assign(new Error('This operation was aborted'), { name: 'AbortError' });
     })();
     await expect(bridgeGraphStream(chunks, 'run-1', (event) => out.push(event))).rejects.toThrow(/aborted/);
-    expect(out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'brepBuild')).toMatchObject({
+    expect(out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'designerNode')).toMatchObject({
       status: 'ok',
       attempt: 1,
     });
-    expect(out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'validateBrep')).toMatchObject({
+    expect(out.find((e) => e.t === 'section' && e.state === 'close' && e.id === 'designerCheck')).toMatchObject({
       status: 'skipped',
       summary: 'stopped',
     });
@@ -447,8 +194,8 @@ describe('bridgeGraphStream', () => {
   it('keeps model output out of a section summary and in apiError.detail only', async () => {
     const raw = 'Failed to parse. Text: {"secret model output": 1} /home/claude/work/wt-r2/a.ts';
     const out = await bridge([
-      ['custom', { t: 'delta', text: 'a', node: 'drafterNode' }],
-      ['custom', { t: 'error', message: raw, node: 'drafterNode' }],
+      ['custom', { t: 'delta', text: 'a', node: 'designerNode' }],
+      ['custom', { t: 'error', message: raw, node: 'designerNode' }],
     ]);
     const close = out.find((e) => e.t === 'section' && e.state === 'close');
     expect(close).toMatchObject({ status: 'failed', summary: 'Something went wrong on the server.' });

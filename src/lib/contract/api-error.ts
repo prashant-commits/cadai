@@ -27,7 +27,7 @@ export function badRequest(message: string): Error {
 }
 
 export function compileFailed(message: string): Error {
-  return named('OpenSCADCompileError', message);
+  return named('CompileError', message);
 }
 
 export function geometryFailed(message: string, opts?: { unreachable?: boolean }): Error {
@@ -82,7 +82,7 @@ export function sanitizeText(text: string): string {
   out = out.replace(/\/(?:home|Users)\/[^\s'")\]]+/g, '[home]');
   // Absolute paths only. The slash must start the text or follow whitespace, a
   // quote, or `(`, so `a/b/c`, dates, and URLs are left alone. One segment
-  // (`/in.scad`) is not a filesystem path and stays.
+  // (`/in.py`) is not a filesystem path and stays.
   out = out.replace(/(^|[\s"'`(])(?:\/(?:[\w.+@=-]+)){2,}/g, '$1[path]');
   return out;
 }
@@ -126,7 +126,7 @@ function lastLine(text: string): string {
   return lines[lines.length - 1] ?? '';
 }
 
-/** OpenSCAD's useful diagnostic is the first `ERROR:` line. The last line is the generic "Can't parse file". */
+/** A compiler's useful diagnostic is the first `ERROR:` line. The last line is the generic "Can't parse file". */
 function firstErrorLine(text: string): string {
   const lines = linesOf(text);
   return lines.find((line) => /^ERROR:/i.test(line)) ?? lines[0] ?? '';
@@ -193,7 +193,7 @@ function providerOverloaded(status: number | undefined, message: string): boolea
 }
 
 /**
- * `compile_failed` uses the first `ERROR:` line (OpenSCAD's real diagnostic).
+ * `compile_failed` uses the first `ERROR:` line.
  * `geometry_failed` keeps the last non-empty traceback line. Multi-line text,
  * or a line whose path was stripped, also fills `detail`.
  */
@@ -229,7 +229,7 @@ export function toApiError(err: unknown): ApiError {
   if (name === 'SyntaxError' && isJsonSyntax(message)) {
     return { code: 'bad_request', message: clip(sanitizeText(message), 300) || 'The request body is invalid.' };
   }
-  if (name === 'OpenSCADCompileError') return scriptError('compile_failed', message, 'OpenSCAD compilation failed.');
+  if (name === 'CompileError') return scriptError('compile_failed', message, 'The script did not compile.');
   if (name === 'GeometryServiceTimeout') {
     return withDetail(
       { code: 'geometry_unavailable', message: GEOMETRY_TIMEOUT, retryable: true },

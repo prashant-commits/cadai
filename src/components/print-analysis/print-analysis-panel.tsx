@@ -5,18 +5,14 @@ import { useAppStore } from '@/store/app-store';
 import { exportStl } from '@/lib/export/stl-exporter';
 import { export3mf } from '@/lib/export/threemf-exporter';
 import {
-  Printer,
   Download,
   Box,
   Layers,
   ShieldCheck,
   ShieldAlert,
-  PanelRightClose,
-  ChevronRight,
   Gauge,
   Sparkles,
   Sliders,
-  CheckCircle2,
 } from 'lucide-react';
 
 export function PrintAnalysisPanel() {
@@ -186,7 +182,7 @@ export function PrintAnalysisPanel() {
             <Box className="w-8 h-8 text-slate-700 animate-pulse" />
             <p className="text-slate-400 font-semibold">No Model Compiled</p>
             <p className="text-[11px] text-slate-600 font-sans leading-relaxed">
-              Describe a mechanical part in the chat or edit the OpenSCAD code to inspect print dimensions & export files.
+              Describe a mechanical part in the chat or edit the build123d code to inspect print dimensions & export files.
             </p>
           </div>
         )}

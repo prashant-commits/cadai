@@ -14,7 +14,7 @@ export function downloadFile(filename: string, content: string | Blob, mimeType 
 }
 
 /**
- * Exports current OpenSCAD STL content to a downloaded file.
+ * Exports the current STL content to a downloaded file.
  */
 export function exportStl(stlContent: string, filename = 'cadai_model.stl') {
   if (!stlContent) {

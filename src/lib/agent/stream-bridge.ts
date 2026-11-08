@@ -3,53 +3,12 @@ import { sanitizeText, toApiError } from '@/lib/contract/api-error';
 import type { StreamEvent } from './stream-events';
 import type { SectionStatus } from './transcript';
 import type { AgentStateType } from './designer/state';
-import { routeAfterDesignerCheck } from './designer/graph';
 import { contentText } from './message-text';
-
-function nextStep(node: string, state: AgentStateType): string | null {
-  switch (node) {
-    case 'START':
-      return 'designerNode';
-    case 'designerCheck':
-      return routeAfterDesignerCheck(state);
-    default:
-      return null;
-  }
-}
 
 /** Human labels for graph nodes. An unlisted node falls back to its own id when it produces output. */
 export const NODE_LABELS: Record<string, string> = {
-  architectNode: 'Mechanical Architect',
-  architectBuild: 'Mechanical Architect · Build',
-  brepBuild: 'Mechanical Architect · Build (build123d)',
-  brepAgentBuild: 'Mechanical Architect · Build (build123d agent)',
-  specIllustrator: 'Concept Sheets',
-  specReviewer: 'Sheet Reviewer',
-  specGate: 'Spec Review',
-  drafterNode: 'Parametric Drafter',
-  validateCode: 'Physical Validator',
-  validateBrep: 'Physical Validator (build123d)',
-  fixCode: 'Repair',
-  visualCritic: 'Design Inspector',
-  acceptGate: 'Model Review',
   respondToUser: 'Result',
 };
-
-/**
- * Nodes whose `messages`-mode chunks must never reach the UI: structured-output
- * JSON, and the Architect's raw `@body` build reply (OpenSCAD or build123d), and the
- * B-rep validator's `[Validation Report]` message. The structured nodes render
- * their own markdown over `custom`.
- */
-const STRUCTURED_NODES = new Set(['architectNode', 'specReviewer', 'visualCritic', 'architectBuild', 'brepBuild', 'brepAgentBuild', 'validateBrep']);
-
-const DECIDERS = new Set(['specReviewer', 'specGate', 'validateCode', 'validateBrep', 'visualCritic', 'acceptGate']);
-
-/** Re-showing a gate is not a retry. Pending retries are for nodes the graph re-enters. */
-const GATES = new Set(['specGate', 'acceptGate']);
-
-/** attemptCount on these updates is that node's own visit number. fixCode's is the global counter. */
-const BUILD_NODES = new Set(['architectBuild', 'brepBuild', 'brepAgentBuild', 'drafterNode']);
 
 type CustomPayload = StreamEvent & { node?: string };
 type CloseStatus = 'ok' | 'failed' | 'retrying' | 'skipped';
@@ -63,12 +22,6 @@ interface Section {
   emitted: boolean;
   hadOutput: boolean;
   preferSkipped: boolean;
-}
-
-interface PendingRetry {
-  step: string;
-  maxAttempts: number;
-  reason: string;
 }
 
 /**
@@ -86,7 +39,6 @@ export async function bridgeGraphStream(
 ): Promise<void> {
   const box = {
     current: null as Section | null,
-    pending: null as PendingRetry | null,
     state: initialRouteState(),
   };
   const runs = new Map<string, number>();
@@ -142,24 +94,13 @@ export async function bridgeGraphStream(
     });
   }
 
-  function enter(node: string, opts?: { partial?: Record<string, unknown>; input?: Record<string, unknown>; attempt?: number }) {
-    if (box.current?.id === node && opts?.attempt === undefined) {
-      // The open already announced this attempt. Keep it on the close; only the visit counter moves.
-      if (BUILD_NODES.has(node) && typeof opts?.partial?.attemptCount === 'number') {
-        runs.set(node, Math.max(runs.get(node) ?? 0, opts.partial.attemptCount));
-      }
+  function enter(node: string, attemptOverride?: number) {
+    if (box.current?.id === node && attemptOverride === undefined) {
       return;
     }
     leaveFor(node);
-    const attempt = opts?.attempt ?? attemptNumber(node, opts?.partial, opts?.input, runs);
+    const attempt = attemptOverride ?? attemptNumber(node, runs);
     runs.set(node, Math.max(runs.get(node) ?? 0, attempt));
-    if (box.pending?.step === node) {
-      const pending = box.pending;
-      box.pending = null;
-      if (attempt >= 2) {
-        send({ t: 'retry', step: node, attempt, maxAttempts: pending.maxAttempts, reason: pending.reason });
-      }
-    }
     const stamped = starts.get(node);
     starts.delete(node);
     const section: Section = {
@@ -191,17 +132,6 @@ export async function bridgeGraphStream(
     closeCurrent('skipped', 'stopped');
   }
 
-  function applyRoute(node: string, partial: Record<string, unknown>) {
-    const next = nextStep(node, box.state);
-    const reason = oneLine(sanitizeText(routeReason(node, partial, box.state)));
-    const revisits = Boolean(next && !GATES.has(next) && (runs.get(next) ?? 0) > 0 && next !== node);
-    if (next && revisits) {
-      box.pending = { step: next, maxAttempts: stepMax(next, box.state), reason };
-      return;
-    }
-    box.pending = null;
-  }
-
   try {
     for await (const chunk of chunks) {
       if (!Array.isArray(chunk) || chunk.length < 2) continue;
@@ -224,7 +154,7 @@ export async function bridgeGraphStream(
         starts.set(task.name, Date.now());
         const input = task.input && typeof task.input === 'object' ? task.input as Record<string, unknown> : undefined;
         if (input) mergeDefined(box.state, input);
-        enter(task.name, { input });
+        enter(task.name);
         continue;
       }
 
@@ -241,53 +171,40 @@ export async function bridgeGraphStream(
           send({ t: 'delta', text: event.text });
         } else if (event.t === 'retry') {
           const reason = oneLine(sanitizeText(event.reason));
-          if (event.variantId) {
-            // Parallel variants share one section. Its attempt stays the attempt it opened at.
-            if (box.current?.id !== event.step) enter(event.step);
-            send({
-              t: 'retry',
-              step: event.step,
-              attempt: event.attempt,
-              maxAttempts: event.maxAttempts,
-              reason,
-              variantId: event.variantId,
-            });
+          // One section per attempt.
+          const previous = box.current?.id === event.step ? box.current.attempt : (runs.get(event.step) ?? 0);
+          const attempt = Math.max(event.attempt, previous + 1);
+          if (box.current?.id === event.step && box.current.emitted) {
+            const prev = box.current;
+            box.current = null;
+            emit(closeEvent(prev, 'retrying', reason));
+          } else if (box.current?.emitted) {
+            closeCurrent();
           } else {
-            // One section per attempt. A reviewer re-entry and an in-node self-check must not reuse a number.
-            const previous = box.current?.id === event.step ? box.current.attempt : (runs.get(event.step) ?? 0);
-            const attempt = Math.max(event.attempt, previous + 1);
-            if (box.current?.id === event.step && box.current.emitted) {
-              const prev = box.current;
-              box.current = null;
-              emit(closeEvent(prev, 'retrying', reason));
-            } else if (box.current?.emitted) {
-              closeCurrent();
-            } else {
-              box.current = null;
-            }
-            emit({
-              t: 'retry',
-              step: event.step,
-              attempt,
-              maxAttempts: Math.max(event.maxAttempts, attempt),
-              reason,
-            });
-            runs.set(event.step, Math.max(runs.get(event.step) ?? 0, attempt));
-            const stamped = starts.get(event.step);
-            starts.delete(event.step);
-            const section: Section = {
-              id: event.step,
-              attempt,
-              startedAt: stamped ?? Date.now(),
-              endedAt: null,
-              summary: null,
-              emitted: false,
-              hadOutput: false,
-              preferSkipped: false,
-            };
-            box.current = section;
-            emitOpen(section);
+            box.current = null;
           }
+          emit({
+            t: 'retry',
+            step: event.step,
+            attempt,
+            maxAttempts: Math.max(event.maxAttempts, attempt),
+            reason,
+          });
+          runs.set(event.step, Math.max(runs.get(event.step) ?? 0, attempt));
+          const stamped = starts.get(event.step);
+          starts.delete(event.step);
+          const section: Section = {
+            id: event.step,
+            attempt,
+            startedAt: stamped ?? Date.now(),
+            endedAt: null,
+            summary: null,
+            emitted: false,
+            hadOutput: false,
+            preferSkipped: false,
+          };
+          box.current = section;
+          emitOpen(section);
         } else if (event.t === 'result') {
           if (box.current) closeCurrent();
           const { node, ...rest } = event;
@@ -311,7 +228,6 @@ export async function bridgeGraphStream(
         const text = contentText(msg?.content);
         if (!text) continue;
         const node = meta?.langgraph_node ?? 'agent';
-        if (STRUCTURED_NODES.has(node)) continue;
         enter(node);
         if (box.current?.id === node) {
           box.current.hadOutput = true;
@@ -328,24 +244,20 @@ export async function bridgeGraphStream(
           if (node === '__interrupt__' || !partial || typeof partial !== 'object' || Array.isArray(partial)) continue;
           const record = partial as Record<string, unknown>;
           mergeDefined(box.state, record);
-          if (box.current?.id !== node) enter(node, { partial: record });
-          else if (BUILD_NODES.has(node) && typeof record.attemptCount === 'number') {
-            runs.set(node, Math.max(runs.get(node) ?? 0, record.attemptCount));
-          }
+          if (box.current?.id !== node) enter(node);
           const summary = failureOf(record);
           if (box.current?.id === node) {
             if (record.isValid === true) box.current.summary = null;
             else if (summary) box.current.summary = oneLine(sanitizeText(summary));
             if (Object.keys(record).length === 0 && !box.current.hadOutput) box.current.preferSkipped = true;
           }
-          if (DECIDERS.has(node)) applyRoute(node, record);
         }
       }
     }
   } catch (err) {
     try {
       const api = toApiError(err instanceof Error ? err : new Error(typeof err === 'string' ? err : 'failed'));
-      // An illustrator throw closes the illustrator. A section that already finished stays as it closed.
+      // A section that already finished stays as it closed.
       if (api.code === 'cancelled') closeCancelled();
       else finishOpen(api.message);
     } catch (emitErr) {
@@ -379,18 +291,9 @@ function initialRouteState(): AgentStateType {
     maxAttempts: positive(process.env.CADAI_MAX_ATTEMPTS, 1),
     failureKind: 'none',
     isValid: false,
-    semanticFailures: 0,
-    compileFailures: 0,
     pipeline: null,
     kernel: null,
-    specRevisionCount: 0,
-    acceptRevisionCount: 0,
-    gateAction: null,
     stlContent: null,
-    specVariants: [],
-    specViolations: [],
-    assemblySpec: null,
-    reviewDeadline: null,
   } as unknown as AgentStateType;
 }
 
@@ -401,26 +304,8 @@ function mergeDefined(state: AgentStateType, partial: Record<string, unknown>) {
   }
 }
 
-function attemptNumber(
-  node: string,
-  partial: Record<string, unknown> | undefined,
-  input: Record<string, unknown> | undefined,
-  runs: Map<string, number>,
-): number {
-  if (BUILD_NODES.has(node)) {
-    if (typeof partial?.attemptCount === 'number') return partial.attemptCount;
-    if (typeof input?.attemptCount === 'number') return input.attemptCount + 1;
-  }
+function attemptNumber(node: string, runs: Map<string, number>): number {
   return (runs.get(node) ?? 0) + 1;
-}
-
-function stepMax(step: string, state: AgentStateType): number {
-  const max = typeof state.maxAttempts === 'number' && state.maxAttempts > 0
-    ? state.maxAttempts
-    : positive(process.env.CADAI_MAX_ATTEMPTS, 1);
-  if (step === 'architectNode') return positive(process.env.CADAI_SPEC_REVIEW_RETRIES, 5) + 1;
-  if (step === 'fixCode') return Math.max(1, max - 1);
-  return max;
 }
 
 function closeEvent(section: Section, status: CloseStatus, summary?: string): StreamEvent {
@@ -444,53 +329,9 @@ function closeEvent(section: Section, status: CloseStatus, summary?: string): St
 
 function failureOf(state: Record<string, unknown>): string | null {
   if (state.isValid === true) return null;
-  if (Array.isArray(state.specViolations)) {
-    for (const violation of state.specViolations) {
-      if (!violation || typeof violation !== 'object') continue;
-      const rec = violation as { severity?: unknown; message?: unknown };
-      if (rec.severity === 'error' && typeof rec.message === 'string' && rec.message.trim()) return rec.message.trim();
-    }
-  }
-  if (state.validation && typeof state.validation === 'object') {
-    const validation = state.validation as { errors?: unknown; valid?: unknown; error?: unknown };
-    if (Array.isArray(validation.errors)) {
-      for (const diagnostic of validation.errors) {
-        if (!diagnostic || typeof diagnostic !== 'object') continue;
-        const rec = diagnostic as { severity?: unknown; message?: unknown };
-        if (rec.severity === 'error' && typeof rec.message === 'string' && rec.message.trim()) return rec.message.trim();
-      }
-    }
-    if (validation.valid === false && typeof validation.error === 'string' && validation.error.trim()) return validation.error.trim();
-  }
   if (typeof state.error === 'string' && state.error.trim()) return state.error.trim();
   if (state.isValid === false && typeof state.failureKind === 'string' && state.failureKind !== 'none') {
     return state.failureKind.replaceAll('_', ' ');
   }
   return null;
-}
-
-function reviewReason(state: Record<string, unknown>): string {
-  if (Array.isArray(state.specVariants)) {
-    for (const variant of state.specVariants) {
-      if (!variant || typeof variant !== 'object') continue;
-      const rec = variant as { needsRevision?: unknown; review?: { findings?: Array<{ severity?: string; issue?: string }> } };
-      if (!rec.needsRevision) continue;
-      const findings = rec.review?.findings ?? [];
-      const finding = findings.find((item) => item.severity === 'major' && item.issue) ?? findings.find((item) => item.issue);
-      if (finding?.issue) return finding.issue;
-    }
-  }
-  if (typeof state.gateFeedback === 'string' && state.gateFeedback.trim()) return state.gateFeedback.trim();
-  return 'revision required';
-}
-
-function routeReason(node: string, partial: Record<string, unknown>, state: AgentStateType): string {
-  const fromPartial = failureOf(partial);
-  if (fromPartial) return fromPartial;
-  if (node === 'specReviewer' || node === 'specGate' || node === 'acceptGate') return reviewReason(partial);
-  if (typeof partial.failureKind === 'string' && partial.failureKind !== 'none') return partial.failureKind.replaceAll('_', ' ');
-  if (state.isValid === false && typeof state.failureKind === 'string' && state.failureKind !== 'none') {
-    return state.failureKind.replaceAll('_', ' ');
-  }
-  return 'validation failed';
 }

@@ -16,7 +16,7 @@ export type ErrorCode =
   | 'model_unavailable' //  the model provider refused or is overloaded (retryable)
   | 'model_error' //        the model call failed or returned unusable output
   | 'timeout' //            a step or the whole run exceeded its time budget
-  | 'compile_failed' //     OpenSCAD failed to compile the script
+  | 'compile_failed' //     the script failed to compile
   | 'geometry_failed' //    the B-rep geometry service failed to run the script
   | 'geometry_unavailable' // the geometry service is unreachable (retryable)
   | 'internal';
@@ -57,7 +57,7 @@ export interface EventEnvelope {
 /** Reference to a large payload served by GET /api/artifacts/:id (R3). */
 export interface ArtifactRef {
   id: string;
-  kind: 'stl' | 'step' | 'svg' | 'png' | 'scad' | 'py';
+  kind: 'stl' | 'step' | 'svg' | 'png' | 'py';
   bytes: number;
   sha256: string;
   url: string; //               relative, e.g. /api/artifacts/abc123
@@ -69,7 +69,7 @@ export interface ResultArtifacts {
   step?: ArtifactRef; //        B-rep kernel only
 }
 
-/** Measurement of one part (R2): from the geometry service, or measured frames on OpenSCAD. */
+/** Measurement of one part (R2): from the geometry service. */
 export interface PartInfo {
   label: string;
   valid: boolean;
@@ -97,13 +97,13 @@ export type ContractEvent =
       summary?: string; //    always set when status is failed or retrying
       endedAt: number; durationMs: number; attempt: number;
     }
-  | { t: 'retry'; step: string; attempt: number; maxAttempts: number; reason: string; variantId?: string }
+  | { t: 'retry'; step: string; attempt: number; maxAttempts: number; reason: string }
   | { t: 'error'; message: string; apiError: ApiError }
   | { t: 'cancelled'; at: number };
 
 /** Ordered pipeline steps, for index/total in the UI. Unknown nodes get index -1. */
 export const PIPELINE_STEPS = [
-  'architectNode', 'specIllustrator', 'specReviewer', 'specGate',
-  'architectBuild', 'brepBuild', 'drafterNode', 'validateCode', 'validateBrep',
-  'fixCode', 'visualCritic', 'acceptGate', 'respondToUser',
+  'designerNode',
+  'designerCheck',
+  'respondToUser',
 ] as const;

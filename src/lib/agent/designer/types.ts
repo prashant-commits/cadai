@@ -1,10 +1,9 @@
 /**
- * Shared contract for the "designer" build mode (CADAI_PIPELINE=designer).
+ * Shared contract for the designer pipeline.
  *
  * One agent (the designer) writes a whole build123d script, runs it, looks at
  * renders and revises; an independent reviewer (separate model instance) sees
  * only the request, the renders and the measured facts, and returns flags.
- * There is no architect plan or spec contract in this mode.
  *
  * Ownership (parallel lanes; do not edit another lane's files):
  *   - designer loop  (Sonnet lane): designer/run-designer.ts, designer/prompt.ts, designer/tools.ts

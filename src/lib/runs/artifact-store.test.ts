@@ -92,6 +92,8 @@ describe('LocalArtifactStore', () => {
     await expect(s.put('blobs', 'stl', 'a')).resolves.toBeDefined(); // not a store-reserved run id: layout keeps kinds in separate dirs
     // @ts-expect-error bad kind
     await expect(s.put('r', 'exe', 'a')).rejects.toThrow(/Invalid artifact kind/);
+    // @ts-expect-error bad kind
+    await expect(s.put('r', 'scad', 'a')).rejects.toThrow(/Invalid artifact kind/);
   });
 
   it('deleteForRun removes only artifacts no other run holds', async () => {

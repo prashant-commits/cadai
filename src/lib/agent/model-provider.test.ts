@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ChatAnthropic } from '@langchain/anthropic';
 import { anthropicModelId, getChatModel, thinkingFor } from './model-provider';
 import { DEFAULT_MODEL, MODELS, isOfferedModel, isVisionModel } from './models';
-import { cachedSystemMessage, systemPromptFor } from './system-prompt';
+import { cachedSystemMessage } from './system-prompt';
 
 const saved = { ...process.env };
 
@@ -117,11 +117,10 @@ describe('thinking and effort', () => {
 });
 
 describe('cachedSystemMessage', () => {
-  it('every node system prompt is a cached block', () => {
-    for (const node of ['planner', 'variant', 'drafter', 'repair', 'critic', 'reviewer', 'build'] as const) {
-      const msg = cachedSystemMessage(systemPromptFor(node));
-      expect(msg.content).toEqual([{ type: 'text', text: systemPromptFor(node), cache_control: { type: 'ephemeral' } }]);
-    }
+  it('returns a SystemMessage with ephemeral cache control', () => {
+    const text = 'test prompt';
+    const msg = cachedSystemMessage(text);
+    expect(msg.content).toEqual([{ type: 'text', text, cache_control: { type: 'ephemeral' } }]);
   });
 });
 

@@ -12,7 +12,7 @@
  */
 
 /**
- * Multimodal model used for all nodes (architect, builder, reviewer).
+ * Multimodal model used for all nodes (designer, reviewer).
  *
  * claude-sonnet-5.5 since 2026-11-07 (feat/brep, B-rep kernel): on the hard
  * eval set (12 prompts x 2, intent judge) Sonnet was 22/22 workable with a

@@ -109,7 +109,7 @@ describe('M1: a failing artifact store never kills the run', () => {
   it('an unsupported CADAI_ARTIFACT_STORE leaves a result inline and ends the run done; delta/run events never touch the store', async () => {
     process.env.CADAI_ARTIFACT_STORE = 's3';
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    createAgent.mockReturnValue(graphOf([['custom', { t: 'delta', text: 'hi', node: 'architectNode' }], resultChunk()]));
+    createAgent.mockReturnValue(graphOf([['custom', { t: 'delta', text: 'hi', node: 'designerNode' }], resultChunk()]));
     const events = parse(await (await startChat()).text());
     const result = events.find((e) => e.t === 'result')!;
     expect(result.stl).toBe(BIG_STL);

@@ -12,7 +12,6 @@ const CONTENT_TYPES: Record<ArtifactRef['kind'], string> = {
   step: 'model/step',
   svg: 'image/svg+xml',
   png: 'image/png',
-  scad: 'text/plain; charset=utf-8',
   py: 'text/plain; charset=utf-8',
 };
 

@@ -8,7 +8,7 @@ import { artifactStoreDir, artifactStoreKind } from './config';
 import { getRunStore, isSafeRunId, onRunRemoved, runTtlMs } from './run-store';
 
 export type ArtifactKind = ArtifactRef['kind'];
-export const ARTIFACT_KINDS: readonly ArtifactKind[] = ['stl', 'step', 'svg', 'png', 'scad', 'py'];
+export const ARTIFACT_KINDS: readonly ArtifactKind[] = ['stl', 'step', 'svg', 'png', 'py'];
 
 /**
  * Large payloads by reference. Content-addressed: the id is the first 32 hex
