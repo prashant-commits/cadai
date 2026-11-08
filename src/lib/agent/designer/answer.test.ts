@@ -33,6 +33,7 @@ function createMockState(overrides: Partial<AgentStateType> = {}): AgentStateTyp
     baseVersion: 1,
     baseBody: 'box = Box(10, 10, 25)\n_cadai_parts = [box]',
     baseRequest: 'make a 10mm cube',
+    baseEdits: [],
     attachments: [],
     outcome: null,
     triageKind: 'question',

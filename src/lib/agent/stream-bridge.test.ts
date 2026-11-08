@@ -35,13 +35,13 @@ function closed(id: string, attempt = 1, extra: Record<string, unknown> = {}) {
 }
 
 describe('bridgeGraphStream', () => {
-  it('exports NODE_LABELS with only respondToUser', () => {
-    expect(NODE_LABELS).toEqual({ respondToUser: 'Result' });
+  it('exports NODE_LABELS for the designer nodes', () => {
+    expect(NODE_LABELS).toEqual({ designerNode: 'Designer', designerCheck: 'Checks' });
   });
 
-  it('opens a section on the first delta for a node and labels it with its fallback id', async () => {
+  it('opens a section on the first delta for a node and labels it from NODE_LABELS', async () => {
     const out = await bridge([['custom', { t: 'delta', text: 'hi', node: 'designerNode' }]]);
-    expect(out[0]).toEqual(opened('designerNode', 'designerNode', 0));
+    expect(out[0]).toEqual(opened('designerNode', 'Designer', 0));
     expect(out[1]).toEqual({ t: 'delta', text: 'hi' });
   });
 
@@ -60,7 +60,7 @@ describe('bridgeGraphStream', () => {
       ['custom', { t: 'delta', text: 'b', node: 'designerCheck' }],
     ]);
     expect(out[2]).toEqual(closed('designerNode'));
-    expect(out[3]).toEqual(opened('designerCheck', 'designerCheck', 1));
+    expect(out[3]).toEqual(opened('designerCheck', 'Checks', 1));
   });
 
   it('turns model token chunks into deltas under their own node', async () => {
@@ -79,15 +79,6 @@ describe('bridgeGraphStream', () => {
       ['messages', [{ content: [{ index: 2, type: 'input_json_delta', input: '{"a"' }] }, { langgraph_node: 'genericNode' }]],
     ]);
     expect(out.filter((e) => e.t === 'delta')).toEqual([{ t: 'delta', text: 'Hel' }, { t: 'delta', text: 'lo' }]);
-  });
-
-  it('passes a result event straight through and closes any open section', async () => {
-    const out = await bridge([
-      ['custom', { t: 'delta', text: 'a', node: 'designerNode' }],
-      ['custom', { t: 'result', summary: 'Built it.', node: 'respondToUser' }],
-    ]);
-    expect(out.at(-1)).toEqual({ t: 'result', summary: 'Built it.' });
-    expect(out.some((e) => e.t === 'section' && e.state === 'close')).toBe(true);
   });
 
   it('labels an unknown node with its own id rather than dropping it', async () => {
@@ -158,17 +149,6 @@ describe('bridgeGraphStream', () => {
     })).rejects.toThrow('node exploded');
   });
 
-  it('puts apiError on a custom error event and keeps message', async () => {
-    const out = await bridge([
-      ['custom', { t: 'error', message: 'overloaded', node: 'designerNode' }],
-    ]);
-    expect(out.at(-1)).toMatchObject({
-      t: 'error',
-      message: 'overloaded',
-      apiError: { code: 'model_unavailable', retryable: true },
-    });
-  });
-
   it('closes an open section as skipped when the user aborts, without the abort text', async () => {
     const out: StreamEvent[] = [];
     const chunks = (async function* () {
@@ -192,26 +172,17 @@ describe('bridgeGraphStream', () => {
     }
   });
 
-  it('keeps model output out of a section summary and in apiError.detail only', async () => {
+  it('keeps model output out of a section summary', async () => {
     const raw = 'Failed to parse. Text: {"secret model output": 1} /home/claude/work/wt-r2/a.ts';
-    const out = await bridge([
-      ['custom', { t: 'delta', text: 'a', node: 'designerNode' }],
-      ['custom', { t: 'error', message: raw, node: 'designerNode' }],
-    ]);
+    async function* throwingStream() {
+      yield ['custom', { t: 'delta', text: 'a', node: 'designerNode' }];
+      throw new Error(raw);
+    }
+    const out: StreamEvent[] = [];
+    await expect(bridgeGraphStream(throwingStream(), 'r1', (e) => out.push(e))).rejects.toThrow();
     const close = out.find((e) => e.t === 'section' && e.state === 'close');
     expect(close).toMatchObject({ status: 'failed', summary: 'Something went wrong on the server.' });
     if (close?.t === 'section' && close.state === 'close') expect(close.summary).not.toMatch(/secret model output/);
-    const error = out.find((e) => e.t === 'error');
-    expect(error).toMatchObject({
-      t: 'error',
-      message: raw,
-      apiError: { code: 'internal', message: 'Something went wrong on the server.' },
-    });
-    if (error?.t === 'error') {
-      expect(error.apiError?.detail).toContain('secret model output');
-      expect(error.apiError?.detail).not.toMatch(/\/home\//);
-      expect(error.apiError?.message).not.toMatch(/secret/);
-    }
   });
 
   it('no unrendered designer model text in deltas', async () => {

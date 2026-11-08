@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { NextRequest } from 'next/server';
 import { POST as compileRoutePOST } from '@/app/api/compile/route';
 import { runBrep } from '@/lib/engine/brep-runner';
+import { parseStlToGeometry } from '@/lib/engine/geometry-utils';
 import { withGeneratedPrelude, toBody } from '@/lib/brep/prelude';
 import { useAppStore } from '@/store/app-store';
 import { DB_NAME } from '@/lib/storage/db-schema';
@@ -114,14 +115,13 @@ describe('0c component test: designer run and slider recompilation', () => {
           { t: 'delta', text: 'Generating parametric box with width and depth...' },
           { t: 'section', id: 'designerNode', state: 'close', status: 'ok', endedAt: Date.now() + 50, durationMs: 50, attempt: 1 },
           {
-            t: 'result',
-            summary: 'A parametric box with customizable width and depth.',
-            code: SAMPLE_BUILD123D_CODE,
-            stl: VALID_ASCII_STL,
-            language: 'build123d',
-            designContract: {
-              standing: { maxSizeMm: [100, 100, 100], minWallMm: 1.6 },
-              pinnedParams: {},
+            t: 'end',
+            seq: 2,
+            status: 'done',
+            reply: {
+              messageId: 'm1',
+              kind: 'result',
+              markdown: 'A parametric box with customizable width and depth.',
             },
           },
         ];
@@ -188,6 +188,21 @@ describe('0c component test: designer run and slider recompilation', () => {
         await applyStreamResult(state, targetThreadId, assistantMsgId);
       },
     });
+
+    // In C1, code and STL are loaded via thread reload (A10a).
+    // Populate store to assert DesignPanel and slider move recompilation.
+    const { geometry, modelInfo } = parseStlToGeometry(VALID_ASCII_STL);
+    useAppStore.getState().setCode(SAMPLE_BUILD123D_CODE, targetThreadId);
+    useAppStore.getState().setCompileResult(
+      {
+        success: true,
+        stlContent: VALID_ASCII_STL,
+        geometry,
+        modelInfo,
+        compileTimeMs: 0,
+      },
+      targetThreadId
+    );
 
     // 3. Assert the run rendered in store
     const stateAfterRun = useAppStore.getState();

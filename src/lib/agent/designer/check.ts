@@ -80,7 +80,7 @@ export function buildOutcome(params: {
     }
 
     const baseRequest = isEdit ? (state.baseRequest ?? firstText) : latestText;
-    const edits = isEdit ? [latestText] : [];
+    const edits = isEdit ? [...(state.baseEdits ?? []), latestText] : [];
 
     return {
       replyKind: 'error',
@@ -112,7 +112,7 @@ export function buildOutcome(params: {
   }
 
   const baseRequest = isEdit ? (state.baseRequest ?? firstText) : latestText;
-  const edits = isEdit ? [latestText] : [];
+  const edits = isEdit ? [...(state.baseEdits ?? []), latestText] : [];
 
   return {
     replyKind: 'result',

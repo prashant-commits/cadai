@@ -7,7 +7,8 @@ import { contentText } from './message-text';
 
 /** Human labels for graph nodes. An unlisted node falls back to its own id when it produces output. */
 export const NODE_LABELS: Record<string, string> = {
-  respondToUser: 'Result',
+  designerNode: 'Designer',
+  designerCheck: 'Checks',
 };
 
 /**
@@ -211,20 +212,6 @@ export async function bridgeGraphStream(
           };
           box.current = section;
           emitOpen(section);
-        } else if (event.t === 'result') {
-          if (box.current) closeCurrent();
-          const { node, ...rest } = event;
-          void node;
-          emit(rest);
-        } else if (event.t === 'error') {
-          const apiError = event.apiError ?? toApiError(new Error(event.message));
-          try {
-            if (apiError.code === 'cancelled') closeCancelled();
-            else finishOpen(apiError.message);
-          } catch (emitErr) {
-            console.error('bridge close failed:', emitErr);
-          }
-          emit({ t: 'error', message: event.message, apiError });
         }
         continue;
       }

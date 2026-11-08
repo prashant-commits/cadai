@@ -162,12 +162,13 @@ async function drive(
     if (mode === 'custom') {
       const ev = payload as { t?: string; text?: string; summary?: string } | undefined;
       if (ev?.t === 'delta' && typeof ev.text === 'string') transcript += ev.text;
-      else if (ev?.t === 'result' && typeof ev.summary === 'string' && ev.summary) {
-        transcript += `${transcript && !transcript.endsWith('\n') ? '\n' : ''}${ev.summary}\n`;
-      }
     } else if (mode === 'values') {
       lastValues = payload as AgentStateType;
     }
+  }
+  const reply = lastValues?.outcome?.replyMarkdown;
+  if (reply && !transcript.includes(reply)) {
+    transcript += `${transcript && !transcript.endsWith('\n') ? '\n' : ''}${reply}\n`;
   }
   return { transcript, values: lastValues };
 }

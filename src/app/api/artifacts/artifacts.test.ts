@@ -1,83 +1,77 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import { describe, it, expect, afterAll } from 'vitest';
+import * as crypto from 'crypto';
 import { NextRequest } from 'next/server';
-import { getArtifactStore } from '@/lib/runs/artifact-store';
+import { closeDb } from '@/lib/db/db';
+import { CADAI_OWNER_COOKIE } from '@/lib/owner';
+import { put } from '@/lib/runs/owner-artifacts';
 import { GET } from './[id]/route';
 
-const saved = { ...process.env };
-let dir = '';
-beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadai-art-route-'));
-  process.env.CADAI_RUN_DIR = dir;
-});
-afterEach(() => {
-  process.env = { ...saved };
-  fs.rmSync(dir, { recursive: true, force: true });
-});
+function makeOwner() {
+  const uuid = crypto.randomUUID();
+  const cookie = `${CADAI_OWNER_COOKIE}=${uuid}`;
+  const key = crypto.createHash('sha256').update(uuid).digest('hex');
+  return { uuid, cookie, key };
+}
 
-const get = (id: string, headers: Record<string, string> = {}) =>
-  GET(new NextRequest(`http://localhost/api/artifacts/${id}`, { headers }), { params: Promise.resolve({ id }) });
+const req = (id: string, cookie?: string) =>
+  GET(
+    new NextRequest(`http://localhost/api/artifacts/${id}`, {
+      headers: cookie ? { cookie } : {},
+    }),
+    { params: Promise.resolve({ id }) }
+  );
 
 describe('GET /api/artifacts/:id', () => {
-  it.each([
-    ['stl', 'model/stl'],
-    ['step', 'model/step'],
-    ['svg', 'image/svg+xml'],
-    ['png', 'image/png'],
-    ['py', 'text/plain; charset=utf-8'],
-  ] as const)('serves %s as %s with cache headers', async (kind, type) => {
-    const ref = await getArtifactStore().put('r1', kind, `payload-${kind}`);
-    const res = await get(ref.id);
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toBe(type);
-    expect(res.headers.get('content-length')).toBe(String(`payload-${kind}`.length));
-    expect(res.headers.get('etag')).toBe(`"${ref.sha256}"`);
-    expect(res.headers.get('cache-control')).toBe('private, max-age=31536000, immutable');
-    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
-    expect(await res.text()).toBe(`payload-${kind}`);
+  afterAll(async () => {
+    await closeDb();
   });
 
-  it('streams a multi-MB body intact', async () => {
-    const big = 'facet\n'.repeat(500_000);
-    const ref = await getArtifactStore().put('r1', 'stl', big);
-    const res = await get(ref.id);
-    expect(res.headers.get('content-length')).toBe(String(big.length));
-    expect((await res.text()).length).toBe(big.length);
+  it('no owner returns 401', async () => {
+    const res = await req('some-id');
+    expect(res.status).toBe(401);
   });
 
-  it('locks svg down with a CSP; other kinds carry none', async () => {
-    const svg = await getArtifactStore().put('r1', 'svg', '<svg xmlns="http://www.w3.org/2000/svg"/>');
-    const stl = await getArtifactStore().put('r1', 'stl', 'solid');
-    expect((await get(svg.id)).headers.get('content-security-policy')).toBe("default-src 'none'; style-src 'unsafe-inline'");
-    expect((await get(stl.id)).headers.get('content-security-policy')).toBeNull();
-  });
+  it("another owner's artifact → 404", async () => {
+    const owner1 = makeOwner();
+    const owner2 = makeOwner();
+    const id = await put(owner1.key, 'stl', Buffer.from('solid test'));
 
-  it('answers If-None-Match with 304 and no body', async () => {
-    const ref = await getArtifactStore().put('r1', 'stl', 'solid');
-    const etag = `"${ref.sha256}"`;
-    for (const header of [etag, `W/${etag}`, `"other", ${etag}`, '*']) {
-      const res = await get(ref.id, { 'If-None-Match': header });
-      expect(res.status).toBe(304);
-      expect(res.headers.get('etag')).toBe(etag);
-      expect(await res.text()).toBe('');
-    }
-    expect((await get(ref.id, { 'If-None-Match': '"nope"' })).status).toBe(200);
-  });
-
-  it('unknown id is a 404 ErrorBody (not_found)', async () => {
-    const res = await get('a'.repeat(32));
+    const res = await req(id, owner2.cookie);
     expect(res.status).toBe(404);
-    const body = await res.json();
-    expect(body.apiError.code).toBe('not_found');
-    expect(typeof body.error).toBe('string');
-    expect(body.error).toBe(body.apiError.message);
   });
 
-  it.each(['zzz', '..%2F..%2Fetc', 'A'.repeat(32), 'a'.repeat(64)])('invalid id %s is a 400 bad_request', async (id) => {
-    const res = await get(id);
-    expect(res.status).toBe(400);
-    expect((await res.json()).apiError.code).toBe('bad_request');
+  it('artifact responses are private, no-store', async () => {
+    const owner = makeOwner();
+    const bytes = Buffer.from('solid test mesh data');
+    const id = await put(owner.key, 'stl', bytes);
+
+    const res = await req(id, owner.cookie);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
+    expect(res.headers.get('content-type')).toBe('model/stl');
+    expect(res.headers.get('content-length')).toBe(String(bytes.byteLength));
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(await res.text()).toBe('solid test mesh data');
+  });
+
+  it('serves step and image content types', async () => {
+    const owner = makeOwner();
+    const stepBytes = Buffer.from('STEP-DATA');
+    const stepId = await put(owner.key, 'step', stepBytes);
+    const stepRes = await req(stepId, owner.cookie);
+    expect(stepRes.status).toBe(200);
+    expect(stepRes.headers.get('content-type')).toBe('model/step');
+
+    const imgBytes = Buffer.from('PNG-DATA');
+    const imgId = await put(owner.key, 'image', imgBytes);
+    const imgRes = await req(imgId, owner.cookie);
+    expect(imgRes.status).toBe(200);
+    expect(imgRes.headers.get('content-type')).toBe('image/png');
+  });
+
+  it('unknown id returns 404', async () => {
+    const owner = makeOwner();
+    const res = await req('non-existent-id-22ch--', owner.cookie);
+    expect(res.status).toBe(404);
   });
 });

@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import * as crypto from 'crypto';
 import type { Readable } from 'stream';
-import { getDb, closeDb } from '@/lib/db/db';
+import { getDb, closeDb, type Db } from '@/lib/db/db';
 import {
   newArtifactId,
   put,
@@ -151,5 +151,32 @@ describe('owner-artifacts', () => {
     expect(row).not.toBeNull();
     expect(row?.threadId).toBe(threadId);
     expect(row?.runId).toBe(runId);
+  });
+
+  it('when the row insert fails, no object is written', async () => {
+    const owner = `owner_${crypto.randomUUID()}`;
+    const bytes = new Uint8Array([1, 2, 3]);
+    let objectWritten = false;
+    const fakeObjectStore: ObjectStore = {
+      async put(): Promise<void> {
+        objectWritten = true;
+      },
+      async openStream(): Promise<Readable | null> {
+        return null;
+      },
+      async delete(): Promise<void> {},
+    };
+
+    const failingDb = {
+      query: vi.fn(),
+      transaction: vi.fn().mockRejectedValue(new Error('DB transaction failed')),
+      close: vi.fn(),
+    } as unknown as Db;
+
+    await expect(
+      put(owner, 'image', bytes, undefined, { db: failingDb, objectStore: fakeObjectStore })
+    ).rejects.toThrow('DB transaction failed');
+
+    expect(objectWritten).toBe(false);
   });
 });

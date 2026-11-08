@@ -13,7 +13,9 @@ async function run(events: StreamEvent[]) {
   const updates: StreamState[] = [];
   await readStream(sse(events), {
     onUpdate: (s) => updates.push(structuredClone({ ...s, nodes: [...s.nodes] })),
-    onDone: (s) => { final = s; },
+    onDone: (s) => {
+      final = s;
+    },
   });
   return { final: final!, updates };
 }
@@ -25,10 +27,21 @@ describe('readStream', () => {
       { t: 'delta', text: 'Bounding box: ' },
       { t: 'delta', text: '62 x 40 x 18 mm' },
       { t: 'section', id: 'designerNode', state: 'close', status: 'ok' },
-      { t: 'result', summary: 'Built it.' },
+      {
+        t: 'end',
+        seq: 2,
+        status: 'done',
+        reply: { messageId: 'm1', kind: 'result', markdown: 'Built it.' },
+      },
     ]);
     expect(final.nodes).toEqual([
-      { kind: 'section', id: 'designerNode', label: 'designerNode', status: 'ok', body: 'Bounding box: 62 x 40 x 18 mm' },
+      {
+        kind: 'section',
+        id: 'designerNode',
+        label: 'designerNode',
+        status: 'ok',
+        body: 'Bounding box: 62 x 40 x 18 mm',
+      },
     ]);
     expect(final.summary).toBe('Built it.');
   });
@@ -41,12 +54,15 @@ describe('readStream', () => {
       { t: 'section', id: 'designerCheck', label: 'designerCheck', state: 'open' },
       { t: 'delta', text: 'drawn' },
       { t: 'section', id: 'designerCheck', state: 'close', status: 'ok' },
+      {
+        t: 'end',
+        seq: 3,
+        status: 'done',
+        reply: { messageId: 'm1', kind: 'result', markdown: 'done' },
+      },
     ]);
     const parsed = parseTranscript(serializeTranscript(final.nodes));
-    expect(parsed.map((node) => node.id)).toEqual([
-      'designerNode',
-      'designerCheck',
-    ]);
+    expect(parsed.map((node) => node.id)).toEqual(['designerNode', 'designerCheck']);
     const designer = parsed[0];
     if (designer.kind !== 'section') throw new Error('expected a section');
     // Stored as an entity. The browser renders it back as a literal `<!-- notes -->`.
@@ -65,7 +81,12 @@ describe('readStream', () => {
       { t: 'delta', text: 'a' },
       { t: 'delta', text: 'b' },
       { t: 'section', id: 'n', state: 'close', status: 'ok' },
-      { t: 'result', summary: 'done' },
+      {
+        t: 'end',
+        seq: 2,
+        status: 'done',
+        reply: { messageId: 'm1', kind: 'result', markdown: 'done' },
+      },
     ]);
     expect(updates.length).toBeGreaterThanOrEqual(4);
   });
@@ -73,49 +94,44 @@ describe('readStream', () => {
   it('routes a delta with no open section into an implicit section rather than dropping it', async () => {
     const { final } = await run([
       { t: 'delta', text: 'orphan text' },
-      { t: 'result', summary: 'done' },
+      {
+        t: 'end',
+        seq: 1,
+        status: 'done',
+        reply: { messageId: 'm1', kind: 'result', markdown: 'done' },
+      },
     ]);
     expect(serializeOf(final)).toContain('orphan text');
-  });
-
-  it('carries code, stl and contract off the result event', async () => {
-    const { final } = await run([
-      { t: 'result', summary: 'ok', code: 'cube(1);', stl: 'solid x facet normal', designContract: { standing: {}, pinnedParams: {} } },
-    ]);
-    expect(final.code).toBe('cube(1);');
-    expect(final.stl).toContain('facet normal');
-    expect(final.designContract).toBeDefined();
-  });
-
-  it('carries language off the result event', async () => {
-    const { final } = await run([{ t: 'result', summary: 'ok', code: 'PY', step: 'U1RFUA==', language: 'build123d' }]);
-    expect(final.language).toBe('build123d');
-    expect(final.step).toBe('U1RFUA==');
-  });
-
-  it('carries step off the result event when present', async () => {
-    const { final } = await run([
-      { t: 'result', summary: 'ok', code: 'PY', step: 'U1RFUA==' } as unknown as StreamEvent,
-    ]);
-    expect(final.step).toBe('U1RFUA==');
   });
 
   it('surfaces an error event and closes the open section as failed', async () => {
     const { final } = await run([
       { t: 'section', id: 'n', label: 'N', state: 'open' },
       { t: 'delta', text: 'partial' },
-      { t: 'error', message: 'gateway refused' },
+      {
+        t: 'end',
+        seq: 2,
+        status: 'failed',
+        reply: { messageId: 'm1', kind: 'error', markdown: 'gateway refused' },
+      },
     ]);
     expect(final.error).toBe('gateway refused');
     expect((final.nodes[0] as { status: string }).status).toBe('error');
   });
 
-  it('turns an error event into an error message instead of a blank complete', async () => {
+  it('turns a failed end event into an error message instead of a blank complete', async () => {
     const message = 'The build ran out of time. Try a simpler request or send it again.';
-    const { final } = await run([{ t: 'error', message }]);
+    const { final } = await run([
+      {
+        t: 'end',
+        seq: 1,
+        status: 'failed',
+        reply: { messageId: 'm1', kind: 'error', markdown: message },
+      },
+    ]);
     const patch = streamMessagePatch(final);
     expect(patch.status).toBe('error');
-    expect(patch.content).toBe(`**Error:** ${message}`);
+    expect(patch.content).toBe(message);
     expect(patch.content?.trim()).not.toBe('');
 
     const finished = streamMessagePatch({
@@ -124,6 +140,22 @@ describe('readStream', () => {
     });
     expect(finished.status).toBe('complete');
     expect(finished.content).toBe('Built it.');
+  });
+
+  it('handles a cancelled end event setting summary to reply.markdown', async () => {
+    const { final } = await run([
+      {
+        t: 'end',
+        seq: 1,
+        status: 'cancelled',
+        reply: { messageId: 'm1', kind: 'cancelled', markdown: 'Stopped.' },
+      },
+    ]);
+    expect(final.summary).toBe('Stopped.');
+    expect(final.error).toBeUndefined();
+    const patch = streamMessagePatch(final);
+    expect(patch.status).toBe('complete');
+    expect(patch.content).toBe('Stopped.');
   });
 });
 

@@ -32,6 +32,7 @@ function createMockState(overrides: Partial<AgentStateType> = {}): AgentStateTyp
     baseVersion: null,
     baseBody: null,
     baseRequest: null,
+    baseEdits: [],
     attachments: [],
     outcome: null,
     triageKind: null,

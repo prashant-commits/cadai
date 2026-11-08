@@ -1,12 +1,14 @@
-import type { ApiError, RunStatus } from '@/lib/contract/run-contract';
-import { toApiError } from '@/lib/contract/api-error';
+import type { Db } from '@/lib/db/db';
+import { getDb } from '@/lib/db/db';
+import { DbRunStore } from '@/lib/runs/db-run-store';
+import { put as defaultPutArtifact } from '@/lib/runs/owner-artifacts';
+import { registerRun, unregisterRun } from '@/lib/runs/run-control';
 import { bridgeGraphStream } from '@/lib/agent/stream-bridge';
 import type { StreamEvent } from '@/lib/agent/stream-events';
-import { describeGraphError } from '@/lib/agent/run-limits';
-import { runHeartbeatMs, type RunStore } from './run-store';
-import { registerRun, unregisterRun } from './run-control';
-import { safeDeleteForRun } from './artifact-store';
-import { externalizeEvent } from './externalize';
+import type { AgentStateType } from '@/lib/agent/designer/state';
+import type { CommitPlan, EndEvent } from '@/lib/persist/types';
+import type { TerminateCode } from '@/lib/persist/phrases';
+import { SAVE_FAILED } from '@/lib/persist/phrases';
 
 export const SSE_HEADERS = {
   'Content-Type': 'text/event-stream; charset=utf-8',
@@ -14,61 +16,72 @@ export const SSE_HEADERS = {
   Connection: 'keep-alive',
 };
 
-/** Anything the run log can hold: the graph's events plus the contract's. */
-export type RunEvent = StreamEvent | Record<string, unknown>;
-
 export function sse(event: Record<string, unknown>): string {
   return `data: ${JSON.stringify(event)}\n\n`;
+}
+
+export function toWire(row: { seq: number; type: string; payload: unknown; ts: number }): Record<string, unknown> {
+  const p = (row.payload && typeof row.payload === 'object' ? row.payload : {}) as Record<string, unknown>;
+  return { ...p, t: row.type, seq: row.seq, ts: row.ts };
 }
 
 function envMs(name: string, fallback: number): number {
   const n = Number(process.env[name] ?? fallback);
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
-/** How often the owner checks for a cancel requested on another instance. */
-const cancelPollMs = () => envMs('CADAI_CANCEL_POLL_MS', 500);
-/** Unread bytes queued for a client before it is treated as gone (it can replay). */
+
+const heartbeatMs = () => envMs('CADAI_HEARTBEAT_MS', 15_000);
+const appendWindowMs = () => envMs('CADAI_APPEND_WINDOW_MS', 30_000);
+const commitRetryMs = () => envMs('CADAI_COMMIT_RETRY_MS', 30_000);
 const clientBacklogBytes = () => envMs('CADAI_CLIENT_BACKLOG_BYTES', 64 * 1024 * 1024);
-/** How long appends may keep failing before the live stream stops waiting for the store. */
-const storeOutageMs = () => envMs('CADAI_STORE_OUTAGE_MS', 30_000);
 
 export interface StreamRunOptions {
-  store: RunStore;
   runId: string;
   threadId: string;
-  /** Prefix for the user-facing failure label, e.g. "Agent execution failed". */
-  failLabel: string;
-  /** Starts the graph stream; must pass `signal` to it. */
+  ownerKey: string;
+  /** Starts the graph stream with modes including 'values'; must pass `signal`. Yields [mode, chunk] tuples. */
   invoke: (signal: AbortSignal) => Promise<AsyncIterable<unknown>>;
-  /** Runs after the last event, before the stream closes (e.g. tracing flush). */
   onFinally?: () => Promise<void>;
+  deps?: {
+    db?: Db;
+    store?: typeof DbRunStore;
+    putArtifact?: typeof defaultPutArtifact;
+  };
 }
 
-/**
- * Drives one run and returns its SSE Response.
- *
- * Every event gets seq + ts, is appended to the run store and then written to
- * the client; the client's connection dropping never stops the run (reconnect
- * with GET /api/runs/:id/events). Only the cancel flag does.
- *
- * Exactly one terminal outcome is stored: the final event and the final status
- * are written in one atomic store step that only applies while the run is still
- * `running`, so a racing cancel, a lost-run reaper and this owner cannot both
- * end it.
- *
- * Caller contract: the run record exists and the caller has already moved it
- * to `running`.
- */
-export function streamRun(o: StreamRunOptions): Response {
-  const { store, runId } = o;
-  const encoder = new TextEncoder();
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxWindowMs: number,
+  baseMs = 50,
+  maxBackoffMs = 1000
+): Promise<T> {
+  const start = Date.now();
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (err) {
+      const elapsed = Date.now() - start;
+      if (elapsed >= maxWindowMs) {
+        throw err;
+      }
+      const backoff = Math.min(baseMs * Math.pow(2, attempt), maxBackoffMs);
+      const delay = Math.min(backoff, maxWindowMs - elapsed);
+      await new Promise((r) => setTimeout(r, delay));
+      attempt++;
+    }
+  }
+}
 
-  // The client side is a stream this run controls: enqueue never blocks and
-  // close is immediate, so nothing in the run ever waits on the reader. A
-  // reader that falls more than CADAI_CLIENT_BACKLOG_BYTES behind is cut off
-  // (it reconnects via replay); a disconnect only stops the writes.
+export function streamRun(o: StreamRunOptions): Response {
+  const db = o.deps?.db ?? getDb();
+  const store = o.deps?.store ?? DbRunStore;
+  const putArtifact = o.deps?.putArtifact ?? defaultPutArtifact;
+
+  const encoder = new TextEncoder();
   let client!: ReadableStreamDefaultController<Uint8Array>;
   let clientGone = false;
+
   const readable = new ReadableStream<Uint8Array>(
     {
       start(c) {
@@ -78,26 +91,10 @@ export function streamRun(o: StreamRunOptions): Response {
         clientGone = true;
       },
     },
-    new ByteLengthQueuingStrategy({ highWaterMark: 64 * 1024 }),
+    new ByteLengthQueuingStrategy({ highWaterMark: 64 * 1024 })
   );
 
-  // Registered up front so a detach (below) can stop the graph at any point.
-  const controller = registerRun(runId);
-
-  // Appends are strictly ordered so seq follows emission order.
-  let appendChain: Promise<unknown> = Promise.resolve();
-  let lastSeq = 0;
-  // Events the store has not accepted yet (an append threw). They are retried,
-  // in order, before every later event, so one failed append never stops later
-  // events being stored, and the live client only ever sees stored seqs. Only
-  // an outage longer than CADAI_STORE_OUTAGE_MS degrades to an unstored live
-  // stream with local seqs.
-  const pending: Array<Record<string, unknown>> = [];
-  let failingSince = 0;
-  let storeBroken = false;
-  // The store ended this run without its owner (reaped as lost while stalled):
-  // nothing more is stored or run.
-  let detached = false;
+  const controller = registerRun(o.runId);
 
   const writeClient = (payload: Record<string, unknown>) => {
     if (clientGone) return;
@@ -113,196 +110,292 @@ export function streamRun(o: StreamRunOptions): Response {
     }
   };
 
-  /** Seq for an event the store could not take: keeps the live stream monotonic and unique. */
-  const localSeq = () => ++lastSeq;
+  let costTotal = 0;
+  let lastSeq = 0;
+  let endedElsewhere = false;
+  let storeOutage = false;
+  let outageSince = 0;
 
-  /** Shows the live client how the store ended the run, and stops the graph. */
-  const detach = async () => {
-    if (detached) return;
-    detached = true;
-    pending.length = 0;
-    controller.abort();
-    try {
-      for (const e of await store.events(runId, lastSeq)) {
-        lastSeq = e.seq;
-        writeClient(e);
-      }
-    } catch {
-      // the client can still replay
-    }
-  };
+  const pendingEvents: StreamEvent[] = [];
+  let appendChain: Promise<void> = Promise.resolve();
 
-  const sendUnstored = () => {
-    for (const ev of pending.splice(0)) writeClient({ ...ev, seq: localSeq() });
-  };
+  const processPendingAppends = async () => {
+    while (pendingEvents.length > 0 && !storeOutage && !endedElsewhere) {
+      const ev = pendingEvents[0];
+      let attempt = 0;
+      let appendSuccess = false;
 
-  /** Stores and sends pending events in order. False when the store is still failing. */
-  const flushPending = async (): Promise<boolean> => {
-    while (pending.length > 0 && !detached) {
-      const ev = pending[0];
-      let seq: number;
-      try {
-        // Only while the run is still ours (running): never after a terminal event.
-        seq = await store.append(runId, ev, { expect: ['running'] });
-      } catch (e) {
-        if (!failingSince) {
-          failingSince = Date.now();
-          console.error('Run store append failed; retrying before the next event:', e);
+      while (!appendSuccess && !storeOutage && !endedElsewhere) {
+        try {
+          const seq = await store.append(db, o.runId, { type: ev.t, payload: ev });
+          if (seq === 0) {
+            endedElsewhere = true;
+            controller.abort();
+            pendingEvents.length = 0;
+            return;
+          }
+          outageSince = 0;
+          lastSeq = seq;
+          writeClient(toWire({ seq, type: ev.t, payload: ev, ts: Date.now() }));
+          pendingEvents.shift();
+          appendSuccess = true;
+        } catch (err) {
+          if (!outageSince) {
+            outageSince = Date.now();
+            console.error('Run store append failed; retrying:', err);
+          }
+          const elapsed = Date.now() - outageSince;
+          if (elapsed >= appendWindowMs()) {
+            storeOutage = true;
+            controller.abort();
+            pendingEvents.length = 0;
+            return;
+          }
+          const backoff = Math.min(50 * Math.pow(2, attempt), 1000);
+          const delay = Math.min(backoff, appendWindowMs() - elapsed);
+          await new Promise((r) => setTimeout(r, delay));
+          attempt++;
         }
-        if (Date.now() - failingSince > storeOutageMs()) {
-          console.error('Run store unavailable; the live stream continues unstored.');
-          storeBroken = true;
-          sendUnstored();
-        }
-        return false;
       }
-      failingSince = 0;
-      pending.shift();
-      if (seq === 0) {
-        await detach();
-        return true;
-      }
-      lastSeq = seq;
-      writeClient({ ...ev, seq });
-    }
-    return true;
-  };
-
-  const emit = (event: RunEvent): void => {
-    appendChain = appendChain.then(async () => {
-      if (detached) return;
-      // Large payloads become artifact refs BEFORE the event is stored, so the log holds the event as streamed.
-      const slim = await externalizeEvent(runId, event as Record<string, unknown>);
-      if (detached) return;
-      const stamped: Record<string, unknown> = { ...slim, ts: Date.now() };
-      if (stamped.t === 'error' && !stamped.apiError) {
-        stamped.apiError = toApiError(new Error(String(stamped.message ?? 'Run failed')));
-      }
-      if (storeBroken) return writeClient({ ...stamped, seq: localSeq() });
-      pending.push(stamped);
-      await flushPending();
-    });
-  };
-
-  /** Last chance for events the store refused during the run: a few retries, then send them unstored. */
-  const settlePending = async () => {
-    for (let i = 0; i < 3 && pending.length > 0 && !storeBroken && !detached; i++) {
-      if (await flushPending()) break;
-      await new Promise((r) => setTimeout(r, 100 * 4 ** i));
-    }
-    if (pending.length > 0) {
-      storeBroken = true;
-      sendUnstored();
     }
   };
 
-  /** Stores `event` and moves the run to `status` atomically, only if it is still `expect`. */
-  const finish = async (event: RunEvent | null, status: RunStatus, error: ApiError | undefined, expect: RunStatus[]) => {
-    await finishInner(event, status, error, expect);
-    // A stopped run keeps no artifacts that only it referenced.
-    if (status === 'cancelled') await safeDeleteForRun(runId);
-  };
-
-  const finishInner = async (event: RunEvent | null, status: RunStatus, error: ApiError | undefined, expect: RunStatus[]) => {
-    await appendChain;
-    await settlePending();
-    if (detached) return;
-    if (storeBroken) {
-      if (event) writeClient({ ...event, ts: Date.now(), seq: localSeq() });
-      await store.setStatus(runId, status, error, { expect }).catch(() => undefined);
+  const emitEvent = (ev: StreamEvent) => {
+    if (ev.t === 'cost') {
+      costTotal += (ev as { usd: number }).usd ?? 0;
       return;
     }
+    if (storeOutage || endedElsewhere) return;
+    pendingEvents.push(ev);
+    appendChain = appendChain.then(processPendingAppends);
+  };
+
+  const replayAndClose = async (fromSeq: number): Promise<void> => {
     try {
-      if (event) {
-        const stamped = { ...event, ts: Date.now() };
-        const seq = await store.append(runId, stamped, { status, error, expect });
-        if (seq > 0) {
-          lastSeq = seq;
-          writeClient({ ...stamped, seq });
-        } else {
-          await detach();
-        }
-      } else if (!(await store.setStatus(runId, status, error, { expect }))) {
-        await detach();
+      const events = await store.eventsSince(db, o.runId, fromSeq, 1000);
+      for (const row of events) {
+        lastSeq = Math.max(lastSeq, row.seq);
+        writeClient(toWire(row));
       }
-    } catch (e) {
-      console.error('Run finalization write failed:', e);
+    } catch (err) {
+      console.error('eventsSince replay failed:', err);
+      writeClient(
+        toWire({
+          seq: lastSeq + 1,
+          type: 'end',
+          payload: {
+            t: 'end',
+            seq: lastSeq + 1,
+            status: 'failed',
+            reply: { messageId: '', kind: 'error', markdown: SAVE_FAILED },
+          },
+          ts: Date.now(),
+        })
+      );
     }
   };
 
   (async () => {
-    const poll = setInterval(() => {
-      void store.isCancelled(runId).then((c) => {
-        if (c) controller.abort();
-      }, () => undefined);
-    }, cancelPollMs());
-    // Liveness: a reader treats a running run without a heartbeat for
-    // CADAI_RUN_LOST_MS as lost (its instance died) and fails it.
-    const beat = setInterval(() => {
-      void store.heartbeat(runId).catch(() => undefined);
-    }, runHeartbeatMs());
+    // Heartbeat starts before the graph
+    const beatTimer = setInterval(async () => {
+      try {
+        const rows = await store.heartbeat(db, o.runId, costTotal);
+        if (rows === 0) {
+          endedElsewhere = true;
+          controller.abort();
+        }
+      } catch (err) {
+        console.error('Heartbeat error:', err);
+      }
+    }, heartbeatMs());
 
-    let sawResult = false;
-    let graphError: ApiError | null = null;
-    let threw: unknown = null;
+    let lastValues: AgentStateType | null = null;
+    let graphThrew: unknown = null;
 
     try {
-      emit({ t: 'run', runId: o.runId, threadId: o.threadId, status: 'running', resumed: false });
+      // First stored event
+      emitEvent({
+        t: 'run',
+        runId: o.runId,
+        threadId: o.threadId,
+        status: 'running',
+        resumed: false,
+      });
+
       const chunks = await o.invoke(controller.signal);
-      await bridgeGraphStream(chunks, runId, (event) => {
-        if (event.t === 'result') sawResult = true;
-        if (event.t === 'error') {
-          const ev = event as { message: string; apiError?: ApiError };
-          graphError = ev.apiError ?? toApiError(new Error(ev.message));
+
+      async function* filterValues(source: AsyncIterable<unknown>) {
+        for await (const chunk of source) {
+          if (Array.isArray(chunk) && chunk[0] === 'values') {
+            lastValues = chunk[1] as AgentStateType;
+            continue;
+          }
+          yield chunk;
         }
-        emit(event);
+      }
+
+      await bridgeGraphStream(filterValues(chunks), o.runId, (event) => {
+        emitEvent(event);
       });
     } catch (err) {
-      threw = err;
+      graphThrew = err;
     }
 
-    clearInterval(poll);
-    clearInterval(beat);
-    unregisterRun(runId, controller);
+    async function terminateAndFinish(status: 'cancelled' | 'failed', code: TerminateCode): Promise<void> {
+      let termRes: { ended: true; end: EndEvent } | { ended: false } | null = null;
+      try {
+        termRes = await withRetry(
+          () => db.transaction((q) => store.terminate(q, o.runId, status, code, costTotal)),
+          commitRetryMs()
+        );
+      } catch (termErr) {
+        console.error('Terminate failed after retries:', termErr);
+        await replayAndClose(lastSeq);
+        return;
+      }
+
+      if (termRes.ended) {
+        writeClient(toWire({ seq: termRes.end.seq, type: termRes.end.t, payload: termRes.end, ts: Date.now() }));
+      } else {
+        await replayAndClose(lastSeq);
+      }
+    }
 
     try {
+      // Ending: await the chain
       await appendChain;
-      await settlePending();
-      if (detached) return; // the store already holds this run's ending
-      const flagged = controller.signal.aborted || (await store.isCancelled(runId).catch(() => false));
-      // A stream that ran to its end keeps its outcome even if a cancel landed
-      // during the last drain: the result is already out, so `done` wins.
-      const completed = threw === null && sawResult;
-      const cancelled: ApiError = { code: 'cancelled', message: 'The run was stopped.' };
 
-      if (flagged && !completed) {
-        await finish({ t: 'cancelled', at: Date.now() }, 'cancelled', cancelled, ['running']);
-      } else if (threw !== null) {
-        const message = describeGraphError(threw, o.failLabel);
-        const apiError = toApiError(threw);
-        await finish({ t: 'error', message, apiError }, 'failed', apiError, ['running']);
-      } else if (graphError) {
-        await finish(null, 'failed', graphError, ['running']);
+      if (endedElsewhere) {
+        // Step 0: endedElsewhere
+        await replayAndClose(lastSeq);
+        return;
+      }
+
+      const outcome = (lastValues as AgentStateType | null)?.outcome;
+
+      if (outcome) {
+        // Step 1: lastValues?.outcome exists -> completed wins
+        let uploadFailed = false;
+        let stlArtifact: string | undefined;
+        let stepArtifact: string | undefined;
+
+        if (outcome.design?.stl) {
+          try {
+            stlArtifact = await putArtifact(
+              o.ownerKey,
+              'stl',
+              Buffer.from(outcome.design.stl, 'utf8'),
+              { threadId: o.threadId, runId: o.runId },
+              { db }
+            );
+          } catch (err) {
+            console.error('STL upload failed:', err);
+            uploadFailed = true;
+          }
+        }
+
+        if (!uploadFailed && outcome.design?.step) {
+          try {
+            stepArtifact = await putArtifact(
+              o.ownerKey,
+              'step',
+              Buffer.from(outcome.design.step, 'base64'),
+              { threadId: o.threadId, runId: o.runId },
+              { db }
+            );
+          } catch (err) {
+            console.error('STEP upload failed:', err);
+            uploadFailed = true;
+          }
+        }
+
+        if (uploadFailed) {
+          await terminateAndFinish('failed', 'internal');
+          return;
+        }
+
+        let plan: CommitPlan;
+        if (outcome.design) {
+          const design = {
+            ...outcome.design,
+            stlArtifact,
+            stepArtifact,
+          };
+          delete (design as { stl?: string }).stl;
+          delete (design as { step?: string }).step;
+          plan = {
+            ...outcome,
+            costUsd: costTotal > 0 ? costTotal : (outcome.costUsd ?? 0),
+            design,
+          };
+        } else {
+          plan = {
+            replyKind: outcome.replyKind,
+            replyMarkdown: outcome.replyMarkdown,
+            userKind: outcome.userKind,
+            wallMs: outcome.wallMs,
+            turns: outcome.turns,
+            costUsd: costTotal > 0 ? costTotal : (outcome.costUsd ?? 0),
+          };
+        }
+
+        let commitResult: { committed: true; end: EndEvent } | { committed: false } | null = null;
+        try {
+          commitResult = await withRetry(
+            () => db.transaction((q) => store.commit(q, o.runId, plan)),
+            commitRetryMs()
+          );
+        } catch (commitErr) {
+          console.error('Commit failed after retries exhausted:', commitErr);
+          // Retries exhausted after a commit -> terminate('failed', 'internal') once more
+          await terminateAndFinish('failed', 'internal');
+          return;
+        }
+
+        if (commitResult.committed) {
+          writeClient(toWire({ seq: commitResult.end.seq, type: commitResult.end.t, payload: commitResult.end, ts: Date.now() }));
+        } else {
+          await replayAndClose(lastSeq);
+        }
+        return;
+      }
+
+      // No outcome
+      if (controller.signal.aborted && !storeOutage) {
+        // Step 2
+        await terminateAndFinish('cancelled', 'cancelled');
+      } else if (storeOutage) {
+        // Step 3
+        await terminateAndFinish('failed', 'internal');
+      } else if (graphThrew !== null) {
+        // Step 4
+        console.error('Graph threw error:', graphThrew);
+        await terminateAndFinish('failed', 'graph');
       } else {
-        await finish(null, 'done', undefined, ['running']);
+        // Step 5
+        console.error('graph ended without an outcome');
+        await terminateAndFinish('failed', 'graph');
       }
     } catch (e) {
-      console.error('Run finalization failed:', e);
+      console.error('Run ending failed:', e);
+      await replayAndClose(lastSeq);
     } finally {
+      clearInterval(beatTimer);
+      unregisterRun(o.runId, controller);
       try {
         await o.onFinally?.();
       } catch (e) {
-        console.warn('Run cleanup failed:', e);
+        console.warn('onFinally failed:', e);
       }
       if (!clientGone) {
         try {
-          client.close(); // queued data is still delivered; nothing waits for it
+          client.close();
         } catch {
-          // errored or cancelled meanwhile
+          // already closed
         }
       }
     }
-  })().catch((err) => console.error('Run IIFE failed:', err));
+  })().catch((err) => console.error('streamRun background task failed:', err));
 
   return new Response(readable, { headers: SSE_HEADERS });
 }

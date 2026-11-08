@@ -1,7 +1,7 @@
 /**
  * In-process handles for runs this instance is streaming: the AbortController
- * that stops the graph. Cross-instance cancel goes through RunStore.requestCancel;
- * the owning instance polls isCancelled() (see streamRun) and aborts from there.
+ * that stops the graph. Cross-process cancel terminates the run in the database;
+ * the owning instance detects this via heartbeat or append and aborts locally.
  */
 const controllers = new Map<string, AbortController>();
 

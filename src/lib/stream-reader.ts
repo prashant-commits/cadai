@@ -24,14 +24,11 @@ export interface StreamCallbacks {
 
 /**
  * The message fields a finished stream writes.
- *
- * An error event wins over a result: the message is marked `error` and the
- * event text is shown.
  */
 export function streamMessagePatch(state: StreamState): Partial<ChatMessage> {
   if (state.error) {
     const patch: Partial<ChatMessage> = {
-      content: `**Error:** ${state.error}`,
+      content: state.error,
       status: 'error',
     };
     if (state.nodes.length > 0) patch.transcript = serializeTranscript(state.nodes);
@@ -76,18 +73,20 @@ export async function readStream(response: Response, callbacks: StreamCallbacks)
         // Model text can contain `<!--`, which is how transcript sections are delimited.
         ensureOpen().body += escapeMarkers(event.text);
         return;
-      case 'result':
-        if (open) { open.status = 'ok'; open = null; }
-        state.summary = event.summary;
-        if (event.code) state.code = event.code;
-        if (event.stl) state.stl = event.stl;
-        if (event.step) state.step = event.step;
-        if (event.language) state.language = event.language;
-        if (event.designContract) state.designContract = event.designContract;
+      case 'run':
+        state.runId = event.runId;
         return;
-      case 'error':
-        if (open) { open.status = 'error'; open = null; }
-        state.error = event.message;
+      case 'end':
+        if (open) {
+          open.status = event.status === 'failed' ? 'error' : 'ok';
+          open = null;
+        }
+        state.summary = event.reply.markdown;
+        if (event.status === 'failed') {
+          state.error = event.reply.markdown;
+        } else if (event.status === 'cancelled') {
+          state.summary = event.reply.markdown;
+        }
         return;
     }
   }

@@ -38,7 +38,6 @@ export async function put(
   const threadId = opts?.threadId ?? null;
   const runId = opts?.runId ?? null;
 
-  await objectStore.put(objectKey, bytes);
   await db.transaction(async (q) => {
     await q.query(
       `INSERT INTO artifacts(id, owner_key, thread_id, run_id, kind, bytes, object_key)

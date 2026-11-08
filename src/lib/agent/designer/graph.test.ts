@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { END } from '@langchain/langgraph';
 import { routeAfterDesignerCheck } from './graph';
 import type { AgentStateType } from './state';
 
@@ -13,23 +14,23 @@ describe('routeAfterDesignerCheck', () => {
     expect(routeAfterDesignerCheck(state)).toBe('designerNode');
   });
 
-  it('routes to respondToUser when valid', () => {
+  it('routes to END when valid', () => {
     const state = {
       isValid: true,
       designerRetryCount: 0,
       designerCheckCompleted: true,
     } as AgentStateType;
 
-    expect(routeAfterDesignerCheck(state)).toBe('respondToUser');
+    expect(routeAfterDesignerCheck(state)).toBe(END);
   });
 
-  it('routes to respondToUser on failure after the retry', () => {
+  it('routes to END on failure after the retry', () => {
     const state = {
       isValid: false,
       designerRetryCount: 2,
       designerCheckCompleted: true,
     } as AgentStateType;
 
-    expect(routeAfterDesignerCheck(state)).toBe('respondToUser');
+    expect(routeAfterDesignerCheck(state)).toBe(END);
   });
 });

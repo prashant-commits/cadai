@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { HumanMessage } from '@langchain/core/messages';
-import { createDesignerAgent, createRespondToUser } from './graph';
+import { createDesignerAgent } from './graph';
 import type { AgentStateType } from './state';
 import type { DesignerResult, RunDesignerFn } from './types';
 import type { BrepResult } from '../../engine/brep-runner';
@@ -313,109 +313,80 @@ describe('designer mode graph wiring', () => {
     expect(secondCall.priorScript).toBe(state1.outcome?.design?.body);
   });
 
-  it('until C1, respondToUser renders each outcome kind', async () => {
-    const respond = createRespondToUser();
-
+  it('the graph ends at END with outcome for each outcome kind', async () => {
     // 1. result with design
-    const writerResult = vi.fn();
-    await respond(
-      {
-        outcome: {
-          replyKind: 'result',
-          replyMarkdown: '**Designer**\n\nDone',
-          userKind: 'request',
-          design: {
-            parentVersion: null,
-            origin: 'designer',
-            baseRequest: 'box',
-            edits: [],
-            body: 'box = Box(10, 10, 10)',
-            preludeVersion: '1',
-            summary: 'Done',
-            facts: null,
-            flags: [],
-            stl: 'solid ...',
-            step: 'step ...',
-          },
-          costUsd: 0.1,
-          wallMs: 100,
-          turns: 1,
-        },
-      } as unknown as AgentStateType,
-      { writer: writerResult } as never
-    );
-    expect(writerResult).toHaveBeenCalledWith(
-      expect.objectContaining({
-        t: 'result',
-        summary: '**Designer**\n\nDone',
-        code: expect.stringContaining('box = Box(10, 10, 10)'),
-        stl: 'solid ...',
-        step: 'step ...',
-      })
-    );
+    const agentPass = createDesignerAgent('gpt-6-sol', {
+      runDesigner: vi.fn<RunDesignerFn>().mockResolvedValue(mockSuccessDesignerResult),
+      runBrep: vi.fn().mockResolvedValue(mockSuccessBrep),
+    });
+    const s1 = (await agentPass.invoke({ messages: [new HumanMessage('make a box')] })) as AgentStateType;
+    expect(s1.outcome).toBeDefined();
+    expect(s1.outcome?.replyKind).toBe('result');
+    expect(s1.outcome?.replyMarkdown).toContain('**Designer**');
+    expect(s1.outcome?.design).toBeDefined();
+    expect(s1.outcome?.design?.body).toBe(mockSuccessDesignerResult.script);
 
     // 2. answer
-    const writerAnswer = vi.fn();
-    await respond(
-      {
-        outcome: {
-          replyKind: 'answer',
-          replyMarkdown: 'It is a 10mm cube.',
-          userKind: 'question',
-          costUsd: 0.05,
-          wallMs: 50,
-          turns: 0,
-        },
-      } as unknown as AgentStateType,
-      { writer: writerAnswer } as never
-    );
-    expect(writerAnswer).toHaveBeenCalledWith({
-      t: 'result',
-      summary: 'It is a 10mm cube.',
-      node: 'respondToUser',
+    const agentAnswer = createDesignerAgent('gpt-6-sol', {
+      classify: vi.fn().mockResolvedValue({ label: 'question', costUsd: 0 }),
+      answer: vi.fn().mockResolvedValue({ answer: 'It is a 10mm cube.', costUsd: 0 }),
     });
+    const s2 = (await agentAnswer.invoke({
+      messages: [new HumanMessage('how tall is it?')],
+      baseBody: 'box = Box(10, 10, 10)',
+    })) as AgentStateType;
+    expect(s2.outcome).toBeDefined();
+    expect(s2.outcome?.replyKind).toBe('answer');
+    expect(s2.outcome?.replyMarkdown).toBe('It is a 10mm cube.');
 
     // 3. nochange
-    const writerNoChange = vi.fn();
-    await respond(
-      {
-        outcome: {
-          replyKind: 'nochange',
-          replyMarkdown: NO_CHANGE,
-          userKind: 'edit',
-          costUsd: 0.05,
-          wallMs: 50,
-          turns: 1,
-        },
-      } as unknown as AgentStateType,
-      { writer: writerNoChange } as never
-    );
-    expect(writerNoChange).toHaveBeenCalledWith({
-      t: 'result',
-      summary: NO_CHANGE,
-      node: 'respondToUser',
+    const agentNoChange = createDesignerAgent('gpt-6-sol', {
+      classify: vi.fn().mockResolvedValue({ label: 'edit', costUsd: 0 }),
+      runDesigner: vi.fn<RunDesignerFn>().mockResolvedValue({
+        script: 'box = Box(10, 10, 10)',
+        facts: mockSuccessDesignerResult.facts,
+        summary: 'No change',
+        reviewerFlags: [],
+        turns: 1,
+        costUsd: 0.05,
+      }),
+      runBrep: vi.fn().mockResolvedValue(mockSuccessBrep),
     });
+    const s3 = (await agentNoChange.invoke({
+      messages: [new HumanMessage('leave it alone')],
+      baseBody: 'box = Box(10, 10, 10)',
+    })) as AgentStateType;
+    expect(s3.outcome).toBeDefined();
+    expect(s3.outcome?.replyKind).toBe('nochange');
+    expect(s3.outcome?.replyMarkdown).toBe(NO_CHANGE);
 
     // 4. error
-    const writerError = vi.fn();
-    await respond(
-      {
-        outcome: {
-          replyKind: 'error',
-          replyMarkdown: REFUSAL,
-          userKind: 'unknown',
-          costUsd: 0,
-          wallMs: 10,
-          turns: 0,
-        },
-      } as unknown as AgentStateType,
-      { writer: writerError } as never
-    );
-    expect(writerError).toHaveBeenCalledWith({
-      t: 'error',
-      message: REFUSAL,
-      node: 'respondToUser',
+    const agentRefusal = createDesignerAgent('gpt-6-sol', {
+      classify: vi.fn().mockRejectedValue(new UnusableReplyError('refusal')),
     });
+    const s4 = (await agentRefusal.invoke({
+      messages: [new HumanMessage('bad request')],
+      baseBody: 'box = Box(10, 10, 10)',
+    })) as AgentStateType;
+    expect(s4.outcome).toBeDefined();
+    expect(s4.outcome?.replyKind).toBe('error');
+    expect(s4.outcome?.replyMarkdown).toBe(REFUSAL);
+  });
+
+  it("an edit's design edits accumulate baseEdits", async () => {
+    const agent = createDesignerAgent('gpt-6-sol', {
+      classify: vi.fn().mockResolvedValue({ label: 'edit', costUsd: 0 }),
+      runDesigner: vi.fn<RunDesignerFn>().mockResolvedValue(mockSuccessDesignerResult),
+      runBrep: vi.fn().mockResolvedValue(mockSuccessBrep),
+    });
+    const state = (await agent.invoke({
+      messages: [new HumanMessage('b')],
+      baseBody: 'box = Box(10, 10, 10)',
+      baseRequest: 'make a box',
+      baseEdits: ['a'],
+    })) as AgentStateType;
+    expect(state.outcome).toBeDefined();
+    expect(state.outcome?.design?.edits).toEqual(['a', 'b']);
   });
 
   it('every path that reaches END sets outcome', async () => {

@@ -1,92 +1,243 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { HumanMessage, AIMessage } from '@langchain/core/messages';
 import { createDesignerAgent } from '@/lib/agent/designer/graph';
-import { getRunStore } from '@/lib/runs/run-store';
 import { streamRun } from '@/lib/runs/stream-run';
-import { errorResponse } from '@/lib/runs/api-error';
-import { toApiError } from '@/lib/contract/api-error';
 import { getLangfuseCallbackHandler, getLangfuseSpanProcessor } from '@/lib/tracing/langfuse';
-import { DesignContract } from '@/types';
 import { coerceRouteModel } from '@/lib/agent/models';
 import { graphRecursionLimit } from '@/lib/agent/run-limits';
-import { randomUUID } from 'crypto';
+import { getDb } from '@/lib/db/db';
+import { DbRunStore } from '@/lib/runs/db-run-store';
+import { loadRunInput } from '@/lib/persist/run-input';
+import { isValidUuid, ownerKeyFrom } from '@/lib/owner';
+import { StoreError } from '@/lib/persist/types';
+import {
+  BAD_ATTACHMENT,
+  BAD_EDIT,
+  BAD_PIN,
+  LEGACY,
+  RUN_ACTIVE,
+  STALE_CLIENT,
+} from '@/lib/persist/phrases';
+import { checkPythonScript } from '@/lib/brep/body-check';
+import { withGeneratedPrelude, toBody } from '@/lib/brep/prelude';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
+  const ownerKey = ownerKeyFrom(req);
+  if (!ownerKey) {
+    return NextResponse.json(
+      { error: { code: 'unauthorized', message: 'Unauthorized' } },
+      { status: 401 }
+    );
+  }
+
+  let body: unknown;
   try {
-    const body = await req.json();
-    const { messages, model, threadId, designContract } = body as {
-      messages: unknown;
-      model?: string;
-      threadId: string;
-      designContract?: DesignContract;
+    body = await req.json();
+  } catch {
+    return NextResponse.json(
+      { error: { code: 'bad_request', message: 'Invalid JSON' } },
+      { status: 400 }
+    );
+  }
+
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return NextResponse.json(
+      { error: { code: 'bad_request', message: 'Request body must be an object' } },
+      { status: 400 }
+    );
+  }
+
+  const b = body as Record<string, unknown>;
+
+  if (typeof b.text !== 'string') {
+    return NextResponse.json(
+      { error: { code: 'bad_request', message: 'text must be a string' } },
+      { status: 400 }
+    );
+  }
+
+  if (typeof b.threadId !== 'string' || !isValidUuid(b.threadId)) {
+    return NextResponse.json(
+      { error: { code: 'legacy', message: LEGACY } },
+      { status: 400 }
+    );
+  }
+
+  if (typeof b.clientMessageId !== 'string' || !isValidUuid(b.clientMessageId)) {
+    return NextResponse.json(
+      { error: { code: 'stale_client', message: STALE_CLIENT } },
+      { status: 400 }
+    );
+  }
+
+  if (
+    b.viewingVersion !== undefined &&
+    b.viewingVersion !== null &&
+    (typeof b.viewingVersion !== 'number' || !Number.isInteger(b.viewingVersion))
+  ) {
+    return NextResponse.json(
+      { error: { code: 'stale_client', message: STALE_CLIENT } },
+      { status: 400 }
+    );
+  }
+
+  if (b.attachmentIds !== undefined && b.attachmentIds !== null) {
+    if (
+      !Array.isArray(b.attachmentIds) ||
+      b.attachmentIds.length > 4 ||
+      !b.attachmentIds.every((id) => typeof id === 'string')
+    ) {
+      return NextResponse.json(
+        { error: { code: 'bad_attachment', message: BAD_ATTACHMENT } },
+        { status: 400 }
+      );
+    }
+  }
+
+  if (b.pinnedParams !== undefined && b.pinnedParams !== null) {
+    if (typeof b.pinnedParams !== 'object' || Array.isArray(b.pinnedParams)) {
+      return NextResponse.json(
+        { error: { code: 'bad_pin', message: BAD_PIN } },
+        { status: 400 }
+      );
+    }
+    for (const [k, v] of Object.entries(b.pinnedParams as Record<string, unknown>)) {
+      if (typeof k !== 'string' || typeof v !== 'number' || !Number.isFinite(v)) {
+        return NextResponse.json(
+          { error: { code: 'bad_pin', message: BAD_PIN } },
+          { status: 400 }
+        );
+      }
+    }
+  }
+
+  if (b.editedBody !== undefined && b.editedBody !== null) {
+    if (typeof b.editedBody !== 'string') {
+      return NextResponse.json(
+        { error: { code: 'bad_edit', message: BAD_EDIT } },
+        { status: 400 }
+      );
+    }
+    const check = checkPythonScript(withGeneratedPrelude(toBody(b.editedBody)));
+    if (!check.ok) {
+      return NextResponse.json(
+        { error: { code: 'bad_edit', message: BAD_EDIT } },
+        { status: 400 }
+      );
+    }
+  }
+
+  const threadId = b.threadId as string;
+  const clientMessageId = b.clientMessageId as string;
+  const text = b.text as string;
+  const viewingVersion =
+    b.viewingVersion === undefined ? undefined : (b.viewingVersion as number | null);
+  const attachmentIds = (b.attachmentIds as string[] | undefined) ?? undefined;
+  const pinnedParams = (b.pinnedParams as Record<string, number> | undefined) ?? undefined;
+  const editedBody = (b.editedBody as string | undefined) ?? undefined;
+  const model = typeof b.model === 'string' ? b.model : undefined;
+
+  const db = getDb();
+  let r:
+    | { replay: true; runId: string }
+    | {
+        replay: false;
+        runId: string;
+        threadId: string;
+        baseVersion: number | null;
+        userMessageId: string;
+      };
+
+  try {
+    r = await db.transaction((q) =>
+      DbRunStore.start(q, {
+        ownerKey,
+        threadId,
+        clientMessageId,
+        text,
+        viewingVersion: viewingVersion as unknown as number | null,
+        attachmentIds,
+        pinnedParams,
+        editedBody,
+        model,
+      })
+    );
+  } catch (err) {
+    if (err instanceof StoreError) {
+      if (err.status === 404) {
+        return NextResponse.json(
+          { error: { code: 'not_found', message: err.message } },
+          { status: 404 }
+        );
+      }
+      if (err.status === 409 && err.code === 'run_active') {
+        return NextResponse.json(
+          { error: { code: 'run_active', message: RUN_ACTIVE }, activeRunId: err.activeRunId },
+          { status: 409 }
+        );
+      }
+      return NextResponse.json(
+        { error: { code: err.code, message: err.message } },
+        { status: err.status }
+      );
+    }
+    throw err;
+  }
+
+  if (r.replay) {
+    return NextResponse.json(
+      { error: { code: 'duplicate_message' }, runId: r.runId },
+      { status: 409 }
+    );
+  }
+
+  try {
+    const input = await loadRunInput(
+      db,
+      ownerKey,
+      threadId,
+      r.baseVersion,
+      attachmentIds ?? []
+    );
+
+    const lcMessages = input.messages.map((m) =>
+      m.role === 'user'
+        ? new HumanMessage({ content: m.content })
+        : new AIMessage({ content: m.content })
+    );
+
+    const graphInput = {
+      messages: lcMessages,
+      baseVersion: input.baseVersion,
+      baseBody: input.baseBody,
+      baseRequest: input.baseRequest,
+      attachments: input.attachments,
+      baseEdits: input.baseEdits,
     };
 
-    if (!messages || !Array.isArray(messages) || messages.length === 0) {
-      return errorResponse('bad_request', 'Messages array is required.');
-    }
-
-    // Map client messages to LangChain BaseMessage objects
-    const lcMessages = messages.map((m: { role: string; content: string; image?: string }) => {
-      let content: string | Array<{ type: string; text?: string; image_url?: { url: string } }> = m.content;
-
-      if (m.image) {
-        content = [
-          { type: 'text', text: m.content || 'Please see the attached annotation.' },
-          { type: 'image_url', image_url: { url: m.image } }
-        ];
-      }
-
-      if (m.role === 'user') {
-        return new HumanMessage({ content: content as never });
-      } else {
-        return new AIMessage({ content: content as never });
-      }
-    });
-
-    // The runId is minted here, before any work, so the client can stop or
-    // reconnect to the run from its first event (`{ t: 'run' }`).
-    const runId = randomUUID();
-    const chatThreadId = typeof threadId === 'string' && threadId ? threadId : runId;
-    await getRunStore().create({ runId, threadId: chatThreadId });
-
-    // Hoisted so onFinally can flush it. The factory swallows its own
-    // construction errors and returns null, so this cannot throw.
     const effectiveModel = coerceRouteModel(model);
     const langfuseHandler = getLangfuseCallbackHandler({
-      sessionId: chatThreadId,
+      sessionId: threadId,
       tags: ['cadai', effectiveModel],
       metadata: { model: effectiveModel },
     });
 
-    return streamRun({
-      store: getRunStore(),
-      runId,
-      threadId: chatThreadId,
-      failLabel: 'Agent execution failed',
-      invoke: async (signal) => {
-        const agent = createDesignerAgent(effectiveModel);
-        return agent.stream(
-          { messages: lcMessages, designContract: designContract ?? null },
-          {
-            configurable: { thread_id: chatThreadId },
-            recursionLimit: graphRecursionLimit(),
-            streamMode: ['updates', 'messages', 'custom', 'tasks'],
-            callbacks: langfuseHandler ? [langfuseHandler] : undefined,
-            signal,
-          }
-        );
-      },
-      // Langfuse batches spans and ships them on a timer. The run is detached
-      // from a request whose Response already returned, so nothing else
-      // guarantees the queue drains - on a serverless runtime the tail of every
-      // run is dropped. Flush before the stream closes, while the platform is
-      // still holding the invocation open; `after()` would race that teardown.
-      // v5 moved the export queue onto the span processor (see
-      // src/lib/tracing/langfuse.ts), so that is what gets flushed.
+    const response = streamRun({
+      runId: r.runId,
+      threadId,
+      ownerKey,
+      invoke: (signal) =>
+        createDesignerAgent(effectiveModel).stream(graphInput, {
+          configurable: { ownerKey, threadId, runId: r.runId },
+          recursionLimit: graphRecursionLimit(),
+          streamMode: ['updates', 'messages', 'custom', 'tasks', 'values'],
+          callbacks: langfuseHandler ? [langfuseHandler] : undefined,
+          signal,
+        }),
       onFinally: async () => {
         try {
           await getLangfuseSpanProcessor()?.forceFlush();
@@ -95,9 +246,21 @@ export async function POST(req: NextRequest) {
         }
       },
     });
-  } catch (err: unknown) {
-    const api = toApiError(err);
-    const { code, message, ...extra } = api;
-    return errorResponse(code, message, extra);
+
+    response.headers.set('X-Run-Id', r.runId);
+    return response;
+  } catch (err) {
+    try {
+      await db.transaction((q) =>
+        DbRunStore.terminate(q, r.runId, 'failed', 'internal')
+      );
+    } catch (termErr) {
+      console.error('Failed to terminate run after setup error:', termErr);
+    }
+    console.error('Chat route setup error:', err);
+    return NextResponse.json(
+      { error: { code: 'internal', message: 'Internal server error' } },
+      { status: 500 }
+    );
   }
 }

@@ -1,122 +1,126 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import { describe, it, expect, afterAll } from 'vitest';
+import * as crypto from 'crypto';
 import { NextRequest } from 'next/server';
-import { getRunStore } from '@/lib/runs/run-store';
-import { getArtifactStore } from '@/lib/runs/artifact-store';
-
-const createAgent = vi.hoisted(() => vi.fn());
-vi.mock('@/lib/agent/designer/graph', () => ({ createDesignerAgent: createAgent }));
-
-import { POST as chat } from '../chat/route';
+import { getDb, closeDb, type Db } from '@/lib/db/db';
+import { CADAI_OWNER_COOKIE } from '@/lib/owner';
+import { streamRun } from '@/lib/runs/stream-run';
+import type { RunOutcome } from '@/lib/persist/types';
 import { GET as getArtifact } from '../artifacts/[id]/route';
 
-const saved = { ...process.env };
-let dir = '';
-beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadai-art-run-'));
-  process.env.CADAI_RUN_DIR = dir;
-  process.env.CADAI_CANCEL_POLL_MS = '20';
-  delete process.env.CADAI_INLINE_PAYLOADS;
-  createAgent.mockReset();
-});
-afterEach(async () => {
-  await new Promise((r) => setTimeout(r, 150));
-  process.env = { ...saved };
-  fs.rmSync(dir, { recursive: true, force: true });
-});
+function makeOwner() {
+  const uuid = crypto.randomUUID();
+  const cookie = `${CADAI_OWNER_COOKIE}=${uuid}`;
+  const key = crypto.createHash('sha256').update(uuid).digest('hex');
+  return { uuid, cookie, key };
+}
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- SSE payloads are asserted field by field
-type Ev = Record<string, any>;
-const parse = (text: string): Ev[] => text.split('\n\n').filter(Boolean).map((l) => JSON.parse(l.replace(/^data: /, '')));
-const graphOf = (chunks: unknown[]) => ({
-  stream: async () =>
-    (async function* () {
-      for (const c of chunks) yield c;
-    })(),
-});
-const startChat = () =>
-  chat(new NextRequest('http://localhost/api/chat', { method: 'POST', body: JSON.stringify({ threadId: 't1', messages: [{ role: 'user', content: 'a bracket' }] }) }));
-const fetchArtifact = (id: string) => getArtifact(new NextRequest(`http://localhost/api/artifacts/${id}`), { params: Promise.resolve({ id }) });
+async function createTestRun(db: Db, ownerKey: string) {
+  const threadId = crypto.randomUUID();
+  const runId = `run_${crypto.randomUUID()}`;
+  await db.query(
+    `INSERT INTO threads(id, owner_key, active_run_id) VALUES ($1, $2, $3)`,
+    [threadId, ownerKey, runId]
+  );
+  await db.query(
+    `INSERT INTO runs(id, thread_id, status, deadline_at) VALUES ($1, $2, 'running', now() + interval '15 minutes')`,
+    [runId, threadId]
+  );
+  return { threadId, runId };
+}
 
-/** A 2 MB ASCII STL (the size class that motivated this) and a small base64 STEP. */
-const BIG_STL = `solid big\n${'facet normal 0 0 1\n outer loop\n  vertex 0 0 0\n  vertex 1 0 0\n  vertex 0 1 0\n endloop\nendfacet\n'.repeat(22_000)}endsolid big\n`;
-const STEP_BYTES = Buffer.from('ISO-10303-21;\nHEADER;\nENDSEC;\nEND-ISO-10303-21;\n');
-const resultChunk = (extra: Record<string, unknown> = {}) => [
-  'custom',
-  { t: 'result', summary: 'done', code: 'cube(1);', stl: BIG_STL, step: STEP_BYTES.toString('base64'), language: 'build123d', node: 'respondToUser', ...extra },
-];
+const reqArtifact = (id: string, cookie?: string) =>
+  getArtifact(
+    new NextRequest(`http://localhost/api/artifacts/${id}`, {
+      headers: cookie ? { cookie } : {},
+    }),
+    { params: Promise.resolve({ id }) }
+  );
 
-describe('result event', () => {
-  it('carries refs and no inline stl/step by default; code stays inline', async () => {
-    expect(BIG_STL.length).toBeGreaterThan(1_900_000);
-    createAgent.mockReturnValue(graphOf([resultChunk()]));
-    const events = parse(await (await startChat()).text());
-    const result = events.find((e) => e.t === 'result')!;
-    expect(result.stl).toBeUndefined();
-    expect(result.step).toBeUndefined();
-    expect(result.code).toBe('cube(1);');
-    expect(result.artifacts.stl).toMatchObject({ kind: 'stl', bytes: BIG_STL.length });
-    expect(result.artifacts.step).toMatchObject({ kind: 'step', bytes: STEP_BYTES.length });
-
-    // The refs resolve to the original bytes.
-    const stl = await fetchArtifact(result.artifacts.stl.id);
-    expect(await stl.text()).toBe(BIG_STL);
-    const step = await fetchArtifact(result.artifacts.step.id);
-    expect(Buffer.from(await step.arrayBuffer()).equals(STEP_BYTES)).toBe(true);
+describe('artifacts-run', () => {
+  afterAll(async () => {
+    await closeDb();
   });
 
-  it('keeps the inline fields next to the refs when CADAI_INLINE_PAYLOADS=1', async () => {
-    process.env.CADAI_INLINE_PAYLOADS = '1';
-    createAgent.mockReturnValue(graphOf([resultChunk()]));
-    const result = parse(await (await startChat()).text()).find((e) => e.t === 'result')!;
-    expect(result.stl).toBe(BIG_STL);
-    expect(result.step).toBe(STEP_BYTES.toString('base64'));
-    expect(result.artifacts.stl.bytes).toBe(BIG_STL.length);
-    expect(result.artifacts.step.bytes).toBe(STEP_BYTES.length);
-  });
+  it('a completed design run creates STL and STEP artifacts accessible to the owner', async () => {
+    const db = getDb();
+    const owner = makeOwner();
+    const { threadId, runId } = await createTestRun(db, owner.key);
 
-  it('stores the event exactly as streamed: the log line for a 2 MB STL is small', async () => {
-    createAgent.mockReturnValue(graphOf([resultChunk()]));
-    const events = parse(await (await startChat()).text());
-    const runId = events[0].runId;
-    const line = fs.readFileSync(path.join(dir, 'events', `${runId}.jsonl`), 'utf-8').split('\n').find((l) => l.includes('"t":"result"'))!;
-    expect(line.length).toBeLessThan(10_000);
-    const stored = (await getRunStore().events(runId, 0)).find((e) => e.t === 'result')!;
-    const streamed = events.find((e) => e.t === 'result')!;
-    expect(stored).toEqual(streamed);
-  });
+    const STL_TEXT = 'solid cube\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid cube';
+    const STEP_TEXT = 'ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n';
+    const STEP_BASE64 = Buffer.from(STEP_TEXT).toString('base64');
 
-  it('a result without payloads has no artifacts field', async () => {
-    createAgent.mockReturnValue(graphOf([['custom', { t: 'result', summary: 'x', node: 'respondToUser' }]]));
-    const result = parse(await (await startChat()).text()).find((e) => e.t === 'result')!;
-    expect(result.artifacts).toBeUndefined();
-  });
+    const outcome: RunOutcome = {
+      replyKind: 'result',
+      replyMarkdown: 'Cube created',
+      userKind: 'request',
+      design: {
+        parentVersion: null,
+        origin: 'designer',
+        baseRequest: 'cube',
+        edits: [],
+        body: 'cube = Box(10, 10, 10)',
+        preludeVersion: '1',
+        summary: 'Cube',
+        facts: null,
+        flags: [],
+        stl: STL_TEXT,
+        step: STEP_BASE64,
+      },
+      costUsd: 0.05,
+      wallMs: 150,
+      turns: 1,
+    };
 
-  it('falls back to inline when the artifact store fails', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    vi.spyOn(getArtifactStore(), 'put').mockRejectedValue(new Error('disk full'));
-    createAgent.mockReturnValue(graphOf([resultChunk()]));
-    const result = parse(await (await startChat()).text()).find((e) => e.t === 'result')!;
-    expect(result.stl).toBe(BIG_STL);
-    expect(result.artifacts).toBeUndefined();
-    warn.mockRestore();
-  });
-});
+    const res = streamRun({
+      runId,
+      threadId,
+      ownerKey: owner.key,
+      invoke: async () =>
+        (async function* () {
+          yield ['values', { outcome }];
+        })(),
+    });
 
-describe('M1: a failing artifact store never kills the run', () => {
-  it('an unsupported CADAI_ARTIFACT_STORE leaves a result inline and ends the run done; delta/run events never touch the store', async () => {
-    process.env.CADAI_ARTIFACT_STORE = 's3';
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    createAgent.mockReturnValue(graphOf([['custom', { t: 'delta', text: 'hi', node: 'designerNode' }], resultChunk()]));
-    const events = parse(await (await startChat()).text());
-    const result = events.find((e) => e.t === 'result')!;
-    expect(result.stl).toBe(BIG_STL);
-    expect(result.artifacts).toBeUndefined();
-    expect(events.some((e) => e.t === 'error')).toBe(false);
-    expect((await getRunStore().get(events[0].runId))?.status).toBe('done');
-    expect(warn).toHaveBeenCalledTimes(1); // logged once
-    warn.mockRestore();
+    const raw = await res.text();
+    expect(raw).toContain('"t":"end"');
+
+    // Verify designs row has stl_artifact and step_artifact
+    const designRes = await db.query(
+      `SELECT stl_artifact, step_artifact FROM designs WHERE thread_id = $1 AND version = 1`,
+      [threadId]
+    );
+    expect(designRes.rows).toHaveLength(1);
+    const stlArtId = String(designRes.rows[0].stl_artifact);
+    const stepArtId = String(designRes.rows[0].step_artifact);
+    expect(stlArtId).toBeTruthy();
+    expect(stepArtId).toBeTruthy();
+
+    // Verify artifact rows
+    const artRows = await db.query(
+      `SELECT id, kind, bytes, run_id, thread_id FROM artifacts WHERE id IN ($1, $2)`,
+      [stlArtId, stepArtId]
+    );
+    expect(artRows.rows).toHaveLength(2);
+    for (const r of artRows.rows) {
+      expect(r.run_id).toBe(runId);
+      expect(r.thread_id).toBe(threadId);
+    }
+
+    // Download via /api/artifacts/:id as the owner
+    const stlRes = await reqArtifact(stlArtId, owner.cookie);
+    expect(stlRes.status).toBe(200);
+    expect(stlRes.headers.get('content-type')).toBe('model/stl');
+    expect(await stlRes.text()).toBe(STL_TEXT);
+
+    const stepRes = await reqArtifact(stepArtId, owner.cookie);
+    expect(stepRes.status).toBe(200);
+    expect(stepRes.headers.get('content-type')).toBe('model/step');
+    expect(await stepRes.text()).toBe(STEP_TEXT);
+
+    // Another owner gets 404
+    const otherOwner = makeOwner();
+    const otherRes = await reqArtifact(stlArtId, otherOwner.cookie);
+    expect(otherRes.status).toBe(404);
   });
 });
