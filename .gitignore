@@ -67,3 +67,6 @@ explabs_smoke.mjs
 
 # generation eval outputs
 /eval/results/
+
+# eval run output (records, meshes, private PGlite)
+eval/designer/results/
