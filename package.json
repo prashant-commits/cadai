@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "migrate": "tsx scripts/migrate.ts",
     "test": "vitest run --project unit",
     "test:pg": "vitest run --project pg",
     "test:watch": "vitest",
