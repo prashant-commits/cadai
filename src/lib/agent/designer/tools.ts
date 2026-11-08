@@ -40,9 +40,9 @@ export function designerTools() {
   const runScript = new DynamicStructuredTool({
     name: 'run_script',
     description:
-      'Run a complete build123d Python script and return geometric measurements, validity, interferences and parameters.',
+      'Run the build123d Python design code (body) and return geometric measurements, validity, interferences and parameters.',
     schema: z.object({
-      script: z.string().describe('The complete build123d Python script to execute.'),
+      script: z.string().describe('The build123d Python design code (body) to execute.'),
     }),
     func: async () => 'handled in loop',
   });
@@ -64,7 +64,7 @@ export function designerTools() {
       'Complete the design session. Provide a short summary of the design, its clearances and how you read the request.',
     schema: z.object({
       summary: z.string().describe('Summary of the design, features and interpretations.'),
-      script: z.string().optional().describe('Optional. Must equal the last script you ran; geometry changes go through run_script.'),
+      script: z.string().optional().describe('Optional. Must equal the last design code (body) you ran; geometry changes go through run_script.'),
     }),
     func: async () => 'handled in loop',
   });

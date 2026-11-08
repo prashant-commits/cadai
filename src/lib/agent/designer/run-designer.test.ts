@@ -6,6 +6,8 @@ import { runBrep } from '../../engine/brep-runner';
 import { getChatModel } from '../model-provider';
 import { MAX_COST_USD, MAX_TURNS, runDesigner } from './run-designer';
 import type { DesignerEvent, ReviewFn, ReviewFlag } from './types';
+import { DESIGNER_SYSTEM_PROMPT } from './prompt';
+import { withGeneratedPrelude } from '../../brep/prelude';
 
 vi.mock('../../engine/brep-runner', () => ({ runBrep: vi.fn() }));
 vi.mock('../model-provider', async (orig) => ({
@@ -67,7 +69,8 @@ function reply(calls: Call[], opts: { text?: string; outputTokens?: number } = {
 /** Installs a scripted model. Each turn pops the next reply; the last one repeats when `repeat` is set. */
 function installModel(script: AIMessage[] | ((turn: number) => AIMessage)) {
   const seen: BaseMessage[][] = [];
-  const invoke = vi.fn(async (msgs: BaseMessage[]) => {
+  const invoke = vi.fn(async (msgs: BaseMessage[], options?: unknown) => {
+    void options;
     seen.push([...msgs]);
     const n = seen.length - 1;
     const next = typeof script === 'function' ? script(n) : script[n];
@@ -382,6 +385,14 @@ describe('events', () => {
     const res = await runDesigner({ request: 'a box' }, { onEvent: () => { throw new Error('ui'); } });
     expect(res.summary).toBe('ok');
   });
+
+  it('invokes the designer model with nostream tag', async () => {
+    const m = installModel([reply([run(PLAIN), run(PLAIN), render(), finish()])]);
+    await runDesigner({ request: 'a box' }, {});
+    expect(m.invoke).toHaveBeenCalled();
+    const options = m.invoke.mock.calls[0]?.[1] as { tags?: string[] } | undefined;
+    expect(options?.tags).toContain('nostream');
+  });
 });
 
 describe('prompt caching', () => {
@@ -393,5 +404,57 @@ describe('prompt caching', () => {
     expect(breakpoints).toHaveLength(2); // system + newest
     expect(breakpoints[0]).toBe(lastMsgs[0]);
     expect(breakpoints[1]).toBe(lastMsgs[lastMsgs.length - 1]);
+  });
+});
+
+describe('body-only model interface', () => {
+  it('the model is shown the body only', async () => {
+    const priorBody = 'width = 40\nresult = Box(width, 10, 10)\n';
+    const priorScript = `${GENERATED_PRELUDE}\n\n${PRELUDE_SENTINEL}\n\n${priorBody}`;
+
+    // New design
+    const mNew = installModel([reply([finish('ok')])]);
+    await runDesigner({ request: 'a box' }, {});
+    const newMsgText = (mNew.seen[0][1].content as Array<{ text: string }>)[0].text;
+    expect(newMsgText).not.toContain(PRELUDE_SENTINEL);
+    expect(newMsgText).not.toContain('from build123d import *');
+    expect(newMsgText).not.toContain('def _fuse');
+
+    // Edit design
+    const mEdit = installModel([reply([finish('ok')])]);
+    await runDesigner({ request: 'a box', priorScript, editRequest: 'wider' }, {});
+    const editMsgText = (mEdit.seen[0][1].content as Array<{ text: string }>)[0].text;
+    expect(editMsgText).not.toContain(PRELUDE_SENTINEL);
+    expect(editMsgText).not.toContain('from build123d import *');
+    expect(editMsgText).not.toContain('def _fuse');
+    expect(editMsgText).toContain('width = 40');
+  });
+
+  it('finish accepts its own body', async () => {
+    const bodyCode = 'width = 40\nresult = Box(width, 10, 10)\n';
+    installModel([
+      reply([run(bodyCode), run(bodyCode), render(), { name: 'finish', args: { summary: 'finished', script: bodyCode } }]),
+    ]);
+    const res = await runDesigner({ request: 'a box' }, {});
+    expect(res.failed).toBeUndefined();
+    expect(res.summary).toBe('finished');
+  });
+
+  it('a body-only first run passes', async () => {
+    const bodyCode = 'width = 40\nresult = Box(width, 10, 10)\n';
+    installModel([
+      reply([run(bodyCode), run(bodyCode), render(), finish()]),
+    ]);
+    const res = await runDesigner({ request: 'a box' }, {});
+    const expectedScript = withGeneratedPrelude(bodyCode);
+    expect(vi.mocked(runBrep).mock.calls[0]?.[0]).toBe(expectedScript);
+    expect(checkPythonScript(expectedScript).ok).toBe(true);
+    expect(res.script).toBe(expectedScript);
+  });
+
+  it('prompt contains the exact prelude contract sentence', () => {
+    expect(DESIGNER_SYSTEM_PROMPT).toContain(
+      'Write only the design code; the tool adds the prelude; `_round`/`_bevel` are available.'
+    );
   });
 });
