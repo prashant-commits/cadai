@@ -7,21 +7,18 @@ import { getArtifactStore } from '@/lib/runs/artifact-store';
 import { POST } from './route';
 
 const VALID_CODE = `
-cube([10, 10, 10]);
+from build123d import Box
+result = Box(10, 10, 10)
 `;
 
 const EMPTY_CODE = `   `;
-
-const ERROR_CODE = `
-cube([10, 10, 10]
-`;
 
 describe('/api/compile API Route', () => {
   it('returns inline stl AND artifact refs that resolve to the same bytes', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadai-compile-'));
     process.env.CADAI_RUN_DIR = dir;
     try {
-      const res = await POST(new NextRequest('http://localhost:3000/api/compile', { method: 'POST', body: JSON.stringify({ code: VALID_CODE, language: 'openscad' }) }));
+      const res = await POST(new NextRequest('http://localhost:3000/api/compile', { method: 'POST', body: JSON.stringify({ code: VALID_CODE }) }));
       const data = await res.json();
       expect(data.stl).toContain('facet normal');
       expect(data.artifacts.stl).toMatchObject({ kind: 'stl', bytes: Buffer.byteLength(data.stl) });
@@ -33,7 +30,7 @@ describe('/api/compile API Route', () => {
       const runs = fs.readdirSync(path.join(dir, 'artifacts', 'runs'));
       expect(runs).toHaveLength(1);
       expect(runs[0]).toMatch(/^compile-[0-9a-f]{24}$/);
-      const again = await (await POST(new NextRequest('http://localhost:3000/api/compile', { method: 'POST', body: JSON.stringify({ code: VALID_CODE, language: 'openscad' }) }))).json();
+      const again = await (await POST(new NextRequest('http://localhost:3000/api/compile', { method: 'POST', body: JSON.stringify({ code: VALID_CODE }) }))).json();
       expect(again.artifacts.stl.id).toBe(data.artifacts.stl.id);
     } finally {
       delete process.env.CADAI_RUN_DIR;
@@ -45,10 +42,11 @@ describe('/api/compile API Route', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadai-compile-cap-'));
     process.env.CADAI_RUN_DIR = dir;
     try {
-      const compile = async (code: string) => (await (await POST(new NextRequest('http://localhost:3000/api/compile', { method: 'POST', body: JSON.stringify({ code, language: 'openscad' }) }))).json());
-      const first = await compile('cube([1, 1, 1]);');
-      process.env.CADAI_COMPILE_ARTIFACT_MAX_BYTES = String(first.artifacts.stl.bytes + 10); // room for one
-      const second = await compile('cube([2, 2, 2]);');
+      const compile = async (code: string) => (await (await POST(new NextRequest('http://localhost:3000/api/compile', { method: 'POST', body: JSON.stringify({ code }) }))).json());
+      const first = await compile('from build123d import Box\nresult = Box(1, 1, 1)\n');
+      const firstBytes = (first.artifacts.stl?.bytes ?? 0) + (first.artifacts.step?.bytes ?? 0);
+      process.env.CADAI_COMPILE_ARTIFACT_MAX_BYTES = String(firstBytes + 10); // room for one
+      const second = await compile('from build123d import Box\nresult = Box(2, 2, 2)\n');
       expect(await getArtifactStore().get(second.artifacts.stl.id)).toBeDefined();
       expect(await getArtifactStore().get(first.artifacts.stl.id)).toBeUndefined();
       expect(second.stl).toContain('facet normal'); // inline is unaffected
@@ -72,18 +70,6 @@ describe('/api/compile API Route', () => {
     expect(data.apiError).toEqual({ code: 'bad_request', message: 'build123d code is required.' });
   });
 
-  it('asks for OpenSCAD code when that language is requested and the body is empty', async () => {
-    const req = new NextRequest('http://localhost:3000/api/compile', {
-      method: 'POST',
-      body: JSON.stringify({ code: EMPTY_CODE, language: 'openscad' }),
-    });
-    const res = await POST(req);
-    expect(res.status).toBe(400);
-    const data = await res.json();
-    expect(data.error).toBe('OpenSCAD code is required.');
-    expect(data.apiError).toEqual({ code: 'bad_request', message: 'OpenSCAD code is required.' });
-  });
-
   it('asks for build123d code when that language is requested and the body is empty', async () => {
     const req = new NextRequest('http://localhost:3000/api/compile', {
       method: 'POST',
@@ -94,22 +80,6 @@ describe('/api/compile API Route', () => {
     const data = await res.json();
     expect(data.error).toBe('build123d code is required.');
     expect(data.apiError.code).toBe('bad_request');
-  });
-
-  it('compiles valid OpenSCAD code to STL when language: openscad is explicit', async () => {
-    const req = new NextRequest('http://localhost:3000/api/compile', {
-      method: 'POST',
-      body: JSON.stringify({ code: VALID_CODE, language: 'openscad' }),
-    });
-
-    const res = await POST(req);
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.success).toBe(true);
-    expect(data.stl).toContain('facet normal');
-    expect(data.stl).toContain('endsolid');
-    // OpenSCAD has no per-part measurement. `parts` is only on build123d responses.
-    expect(data.parts).toBeUndefined();
   });
 
   it('returns 400 for a malformed JSON body', async () => {
@@ -123,20 +93,5 @@ describe('/api/compile API Route', () => {
     const data = await res.json();
     expect(data.apiError.code).toBe('bad_request');
     expect(data.error).toBe(data.apiError.message);
-  });
-
-  it('returns error for invalid syntax when language: openscad is explicit', async () => {
-    const req = new NextRequest('http://localhost:3000/api/compile', {
-      method: 'POST',
-      body: JSON.stringify({ code: ERROR_CODE, language: 'openscad' }),
-    });
-
-    const res = await POST(req);
-    // Even if openscad-wasm returns an empty STL or throws, we handle it
-    const data = await res.json();
-    expect(res.status).toBeGreaterThanOrEqual(400);
-    expect(data.error).toBeDefined();
-    expect(data.apiError.message).toBe(data.error);
-    if (res.status === 422) expect(data.apiError.code).toBe('compile_failed');
   });
 });

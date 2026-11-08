@@ -5,8 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ChatMessage } from '@/types';
 import { useAppStore } from '@/store/app-store';
-import { compileOpenScad } from '@/lib/engine/openscad-bridge';
-import { TranscriptView } from './transcript-view';
+import { compileModel } from '@/lib/engine/build123d-client';
 import { Check, Copy, Play, User, Bot, Code } from 'lucide-react';
 
 interface MessageBubbleProps {
@@ -34,7 +33,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   const handleApplyCode = async (codeToApply: string) => {
     setCode(codeToApply);
     setCompileStatus('compiling');
-    const result = await compileOpenScad(codeToApply);
+    const result = await compileModel(codeToApply);
     setCompileResult(result);
   };
 
@@ -59,10 +58,6 @@ export function MessageBubble({ message }: MessageBubbleProps) {
       )}
 
       <div className={`max-w-[88%] space-y-2 ${isUser ? 'items-end' : 'items-start'}`}>
-        {message.transcript && (
-          <TranscriptView transcript={message.transcript} gates={message.gates} />
-        )}
-
         {/* Message body */}
         <div
           className={`rounded-xl px-4 py-3 text-sm leading-relaxed ${
@@ -82,18 +77,18 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               ol: ({ children }) => <ol className="list-decimal pl-4 mb-2 space-y-1 text-xs">{children}</ol>,
               li: ({ children }) => <li className="text-slate-300">{children}</li>,
               strong: ({ children }) => <strong className="font-semibold text-slate-100">{children}</strong>,
-              code: ({ inline, className, children, ...props }: any) => {
+              code: ({ inline, className, children, ...props }: React.ComponentPropsWithoutRef<'code'> & { inline?: boolean }) => {
                 const match = /language-(\w+)/.exec(className || '');
                 const language = match ? match[1] : '';
                 const codeString = String(children).replace(/\n$/, '');
 
-                if (!inline && (language === 'openscad' || language === 'scad' || codeString.includes('cube(') || codeString.includes('cylinder('))) {
+                if (!inline && (language === 'python' || language === 'build123d')) {
                   return (
                     <div className="my-3 rounded-lg overflow-hidden border border-slate-800 bg-slate-950">
                       <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900/90 border-b border-slate-800 text-xs">
                         <div className="flex items-center gap-1.5 text-indigo-400 font-mono">
                           <Code className="w-3.5 h-3.5" />
-                          <span>OpenSCAD</span>
+                          <span>build123d</span>
                         </div>
                         <div className="flex items-center gap-2">
                           <button

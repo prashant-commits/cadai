@@ -1,16 +1,15 @@
 import { parseStlToGeometry } from './geometry-utils';
 import { CompileResult } from '@/types';
-import { detectLanguage } from '@/lib/brep/language';
 
 /**
- * Compiles CAD code (OpenSCAD or build123d) and returns Three.js BufferGeometry + ModelInfo.
+ * Compiles build123d CAD code and returns Three.js BufferGeometry + ModelInfo.
  * Uses the server compiler endpoint (/api/compile).
  */
 let compileTimeout: ReturnType<typeof setTimeout> | null = null;
 let currentCompileId = 0;
 let activeAbortController: AbortController | null = null;
 
-export function compileModel(code: string, language?: 'openscad' | 'build123d'): Promise<CompileResult> {
+export function compileModel(code: string): Promise<CompileResult> {
   return new Promise((resolve) => {
     if (compileTimeout) clearTimeout(compileTimeout);
     
@@ -35,13 +34,11 @@ export function compileModel(code: string, language?: 'openscad' | 'build123d'):
         return resolve({ success: false, error: 'Empty CAD code provided.' });
       }
 
-      const lang = language || detectLanguage(code);
-
       try {
         const response = await fetch('/api/compile', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code, language: lang }),
+          body: JSON.stringify({ code, language: 'build123d' }),
           signal,
         });
 
@@ -56,7 +53,7 @@ export function compileModel(code: string, language?: 'openscad' | 'build123d'):
             success: false,
             error: data.error || `Compilation failed with status ${response.status}`,
             compileTimeMs: Math.round(performance.now() - startTime),
-            language: lang,
+            language: 'build123d',
           });
         }
 
@@ -68,7 +65,7 @@ export function compileModel(code: string, language?: 'openscad' | 'build123d'):
           geometry,
           modelInfo,
           step: data.step,
-          language: data.language || lang,
+          language: 'build123d',
           compileTimeMs: typeof data.compileTimeMs === 'number' ? data.compileTimeMs : Math.round(performance.now() - startTime),
         });
       } catch (err: unknown) {
@@ -80,7 +77,7 @@ export function compileModel(code: string, language?: 'openscad' | 'build123d'):
           success: false,
           error: message,
           compileTimeMs: Math.round(performance.now() - startTime),
-          language: lang,
+          language: 'build123d',
         });
       }
     }, 250);

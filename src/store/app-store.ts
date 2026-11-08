@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import * as THREE from 'three';
 import { ChatMessage, ModelInfo, ViewportSettings, CompileResult, ChatThread, ScadParam, ContractDiff, ParamValue, StandingConstraints, DesignContract } from '@/types';
 import {
-  DEFAULT_OPENSCAD_CODE,
+  DEFAULT_CODE,
   clearThreadMessages,
   createInitialThread,
   deleteThreadCascade,
@@ -15,7 +15,7 @@ import {
 import { applyContract } from '@/lib/design/contract';
 import { parseParams } from '@/lib/design/parse-params';
 import { setParamValue } from '@/lib/design/write-params';
-import { compileModel } from '@/lib/engine/openscad-bridge';
+import { compileModel } from '@/lib/engine/build123d-client';
 import { DEFAULT_MODEL } from '@/lib/agent/models';
 
 interface AppState {
@@ -90,7 +90,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeThreadId: '',
 
   messages: [],
-  code: DEFAULT_OPENSCAD_CODE,
+  code: DEFAULT_CODE,
   geometry: null,
   stlContent: null,
   modelInfo: null,
@@ -119,7 +119,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   initializeFromStorage: async () => {
     const { threads, activeThreadId } = await loadAllThreads();
     const active = threads.find((t) => t.id === activeThreadId) || threads[0];
-    const initialCode = active.code || DEFAULT_OPENSCAD_CODE;
+    const initialCode = active.code || DEFAULT_CODE;
 
     set({
       threads,
@@ -141,14 +141,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       createdAt: Date.now(),
       updatedAt: Date.now(),
       selectedModel: get().selectedModel,
-      code: DEFAULT_OPENSCAD_CODE,
+      code: DEFAULT_CODE,
       step: null,
       messages: [
         {
           id: 'welcome-' + Date.now(),
           role: 'assistant',
           content: `👋 **New 3D Design Started!** What would you like to model? Describe your dimensions, features, or 3D print requirements.`,
-          code: DEFAULT_OPENSCAD_CODE,
+          code: DEFAULT_CODE,
           timestamp: Date.now(),
         },
       ],
@@ -179,7 +179,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const target = get().threads.find((t) => t.id === threadId);
     if (!target) return;
 
-    const initialCode = target.code || DEFAULT_OPENSCAD_CODE;
+    const initialCode = target.code || DEFAULT_CODE;
     set({
       activeThreadId: target.id,
       messages: target.messages,
@@ -208,7 +208,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const filtered = threads.filter((t) => t.id !== threadId);
     const newActiveId = activeThreadId === threadId ? filtered[0].id : activeThreadId;
     const newActive = filtered.find((t) => t.id === newActiveId)!;
-    const initialCode = newActive.code || DEFAULT_OPENSCAD_CODE;
+    const initialCode = newActive.code || DEFAULT_CODE;
 
     set({
       threads: filtered,
@@ -379,7 +379,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             ...t,
             stlContent: result.stlContent || t.stlContent,
             modelInfo: result.modelInfo || t.modelInfo,
-            step: result.step !== undefined ? (result.step || null) : (result.success && result.language === 'openscad' ? null : (t.step || null)),
+            step: result.step !== undefined ? (result.step || null) : (t.step || null),
             updatedAt: Date.now(),
           }
         : t
@@ -582,7 +582,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       t.id === activeThreadId
         ? {
             ...t,
-            code: DEFAULT_OPENSCAD_CODE,
+            code: DEFAULT_CODE,
             designContract: undefined,
             stlContent: null,
             modelInfo: null,
@@ -594,8 +594,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     );
 
     set({
-      code: DEFAULT_OPENSCAD_CODE,
-      params: parseParams(DEFAULT_OPENSCAD_CODE),
+      code: DEFAULT_CODE,
+      params: parseParams(DEFAULT_CODE),
       contractDiff: null,
       geometry: null,
       stlContent: null,

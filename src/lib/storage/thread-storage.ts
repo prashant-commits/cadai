@@ -12,35 +12,18 @@ import {
   rowId,
 } from './db-schema';
 
-export const DEFAULT_OPENSCAD_CODE = `// CAD AI - Welcome Demo: Parametric Rounded Box with Center Bore
-// Designed for FDM 3D Printing
+export const DEFAULT_CODE = `# CAD AI - Welcome Demo: Parametric Rounded Box with Center Bore
+from build123d import *
 
-// [Parameters]
-width = 40;          // [20:80] Width in mm
-depth = 40;          // [20:80] Depth in mm
-height = 25;         // [10:60] Total height in mm
-wall_thickness = 2.4;// [1.2:5] Minimum wall thickness
-corner_radius = 5;   // [1:10] Corner fillet radius
-hole_radius = 8;     // [3:15] Center bore radius
-$fn = 48;            // Smooth curve resolution
+width = 40  # [20:80] Width in mm
+depth = 40  # [20:80] Depth in mm
+height = 25  # [10:60] Total height in mm
+corner_radius = 5  # [1:8] Corner radius
+hole_radius = 8  # [3:15] Center bore radius
 
-module rounded_box(w, d, h, r) {
-    hull() {
-        translate([-(w/2-r), -(d/2-r), 0]) cylinder(h=h, r=r);
-        translate([ (w/2-r), -(d/2-r), 0]) cylinder(h=h, r=r);
-        translate([-(w/2-r),  (d/2-r), 0]) cylinder(h=h, r=r);
-        translate([ (w/2-r),  (d/2-r), 0]) cylinder(h=h, r=r);
-    }
-}
-
-difference() {
-    // 1. Outer solid body with rounded corners
-    rounded_box(width, depth, height, corner_radius);
-
-    // 2. Center through-bore
-    translate([0, 0, -1])
-        cylinder(h=height + 2, r=hole_radius);
-}
+body = extrude(RectangleRounded(width, depth, corner_radius), amount=height)
+bore = Pos(0, 0, -1) * Cylinder(hole_radius, height + 2, align=(Align.CENTER, Align.CENTER, Align.MIN))
+result = body - bore
 `;
 
 /**
@@ -64,7 +47,7 @@ export function createInitialThread(): ChatThread {
     createdAt: Date.now(),
     updatedAt: Date.now(),
     selectedModel: DEFAULT_MODEL,
-    code: DEFAULT_OPENSCAD_CODE,
+    code: DEFAULT_CODE,
     messages: [
       {
         id: 'welcome-msg',
@@ -73,7 +56,7 @@ export function createInitialThread(): ChatThread {
 
 I specialize in creating 3D printable objects for **FDM, SLA, and SLS** printing. You can describe any part or mechanical design in plain English, and I will:
 1. 🧠 Plan and reason about the mechanics & printability
-2. ⚙️ Generate parametric OpenSCAD code
+2. ⚙️ Generate parametric build123d code
 3. 🔍 Validate geometry & manifoldness before rendering
 4. 🖨️ Recommend slicing settings (walls, infill, layer height, orientation)
 
@@ -82,7 +65,7 @@ I specialize in creating 3D printable objects for **FDM, SLA, and SLS** printing
 - *"Create a parametric phone stand tilted at 60 degrees with cable pass-through"*
 - *"Make a durable hex-grid storage container"*
 - *"Model a GT2 20-tooth timing pulley with 5mm shaft bore"*`,
-        code: DEFAULT_OPENSCAD_CODE,
+        code: DEFAULT_CODE,
         timestamp: Date.now(),
       },
     ],

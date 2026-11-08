@@ -4,7 +4,7 @@ import { deflateSync } from 'zlib';
  * Server-side multi-view renderer for ASCII STL and coloured triangle lists.
  *
  * Exists because nothing in the stack can produce an image of the geometry:
- * the bundled openscad-wasm has no PNG path (no `--imgsize`, no lodepng, no
+ * the compile backend has no PNG path (no `--imgsize`, no lodepng, no
  * OffscreenContext), and three.js is browser-only here. Every accuracy check in
  * the pipeline measures NUMBERS about the mesh - bbox, volume, manifoldness,
  * shell count - so a part that is the right size and watertight but shaped
@@ -141,7 +141,7 @@ function clampByte(n: number): number {
 /**
  * Pulls triangles out of ASCII STL.
  *
- * Face normals in the file are ignored on purpose - OpenSCAD's exporter is
+ * Face normals in the file are ignored on purpose - the exporter is
  * reliable, but a repair-loop mesh may be malformed in exactly the ways worth
  * seeing, and a normal recomputed from the winding never disagrees with the
  * triangle actually being drawn.

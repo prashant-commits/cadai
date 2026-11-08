@@ -1,35 +1,23 @@
 import { describe, it, expect } from 'vitest';
 import { parseParams } from './parse-params';
 import { setParamValue } from './write-params';
-import { DEFAULT_OPENSCAD_CODE } from '../storage/thread-storage';
-import { compileScad } from '../engine/scad-compiler';
+import { DEFAULT_CODE } from '../storage/thread-storage';
 
 describe('Design Contract Integration', () => {
-  it('closes the loop from parsing to compiling', async () => {
+  it('updates parameter values in build123d code', () => {
     // 1. Parse params
-    const params = parseParams(DEFAULT_OPENSCAD_CODE);
+    const params = parseParams(DEFAULT_CODE);
     const widthParam = params.find(p => p.name === 'width');
     expect(widthParam).toBeDefined();
-    
+    expect(widthParam?.value).toBe(40);
+
     // 2. Set param value
-    const updatedCode = setParamValue(DEFAULT_OPENSCAD_CODE, 'width', 55);
-    
-    // 3. Compile the updated code
-    const result = await compileScad(updatedCode);
-    
-    // 4. Assert the bounding box actually changed
-    expect(result.valid).toBe(true);
-    expect(result.summary).toBeDefined();
-    expect(result.summary!.dimensions).toBe(3);
-    
-    // The width should be 55. The bounding box max x - min x might be slightly different if it's not centered, 
-    // but looking at DEFAULT_OPENSCAD_CODE:
-    // translate([-(w/2-r), -(d/2-r), 0]) ...
-    // The box is centered at 0,0,0 and spans width w.
-    // So the bounding box size in X should be exactly 55.
-    const sizeX = result.summary!.boundingBox!.max[0] - result.summary!.boundingBox!.min[0];
-    
-    // Using toBeCloseTo because of float math in bounding boxes
-    expect(sizeX).toBeCloseTo(55, 1);
+    const updatedCode = setParamValue(DEFAULT_CODE, 'width', 55);
+
+    // 3. Verify parse on updated code reflects new value
+    const updatedParams = parseParams(updatedCode);
+    const updatedWidth = updatedParams.find(p => p.name === 'width');
+    expect(updatedWidth?.value).toBe(55);
+    expect(updatedCode).toContain('width = 55');
   });
 });

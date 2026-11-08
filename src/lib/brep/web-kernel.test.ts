@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { parseParams } from '@/lib/design/parse-params';
 import { setParamValue } from '@/lib/design/write-params';
-import { detectLanguage } from '@/lib/brep/language';
 
 // P2 web acceptance: the web app understands build123d code the agent produces.
 
@@ -19,14 +18,6 @@ def base():
 result = base()
 `;
 
-describe('detectLanguage', () => {
-  it('recognises build123d and defaults to OpenSCAD', () => {
-    expect(detectLanguage(PY)).toBe('build123d');
-    expect(detectLanguage('w = 4; // [1:10]\ncube([w, w, w]);')).toBe('openscad');
-    expect(detectLanguage('')).toBe('openscad');
-  });
-});
-
 describe('parseParams on build123d code', () => {
   it('reads top-level numeric assignments with their # [min:step:max] description', () => {
     const ps = parseParams(PY);
@@ -42,11 +33,6 @@ describe('parseParams on build123d code', () => {
     const out = setParamValue(PY, 'base_t', 7);
     expect(out).toMatch(/^base_t = 7\s+# \[2:0\.5:20\] Base thickness$/m);
     expect(out.replace(/^base_t = .*$/m, '')).toBe(PY.replace(/^base_t = .*$/m, ''));
-  });
-
-  it('OpenSCAD parsing is unchanged', () => {
-    const ps = parseParams('w = 4; // [1:1:10] width\ncube([w, w, w]);');
-    expect(ps[0]).toMatchObject({ name: 'w', value: 4, min: 1, max: 10 });
   });
 });
 

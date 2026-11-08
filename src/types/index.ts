@@ -117,7 +117,7 @@ export interface CompileResult {
   compileTimeMs?: number;
   aborted?: boolean;
   step?: string;
-  language?: 'openscad' | 'build123d';
+  language?: 'build123d';
 }
 
 export interface ViewportSettings {

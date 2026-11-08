@@ -5,6 +5,7 @@ import {
   clearThreadMessages,
   coerceModelSlug,
   createInitialThread,
+  DEFAULT_CODE,
   deleteThreadCascade,
   loadAllThreads,
   setActiveThreadId,
@@ -52,8 +53,9 @@ describe('thread-storage', () => {
     expect(initial.id).toBeDefined();
     expect(initial.title).toBe('Demo Rounded Box');
     expect(initial.messages.length).toBeGreaterThan(0);
-    expect(initial.code).toContain('rounded_box');
-    expect(initial.code).toContain('difference()');
+    expect(initial.code).toBe(DEFAULT_CODE);
+    expect(initial.code).toContain('RectangleRounded');
+    expect(initial.code).toContain('extrude');
   });
 
   it('bootstraps and persists an initial thread on an empty database', async () => {

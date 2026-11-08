@@ -7,7 +7,7 @@ import { useAppStore } from '@/store/app-store';
 import { CadModel } from './cad-model';
 import { ViewportToolbar } from './viewport-toolbar';
 import { Annotator } from './annotator';
-import { compileModel } from '@/lib/engine/openscad-bridge';
+import { compileModel } from '@/lib/engine/build123d-client';
 import { Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 

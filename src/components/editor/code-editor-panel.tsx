@@ -3,9 +3,7 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import Editor, { Monaco } from '@monaco-editor/react';
 import { useAppStore } from '@/store/app-store';
-import { compileModel } from '@/lib/engine/openscad-bridge';
-import { detectLanguage } from '@/lib/brep/language';
-import { OPENSCAD_LANGUAGE_ID, openscadLanguageDef } from '@/lib/editor/openscad-language';
+import { compileModel } from '@/lib/engine/build123d-client';
 import {
   Play,
   Copy,
@@ -39,42 +37,34 @@ export function CodeEditorPanel() {
     setEditorValue(code);
   }, [code]);
 
-  const language = detectLanguage(editorValue);
-
   const handleEditorWillMount = (monaco: Monaco) => {
-    // Register custom OpenSCAD language
-    if (!monaco.languages.getLanguages().some((lang: { id: string }) => lang.id === OPENSCAD_LANGUAGE_ID)) {
-      monaco.languages.register({ id: OPENSCAD_LANGUAGE_ID });
-      monaco.languages.setMonarchTokensProvider(OPENSCAD_LANGUAGE_ID, openscadLanguageDef);
-
-      // Register dark CAD theme
-      monaco.editor.defineTheme('cad-dark', {
-        base: 'vs-dark',
-        inherit: true,
-        rules: [
-          { token: 'keyword', foreground: '818cf8', fontStyle: 'bold' },
-          { token: 'type', foreground: '38bdf8' },
-          { token: 'keyword.flow', foreground: 'c084fc' },
-          { token: 'support.function', foreground: '4ade80' },
-          { token: 'variable.predefined', foreground: 'f472b6' },
-          { token: 'variable', foreground: 'e2e8f0' },
-          { token: 'number', foreground: 'fbbf24' },
-          { token: 'number.float', foreground: 'fbbf24' },
-          { token: 'string', foreground: 'a3e635' },
-          { token: 'comment', foreground: '64748b', fontStyle: 'italic' },
-          { token: 'operator', foreground: 'f87171' },
-        ],
-        colors: {
-          'editor.background': '#0b0f19',
-          'editor.foreground': '#e2e8f0',
-          'editor.lineHighlightBackground': '#1e293b50',
-          'editorCursor.foreground': '#818cf8',
-          'editorWhitespace.foreground': '#334155',
-          'editorIndentGuide.background': '#1e293b',
-          'editorIndentGuide.activeBackground': '#475569',
-        },
-      });
-    }
+    // Register dark CAD theme
+    monaco.editor.defineTheme('cad-dark', {
+      base: 'vs-dark',
+      inherit: true,
+      rules: [
+        { token: 'keyword', foreground: '818cf8', fontStyle: 'bold' },
+        { token: 'type', foreground: '38bdf8' },
+        { token: 'keyword.flow', foreground: 'c084fc' },
+        { token: 'support.function', foreground: '4ade80' },
+        { token: 'variable.predefined', foreground: 'f472b6' },
+        { token: 'variable', foreground: 'e2e8f0' },
+        { token: 'number', foreground: 'fbbf24' },
+        { token: 'number.float', foreground: 'fbbf24' },
+        { token: 'string', foreground: 'a3e635' },
+        { token: 'comment', foreground: '64748b', fontStyle: 'italic' },
+        { token: 'operator', foreground: 'f87171' },
+      ],
+      colors: {
+        'editor.background': '#0b0f19',
+        'editor.foreground': '#e2e8f0',
+        'editor.lineHighlightBackground': '#1e293b50',
+        'editorCursor.foreground': '#818cf8',
+        'editorWhitespace.foreground': '#334155',
+        'editorIndentGuide.background': '#1e293b',
+        'editorIndentGuide.activeBackground': '#475569',
+      },
+    });
   };
 
   const triggerRecompile = useCallback(
@@ -113,7 +103,7 @@ export function CodeEditorPanel() {
         <div className="flex items-center gap-2 min-w-0">
           <FileCode className="w-4 h-4 text-cyan-400 shrink-0" />
           <span className="text-xs font-semibold text-slate-200 truncate">
-            {language === 'build123d' ? 'build123d Code' : 'OpenSCAD Code'}
+            build123d Code
           </span>
           <span className="text-[10px] text-slate-500 font-mono hidden md:inline truncate">
             {isGenerating ? '(Streaming...)' : '(Live Sync)'}
@@ -159,7 +149,7 @@ export function CodeEditorPanel() {
           <button
             onClick={handleCopy}
             className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 transition-colors cursor-pointer"
-            title={language === 'build123d' ? 'Copy build123d Code' : 'Copy OpenSCAD Code'}
+            title="Copy build123d Code"
           >
             {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
             <span className="text-[11px] hidden sm:inline">{copied ? 'Copied' : 'Copy'}</span>
@@ -169,7 +159,7 @@ export function CodeEditorPanel() {
             onClick={() => triggerRecompile(editorValue)}
             disabled={compileStatus === 'compiling'}
             className="flex items-center gap-1 text-xs px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-medium shadow-xs transition-colors cursor-pointer disabled:opacity-50"
-            title={language === 'build123d' ? 'Recompile build123d Code' : 'Recompile OpenSCAD Code'}
+            title="Recompile build123d Code"
           >
             <Play className="w-3 h-3 fill-current" />
             <span className="text-[11px]">Compile</span>
@@ -181,7 +171,7 @@ export function CodeEditorPanel() {
       <div className="flex-1 min-h-0 relative">
         <Editor
           height="100%"
-          language={language === 'build123d' ? 'python' : OPENSCAD_LANGUAGE_ID}
+          language="python"
           theme="cad-dark"
           value={editorValue}
           onChange={handleEditorChange}

@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { useAppStore } from '@/store/app-store';
 import { PrintAnalysisPanel } from '@/components/print-analysis/print-analysis-panel';
 import { ParamControl } from './param-control';
-import { ContractDiffBanner } from './contract-diff-banner';
 import { Code2, ChevronDown, ChevronRight, Settings2, Shield, Target, SlidersHorizontal } from 'lucide-react';
 import { ParamValue } from '@/types';
 
@@ -70,8 +69,6 @@ export function DesignPanel() {
           </button>
         </div>
       </div>
-
-      <ContractDiffBanner />
 
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto scrollbar-thin p-3 space-y-4">

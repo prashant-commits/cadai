@@ -8,7 +8,7 @@ import { ThreadDrawer } from './thread-drawer';
 import { readStream, streamMessagePatch } from '@/lib/stream-reader';
 import { serializeTranscript } from '@/lib/agent/transcript';
 import { freezeStreamingMessages } from '@/lib/chat/chat-messages';
-import { compileModel } from '@/lib/engine/openscad-bridge';
+import { compileModel } from '@/lib/engine/build123d-client';
 import { parseStlToGeometry } from '@/lib/engine/geometry-utils';
 import { ChatMessage } from '@/types';
 import {
@@ -133,7 +133,7 @@ export function ChatPanel() {
             );
           } else {
             if (useAppStore.getState().activeThreadId === targetThreadId) setCompileStatus('compiling');
-            const res = await compileModel(state.code, state.language);
+            const res = await compileModel(state.code);
             if (state.step && !res.step) res.step = state.step;
             setCompileResult(res, targetThreadId);
           }

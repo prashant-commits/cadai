@@ -3,9 +3,7 @@ import { NextRequest } from 'next/server';
 
 const runBrep = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/engine/brep-runner', () => ({ runBrep }));
-vi.mock('@/lib/engine/scad-compiler', () => ({ compileScad: vi.fn() }));
 
-import { compileScad } from '@/lib/engine/scad-compiler';
 import { POST } from './route';
 
 const B123D = 'from build123d import Box\n';
@@ -38,6 +36,31 @@ describe('/api/compile build123d contract', () => {
     expect(data.parts).toEqual([
       { label: 'body', valid: true, volume: 12.5, min: [0, 0, 0], max: [10, 20, 30] },
     ]);
+  });
+
+  it('compiles as build123d when language field is omitted', async () => {
+    runBrep.mockResolvedValueOnce({
+      ok: true,
+      parts: [],
+      solids: 1,
+      stl: Buffer.from('solid x\nendsolid x\n').toString('base64'),
+      step: 'U1RFUA==',
+      ms: 10,
+    });
+    const res = await post({ code: B123D });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.language).toBe('build123d');
+    expect(runBrep).toHaveBeenCalledWith(B123D);
+  });
+
+  it('rejects language: openscad with 400 bad_request before calling runBrep', async () => {
+    const res = await post({ code: 'cube(1);', language: 'openscad' });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe('Only build123d scripts are supported.');
+    expect(data.apiError).toEqual({ code: 'bad_request', message: 'Only build123d scripts are supported.' });
+    expect(runBrep).not.toHaveBeenCalled();
   });
 
   it('maps a runBrep script failure to geometry_failed', async () => {
@@ -119,35 +142,6 @@ describe('/api/compile build123d contract', () => {
     warn.mockRestore();
   });
 
-  it('returns 422 when the OpenSCAD compiler throws a script SyntaxError', async () => {
-    vi.mocked(compileScad).mockRejectedValueOnce(new SyntaxError('bad indent in user script'));
-    const res = await post({ code: 'cube(1);', language: 'openscad' });
-    expect(res.status).toBe(422);
-    const data = await res.json();
-    expect(data.apiError.code).toBe('compile_failed');
-    expect(data.apiError.code).not.toBe('bad_request');
-    expect(data.error).toBe(data.apiError.message);
-  });
-
-  it('reports the first OpenSCAD ERROR line, not the generic last line', async () => {
-    vi.mocked(compileScad).mockResolvedValueOnce({
-      valid: false,
-      error: "ERROR: Parser error: syntax error in file /in.scad, line 2\nCan't parse file '/in.scad'!",
-      exitCode: 1,
-      errors: [],
-      warnings: [],
-      compileTimeMs: 1,
-      rawStderr: [],
-    });
-    const res = await post({ code: 'cube([1,2,3]', language: 'openscad' });
-    expect(res.status).toBe(422);
-    const data = await res.json();
-    expect(data.apiError.code).toBe('compile_failed');
-    expect(data.apiError.message).toBe('ERROR: Parser error: syntax error in file /in.scad, line 2');
-    expect(data.error).toBe(data.apiError.message);
-    expect(data.apiError.detail).toContain("Can't parse file '/in.scad'!");
-  });
-
   it('returns 500 when a SyntaxError is not the user script', async () => {
     runBrep.mockRejectedValueOnce(new SyntaxError('Unexpected token < in JSON at position 0'));
     const brep = await post({ code: B123D, language: 'build123d' });
@@ -156,14 +150,6 @@ describe('/api/compile build123d contract', () => {
     expect(brepBody.apiError.code).toBe('internal');
     expect(brepBody.error).toBe('Something went wrong on the server.');
     expect(brepBody.error).not.toContain('Unexpected token');
-
-    vi.mocked(compileScad).mockRejectedValueOnce(new SyntaxError('Unexpected token < in JSON at position 0'));
-    const scad = await post({ code: 'cube(1);', language: 'openscad' });
-    expect(scad.status).toBe(500);
-    const scadBody = await scad.json();
-    expect(scadBody.apiError.code).toBe('internal');
-    expect(scadBody.apiError.code).not.toBe('compile_failed');
-    expect(scadBody.apiError.code).not.toBe('bad_request');
   });
 
   it('rejects oversized scripts (> 256 KiB) with 400 bad_request before running', async () => {

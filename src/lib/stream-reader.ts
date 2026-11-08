@@ -12,7 +12,7 @@ export interface StreamState {
   stl?: string;
   step?: string;
   /** Language of `code` when the server says so (build123d runs); absent means OpenSCAD. */
-  language?: 'openscad' | 'build123d';
+  language?: 'build123d';
   designContract?: DesignContract;
   /** The paused run to POST back to /api/chat/resume. */
   runId?: string;
