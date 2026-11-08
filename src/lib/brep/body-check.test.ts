@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BUILDER_MODE_REASON, checkPythonBody, checkPythonScript, isBuilderModeReason, GENERATED_PRELUDE, PRELUDE_SENTINEL } from './body-check';
+import { PRELUDES, withGeneratedPrelude } from './prelude';
 
 const opts = { reserved: ['width', 'depth'], components: ['base', 'lid', 'lid_part'] };
 const ok = (body: string) => checkPythonBody(body, opts).ok;
@@ -207,6 +208,24 @@ describe('checkPythonScript', () => {
       ok: false,
       reason: 'prelude differs from the generated prelude',
     });
+  });
+
+  it('accepts a script built with an older registry entry', () => {
+    const oldPrelude = 'from build123d import *\nimport math as _math\ndef _old(): pass';
+    PRELUDES['0'] = oldPrelude;
+    try {
+      const body = 'width = 10\nresult = Box(width, 10, 10)\n';
+      const script = withGeneratedPrelude(body, '0');
+      expect(checkPythonScript(script)).toEqual({ ok: true });
+
+      const unmatched = script.replace('from build123d import *', 'from build123d import *\nimport os');
+      expect(checkPythonScript(unmatched)).toEqual({
+        ok: false,
+        reason: 'prelude differs from the generated prelude',
+      });
+    } finally {
+      delete PRELUDES['0'];
+    }
   });
 });
 

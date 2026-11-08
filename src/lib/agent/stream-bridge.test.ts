@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { bridgeGraphStream, NODE_LABELS } from './stream-bridge';
 import type { StreamEvent } from './stream-events';
+import { formatFlags } from './designer/reviewer';
 
 async function bridge(chunks: unknown[]) {
   const out: StreamEvent[] = [];
@@ -64,18 +65,18 @@ describe('bridgeGraphStream', () => {
 
   it('turns model token chunks into deltas under their own node', async () => {
     const out = await bridge([
-      ['messages', [{ content: 'Hel' }, { langgraph_node: 'designerNode' }]],
-      ['messages', [{ content: 'lo' }, { langgraph_node: 'designerNode' }]],
+      ['messages', [{ content: 'Hel' }, { langgraph_node: 'genericNode' }]],
+      ['messages', [{ content: 'lo' }, { langgraph_node: 'genericNode' }]],
     ]);
     expect(out.filter((e) => e.t === 'delta')).toEqual([{ t: 'delta', text: 'Hel' }, { t: 'delta', text: 'lo' }]);
   });
 
   it('streams the text blocks of content-block chunks (native Anthropic tool or thinking calls), not thinking or tool input', async () => {
     const out = await bridge([
-      ['messages', [{ content: [{ index: 0, type: 'thinking', thinking: 'secret' }] }, { langgraph_node: 'designerNode' }]],
-      ['messages', [{ content: [{ index: 1, type: 'text', text: 'Hel' }] }, { langgraph_node: 'designerNode' }]],
-      ['messages', [{ content: [{ index: 1, type: 'text', text: 'lo' }] }, { langgraph_node: 'designerNode' }]],
-      ['messages', [{ content: [{ index: 2, type: 'input_json_delta', input: '{"a"' }] }, { langgraph_node: 'designerNode' }]],
+      ['messages', [{ content: [{ index: 0, type: 'thinking', thinking: 'secret' }] }, { langgraph_node: 'genericNode' }]],
+      ['messages', [{ content: [{ index: 1, type: 'text', text: 'Hel' }] }, { langgraph_node: 'genericNode' }]],
+      ['messages', [{ content: [{ index: 1, type: 'text', text: 'lo' }] }, { langgraph_node: 'genericNode' }]],
+      ['messages', [{ content: [{ index: 2, type: 'input_json_delta', input: '{"a"' }] }, { langgraph_node: 'genericNode' }]],
     ]);
     expect(out.filter((e) => e.t === 'delta')).toEqual([{ t: 'delta', text: 'Hel' }, { t: 'delta', text: 'lo' }]);
   });
@@ -211,5 +212,36 @@ describe('bridgeGraphStream', () => {
       expect(error.apiError?.detail).not.toMatch(/\/home\//);
       expect(error.apiError?.message).not.toMatch(/secret/);
     }
+  });
+
+  it('no unrendered designer model text in deltas', async () => {
+    const flagText = formatFlags(
+      [{ severity: 'major', issue: 'wall is thin', whyItMatters: 'may snap under load' }],
+      false,
+    );
+    const out = await bridge([
+      ['messages', [{ content: 'Let me think about the hinge geometry' }, { langgraph_node: 'designerNode', tags: ['nostream'] }]],
+      ['messages', [{ content: 'The lid looks too thin and the hinge is floating.' }, { langgraph_node: 'designerNode' }]],
+      ['messages', [{ content: '{"intent":"edit"}' }, { langgraph_node: 'designerTriage' }]],
+      ['messages', [{ content: 'checking...' }, { langgraph_node: 'designerCheck' }]],
+      ['messages', [{ content: 'answering...' }, { langgraph_node: 'designerAnswer' }]],
+      ['custom', { t: 'delta', node: 'designerNode', text: 'Built the model (2 parts)\n' }],
+      ['custom', { t: 'delta', node: 'designerNode', text: flagText }],
+    ]);
+
+    const deltas = out.filter((e) => e.t === 'delta');
+    expect(deltas).toEqual([
+      { t: 'delta', text: 'Built the model (2 parts)\n' },
+      { t: 'delta', text: flagText },
+    ]);
+    const deltaTexts = deltas.map((e) => (e as { text: string }).text).join('');
+    expect(deltaTexts).not.toContain('Let me think');
+    expect(deltaTexts).not.toContain('too thin');
+    expect(deltaTexts).not.toContain('intent');
+
+    const sectionIds = out.filter((e) => e.t === 'section').map((e) => (e as { id: string }).id);
+    expect(sectionIds).not.toContain('designerTriage');
+    expect(sectionIds).not.toContain('designerCheck');
+    expect(sectionIds).not.toContain('designerAnswer');
   });
 });

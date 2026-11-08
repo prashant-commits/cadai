@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { parseParams } from '@/lib/design/parse-params';
 import { setParamValue } from '@/lib/design/write-params';
+import { withGeneratedPrelude, toBody } from './prelude';
 
 // P2 web acceptance: the web app understands build123d code the agent produces.
 
@@ -49,7 +50,7 @@ describe('POST /api/compile', () => {
     const j = await res.json();
     expect(j.stl ?? j.stlContent).toContain('facet normal');
     expect(j.step).toBe('U1RFUA==');
-    expect(runBrepMock).toHaveBeenCalledWith(PY);
+    expect(runBrepMock).toHaveBeenCalledWith(withGeneratedPrelude(toBody(PY)));
   });
 
   it('returns 422 with the traceback tail when the script fails', async () => {

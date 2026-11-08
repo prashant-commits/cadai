@@ -10,6 +10,12 @@ export const NODE_LABELS: Record<string, string> = {
   respondToUser: 'Result',
 };
 
+/**
+ * Nodes whose `messages`-mode chunks must never reach the UI.
+ * Structured nodes render their own markdown or status events over `custom`.
+ */
+const STRUCTURED_NODES = new Set(['designerNode', 'designerCheck', 'designerTriage', 'designerAnswer']);
+
 type CustomPayload = StreamEvent & { node?: string };
 type CloseStatus = 'ok' | 'failed' | 'retrying' | 'skipped';
 
@@ -228,6 +234,7 @@ export async function bridgeGraphStream(
         const text = contentText(msg?.content);
         if (!text) continue;
         const node = meta?.langgraph_node ?? 'agent';
+        if (STRUCTURED_NODES.has(node)) continue;
         enter(node);
         if (box.current?.id === node) {
           box.current.hadOutput = true;

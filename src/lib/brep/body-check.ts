@@ -215,44 +215,21 @@ export function checkPythonBody(body: string, options: BodyCheckOptions = {}): B
   return { ok: true };
 }
 
-export const PRELUDE_SENTINEL = '# ---- cadai prelude end ----';
-
-export const FUSE_HELPER = `def _fuse(items):
-    groups = [([name], shape) for name, shape in items]
-    merged = True
-    while merged:
-        merged = False
-        for i in range(len(groups)):
-            for j in range(i + 1, len(groups)):
-                a, b = groups[i][1], groups[j][1]
-                fused = a + b
-                if len(fused.solids()) < len(a.solids()) + len(b.solids()):
-                    groups[i] = (groups[i][0] + groups[j][0], fused)
-                    del groups[j]
-                    merged = True
-                    break
-            if merged:
-                break
-    out = []
-    for names, shape in groups:
-        shape.label = "+".join(names)
-        out.append(shape)
-    return out`;
-
-export const GENERATED_PRELUDE_LINES = [
-  '# Generated from the approved Assembly Spec. Edit a parameter to preview; change the spec to keep it.',
-  'from build123d import *',
-  'import math as _math',
-  'from math import sin, cos, tan, radians, sqrt, pi',
-  '',
-  '# Spec expressions take degrees; model bodies use the math functions above (radians).',
-  'def _sind(deg): return _math.sin(_math.radians(deg))',
-  'def _cosd(deg): return _math.cos(_math.radians(deg))',
-  'def _tand(deg): return _math.tan(_math.radians(deg))',
-  '',
+import {
+  PRELUDE_SENTINEL,
   FUSE_HELPER,
-];
-export const GENERATED_PRELUDE = GENERATED_PRELUDE_LINES.join('\n');
+  GENERATED_PRELUDE_LINES,
+  GENERATED_PRELUDE,
+  PRELUDES,
+  hasPreludeSentinel,
+} from './prelude';
+
+export {
+  PRELUDE_SENTINEL,
+  FUSE_HELPER,
+  GENERATED_PRELUDE_LINES,
+  GENERATED_PRELUDE,
+};
 
 function normalizePrelude(text: string): string {
   return text
@@ -264,10 +241,14 @@ function normalizePrelude(text: string): string {
 
 export function matchesGeneratedPrelude(prelude: string): boolean {
   const norm = normalizePrelude(prelude);
-  const canonicalNorm = normalizePrelude(GENERATED_PRELUDE);
-  if (norm === canonicalNorm) return true;
-  const withoutComment = GENERATED_PRELUDE_LINES.filter((l) => !l.startsWith('#')).join('\n');
-  if (norm === normalizePrelude(withoutComment)) return true;
+  for (const registered of Object.values(PRELUDES)) {
+    if (norm === normalizePrelude(registered)) return true;
+    const withoutComment = registered
+      .split('\n')
+      .filter((l) => !l.startsWith('#'))
+      .join('\n');
+    if (norm === normalizePrelude(withoutComment)) return true;
+  }
   return false;
 }
 
@@ -346,7 +327,7 @@ export function checkPythonScript(script: string): BodyCheck {
   }
 
   let remainder: string;
-  if (script.includes(PRELUDE_SENTINEL)) {
+  if (hasPreludeSentinel(script)) {
     const sentinelIdx = script.indexOf(PRELUDE_SENTINEL);
     const prelude = script.slice(0, sentinelIdx);
     if (!matchesGeneratedPrelude(prelude)) {

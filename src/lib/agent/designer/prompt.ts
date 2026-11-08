@@ -12,7 +12,7 @@ The checks and the UI sliders depend on this contract:
 2. Pose parameters: each moving part has exactly ONE pose parameter, ending in \`_deg\` (rotation, e.g. \`lid_open_deg\`) or \`_travel\` (linear motion, e.g. \`drawer_travel\`). It is the only top-level line with a range: \`name = value  # [min:step:max] description\`, for example \`lid_open_deg = 0  # [0:5:120] lid opening angle in degrees\`. Its default equals the range min (the closed pose), so the model the user sees first is closed. Narrow the range when a clash makes part of it unusable, and say why in the finish summary. A pose parameter moves a part, it never resizes it. Dimensions get no ranges.
 3. Labelled parts in \`_cadai_parts\`: it holds one labelled shape per part you define (assign a descriptive string to \`shape.label\`, e.g. \`lid.label = "lid"\`), measured BEFORE any fusing. Consolidation happens only in \`result\`.
 4. Exported shape: assign the final fused Compound / Part to \`result\`.
-5. Imports: none beyond the existing prelude. Keep the prelude and the \`# ---- cadai prelude end ----\` line exactly as given.
+5. Write only the design code; the tool adds the prelude; \`_round\`/\`_bevel\` are available.
 6. Guardrail rules: algebra mode only (never \`with BuildPart\`, \`with BuildSketch\`, \`with BuildLine\`). No \`open\`, \`eval\`, \`exec\`, \`os\`, \`sys\`, dunder names (\`__\`) or file keywords. A script is at most 256 KiB.
 `.trim();
 
@@ -37,7 +37,7 @@ When the user message contains a current script and an edit request, change only
 
 ## Process
 Build, look, then improve. Render from several angles and in the open pose, criticise your own design against the request and real use, and revise at least once before finishing. Tools:
-- \`run_script\`: run the complete script; returns measured parts, interferences, disconnected parts and parameters.
+- \`run_script\`: run the design code (body); returns measured parts, interferences, disconnected parts and parameters.
 - \`render\`: render the last script that ran, optionally with parameter overrides (for example \`{"lid_open_deg": 90}\`), as coloured views.
 - \`finish\`: only when every check passes. Before finishing, render each pose parameter at its range max with no interference. A finish that breaks a rule is rejected with the reason.
 If a tool result carries independent reviewer notes, weigh them against the request and real use and fix the real problems.
@@ -46,18 +46,18 @@ If a tool result carries independent reviewer notes, weigh them against the requ
 ${BREP_CHEATSHEET}`.trim();
 
 /** The first user message: the request on a fresh build, or the current script plus the edit on a follow-up. */
-export function buildFirstUserMessage(input: DesignerInput, startingScript: string): string {
+export function buildFirstUserMessage(input: DesignerInput, startingBody: string): string {
   if (input.priorScript && input.editRequest) {
     return [
       `Original request:\n${input.request}`,
-      `Current script:\n\`\`\`python\n${input.priorScript}\n\`\`\``,
+      `Current design:\n\`\`\`python\n${startingBody}\n\`\`\``,
       `Edit request:\n${input.editRequest}`,
-      'Apply the edit to the current script. Keep everything the user did not ask to change. Call `run_script` with your complete updated script, `render` to inspect it, and `finish` when done.',
+      'Apply the edit to the current design. Keep everything the user did not ask to change. Call `run_script` with your updated design code, `render` to inspect it, and `finish` when done.',
     ].join('\n\n');
   }
   return [
     `Request:\n${input.request}`,
-    `Starting script:\n\`\`\`python\n${startingScript}\`\`\``,
-    'Design the parametric build123d model for this request. Call `run_script` with your complete script, `render` to inspect clearances and motion, and `finish` when done.',
+    `Starting design:\n\`\`\`python\n${startingBody}\`\`\``,
+    'Design the parametric build123d model for this request. Call `run_script` with your design code, `render` to inspect clearances and motion, and `finish` when done.',
   ].join('\n\n');
 }
