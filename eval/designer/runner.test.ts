@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import type { BrepResult } from '../../src/lib/engine/brep-runner';
 import type { DesignerResult, RunDesignerFn } from '../../src/lib/agent/designer/types';
 import type { EvalPrompt, RunRecord } from './types';
@@ -201,6 +202,21 @@ describe('executeRun', () => {
     const summary = await executeRun([prompts[1]], opts({ arms: ['designer'] }), { runDesigner, runBrep });
     expect(summary.records[0].error).toMatch(/model down/);
     expect(readRecord('designer', 'cube').steps).toEqual([]);
+  });
+
+  it("records priorScriptSha: null on step 0 and sha256 of step 0's script on step 1", async () => {
+    let n = 0;
+    const runDesigner = vi.fn<RunDesignerFn>().mockImplementation(async () => result(++n));
+    const runBrep = vi.fn().mockResolvedValue(brepOk);
+    const summary = await executeRun([prompts[0]], opts({ arms: ['designer'] }), { runDesigner, runBrep });
+
+    expect(summary.records).toHaveLength(1);
+    const rec = summary.records[0];
+    expect(rec.steps.length).toBeGreaterThanOrEqual(2);
+    expect(rec.steps[0].priorScriptSha).toBeNull();
+    const expectedSha = createHash('sha256').update(rec.steps[0].script).digest('hex');
+    expect(rec.steps[1].priorScriptSha).toBe(expectedSha);
+    expect(runDesigner.mock.calls[1][0].priorScript).toBe(rec.steps[0].script);
   });
 });
 

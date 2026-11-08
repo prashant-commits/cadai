@@ -25,15 +25,14 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import { Command } from '@langchain/langgraph';
+import { createHash } from 'crypto';
 import { HumanMessage } from '@langchain/core/messages';
 for (const f of ['.env', '.env.local']) {
   try { process.loadEnvFile(f); } catch { /* absent is fine */ }
 }
 
-import { createCadAgent } from '@/lib/agent/graph';
+import { createDesignerAgent } from '@/lib/agent/designer/graph';
 import type { AgentStateType } from '@/lib/agent/designer/state';
-import { runCheckpointKey, getCheckpointer } from '@/lib/agent/checkpointer';
 import { DEFAULT_MODEL, isOfferedModel } from '@/lib/agent/models';
 import { runBrep as realRunBrep } from '@/lib/engine/brep-runner';
 import { factsFromRun } from '@/lib/agent/designer/tools';
@@ -46,7 +45,6 @@ import type { Arm, EvalPrompt, RunRecord, StepRecord } from './types';
 export const DEFAULT_RESULTS_DIR = path.join(__dirname, 'results');
 const SETS_DIR = path.join(__dirname, 'sets');
 const ARMS: Arm[] = ['designer', 'reviewer'];
-const MAX_GATES = 12;
 
 export interface RunnerOptions {
   tag: string;
@@ -141,27 +139,33 @@ const CAP_ERROR = 'cost cap reached';
 
 // ---------------------------------------------------------------- one run
 
-type Agent = ReturnType<typeof createCadAgent>;
+type Agent = ReturnType<typeof createDesignerAgent>;
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e)).split('\n')[0].slice(0, 300);
 
-/** Send one user message and drive the graph to the end, auto-approving every gate. Returns the rendered stream text. */
-async function drive(agent: Agent, message: string, config: Record<string, unknown>): Promise<string> {
+/** Send one user message and drive the graph to the end. Returns the rendered stream text and final values. */
+async function drive(
+  agent: Agent,
+  input: Record<string, unknown>,
+  config: Record<string, unknown>
+): Promise<{ transcript: string; values: AgentStateType }> {
   let transcript = '';
-  let input: unknown = { messages: [new HumanMessage(message)] };
-  for (let gate = 0; gate <= MAX_GATES; gate++) {
-    const stream = await agent.stream(input as never, { ...config, streamMode: ['custom'] } as never);
-    for await (const chunk of stream as AsyncIterable<unknown>) {
-      const ev = (Array.isArray(chunk) ? chunk[1] : chunk) as { t?: string; text?: string; summary?: string } | undefined;
+  let lastValues: AgentStateType = {} as AgentStateType;
+  const stream = await agent.stream(input as never, { ...config, streamMode: ['values', 'custom'] } as never);
+  for await (const chunk of stream as AsyncIterable<unknown>) {
+    if (!Array.isArray(chunk)) continue;
+    const [mode, payload] = chunk;
+    if (mode === 'custom') {
+      const ev = payload as { t?: string; text?: string; summary?: string } | undefined;
       if (ev?.t === 'delta' && typeof ev.text === 'string') transcript += ev.text;
-      else if (ev?.t === 'result' && typeof ev.summary === 'string' && ev.summary) transcript += `${transcript && !transcript.endsWith('\n') ? '\n' : ''}${ev.summary}\n`;
+      else if (ev?.t === 'result' && typeof ev.summary === 'string' && ev.summary) {
+        transcript += `${transcript && !transcript.endsWith('\n') ? '\n' : ''}${ev.summary}\n`;
+      }
+    } else if (mode === 'values') {
+      lastValues = payload as AgentStateType;
     }
-    const snapshot = await agent.getState(config as never);
-    const interrupted = (snapshot.tasks ?? []).some((t) => (t.interrupts ?? []).length > 0);
-    if (!interrupted) return transcript;
-    input = new Command({ resume: { action: 'approve' } });
   }
-  return transcript;
+  return { transcript, values: lastValues };
 }
 
 const complete = (f: DesignerFacts | null | undefined): f is DesignerFacts =>
@@ -195,35 +199,47 @@ export async function runOne(prompt: EvalPrompt, arm: Arm, sample: number, ctx: 
   // Every designer call of this run, in order. The graph state keeps cost and turns but not
   // capped/failed, so the real loop is wrapped to record its results. The designer arm also
   // drops the reviewer here (CADAI_REVIEWER=off is process-wide and arms run concurrently).
-  const calls: DesignerResult[] = [];
+  interface RecordedCall {
+    result: DesignerResult;
+    priorScriptSha: string | null;
+  }
+  const calls: RecordedCall[] = [];
   const inner: RunDesignerFn = deps.runDesigner ?? (await import('@/lib/agent/designer/run-designer')).runDesigner;
   const runDesigner: RunDesignerFn = async (input, d) => {
     if (budget.exceeded) throw Object.assign(new Error(CAP_ERROR), { name: 'AbortError' });
+    const priorScriptSha = typeof input.priorScript === 'string' && input.priorScript
+      ? createHash('sha256').update(input.priorScript).digest('hex')
+      : null;
     const result = await inner(input, arm === 'designer' ? { ...d, review: undefined } : d);
-    calls.push(result);
+    calls.push({ result, priorScriptSha });
     budget.add(result.costUsd);
     return result;
   };
-  const agent = createCadAgent(opts.model, { runDesigner, runBrep: deps.runBrep, makeReviewer: deps.makeReviewer, model: opts.model });
-  const threadKey = runCheckpointKey(`evd-${opts.tag}`, `${arm}-${base}-${Date.now()}`);
+  const agent = createDesignerAgent(opts.model, { runDesigner, runBrep: deps.runBrep, makeReviewer: deps.makeReviewer, model: opts.model });
+  const threadKey = `evd-${opts.tag}-${arm}-${base}-${Date.now()}`;
   const config = { configurable: { thread_id: threadKey }, signal: budget.controller.signal, recursionLimit: 100 };
 
   const messages = [prompt.request, ...(prompt.followUps ?? []).map((f) => f.text)];
+  let lastValues: AgentStateType | null = null;
   try {
     for (let step = 0; step < messages.length; step++) {
       if (budget.exceeded) throw new Error(CAP_ERROR);
       const firstCall = calls.length;
       const t0 = Date.now();
-      const transcript = await drive(agent, messages[step], config);
+      const input = step === 0
+        ? { messages: [new HumanMessage(messages[0])] }
+        : {
+            messages: [...(lastValues?.messages ?? []), new HumanMessage(messages[step])],
+            acceptedDesignerScript: lastValues?.acceptedDesignerScript ?? null,
+          };
+      const { transcript, values } = await drive(agent, input, config);
+      lastValues = values;
       const wallMs = Date.now() - t0;
-      const state = (await agent.getState(config as never)).values as AgentStateType;
-      const mine = calls.slice(firstCall);
-      const last = mine[mine.length - 1];
 
-      const script = state.currentCode ?? '';
-      let facts: DesignerFacts | null = state.designerFacts ?? null;
-      let stl = state.stlContent ? Buffer.from(state.stlContent, 'utf8') : null;
-      let stepData = state.stepContent ? Buffer.from(state.stepContent, 'base64') : null;
+      const script = values.currentCode ?? '';
+      let facts: DesignerFacts | null = values.designerFacts ?? null;
+      let stl = values.stlContent ? Buffer.from(values.stlContent, 'utf8') : null;
+      let stepData = values.stepContent ? Buffer.from(values.stepContent, 'base64') : null;
       // Re-measure when the state lacks full facts or a mesh (e.g. the check failed before it kept one).
       if (script && (!complete(facts) || !stl)) {
         try {
@@ -236,19 +252,23 @@ export async function runOne(prompt: EvalPrompt, arm: Arm, sample: number, ctx: 
         }
       }
 
+      const mine = calls.slice(firstCall);
+      const last = mine[mine.length - 1]?.result;
+
       const rec: StepRecord = {
         step,
         text: messages[step],
         script,
         facts,
-        costUsd: mine.reduce((s, c) => s + (c.costUsd || 0), 0),
+        costUsd: mine.reduce((s, c) => s + (c.result.costUsd || 0), 0),
         wallMs,
-        turns: mine.reduce((s, c) => s + (c.turns || 0), 0),
-        checkFailures: state.designerCheckFailures ?? null,
+        turns: mine.reduce((s, c) => s + (c.result.turns || 0), 0),
+        checkFailures: values.designerCheckFailures ?? null,
         reviewerFlags: last?.reviewerFlags ?? [],
         transcript,
+        priorScriptSha: calls[firstCall]?.priorScriptSha ?? null,
       };
-      const capped = [...mine].reverse().find((c) => c.capped)?.capped;
+      const capped = [...mine].reverse().find((c) => c.result.capped)?.result.capped;
       if (capped) rec.capped = capped;
       if (last?.failed) rec.failed = true;
       if (stl) {
@@ -263,8 +283,6 @@ export async function runOne(prompt: EvalPrompt, arm: Arm, sample: number, ctx: 
     }
   } catch (e) {
     record.error = budget.exceeded ? `${CAP_ERROR} ($${budget.max})` : errText(e);
-  } finally {
-    await getCheckpointer().deleteThread(threadKey).catch(() => undefined);
   }
   fs.writeFileSync(path.join(armDir, `${base}.json`), JSON.stringify(record, null, 2));
   return record;

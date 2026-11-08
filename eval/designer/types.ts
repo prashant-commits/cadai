@@ -76,6 +76,8 @@ export interface StepRecord {
   reviewerFlags: Array<ReviewFlag & { round: number; final: boolean }>;
   /** Rendered user-visible stream text (no raw model output), for audit. */
   transcript?: string;
+  /** sha256 (hex) of input.priorScript on the step's first designer call; null when that call had no prior script. */
+  priorScriptSha?: string | null;
 }
 
 export interface RunRecord {
