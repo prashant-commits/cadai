@@ -1,0 +1,92 @@
+{
+  "id": "hinged_lid_box",
+  "arm": "reviewer",
+  "finished": true,
+  "capped": false,
+  "cap_reason": null,
+  "turns": 8,
+  "run_script_calls": 3,
+  "renders": 3,
+  "finish_rejections": 2,
+  "cost": 0.1369,
+  "wall_time_s": 62.7,
+  "reviewer_flags": [
+    {
+      "round": 2,
+      "severity": "major",
+      "issue": "The facts table reports a closed-pose interference of 181.9 mm³ between box and lid. The knuckles or pin bosses overlap, so the parts are fused or collide at the hinge. The 0.3 mm clearance is not actually achieved.",
+      "why_it_matters": "Interfering parts cannot be printed or assembled as separate, free-rotating bodies. The hinge would seize or need to be forced."
+    },
+    {
+      "round": 2,
+      "severity": "major",
+      "issue": "The pin is not visible as a distinct part. Only two box knuckles and a lid knuckle strip show, and there is no separate pin body in the parts list. The hinge geometry looks like a small stub on the box rim and a lid-edge cylinder, so it is unclear that the pin passes through knuckles on both parts with clearance.",
+      "why_it_matters": "Without a real pin through clearance-bored knuckles, the lid is not retained and cannot rotate as specified. The hinge may not work."
+    },
+    {
+      "round": 2,
+      "severity": "minor",
+      "issue": "The box is 100 x 79 x 55 instead of 100 x 70 x 50. The hinge knuckles protrude past the back wall and sit above the rim, and the lid is oriented 79 mm tall in the open pose. The lid is only 5 mm thick, with a thin hinge barrel under it.",
+      "why_it_matters": "The body envelope exceeds the requested size, and the thin lid and knuckles are fragile at the hinge."
+    },
+    {
+      "round": 5,
+      "severity": "major",
+      "issue": "The pin is 89 mm long and the box knuckles are only about 6 mm wide at the extreme ends. The pin is a single straight rod with no retention. Nothing visible (no heads, press-fit, or end caps) stops it sliding out axially. The knuckle bores look nearly as large as the 5 mm knuckle radius allows, so the wall around the 4.6 mm hole is very thin.",
+      "why_it_matters": "The pin can walk out and release the lid. A thin knuckle wall around the bore can crack or print poorly."
+    },
+    {
+      "round": 5,
+      "severity": "major",
+      "issue": "The lid sits behind the box's back edge and pivots on knuckles that stick out past the rear wall. The box depth is 80.5 mm instead of 70 mm, and the box height is 55 mm instead of 50 mm. The overall bounding sizes drift from the requested 100x70x50 body. The lid's hinge axis is offset from the lid and wall plane. The closed pose may not seat flat on the rim, and the lid may not seal.",
+      "why_it_matters": "The box deviates from the requested dimensions, and the lid may not close flush over the opening."
+    },
+    {
+      "round": 5,
+      "severity": "minor",
+      "issue": "At 100° open the lid leans only slightly past vertical, and the central lid knuckle is a short orange strip between two small box knuckles. The lid is thin (5 mm) and has no stop or detent, so the hinge load is carried by tiny knuckle contact areas.",
+      "why_it_matters": "The lid can flop backward and stress the hinge, and the small bearing surfaces will wear quickly."
+    },
+    {
+      "round": 7,
+      "severity": "major",
+      "issue": "The pin is 89 mm long and about 4 mm in diameter, with only 0.3 mm clearance, and there is no visible retention. Nothing keeps it from sliding out axially. The box knuckles at the ends and the lid knuckle in the middle sit in a single continuous bore with no stop, head or press fit.",
+      "why_it_matters": "The pin can walk out in use, so the lid comes off the box. The hinge needs end caps, a headed pin or an interference fit at one end."
+    },
+    {
+      "round": 7,
+      "severity": "major",
+      "issue": "The box measures 80.5 mm deep, not the requested 70 mm, and 55 mm tall, not 50 mm. The hinge knuckles protrude behind the back wall. The lid is 75.9 mm tall in the open pose, which is expected, but its footprint depth of about 35 mm in Y suggests it is not a full 70 mm deep panel.",
+      "why_it_matters": "The box does not meet the specified 100 x 70 x 50 envelope. If the lid is only about 70 mm deep, the pivot offset needs checking so it still seals the opening."
+    },
+    {
+      "round": 7,
+      "severity": "minor",
+      "issue": "The knuckle outer radius is 5 mm around a 4 mm pin with 0.3 mm clearance. The wall around the bore is only about 2.7 mm. The knuckles are small, and on the box they hang from a thin back wall at the rim.",
+      "why_it_matters": "Thin knuckles in a printed or molded part are weak and may crack under repeated opening, especially at the box-side supports."
+    },
+    {
+      "round": 8,
+      "severity": "major",
+      "issue": "The pin is 89 mm long, and the pin centroid sits at z=50 (the box rim). The box knuckles in the front view are narrow stubs at the outer edges, and the lid knuckle is a short central segment. The knuckles appear to hold the pin with very little engagement, and the pin has no retention (no head, press fit or stop), so it can slide out axially.",
+      "why_it_matters": "A loose pin can walk out sideways, which lets the hinge come apart in use."
+    },
+    {
+      "round": 8,
+      "severity": "major",
+      "issue": "The hinge is built from thin 5 mm radius knuckles on a 3 mm wall, and the box knuckle stubs are small blocks on the back wall. The lid is a 5 mm plate with a single central knuckle that carries the whole lid load at 110°. The load path through the small knuckles is weak and prone to breaking in plastic.",
+      "why_it_matters": "The hinge could crack or sag under repeated opening."
+    },
+    {
+      "round": 8,
+      "severity": "minor",
+      "issue": "At 110° open, the lid leans only slightly past vertical and has no stop or detent, so it will not stay open reliably and can swing back or over-rotate. The box footprint grows to 80.5 mm deep because the knuckles protrude beyond the 70 mm back wall, which departs from the requested 70 mm depth.",
+      "why_it_matters": "The lid may fall closed on the user, and the overall size no longer matches the requested 100 x 70 x 50 mm."
+    }
+  ],
+  "reviewer_flags_summary": {
+    "blocking": 0,
+    "major": 8,
+    "minor": 4
+  }
+}

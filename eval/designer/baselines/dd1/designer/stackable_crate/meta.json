@@ -1,0 +1,19 @@
+{
+  "id": "stackable_crate",
+  "arm": "designer",
+  "finished": true,
+  "capped": false,
+  "cap_reason": null,
+  "turns": 7,
+  "run_script_calls": 2,
+  "renders": 2,
+  "finish_rejections": 2,
+  "cost": 0.0564,
+  "wall_time_s": 27.7,
+  "reviewer_flags": [],
+  "reviewer_flags_summary": {
+    "blocking": 0,
+    "major": 0,
+    "minor": 0
+  }
+}

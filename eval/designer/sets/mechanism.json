@@ -1,0 +1,32 @@
+[
+  {
+    "id": "pin_hinge_box",
+    "set": "mechanism",
+    "request": "A two-piece storage box with a captive pin-hinged lid along the rear edge that rotates smoothly from 0 to 110 degrees, with cylindrical hinge knuckles and a 0.3 mm clearance gap between rotating surfaces."
+  },
+  {
+    "id": "sliding_drawer_unit",
+    "set": "mechanism",
+    "request": "A desk drawer organizer comprising an outer casing with internal guide rails and a slide-out drawer that travels 80 mm forward with 0.5 mm sliding clearance and an integrated front pull handle."
+  },
+  {
+    "id": "cantilever_snap_case",
+    "set": "mechanism",
+    "request": "A two-part enclosure with a base and snap-on top cover: four cantilever snap-fit hooks with lead-in angles deflect 1.5 mm during assembly and engage matching locking recesses inside the base."
+  },
+  {
+    "id": "sliding_lid_container",
+    "set": "mechanism",
+    "request": "A compact container featuring a sliding lid that moves smoothly along dovetail side tracks, including an integrated finger grip recess and a mechanical travel stop detent."
+  },
+  {
+    "id": "rotating_pivot_arm",
+    "set": "mechanism",
+    "request": "A two-link articulated monitor bracket featuring a base clevis mount and an arm that rotates through a 180-degree horizontal arc around a central pivot pin."
+  },
+  {
+    "id": "nesting_stackable_bins",
+    "set": "mechanism",
+    "request": "A pair of stackable modular storage bins where the bottom base has a recessed perimeter rim that nests snugly into the top rim of another bin with 0.5 mm interlocking clearance."
+  }
+]

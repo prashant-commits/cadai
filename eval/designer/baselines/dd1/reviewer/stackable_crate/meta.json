@@ -1,0 +1,92 @@
+{
+  "id": "stackable_crate",
+  "arm": "reviewer",
+  "finished": true,
+  "capped": false,
+  "cap_reason": null,
+  "turns": 6,
+  "run_script_calls": 3,
+  "renders": 3,
+  "finish_rejections": 1,
+  "cost": 0.113,
+  "wall_time_s": 58.4,
+  "reviewer_flags": [
+    {
+      "round": 3,
+      "severity": "major",
+      "issue": "The stacking lip does not fit inside the bottom of an identical crate. The crate's underside has no recess, socket or rebate to receive the lip, and the bottom is flat (lowest Z 0). The lip sits on the rim at a 153.6 x 113.6 footprint, but it is only about 3 mm thick and sits roughly 3.2 mm inboard of the outer wall. A stacked crate's flat floor would rest on top of the lip, not nest over it.",
+      "why_it_matters": "The crates would stack on the lip edge with no positive location. They could slide sideways, and the lip would not do its job."
+    },
+    {
+      "round": 3,
+      "severity": "major",
+      "issue": "The lip is a thin 5 mm band placed with its outer edge at about 3.2 mm inboard of the outer face. The wall is 3 mm thick, so the lip's outer edge is about 0.2 mm inside the inner wall face, or roughly flush with it. There is no clearance gap and no chamfer or lead-in. Even if the base had a matching groove, the fit would be unclear.",
+      "why_it_matters": "With no defined clearance or lead-in, a printed or molded pair could bind or fail to engage."
+    },
+    {
+      "round": 3,
+      "severity": "minor",
+      "issue": "The ventilation slots are small, square and centered at mid-height. The wall thickness is 3 mm. On the long sides the six slots take up only about half of the width. This gives limited airflow, and the slots are far from the floor and the rim.",
+      "why_it_matters": "The crate may ventilate poorly for its purpose. This is minor because the request is met literally."
+    },
+    {
+      "round": 4,
+      "severity": "major",
+      "issue": "The stacking lip is a thin ring (about 1.2 mm wide, 5 mm tall) sitting on top of the rim. The request says it should fit inside the bottom of an identical crate, but the crate base has no matching recess, socket, or relief. The flat underside would rest on the lip and never seat.",
+      "why_it_matters": "Stacked crates would balance on a 1.2 mm ridge with no locating. They could slide off, so the stacking function does not work."
+    },
+    {
+      "round": 4,
+      "severity": "major",
+      "issue": "The lip outline is 153.6 x 113.6 mm, inset 3.2 mm from the outer edge. That puts it nearly on the 3 mm wall's inner face, so it is about 0.2 mm off the wall and only 1.2 mm wide. It also sits on a rim with no step, and the lip is a separate part.",
+      "why_it_matters": "The thin, tiny-clearance ring is fragile and hard to mold or print. Without a tolerance gap and a matching seat in the base, the nesting fit is unreliable."
+    },
+    {
+      "round": 4,
+      "severity": "minor",
+      "issue": "The vent slots are small (about 6 x 6 mm squares) and sit mid-height. On the long sides the slot row is also visibly uneven in the iso view, with some slots rendered as thin L shapes.",
+      "why_it_matters": "The vents give little airflow. The odd rendering suggests slot geometry that is inconsistent or only partly cut, which could cause manufacturing problems."
+    },
+    {
+      "round": 5,
+      "severity": "major",
+      "issue": "The stacking lip is a thin 1.7 mm-wide ring (156.6 x 116.6 outer) sitting on the 3 mm wall's top. Nothing in the facts or renders shows a matching recess or socket in the crate's underside. The base appears flat and the same size as the walls, so the lip has nothing to seat into and the crate cannot nest as requested.",
+      "why_it_matters": "The lip should fit inside the bottom of an identical crate. If it only lands on a flat base or outer wall edge, stacking is unlocated and can slide, and the core function fails."
+    },
+    {
+      "round": 5,
+      "severity": "major",
+      "issue": "The lip is 5 mm tall and only about 1.7 mm thick, and it is inset just 1.7 mm from the outer face. The lip outer is 156.6 mm against a 160 mm body, and the inner wall is at 154 mm. It also has no clearance or lead-in chamfer for fitting inside the next crate.",
+      "why_it_matters": "With no tolerance gap, a printed or molded lip would bind or fail to engage. A thin, tall rib is also fragile and likely to break under stacked load."
+    },
+    {
+      "round": 5,
+      "severity": "minor",
+      "issue": "The vent slots are small (about 7 x 7 mm square holes) and sit mid-height. Their spacing is tight on the short sides, and the slots are not identical in size between the long and short faces.",
+      "why_it_matters": "Airflow is modest, and uneven slot sizing and spacing may look inconsistent, though it is still functional."
+    },
+    {
+      "round": 6,
+      "severity": "major",
+      "issue": "The stacking lip is a thin 5 mm ring inset only about 1.7 mm from the outer wall, so it is thinner than the 3 mm wall. The request says it must fit inside the bottom of an identical crate, but the crate has a flat bottom with no recess, socket or rebate to receive the lip. Stacked crates would sit on the lip, or the lip would collide with the floor or walls.",
+      "why_it_matters": "The core stacking function is not achieved. The crates would not nest or locate against each other, and could slide off."
+    },
+    {
+      "round": 6,
+      "severity": "minor",
+      "issue": "The 5 mm lip is overall 156.6 x 116.6 mm and sits inside the 160 x 120 mm outer footprint. The overall bounding box of 160 x 120 x 90 mm excludes the lip height, since the lip centroid is at z=92.5. This suggests the crate body is 90 mm and the total height is about 95 mm, which deviates from the requested 90 mm.",
+      "why_it_matters": "The overall height exceeds the specified 90 mm, which affects fit in racks and storage."
+    },
+    {
+      "round": 6,
+      "severity": "minor",
+      "issue": "The vent slots are small square holes (about 7 mm) in a single row at mid-height. The lip is a very thin wall feature, about 1.7 mm thick, which is fragile to print or mold and may break off in use.",
+      "why_it_matters": "A fragile lip reduces durability and manufacturability, and small vent holes give limited airflow."
+    }
+  ],
+  "reviewer_flags_summary": {
+    "blocking": 0,
+    "major": 7,
+    "minor": 5
+  }
+}

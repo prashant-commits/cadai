@@ -1,0 +1,280 @@
+[
+  {
+    "id": "iter_box_with_lid",
+    "set": "iterative",
+    "request": "A rectangular storage box 120 x 80 x 50 mm with a matching lift-off lid and 3 mm walls.",
+    "followUps": [
+      {
+        "text": "Add a central divider wall inside the box dividing it into two compartments.",
+        "kind": "part",
+        "probe": {
+          "kind": "newPart",
+          "label": "divider"
+        }
+      }
+    ]
+  },
+  {
+    "id": "iter_phone_stand",
+    "set": "iterative",
+    "request": "An angled desktop phone stand with an 80 x 100 mm backrest and a bottom retaining lip.",
+    "followUps": [
+      {
+        "text": "Add an adjustable tilt pivot joint allowing the backrest angle to tilt.",
+        "kind": "mechanism",
+        "probe": {
+          "kind": "moves"
+        }
+      },
+      {
+        "text": "Add a secondary tablet support ledge directly in front of the phone rest, overlapping the charging port area.",
+        "kind": "conflict",
+        "probe": {
+          "kind": "reviewer",
+          "question": "Did the model cleanly resolve the spatial conflict between the secondary ledge and the existing rest?"
+        }
+      }
+    ]
+  },
+  {
+    "id": "iter_desk_organizer",
+    "set": "iterative",
+    "request": "A compact desk organizer tray 200 x 120 x 40 mm with two stepped compartments.",
+    "followUps": [
+      {
+        "text": "Add a slide-out drawer inside the exact space where the front compartment cavity sits.",
+        "kind": "conflict",
+        "probe": {
+          "kind": "reviewer",
+          "question": "Did the model resolve the conflict between the new drawer and the existing front compartment cavity?"
+        }
+      }
+    ]
+  },
+  {
+    "id": "iter_wall_shelf",
+    "set": "iterative",
+    "request": "A floating wall shelf 260 x 120 x 30 mm with hidden rear wall-mounting brackets.",
+    "followUps": [
+      {
+        "text": "Add heavy diagonal wall brackets directly across the rear mounting plate area.",
+        "kind": "conflict",
+        "probe": {
+          "kind": "reviewer",
+          "question": "Did the model integrate the diagonal brackets without colliding with the rear mounting structure?"
+        }
+      }
+    ]
+  },
+  {
+    "id": "iter_headphone_stand",
+    "set": "iterative",
+    "request": "A desktop headphone stand with a weighted circular base, a vertical post, and a curved headband saddle.",
+    "followUps": [
+      {
+        "text": "Add an upright phone backrest directly where the center post connects to the base.",
+        "kind": "conflict",
+        "probe": {
+          "kind": "reviewer",
+          "question": "Did the model resolve the overlap between the center post and the phone backrest?"
+        }
+      },
+      {
+        "text": "Add a cable wrapping notch cutout into the rear of the vertical post.",
+        "kind": "cut",
+        "probe": {
+          "kind": "reviewer",
+          "question": "Is there a cable routing notch cut into the vertical post?"
+        }
+      }
+    ]
+  },
+  {
+    "id": "iter_small_enclosure",
+    "set": "iterative",
+    "request": "A two-piece project enclosure 95 x 65 x 30 mm consisting of a base box and snap-fit lid.",
+    "followUps": [
+      {
+        "text": "Add cantilever snap-fit hooks on the lid that snap into recesses in the base.",
+        "kind": "mechanism",
+        "probe": {
+          "kind": "reviewer",
+          "question": "Are there cantilever snap hooks engaging the base?"
+        }
+      },
+      {
+        "text": "Add a row of four ventilation slots along both side walls.",
+        "kind": "cut",
+        "probe": {
+          "kind": "reviewer",
+          "question": "Are there ventilation slots cut into the side walls of the enclosure?"
+        }
+      },
+      {
+        "text": "Add four internal circuit board standoff pillars with 2.5 mm pilot holes.",
+        "kind": "part",
+        "probe": {
+          "kind": "reviewer",
+          "question": "Are there internal PCB mounting standoff pillars in the corners?"
+        }
+      }
+    ]
+  },
+  {
+    "id": "iter_planter",
+    "set": "iterative",
+    "request": "A modern geometric desktop planter 85 x 85 x 75 mm with an internal soil chamber.",
+    "followUps": [
+      {
+        "text": "Add an integrated watering funnel spout running directly through the center of the planting chamber.",
+        "kind": "conflict",
+        "probe": {
+          "kind": "reviewer",
+          "question": "Did the model route the watering funnel without obstructing the entire planting cavity?"
+        }
+      },
+      {
+        "text": "Add a matching nested drip saucer that fits snugly under the planter.",
+        "kind": "part",
+        "probe": {
+          "kind": "newPart",
+          "label": "saucer"
+        }
+      }
+    ]
+  },
+  {
+    "id": "iter_lamp_base",
+    "set": "iterative",
+    "request": "A weighted cylindrical desk lamp base 130 mm diameter and 35 mm height with a central socket hole.",
+    "followUps": [
+      {
+        "text": "Add an 8 mm circular cord pass-through channel from the center out through the rear base rim.",
+        "kind": "cut",
+        "probe": {
+          "kind": "reviewer",
+          "question": "Is there a cable routing channel exiting the rear rim of the base?"
+        }
+      },
+      {
+        "text": "Make it 20 mm taller.",
+        "kind": "global",
+        "probe": {
+          "kind": "spanChange",
+          "axis": "z",
+          "deltaMm": 20,
+          "tolerance": 2
+        }
+      },
+      {
+        "text": "Add a pen cup recess directly into the center where the lamp socket and wiring pass through.",
+        "kind": "conflict",
+        "probe": {
+          "kind": "reviewer",
+          "question": "Did the model offset or adapt the socket to fit the new pen cup without collision?"
+        }
+      }
+    ]
+  },
+  {
+    "id": "iter_drawer_unit",
+    "set": "iterative",
+    "request": "A desktop single drawer unit: outer enclosure 150 x 120 x 80 mm with internal guide rails.",
+    "followUps": [
+      {
+        "text": "Make it 20 mm taller.",
+        "kind": "global",
+        "probe": {
+          "kind": "spanChange",
+          "axis": "z",
+          "deltaMm": 20,
+          "tolerance": 2
+        }
+      },
+      {
+        "text": "Add a second sliding drawer above the first one with matching guide rails.",
+        "kind": "mechanism",
+        "probe": {
+          "kind": "newPart",
+          "label": "drawer"
+        }
+      },
+      {
+        "text": "Add a vertical partition wall extending through the middle of the drawer slide path.",
+        "kind": "conflict",
+        "probe": {
+          "kind": "reviewer",
+          "question": "Did the model adapt the partition so the drawer can still slide open?"
+        }
+      }
+    ]
+  },
+  {
+    "id": "iter_cable_tray",
+    "set": "iterative",
+    "request": "An under-desk cable management tray 250 x 90 x 60 mm with open top and side wire pass-through fingers.",
+    "followUps": [
+      {
+        "text": "Add mounting screw slots through the top mounting flanges.",
+        "kind": "cut",
+        "probe": {
+          "kind": "reviewer",
+          "question": "Are there mounting slots through the top flanges?"
+        }
+      },
+      {
+        "text": "Add a snap-on bottom power brick cradle under the tray.",
+        "kind": "part",
+        "probe": {
+          "kind": "newPart",
+          "label": "cradle|bracket"
+        }
+      }
+    ]
+  },
+  {
+    "id": "iter_pen_holder",
+    "set": "iterative",
+    "request": "A cylindrical desk pen holder 75 mm diameter and 100 mm tall with a hollow interior.",
+    "followUps": [
+      {
+        "text": "Add a removable partitioned organizer insert dividing the cylinder into four quadrants.",
+        "kind": "part",
+        "probe": {
+          "kind": "newPart",
+          "label": "insert|divider"
+        }
+      },
+      {
+        "text": "Add a rotating turntable base bearing underneath allowing the cup to spin smoothly.",
+        "kind": "mechanism",
+        "probe": {
+          "kind": "moves"
+        }
+      },
+      {
+        "text": "Add a shallow memo pad holder ledge directly inside the pen cylinder cavity.",
+        "kind": "conflict",
+        "probe": {
+          "kind": "reviewer",
+          "question": "Did the model arrange the memo ledge without completely blocking pen storage?"
+        }
+      }
+    ]
+  },
+  {
+    "id": "iter_monitor_riser",
+    "set": "iterative",
+    "request": "A monitor riser stand 320 x 220 x 80 mm with dual side legs and open keyboard clearance underneath.",
+    "followUps": [
+      {
+        "text": "Add a slide-out laptop or keyboard tray beneath the top platform.",
+        "kind": "mechanism",
+        "probe": {
+          "kind": "newPart",
+          "label": "drawer|tray"
+        }
+      }
+    ]
+  }
+]

@@ -1,0 +1,409 @@
+[
+  {
+    "id": "hinged_lid_box",
+    "set": "prescriptive",
+    "request": "A box 100 x 70 x 50 mm with a separate lid that rotates on two pin hinges along the back edge. The pins are 4 mm in diameter and pass through knuckles on both the box and the lid with 0.3 mm clearance.",
+    "statedDims": [
+      {
+        "what": "box width",
+        "mm": 100,
+        "axis": "x"
+      },
+      {
+        "what": "box depth",
+        "mm": 70,
+        "axis": "y"
+      },
+      {
+        "what": "box height",
+        "mm": 50,
+        "axis": "z"
+      },
+      {
+        "what": "pin diameter",
+        "mm": 4
+      },
+      {
+        "what": "clearance",
+        "mm": 0.3
+      }
+    ]
+  },
+  {
+    "id": "snap_fit_case",
+    "set": "prescriptive",
+    "request": "A two-part enclosure 80 x 50 x 30 mm whose lid snaps onto the base: four cantilever snap hooks on the lid engage matching recesses cut into the inside of the base walls.",
+    "statedDims": [
+      {
+        "what": "enclosure width",
+        "mm": 80,
+        "axis": "x"
+      },
+      {
+        "what": "enclosure depth",
+        "mm": 50,
+        "axis": "y"
+      },
+      {
+        "what": "enclosure height",
+        "mm": 30,
+        "axis": "z"
+      }
+    ]
+  },
+  {
+    "id": "desk_clamp_tilted_post",
+    "set": "prescriptive",
+    "request": "A desk clamp: a C-shaped clamp for a desk edge up to 40 mm thick with a screw boss on the lower jaw, and an upright post on top of the clamp that tilts 15 degrees back from vertical.",
+    "statedDims": [
+      {
+        "what": "desk edge thickness",
+        "mm": 40
+      }
+    ]
+  },
+  {
+    "id": "hex_grid_organizer",
+    "set": "prescriptive",
+    "request": "A drawer organizer tray 200 x 120 x 40 mm with a 4 x 3 grid of hexagonal pockets, each 30 mm across flats, separated by 2 mm walls.",
+    "statedDims": [
+      {
+        "what": "tray width",
+        "mm": 200,
+        "axis": "x"
+      },
+      {
+        "what": "tray depth",
+        "mm": 120,
+        "axis": "y"
+      },
+      {
+        "what": "tray height",
+        "mm": 40,
+        "axis": "z"
+      },
+      {
+        "what": "hex across flats",
+        "mm": 30
+      },
+      {
+        "what": "wall thickness",
+        "mm": 2
+      }
+    ]
+  },
+  {
+    "id": "pipe_tee",
+    "set": "prescriptive",
+    "request": "A pipe tee fitting: a 60 mm long main tube with 25 mm outer diameter and 2.5 mm walls, and a branch tube of the same size joining it at 90 degrees at its middle, hollow through both.",
+    "statedDims": [
+      {
+        "what": "main tube length",
+        "mm": 60
+      },
+      {
+        "what": "outer diameter",
+        "mm": 25
+      },
+      {
+        "what": "wall thickness",
+        "mm": 2.5
+      }
+    ]
+  },
+  {
+    "id": "gear_blanks_on_plate",
+    "set": "prescriptive",
+    "request": "A mounting plate 120 x 80 x 6 mm with two parallel shafts 50 mm apart, and two gear blanks of 40 mm and 60 mm outer diameter, 8 mm thick, sitting on the shafts 0.5 mm above the plate.",
+    "statedDims": [
+      {
+        "what": "mounting plate width",
+        "mm": 120,
+        "axis": "x"
+      },
+      {
+        "what": "mounting plate depth",
+        "mm": 80,
+        "axis": "y"
+      },
+      {
+        "what": "mounting plate height",
+        "mm": 6,
+        "axis": "z"
+      },
+      {
+        "what": "shaft spacing",
+        "mm": 50
+      },
+      {
+        "what": "gear blank 1 outer diameter",
+        "mm": 40
+      },
+      {
+        "what": "gear blank 2 outer diameter",
+        "mm": 60
+      },
+      {
+        "what": "gear blank thickness",
+        "mm": 8
+      },
+      {
+        "what": "elevation above plate",
+        "mm": 0.5
+      }
+    ]
+  },
+  {
+    "id": "curved_wall_arm",
+    "set": "prescriptive",
+    "request": "A wall bracket whose arm is a quarter-circle of 120 mm radius with a 20 x 10 mm cross-section, joining a vertical wall plate to a horizontal ring of 50 mm inner diameter at the far end.",
+    "statedDims": [
+      {
+        "what": "arm radius",
+        "mm": 120
+      },
+      {
+        "what": "cross-section width",
+        "mm": 20
+      },
+      {
+        "what": "cross-section height",
+        "mm": 10
+      },
+      {
+        "what": "ring inner diameter",
+        "mm": 50
+      }
+    ]
+  },
+  {
+    "id": "drawer_on_rails",
+    "set": "prescriptive",
+    "request": "A drawer unit: an outer shell 150 x 120 x 80 mm with two internal side rails, and a drawer that slides on those rails with 0.5 mm clearance on each side and a pull handle on its front.",
+    "statedDims": [
+      {
+        "what": "outer shell width",
+        "mm": 150,
+        "axis": "x"
+      },
+      {
+        "what": "outer shell depth",
+        "mm": 120,
+        "axis": "y"
+      },
+      {
+        "what": "outer shell height",
+        "mm": 80,
+        "axis": "z"
+      },
+      {
+        "what": "clearance",
+        "mm": 0.5
+      }
+    ]
+  },
+  {
+    "id": "angled_lamp_mount",
+    "set": "prescriptive",
+    "request": "A lamp mount: a round base 100 mm in diameter, a 150 mm arm rising from the base at 60 degrees, and a ring holder at the top of the arm that stays horizontal.",
+    "statedDims": [
+      {
+        "what": "base diameter",
+        "mm": 100
+      },
+      {
+        "what": "arm length",
+        "mm": 150
+      }
+    ]
+  },
+  {
+    "id": "stackable_crate",
+    "set": "prescriptive",
+    "request": "A stackable crate 160 x 120 x 90 mm with 3 mm walls, a row of six ventilation slots on each of the four sides, and a stacking lip on the top rim that fits inside the bottom of an identical crate.",
+    "statedDims": [
+      {
+        "what": "crate width",
+        "mm": 160,
+        "axis": "x"
+      },
+      {
+        "what": "crate depth",
+        "mm": 120,
+        "axis": "y"
+      },
+      {
+        "what": "crate height",
+        "mm": 90,
+        "axis": "z"
+      },
+      {
+        "what": "wall thickness",
+        "mm": 3
+      }
+    ]
+  },
+  {
+    "id": "headphone_saddle_stand",
+    "set": "prescriptive",
+    "request": "A headphone stand: a round weighted base, a vertical post, and a curved saddle at the top shaped as a 120 degree arc of 50 mm radius for the headband to rest on.",
+    "statedDims": [
+      {
+        "what": "saddle radius",
+        "mm": 50
+      }
+    ]
+  },
+  {
+    "id": "adjustable_shelf_bracket",
+    "set": "prescriptive",
+    "request": "A shelf bracket with a 150 mm wall plate, a 200 mm shelf arm and a diagonal brace between them. The arm angle is a parameter between 80 and 100 degrees, and the brace must stay attached to both at any angle.",
+    "statedDims": [
+      {
+        "what": "wall plate length",
+        "mm": 150
+      },
+      {
+        "what": "shelf arm length",
+        "mm": 200
+      }
+    ]
+  },
+  {
+    "id": "phone_tablet_dock",
+    "set": "prescriptive",
+    "request": "Design a desktop phone and tablet dock with a hinged storage lid. All dimensions in mm.\n\nBase: a rectangular base plate 180 wide (X), 120 deep (Y) and 8 thick, sitting on the build plate. Cut four 5 mm through-holes for mounting screws, one 12 mm in from each corner.\n\nPhone cradle: on the front-left of the base, a backrest 80 wide, 110 tall and 6 thick that leans back 70 degrees from the base plane, with a front lip 80 wide, 12 tall and 6 deep at its foot to stop the phone sliding. Leave a 10 mm wide, 15 mm deep slot through the lip and backrest for a charging cable.\n\nTablet slot: on the right half of the base, two parallel upright walls 70 wide and 60 tall, 14 apart on their inner faces, so a 12 mm thick tablet fits with 1 mm clearance on each side.\n\nStorage box: at the back of the base, an open-top box 160 wide, 40 deep and 30 tall with 3 mm walls, for pens and cables. Divide it into four equal compartments with 2 mm internal walls.\n\nLid: a separate flat lid 160 wide, 40 deep and 4 thick that covers the storage box and rotates on two pin hinges along the box's back edge. The pins are 4 mm in diameter and pass through knuckles on both the box and the lid with 0.3 mm clearance. The lid must stay a separate solid.\n\nMake the lean angle, the tablet gap, the box height and the compartment count adjustable parameters. No fillets or chamfers. Nothing may go below the base.",
+    "statedDims": [
+      {
+        "what": "base width",
+        "mm": 180,
+        "axis": "x"
+      },
+      {
+        "what": "base depth",
+        "mm": 120,
+        "axis": "y"
+      },
+      {
+        "what": "base thickness",
+        "mm": 8,
+        "axis": "z"
+      },
+      {
+        "what": "mounting hole diameter",
+        "mm": 5
+      },
+      {
+        "what": "mounting hole inset",
+        "mm": 12
+      },
+      {
+        "what": "phone backrest width",
+        "mm": 80,
+        "axis": "x"
+      },
+      {
+        "what": "phone backrest height",
+        "mm": 110,
+        "axis": "z"
+      },
+      {
+        "what": "phone backrest thickness",
+        "mm": 6
+      },
+      {
+        "what": "phone lip width",
+        "mm": 80,
+        "axis": "x"
+      },
+      {
+        "what": "phone lip height",
+        "mm": 12,
+        "axis": "z"
+      },
+      {
+        "what": "phone lip depth",
+        "mm": 6,
+        "axis": "y"
+      },
+      {
+        "what": "cable slot width",
+        "mm": 10,
+        "axis": "x"
+      },
+      {
+        "what": "cable slot depth",
+        "mm": 15,
+        "axis": "y"
+      },
+      {
+        "what": "tablet wall width",
+        "mm": 70,
+        "axis": "x"
+      },
+      {
+        "what": "tablet wall height",
+        "mm": 60,
+        "axis": "z"
+      },
+      {
+        "what": "tablet wall spacing",
+        "mm": 14
+      },
+      {
+        "what": "tablet thickness",
+        "mm": 12
+      },
+      {
+        "what": "tablet clearance",
+        "mm": 1
+      },
+      {
+        "what": "storage box width",
+        "mm": 160,
+        "axis": "x"
+      },
+      {
+        "what": "storage box depth",
+        "mm": 40,
+        "axis": "y"
+      },
+      {
+        "what": "storage box height",
+        "mm": 30,
+        "axis": "z"
+      },
+      {
+        "what": "storage box wall thickness",
+        "mm": 3
+      },
+      {
+        "what": "compartment wall thickness",
+        "mm": 2
+      },
+      {
+        "what": "lid width",
+        "mm": 160,
+        "axis": "x"
+      },
+      {
+        "what": "lid depth",
+        "mm": 40,
+        "axis": "y"
+      },
+      {
+        "what": "lid thickness",
+        "mm": 4,
+        "axis": "z"
+      },
+      {
+        "what": "pin diameter",
+        "mm": 4
+      },
+      {
+        "what": "hinge clearance",
+        "mm": 0.3
+      }
+    ]
+  }
+]

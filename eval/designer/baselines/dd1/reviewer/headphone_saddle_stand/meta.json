@@ -1,0 +1,92 @@
+{
+  "id": "headphone_saddle_stand",
+  "arm": "reviewer",
+  "finished": true,
+  "capped": false,
+  "cap_reason": null,
+  "turns": 8,
+  "run_script_calls": 3,
+  "renders": 3,
+  "finish_rejections": 4,
+  "cost": 0.124,
+  "wall_time_s": 55.5,
+  "reviewer_flags": [
+    {
+      "round": 3,
+      "severity": "minor",
+      "issue": "The post overlaps the saddle by about 1991 mm³ and ends at the saddle's underside. The post is a separate solid, so the joint is a bare butt/overlap with no fillet, socket or blend.",
+      "why_it_matters": "A thin 18 mm post meeting a 100 mm wide saddle at a single small contact patch makes a weak joint that could snap or print poorly. The overlap is likely intended to fuse the parts, but it should be a deliberate union."
+    },
+    {
+      "round": 3,
+      "severity": "minor",
+      "issue": "The 8 mm saddle shell is thin and spans 100 mm with no ribs or gussets. It is supported only at its centre by the 18 mm post.",
+      "why_it_matters": "Headphone weight acts at the arc's flanks and could flex or crack the saddle, especially in printed plastic."
+    },
+    {
+      "round": 3,
+      "severity": "minor",
+      "issue": "The saddle arc runs along X, and its 40 mm width is only about 2x the post diameter. The arc's open ends have no lip or stop.",
+      "why_it_matters": "Headphones can slide sideways off the saddle. The 50 mm radius is also tighter than most headbands, so the fit is marginal."
+    },
+    {
+      "round": 6,
+      "severity": "major",
+      "issue": "The saddle is a thin 10 mm shell that only touches the top of the post. They overlap by about 2500 mm³, and the post's flat top meets the curved underside at a single narrow line. That is a weak joint with little bonding area, and the saddle can tilt or snap off when a headset is placed on it.",
+      "why_it_matters": "The saddle carries the full weight of the headphones. A small, poorly seated joint is likely to break or wobble under repeated loading."
+    },
+    {
+      "round": 6,
+      "severity": "minor",
+      "issue": "The saddle's 120° arc at 50 mm radius is only about 104 mm wide. Real headbands are wider and sit at a different curvature. The dish is shallow, with about 25 mm of rise, and has no lip or end stops.",
+      "why_it_matters": "Headphones may slide sideways off the saddle or sit unevenly. The saddle's edges are also sharp and could mark the headband."
+    },
+    {
+      "round": 6,
+      "severity": "minor",
+      "issue": "The post is a slender 18 mm column, 220 mm tall, on a 160 mm base that is only 14 mm thick. The center of mass sits high once headphones are hung. The volumes suggest the base is dense enough to resist tipping, but an offset load on the saddle's cantilevered ends adds overturning moment and bending stress at the post.",
+      "why_it_matters": "If the base is not actually weighted, or the headphones hang off-center, the stand could tip or flex noticeably."
+    },
+    {
+      "round": 7,
+      "severity": "major",
+      "issue": "The saddle is a 50 mm radius arc spanning only about 104 mm, so it is narrower than a typical headband and has a steep, open cup shape. A headband would sit in a tight cup with its ends sticking up, and it could slide or tip sideways. The arc is also oriented across the width, so the headband must lie along the 40 mm direction, which is correct but leaves little lateral support.",
+      "why_it_matters": "Headphones may not seat securely or may rock on the small, deep cradle."
+    },
+    {
+      "round": 7,
+      "severity": "minor",
+      "issue": "The post is only 18 mm in diameter and 220 mm tall, and it joins the saddle through a small hub. The saddle is a thin 10 mm shell that overhangs the post by about 50 mm on each side.",
+      "why_it_matters": "The saddle could flex or break at the joint under headphone weight or when knocked, especially if 3D printed."
+    },
+    {
+      "round": 7,
+      "severity": "minor",
+      "issue": "The base has sharp, thin edges and no mention of a non-slip pad. Its 160 mm diameter is adequate, but the weight comes only from the 14 mm thickness.",
+      "why_it_matters": "A light base could slide on a desk when headphones are put on or taken off."
+    },
+    {
+      "round": 8,
+      "severity": "major",
+      "issue": "The saddle is a 10 mm thin shell on a 50 mm radius arc. It spans only about 104 mm and rises about 35 mm. A headband draped over it will tend to slide off or sit shallow, and the thin arc ends are cantilevered. The saddle is also a very small, narrow-width contact surface (40 mm) for a headband of this size.",
+      "why_it_matters": "A 120° arc with 50 mm radius is a tight cradle compared with typical headband width and curvature. Headphones may not seat securely, and the sharp thin edges could press into the headband."
+    },
+    {
+      "round": 8,
+      "severity": "minor",
+      "issue": "The post is attached to the saddle only through a small hub on the underside of the arc, with a visible pad of about 10 mm. The 18 mm post meets the thin saddle at a small contact area.",
+      "why_it_matters": "The joint is a weak point under the lever load of heavy headphones placed off-center, and could crack or break, especially if 3D printed."
+    },
+    {
+      "round": 8,
+      "severity": "minor",
+      "issue": "The base has a 160 mm diameter, but the saddle is 104 mm wide along the arc direction and the headphones' mass hangs on both sides of the post. The base's tipping margin is adequate, yet the base is only 14 mm thick and the base mass is the only counterweight. Nothing indicates a weighted cavity or pad material.",
+      "why_it_matters": "Without real added weight or non-slip feet, the stand may slide on a desk or wobble when headphones are placed or removed."
+    }
+  ],
+  "reviewer_flags_summary": {
+    "blocking": 0,
+    "major": 3,
+    "minor": 9
+  }
+}

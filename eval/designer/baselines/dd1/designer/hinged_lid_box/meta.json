@@ -1,0 +1,19 @@
+{
+  "id": "hinged_lid_box",
+  "arm": "designer",
+  "finished": true,
+  "capped": false,
+  "cap_reason": null,
+  "turns": 9,
+  "run_script_calls": 4,
+  "renders": 4,
+  "finish_rejections": 2,
+  "cost": 0.1248,
+  "wall_time_s": 43.1,
+  "reviewer_flags": [],
+  "reviewer_flags_summary": {
+    "blocking": 0,
+    "major": 0,
+    "minor": 0
+  }
+}

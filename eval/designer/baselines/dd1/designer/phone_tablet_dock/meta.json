@@ -1,0 +1,19 @@
+{
+  "id": "phone_tablet_dock",
+  "arm": "designer",
+  "finished": true,
+  "capped": false,
+  "cap_reason": null,
+  "turns": 11,
+  "run_script_calls": 3,
+  "renders": 5,
+  "finish_rejections": 4,
+  "cost": 0.1913,
+  "wall_time_s": 79.4,
+  "reviewer_flags": [],
+  "reviewer_flags_summary": {
+    "blocking": 0,
+    "major": 0,
+    "minor": 0
+  }
+}
