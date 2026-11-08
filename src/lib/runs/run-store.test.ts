@@ -64,15 +64,9 @@ describe('LocalRunStore', () => {
     await expect(s.append('ghost', { t: 'x' })).rejects.toThrow(/Unknown run/);
   });
 
-  it('setStatus: paused sets expiresAt, other statuses clear it, errors are kept', async () => {
+  it('setStatus: errors are kept on failure and cleared on done', async () => {
     const s = new LocalRunStore(tmp());
     await s.create({ runId: 'r', threadId: 't' });
-    await s.setStatus('r', 'paused');
-    const paused = await s.get('r');
-    expect(paused?.status).toBe('paused');
-    expect(paused?.expiresAt).toBeGreaterThan(Date.now());
-    await s.setStatus('r', 'running');
-    expect((await s.get('r'))?.expiresAt).toBeUndefined();
     await s.setStatus('r', 'failed', { code: 'internal', message: 'boom' });
     expect(await s.get('r')).toMatchObject({ status: 'failed', error: { code: 'internal', message: 'boom' } });
     await s.setStatus('r', 'done');
@@ -135,7 +129,7 @@ describe('review fixes', () => {
   it('F1: reserved names are not run ids, and files of each kind live in their own subdirectory', async () => {
     const dir = tmp();
     const s = new LocalRunStore(dir);
-    for (const id of ['checkpoints', 'runs', 'events', 'locks', 'cancel', 'CHECKPOINTS']) {
+    for (const id of ['runs', 'events', 'locks', 'cancel', 'RUNS']) {
       await expect(s.create({ runId: id, threadId: 't' })).rejects.toThrow(/Invalid runId/);
       expect(await s.get(id)).toBeUndefined();
     }
@@ -186,12 +180,7 @@ describe('review fixes', () => {
 
   it('F3/F9: setStatus and append honour `expect` atomically; exactly one of two racing transitions wins', async () => {
     const s = new LocalRunStore(tmp());
-    await s.create({ runId: 'r', threadId: 't', status: 'paused' });
-    const claims = await Promise.all([
-      s.setStatus('r', 'running', undefined, { expect: ['paused'] }),
-      s.setStatus('r', 'running', undefined, { expect: ['paused'] }),
-    ]);
-    expect(claims.filter(Boolean)).toHaveLength(1);
+    await s.create({ runId: 'r', threadId: 't', status: 'running' });
     const ends = await Promise.all([
       s.append('r', { t: 'cancelled' }, { status: 'cancelled', expect: ['running'] }),
       s.append('r', { t: 'error' }, { status: 'failed', expect: ['running'] }),
@@ -201,19 +190,15 @@ describe('review fixes', () => {
     expect(['cancelled', 'failed']).toContain((await s.get('r'))?.status);
   });
 
-  it('F5: prune deletes finished runs older than CADAI_RUN_TTL_MS, keeps fresh and running ones, fails expired paused runs', async () => {
+  it('F5: prune deletes finished runs older than CADAI_RUN_TTL_MS, keeps fresh and running ones', async () => {
     const dir = tmp();
     const s = new LocalRunStore(dir);
-    for (const id of ['old-done', 'fresh-done', 'live', 'old-paused']) await s.create({ runId: id, threadId: 't' });
+    for (const id of ['old-done', 'fresh-done', 'live']) await s.create({ runId: id, threadId: 't' });
     await s.append('old-done', { t: 'x' });
     await s.setStatus('old-done', 'done');
     await s.setStatus('fresh-done', 'done');
-    await s.setStatus('old-paused', 'paused');
     process.env.CADAI_RUN_TTL_MS = String(60 * 60 * 1000);
     const later = Date.now() + 2 * 60 * 60 * 1000;
-    // the paused run's checkpoint TTL (24 h by default) has not passed; make it.
-    const meta = JSON.parse(fs.readFileSync(path.join(dir, 'runs', 'old-paused.json'), 'utf-8'));
-    fs.writeFileSync(path.join(dir, 'runs', 'old-paused.json'), JSON.stringify({ ...meta, expiresAt: Date.now() - 1 }));
     const fresh = JSON.parse(fs.readFileSync(path.join(dir, 'runs', 'fresh-done.json'), 'utf-8'));
     fs.writeFileSync(path.join(dir, 'runs', 'fresh-done.json'), JSON.stringify({ ...fresh, updatedAt: later }));
     process.env.CADAI_RUN_LOST_MS = String(24 * 60 * 60 * 1000); // keep `live` from being reaped as lost
@@ -223,7 +208,6 @@ describe('review fixes', () => {
     expect(fs.existsSync(path.join(dir, 'events', 'old-done.jsonl'))).toBe(false);
     expect(await s.get('fresh-done')).toBeDefined();
     expect((await s.get('live'))?.status).toBe('running');
-    expect(await s.get('old-paused')).toMatchObject({ status: 'failed', error: { code: 'run_expired' } });
     delete process.env.CADAI_RUN_LOST_MS;
   });
 

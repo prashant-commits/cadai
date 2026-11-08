@@ -18,7 +18,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * GET /api/runs/:runId/events?after=N - reconnect.
  *
  * Replays stored events with seq > N, then tails the log until the run is no
- * longer `running` (paused at a gate, done, failed, cancelled, or failed as
+ * longer `running` (done, failed, cancelled, or failed as
  * lost because its owner stopped heartbeating). The first event is always
  * `run`: when N > 0 that is a synthetic one (seq 0, not stored) with the
  * run's current status and resumed: true; with N = 0 it is the stored first

@@ -3,14 +3,12 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { NextRequest } from 'next/server';
-import { FileCheckpointSaver, getCheckpointer, runCheckpointKey } from '@/lib/agent/checkpointer';
 import { getRunStore } from '@/lib/runs/run-store';
 
 const createAgent = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/agent/designer/graph', () => ({ createDesignerAgent: createAgent }));
 
 import { POST as chat } from '../chat/route';
-import { POST as resume } from '../chat/resume/route';
 import { GET as getRun } from './[runId]/route';
 import { POST as cancelRun } from './[runId]/cancel/route';
 import { GET as getEvents } from './[runId]/events/route';
@@ -27,7 +25,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await new Promise((r) => setTimeout(r, 150)); // debounced checkpoint flush
+  await new Promise((r) => setTimeout(r, 150));
   process.env = { ...saved };
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -55,7 +53,6 @@ const graphOf = (chunks: unknown[]) => ({
 });
 const delta = (text: string) => ['custom', { t: 'delta', text, node: 'architectNode' }];
 const result = (summary: string) => ['custom', { t: 'result', summary, node: 'respondToUser' }];
-const gate = ['updates', { __interrupt__: [{ id: 'g1', value: { kind: 'spec' } }] }];
 
 /** Graph that blocks until its signal aborts, like a long LLM call. */
 function hangingGraph(seen: { signal?: AbortSignal }) {
@@ -151,19 +148,6 @@ describe('POST /api/chat: run envelope', () => {
   });
 });
 
-describe('pause at a gate', () => {
-  it('sets status paused (with expiresAt) before the gate reaches the client, and keeps the checkpoint', async () => {
-    createAgent.mockReturnValue(graphOf([delta('spec'), gate]));
-    const res = await startChat();
-    const events = parse(await res.text());
-    const runId = events[0].runId;
-    expect(events.map((e) => e.t)).toContain('gate');
-    const info = await getRunStore().get(runId);
-    expect(info?.status).toBe('paused');
-    expect(info?.expiresAt).toBeGreaterThan(Date.now());
-  });
-});
-
 describe('client disconnect does not cancel', () => {
   it('the run finishes and is replayable after the reader goes away', async () => {
     createAgent.mockReturnValue({
@@ -237,29 +221,6 @@ describe('POST /api/runs/:runId/cancel', () => {
     expect(res.status).toBe(404);
     expect((await res.json()).apiError.code).toBe('not_found');
   });
-
-  it('cancel of a paused run cancels it, drops its checkpoint, and appends a cancelled event', async () => {
-    createAgent.mockReturnValue(graphOf([gate]));
-    const runId = parse(await (await startChat()).text())[0].runId;
-    const key = runCheckpointKey('t1', runId);
-    await getCheckpointer().put(
-      { configurable: { thread_id: key } },
-      { v: 1, id: 'cp', ts: new Date().toISOString(), channel_values: {}, channel_versions: {}, versions_seen: {} } as never,
-      { source: 'update', step: 0, parents: {} } as never,
-      {}
-    );
-    expect(await getCheckpointer().getTuple({ configurable: { thread_id: key } })).toBeDefined();
-    const res = await cancelRun(post('/c', {}), ctx(runId));
-    expect(res.status).toBe(200);
-    expect(await getCheckpointer().getTuple({ configurable: { thread_id: key } })).toBeUndefined();
-    const info = await getRunStore().get(runId);
-    expect(info?.status).toBe('cancelled');
-    const stored = await getRunStore().events(runId, 0);
-    expect(stored[stored.length - 1]).toMatchObject({ t: 'cancelled' });
-    // and it can no longer be resumed
-    const r = await resume(post('/api/chat/resume', { threadId: 't1', runId, decision: { action: 'approve' } }));
-    expect(r.status).toBe(409);
-  });
 });
 
 describe('GET /api/runs/:runId', () => {
@@ -324,14 +285,6 @@ describe('GET /api/runs/:runId/events', () => {
     await liveP;
   });
 
-  it('ends at a gate (paused) so the client can resume', async () => {
-    createAgent.mockReturnValue(graphOf([delta('s'), gate]));
-    const live = parse(await (await startChat()).text());
-    const replay = parse(await (await events(live[0].runId)).text());
-    expect(replay.map((e) => e.t)).toEqual(live.map((e) => e.t));
-    expect(replay[replay.length - 1].t).toBe('gate');
-  });
-
   it('a cancelled run replays through its cancelled event', async () => {
     const seen: { signal?: AbortSignal } = {};
     createAgent.mockReturnValue(hangingGraph(seen));
@@ -358,102 +311,7 @@ describe('GET /api/runs/:runId/events', () => {
   });
 });
 
-describe('POST /api/chat/resume: run control', () => {
-  async function pausedRun() {
-    createAgent.mockReturnValue(graphOf([delta('spec'), gate]));
-    const runId = parse(await (await startChat()).text())[0].runId;
-    return runId as string;
-  }
-  const plant = (saver: FileCheckpointSaver, key: string) =>
-    saver.put(
-      { configurable: { thread_id: key } },
-      { v: 1, id: 'cp', ts: new Date().toISOString(), channel_values: {}, channel_versions: {}, versions_seen: {} } as never,
-      { source: 'update', step: 0, parents: {} } as never,
-      {}
-    );
-
-
-  it('resume of a run that is not paused is 409 run_conflict', async () => {
-    createAgent.mockReturnValue(graphOf([result('x')]));
-    const runId = parse(await (await startChat()).text())[0].runId;
-    const res = await resume(post('/api/chat/resume', { threadId: 't1', runId, decision: { action: 'approve' } }));
-    expect(res.status).toBe(409);
-    expect((await res.json()).apiError.code).toBe('run_conflict');
-  });
-
-  it('missing checkpoint -> run_expired event, run marked failed', async () => {
-    const runId = await pausedRun(); // run record says paused, but no checkpoint exists
-    const events = parse(await (await resume(post('/api/chat/resume', { threadId: 't1', runId, decision: { action: 'approve' } }))).text());
-    expect(events.find((e) => e.t === 'error')?.apiError.code).toBe('run_expired');
-    const info = await getRunStore().get(runId);
-    expect(info?.status).toBe('failed');
-    expect(info?.error?.code).toBe('run_expired');
-  });
-
-
-  it('a gate "cancel" decision ends the run as cancelled without touching the graph', async () => {
-    const runId = await pausedRun();
-    await plant(getCheckpointer(), runCheckpointKey('t1', runId));
-    createAgent.mockClear();
-    const events = parse(await (await resume(post('/api/chat/resume', { threadId: 't1', runId, decision: { action: 'cancel' } }))).text());
-    expect(events[0]).toMatchObject({ t: 'run', status: 'cancelled', resumed: true });
-    // `result` for old clients, then the contract's terminal `cancelled`.
-    expect(events.map((e) => e.t)).toEqual(['run', 'result', 'cancelled']);
-    expect(events[1]).toMatchObject({ summary: 'Generation cancelled by user.' });
-    expect(createAgent).not.toHaveBeenCalled();
-    expect((await getRunStore().get(runId))?.status).toBe('cancelled');
-  });
-
-  it('bad requests are ErrorBody 400s', async () => {
-    const a = await resume(post('/api/chat/resume', { runId: 'r' }));
-    expect(a.status).toBe(400);
-    expect((await a.json()).apiError.code).toBe('bad_request');
-    const b = await resume(post('/api/chat/resume', { threadId: 't' }));
-    expect(b.status).toBe(400);
-    expect((await b.json()).apiError.code).toBe('bad_request');
-  });
-
-});
-
 describe('review fixes (routes)', () => {
-  const plantCp = (key: string) =>
-    getCheckpointer().put(
-      { configurable: { thread_id: key } },
-      { v: 1, id: 'cp', ts: new Date().toISOString(), channel_values: {}, channel_versions: {}, versions_seen: {} } as never,
-      { source: 'update', step: 0, parents: {} } as never,
-      {}
-    );
-
-  it('F1: GET /api/runs/checkpoints is 404 and exposes nothing, even with a paused checkpoint on disk', async () => {
-    await plantCp(runCheckpointKey('t-secret', 'r-secret'));
-    getCheckpointer().flushNow();
-    for (const id of ['checkpoints', 'runs', 'events', 'locks']) {
-      const res = await getRun(new NextRequest(`http://localhost/api/runs/${id}`), ctx(id));
-      expect(res.status).toBe(404);
-      const text = await res.text();
-      expect(text).not.toContain('t-secret');
-      expect(text).not.toContain('storage');
-      const ev = await getEvents(new NextRequest(`http://localhost/api/runs/${id}/events`), ctx(id));
-      expect(ev.status).toBe(404);
-    }
-    const r = await resume(post('/api/chat/resume', { threadId: 't', runId: 'checkpoints', decision: { action: 'approve' } }));
-    expect(r.status).toBe(400);
-    expect(fs.existsSync(path.join(dir, 'checkpoints', 'checkpoints.json'))).toBe(true);
-    expect(JSON.parse(fs.readFileSync(path.join(dir, 'checkpoints', 'checkpoints.json'), 'utf-8')).storage).toHaveProperty(
-      runCheckpointKey('t-secret', 'r-secret'),
-    );
-  });
-
-
-  it('F5: resume with an unknown runId creates no files', async () => {
-    for (let i = 0; i < 5; i++) {
-      const res = await resume(post('/api/chat/resume', { threadId: 't', runId: `made-up-${i}`, decision: { action: 'approve' } }));
-      expect(res.status).toBe(410);
-    }
-    expect(fs.readdirSync(path.join(dir, 'runs'))).toEqual([]);
-    expect(fs.readdirSync(path.join(dir, 'events'))).toEqual([]);
-  });
-
   it('F7: a run whose owner died is failed by the tail (which then ends) and cancel answers 409', async () => {
     const store = getRunStore();
     await store.create({ runId: 'orphan', threadId: 't' });
@@ -581,35 +439,6 @@ describe('review fixes (routes)', () => {
 });
 
 describe('re-review fixes (routes)', () => {
-  const plantCp = (key: string) =>
-    getCheckpointer().put(
-      { configurable: { thread_id: key } },
-      { v: 1, id: 'cp', ts: new Date().toISOString(), channel_values: {}, channel_versions: {}, versions_seen: {} } as never,
-      { source: 'update', step: 0, parents: {} } as never,
-      {}
-    );
-  const approve = (runId: string, extra: Record<string, unknown> = {}) =>
-    resume(post('/api/chat/resume', { threadId: 't1', runId, decision: { action: 'approve' }, ...extra }));
-  async function pausedRunWithCheckpoint() {
-    createAgent.mockReturnValue(graphOf([delta('spec'), gate]));
-    const runId: string = parse(await (await startChat()).text())[0].runId;
-    await plantCp(runCheckpointKey('t1', runId));
-    return runId;
-  }
-
-  it('N1: resuming a paused run that the sweep expired is 410 run_expired, not 409', async () => {
-    const runId = await pausedRunWithCheckpoint();
-    const file = path.join(dir, 'runs', `${runId}.json`);
-    fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf-8')), expiresAt: Date.now() - 1 }));
-    await (getRunStore() as unknown as { prune(): Promise<string[]> }).prune();
-    expect((await getRunStore().get(runId))?.error?.code).toBe('run_expired');
-    const res = await approve(runId);
-    expect(res.status).toBe(410);
-    const body = await res.json();
-    expect(body.apiError.code).toBe('run_expired');
-    expect(body.error).toBe('This paused run expired or was not found on this server. Send the request again.');
-  });
-
   it('N2: an owner that was reaped while stalled stores nothing after the terminal event and stops its graph', async () => {
     process.env.CADAI_RUN_LOST_MS = '100';
     process.env.CADAI_RUN_HEARTBEAT_MS = '100000'; // the stalled owner does not heartbeat
@@ -681,16 +510,5 @@ describe('re-review fixes (routes)', () => {
     expect(stored.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(live).toEqual(stored);
     expect((await store.get(live[0].runId))?.status).toBe('done');
-  });
-
-
-  it('N6: a resume that fails after its checkpoint is gone fails the run instead of leaving it running', async () => {
-    const runId = await pausedRunWithCheckpoint();
-    const store = getRunStore();
-    const spy = vi.spyOn(store, 'append').mockRejectedValue(new Error('disk full'));
-    const res = await resume(post('/api/chat/resume', { threadId: 't1', runId, decision: { action: 'cancel' } }));
-    spy.mockRestore();
-    expect(res.status).toBe(500);
-    expect(await store.get(runId)).toMatchObject({ status: 'failed', error: { code: 'internal' } });
   });
 });

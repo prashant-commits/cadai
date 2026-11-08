@@ -1,9 +1,7 @@
-import type { GatePayload } from '@/types';
 import { PIPELINE_STEPS } from '@/lib/contract/run-contract';
 import { sanitizeText, toApiError } from '@/lib/contract/api-error';
 import type { StreamEvent } from './stream-events';
 import type { SectionStatus } from './transcript';
-import { checkpointTtlMs } from './checkpointer';
 import type { AgentStateType } from './designer/state';
 import { routeAfterDesignerCheck } from './designer/graph';
 import { contentText } from './message-text';
@@ -73,17 +71,13 @@ interface PendingRetry {
   reason: string;
 }
 
-export interface BridgeOptions {
-  /** Checkpoint `channel_values` for a resumed run. Attempt counts are derived from it. */
-  state?: Record<string, unknown>;
-}
+export interface BridgeOptions {}
 
 /**
  * Translates langgraph's [mode, payload] tuples into the client's event union.
  *
  * Shapes verified against langgraph 1.4: `custom` yields the bare payload,
- * `messages` yields [chunk, metadata], an interrupt arrives as
- * ['updates', { __interrupt__: [{ id, value }] }], a node's return value arrives
+ * `messages` yields [chunk, metadata], a node's return value arrives
  * as ['updates', { nodeName: partialState }], and `tasks` yields a create payload
  * `{name, input}` at start and a result payload `{name, result}` at finish.
  */
@@ -91,7 +85,7 @@ export async function bridgeGraphStream(
   chunks: AsyncIterable<unknown>,
   runId: string,
   emit: (event: StreamEvent) => void,
-  options?: BridgeOptions,
+  _options?: BridgeOptions,
 ): Promise<void> {
   const box = {
     current: null as Section | null,
@@ -100,7 +94,6 @@ export async function bridgeGraphStream(
   };
   const runs = new Map<string, number>();
   const starts = new Map<string, number>();
-  seedRuns(options?.state, box.state, runs);
 
   function send(event: StreamEvent) {
     emit(event);
@@ -334,20 +327,6 @@ export async function bridgeGraphStream(
 
       if (mode === 'updates') {
         const upd = payload as Record<string, unknown>;
-        const interrupts = upd.__interrupt__ as Array<{ id: string; value: unknown }> | undefined;
-        if (interrupts?.length) {
-          if (box.current) closeCurrent();
-          for (const item of interrupts) {
-            emit({
-              t: 'gate',
-              id: item.id,
-              runId,
-              payload: item.value as GatePayload,
-              expiresAt: Date.now() + checkpointTtlMs(),
-            });
-          }
-          continue;
-        }
         for (const [node, partial] of Object.entries(upd)) {
           if (node === '__interrupt__' || !partial || typeof partial !== 'object' || Array.isArray(partial)) continue;
           const record = partial as Record<string, unknown>;
@@ -423,35 +402,6 @@ function mergeDefined(state: AgentStateType, partial: Record<string, unknown>) {
   for (const [key, value] of Object.entries(partial)) {
     if (value !== undefined) target[key] = value;
   }
-}
-
-function seedRuns(initial: Record<string, unknown> | undefined, state: AgentStateType, runs: Map<string, number>) {
-  if (!initial) return;
-  mergeDefined(state, initial);
-  const attempt = typeof initial.attemptCount === 'number' ? initial.attemptCount : 0;
-  if (initial.pipeline === 'architect' && attempt > 0) {
-    runs.set(initial.kernel === 'brep' ? 'brepBuild' : 'architectBuild', attempt);
-  } else if (initial.pipeline && initial.pipeline !== 'architect' && attempt > 0) {
-    runs.set('drafterNode', 1);
-    if (attempt > 1) runs.set('fixCode', attempt - 1);
-  }
-  const hasSpec = initial.assemblySpec != null || (Array.isArray(initial.specVariants) && initial.specVariants.length > 0);
-  if (hasSpec) {
-    const revisions = typeof initial.specRevisionCount === 'number' ? initial.specRevisionCount : 0;
-    // specRevisionCount is user gate revisions. Reviewer loops live on variant.retries.
-    runs.set('architectNode', revisions + reviewerRetries(initial) + 1);
-  }
-}
-
-function reviewerRetries(initial: Record<string, unknown>): number {
-  if (!Array.isArray(initial.specVariants)) return 0;
-  let max = 0;
-  for (const variant of initial.specVariants) {
-    if (!variant || typeof variant !== 'object') continue;
-    const retries = (variant as { retries?: unknown }).retries;
-    if (typeof retries === 'number' && Number.isFinite(retries) && retries > max) max = retries;
-  }
-  return max;
 }
 
 function attemptNumber(

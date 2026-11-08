@@ -2,7 +2,6 @@ import type { ApiError, RunStatus } from '@/lib/contract/run-contract';
 import { toApiError } from '@/lib/contract/api-error';
 import { bridgeGraphStream } from '@/lib/agent/stream-bridge';
 import type { StreamEvent } from '@/lib/agent/stream-events';
-import { deleteRunCheckpoint, getCheckpointer } from '@/lib/agent/checkpointer';
 import { describeGraphError } from '@/lib/agent/run-limits';
 import { runHeartbeatMs, type RunStore } from './run-store';
 import { registerRun, unregisterRun } from './run-control';
@@ -37,13 +36,8 @@ export interface StreamRunOptions {
   store: RunStore;
   runId: string;
   threadId: string;
-  resumed: boolean;
-  /** LangGraph thread key whose checkpoint belongs to this run. */
-  checkpointKey: string;
   /** Prefix for the user-facing failure label, e.g. "Agent execution failed". */
   failLabel: string;
-  /** Checkpoint channel values so section attempts survive a resume. */
-  seed?: Record<string, unknown>;
   /** Starts the graph stream; must pass `signal` to it. */
   invoke: (signal: AbortSignal) => Promise<AsyncIterable<unknown>>;
   /** Runs after the last event, before the stream closes (e.g. tracing flush). */
@@ -51,7 +45,7 @@ export interface StreamRunOptions {
 }
 
 /**
- * Drives one run (fresh or resumed) and returns its SSE Response.
+ * Drives one run and returns its SSE Response.
  *
  * Every event gets seq + ts, is appended to the run store and then written to
  * the client; the client's connection dropping never stops the run (reconnect
@@ -63,7 +57,7 @@ export interface StreamRunOptions {
  * end it.
  *
  * Caller contract: the run record exists and the caller has already moved it
- * to `running` (create, or a paused -> running claim).
+ * to `running`.
  */
 export function streamRun(o: StreamRunOptions): Response {
   const { store, runId } = o;
@@ -101,8 +95,8 @@ export function streamRun(o: StreamRunOptions): Response {
   const pending: Array<Record<string, unknown>> = [];
   let failingSince = 0;
   let storeBroken = false;
-  // The store ended this run without its owner (reaped as lost while stalled,
-  // or stopped while paused): nothing more is stored or run.
+  // The store ended this run without its owner (reaped as lost while stalled):
+  // nothing more is stored or run.
   let detached = false;
 
   const writeClient = (payload: Record<string, unknown>) => {
@@ -146,17 +140,10 @@ export function streamRun(o: StreamRunOptions): Response {
   const flushPending = async (): Promise<boolean> => {
     while (pending.length > 0 && !detached) {
       const ev = pending[0];
-      const gate = ev.t === 'gate';
       let seq: number;
       try {
-        if (gate) {
-          // Durable before visible: the checkpoint is on disk and the status is
-          // `paused` (in the same step as the gate event) before the client can
-          // see the gate and POST a resume.
-          getCheckpointer().flushNow();
-        }
         // Only while the run is still ours (running): never after a terminal event.
-        seq = await store.append(runId, ev, gate ? { status: 'paused', expect: ['running'] } : { expect: ['running'] });
+        seq = await store.append(runId, ev, { expect: ['running'] });
       } catch (e) {
         if (!failingSince) {
           failingSince = Date.now();
@@ -255,23 +242,21 @@ export function streamRun(o: StreamRunOptions): Response {
       void store.heartbeat(runId).catch(() => undefined);
     }, runHeartbeatMs());
 
-    let sawGate = false;
     let sawResult = false;
     let graphError: ApiError | null = null;
     let threw: unknown = null;
 
     try {
-      emit({ t: 'run', runId: o.runId, threadId: o.threadId, status: 'running', resumed: o.resumed });
+      emit({ t: 'run', runId: o.runId, threadId: o.threadId, status: 'running', resumed: false });
       const chunks = await o.invoke(controller.signal);
       await bridgeGraphStream(chunks, runId, (event) => {
-        if (event.t === 'gate') sawGate = true;
         if (event.t === 'result') sawResult = true;
         if (event.t === 'error') {
           const ev = event as { message: string; apiError?: ApiError };
           graphError = ev.apiError ?? toApiError(new Error(ev.message));
         }
         emit(event);
-      }, o.seed ? { state: o.seed } : undefined);
+      });
     } catch (err) {
       threw = err;
     }
@@ -287,30 +272,18 @@ export function streamRun(o: StreamRunOptions): Response {
       const flagged = controller.signal.aborted || (await store.isCancelled(runId).catch(() => false));
       // A stream that ran to its end keeps its outcome even if a cancel landed
       // during the last drain: the result is already out, so `done` wins.
-      const completed = threw === null && (sawResult || sawGate);
+      const completed = threw === null && sawResult;
       const cancelled: ApiError = { code: 'cancelled', message: 'The run was stopped.' };
 
-      if (threw === null && sawGate) {
-        if (flagged) {
-          // Stop was pressed while the run was reaching its gate: stop it there.
-          await deleteRunCheckpoint(o.checkpointKey);
-          await finish({ t: 'cancelled', at: Date.now() }, 'cancelled', cancelled, ['paused']);
-        }
-        // else: already `paused`, set atomically with the gate event.
-      } else if (flagged && !completed) {
-        await deleteRunCheckpoint(o.checkpointKey);
+      if (flagged && !completed) {
         await finish({ t: 'cancelled', at: Date.now() }, 'cancelled', cancelled, ['running']);
       } else if (threw !== null) {
-        await deleteRunCheckpoint(o.checkpointKey);
         const message = describeGraphError(threw, o.failLabel);
         const apiError = toApiError(threw);
         await finish({ t: 'error', message, apiError }, 'failed', apiError, ['running']);
       } else if (graphError) {
-        await deleteRunCheckpoint(o.checkpointKey);
         await finish(null, 'failed', graphError, ['running']);
       } else {
-        // Finished runs cannot be resumed; dropping the checkpoint keeps one-key-per-run bounded.
-        await deleteRunCheckpoint(o.checkpointKey);
         await finish(null, 'done', undefined, ['running']);
       }
     } catch (e) {

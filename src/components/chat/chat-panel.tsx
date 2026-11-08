@@ -5,19 +5,12 @@ import { useAppStore } from '@/store/app-store';
 import { MessageBubble } from './message-bubble';
 import { ChatInput } from './chat-input';
 import { ThreadDrawer } from './thread-drawer';
-import { GateDock } from './gate-dock';
 import { readStream, streamMessagePatch } from '@/lib/stream-reader';
 import { serializeTranscript } from '@/lib/agent/transcript';
-import {
-  resumableGate,
-  stripUnchosenSheets,
-  ensureGateOpenedAt,
-  closedExpiredGateUpdate,
-} from '@/lib/chat/rehydrate';
 import { freezeStreamingMessages } from '@/lib/chat/chat-messages';
 import { compileModel } from '@/lib/engine/openscad-bridge';
 import { parseStlToGeometry } from '@/lib/engine/geometry-utils';
-import { ChatMessage, GatePayload, GateDecision, GateRecord } from '@/types';
+import { ChatMessage } from '@/types';
 import {
   FolderKanban,
   Plus,
@@ -50,11 +43,6 @@ export function ChatPanel() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [tempTitle, setTempTitle] = useState('');
-  const [pendingGate, setPendingGate] = useState<GatePayload | null>(null);
-  const [pendingRunId, setPendingRunId] = useState<string | null>(null);
-  // The message a resumed run must continue appending to.
-  const [pendingMessageId, setPendingMessageId] = useState<string | null>(null);
-  const [pendingExpired, setPendingExpired] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Initialize threads from IndexedDB on client mount
@@ -62,8 +50,7 @@ export function ChatPanel() {
     void initializeFromStorage();
   }, [initializeFromStorage]);
 
-  // Runs after storage has populated the store, and again on every thread
-  // switch: a gate left open in another thread must not stay docked here.
+  // Runs after storage has populated the store, and again on every thread switch.
   useEffect(() => {
     if (!activeThreadId) return;
     const thread = threads.find((t) => t.id === activeThreadId);
@@ -75,23 +62,8 @@ export function ChatPanel() {
         updateMessage(frozen.id, { status: frozen.status, content: frozen.content }, activeThreadId);
       }
     }
-
-    const prepared = thread.messages.map((message) => ensureGateOpenedAt(message));
-    for (let i = 0; i < prepared.length; i++) {
-      if (prepared[i] !== thread.messages[i]) {
-        updateMessage(prepared[i].id, { gates: prepared[i].gates }, activeThreadId);
-      }
-    }
-
-    const open = resumableGate(prepared);
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPendingGate(open?.gate ?? null);
-    setPendingRunId(open?.runId ?? null);
-    setPendingMessageId(open?.messageId ?? null);
-    setPendingExpired(open?.expired ?? false);
-    // `threads` is intentionally absent: this must react to the thread
-    // CHANGING, not to every message mutation during a live stream, which
-    // would re-dock a gate the user just answered.
+    // `threads` is intentionally absent: this must react to the thread CHANGING,
+    // not to every message mutation during a live stream.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeThreadId]);
 
@@ -104,7 +76,7 @@ export function ChatPanel() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, pendingGate]);
+  }, [messages]);
 
   const handleStartRename = () => {
     if (activeThread) {
@@ -120,40 +92,8 @@ export function ChatPanel() {
     setIsEditingTitle(false);
   };
 
-  // Renders an accept gate's candidate mesh into the viewport so the human is
-  // judging the actual part rather than three numbers. Spec gates carry no
-  // geometry yet, so they are a no-op here.
-  const showGateGeometry = (gate: GatePayload | null | undefined, threadId: string) => {
-    if (!gate || gate.kind !== 'accept') return;
-    const stl = gate.stl;
-    if (!stl || !stl.includes('facet normal')) return;
-    try {
-      const { geometry, modelInfo } = parseStlToGeometry(stl);
-      setCompileResult(
-        { success: true, stlContent: stl, geometry, modelInfo, compileTimeMs: 0 },
-        threadId
-      );
-    } catch (e) {
-      // A mesh we cannot parse must not take the gate down with it - the
-      // numeric summary in the gate card still stands on its own.
-      console.error('Failed to render gate geometry:', e);
-    }
-  };
-
-  /** The one gate still awaiting a decision, if any. */
-  function firstOpenGate(gates: Record<string, GateRecord>): GatePayload | null {
-    for (const record of Object.values(gates)) {
-      if (record.status === 'open') return record.payload;
-    }
-    return null;
-  }
-
   /**
    * Drives one stream into ONE assistant message.
-   *
-   * The message is created when the stream opens and mutated as it grows,
-   * because a turn that pauses at a gate spans two HTTP requests and both
-   * halves belong to the same message.
    */
   const consumeStream = async (
     response: Response,
@@ -176,28 +116,12 @@ export function ChatPanel() {
         updateMessage(messageId, streamMessagePatch(state), targetThreadId);
 
         if (state.error) {
-          setPendingGate(null);
-          setPendingRunId(null);
-          setPendingMessageId(null);
-          setPendingExpired(false);
           setIsGenerating(false);
           setGeneratingThreadId(null);
           return;
         }
 
         if (state.designContract) setThreadContract(state.designContract, targetThreadId);
-
-        if (state.awaitingInput) {
-          const open = firstOpenGate(state.gates);
-          setPendingGate(open);
-          setPendingRunId(state.runId ?? null);
-          setPendingMessageId(messageId);
-          setPendingExpired(false);
-          showGateGeometry(open, targetThreadId);
-          setIsGenerating(false);
-          setGeneratingThreadId(null);
-          return;
-        }
 
         if (state.code) {
           setCode(state.code, targetThreadId);
@@ -298,72 +222,6 @@ export function ChatPanel() {
     }
   };
 
-  const handleResume = async (decision: GateDecision) => {
-    const targetThreadId = activeThreadId;
-    const targetRunId = pendingRunId;
-    const messageId = pendingMessageId;
-    if (!targetThreadId || !targetRunId || !messageId) return;
-
-    const thread = threads.find((t) => t.id === targetThreadId);
-    const message = thread?.messages.find((m) => m.id === messageId);
-
-    if (pendingExpired) {
-      if (decision.action !== 'cancel' || !message) return;
-      updateMessage(messageId, closedExpiredGateUpdate(message), targetThreadId);
-      setPendingGate(null);
-      setPendingRunId(null);
-      setPendingMessageId(null);
-      setPendingExpired(false);
-      return;
-    }
-
-    const gates = { ...(message?.gates ?? {}) };
-    const openId = Object.keys(gates).find((k) => gates[k].status === 'open');
-    if (openId) {
-      gates[openId] = {
-        ...gates[openId],
-        payload: stripUnchosenSheets(gates[openId].payload, decision),
-        decision,
-        decidedAt: Date.now(),
-        status:
-          decision.action === 'approve' ? 'approved'
-          : decision.action === 'revise' ? 'revised'
-          : 'denied',
-      };
-    }
-    updateMessage(messageId, { gates, status: 'streaming', runId: undefined }, targetThreadId);
-
-    setPendingGate(null);
-    setPendingRunId(null);
-    setPendingMessageId(null);
-    setPendingExpired(false);
-    setIsGenerating(true);
-    setGeneratingThreadId(targetThreadId);
-
-    try {
-      const response = await fetch('/api/chat/resume', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: selectedModel,
-          threadId: targetThreadId,
-          runId: targetRunId,
-          decision,
-        }),
-      });
-      if (!response.ok) {
-        const errJson = await response.json().catch(() => ({}));
-        throw new Error(errJson.error || `Server responded with HTTP ${response.status}`);
-      }
-      await consumeStream(response, targetThreadId, messageId);
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      updateMessage(messageId, { content: `**Resume failed:** ${errorMessage}`, status: 'error' }, targetThreadId);
-      setIsGenerating(false);
-      setGeneratingThreadId(null);
-    }
-  };
-
   return (
     <div className="relative h-full flex flex-col bg-slate-950">
       {/* Thread Drawer Overlay */}
@@ -439,9 +297,6 @@ export function ChatPanel() {
 
         <div ref={messagesEndRef} />
       </div>
-
-      {/* Gate dock above composer */}
-      {pendingGate && <GateDock gate={pendingGate} expired={pendingExpired} onResume={handleResume} />}
 
       {/* Input bar */}
       <ChatInput

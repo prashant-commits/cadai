@@ -1,6 +1,6 @@
 import { APIConnectionError, APIConnectionTimeoutError, APIUserAbortError } from '@anthropic-ai/sdk';
 import { describe, expect, it } from 'vitest';
-import { badRequest, compileFailed, errorBody, fromBrep, geometryFailed, runExpired, sanitizeText, toApiError } from './api-error';
+import { badRequest, compileFailed, errorBody, fromBrep, geometryFailed, sanitizeText, toApiError } from './api-error';
 
 describe('toApiError', () => {
   it('maps provider 429, 529, and overloaded to retryable model_unavailable', () => {
@@ -173,7 +173,6 @@ describe('toApiError', () => {
     expect(leaked.message).toBe('Something went wrong on the server.');
     expect(leaked.detail).not.toMatch(/\/home\//);
     expect(toApiError(new Error('Failed with header x-api-key: abcd1234 and token')).detail).not.toMatch(/abcd1234/);
-    expect(toApiError(runExpired('This paused run expired or was not found on this server. Send the request again.')).code).toBe('run_expired');
     expect(toApiError(new SyntaxError('Unexpected end of JSON input')).code).toBe('bad_request');
     expect(toApiError(compileFailed('too many requests of module')).code).toBe('compile_failed');
     expect(toApiError({ weird: 1 }).message).toBe('Something went wrong on the server.');

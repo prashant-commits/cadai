@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { bridgeGraphStream } from './stream-bridge';
 import type { StreamEvent } from './stream-events';
 
-async function bridge(chunks: unknown[], options?: { state?: Record<string, unknown> }) {
+async function bridge(chunks: unknown[]) {
   const out: StreamEvent[] = [];
-  await bridgeGraphStream((async function* () { yield* chunks; })(), 'run-1', (e) => out.push(e), options);
+  await bridgeGraphStream((async function* () { yield* chunks; })(), 'run-1', (e) => out.push(e));
   return out;
 }
 
@@ -83,35 +83,6 @@ describe('bridgeGraphStream', () => {
       ['messages', [{ content: [{ index: 2, type: 'input_json_delta', input: '{"a"' }] }, { langgraph_node: 'drafterNode' }]],
     ]);
     expect(out.filter((e) => e.t === 'delta')).toEqual([{ t: 'delta', text: 'Hel' }, { t: 'delta', text: 'lo' }]);
-  });
-
-  it('emits a gate event with the run id when an interrupt arrives', async () => {
-    const payload = { kind: 'spec', spec: null, contract: null, revisionCount: 0 };
-    const out = await bridge([['updates', { __interrupt__: [{ id: 'i1', value: payload }] }]]);
-    const gate = out.find((e) => e.t === 'gate');
-    expect(gate).toMatchObject({ t: 'gate', id: 'i1', runId: 'run-1', payload });
-  });
-
-  it('puts the gate expiry (now + CADAI_CHECKPOINT_TTL_MS) on the gate event', async () => {
-    process.env.CADAI_CHECKPOINT_TTL_MS = '3600000';
-    try {
-      const before = Date.now();
-      const out = await bridge([['updates', { __interrupt__: [{ id: 'i1', value: { kind: 'spec' } }] }]]);
-      const gate = out.find((e) => e.t === 'gate') as { expiresAt?: number };
-      expect(gate.expiresAt).toBeGreaterThanOrEqual(before + 3600000);
-      expect(gate.expiresAt).toBeLessThanOrEqual(Date.now() + 3600000);
-    } finally {
-      delete process.env.CADAI_CHECKPOINT_TTL_MS;
-    }
-  });
-
-  it('closes an open section before emitting a gate', async () => {
-    const out = await bridge([
-      ['custom', { t: 'delta', text: 'a', node: 'architectNode' }],
-      ['updates', { __interrupt__: [{ id: 'i1', value: { kind: 'spec' } }] }],
-    ]);
-    expect(out[2]).toEqual(closed('architectNode'));
-    expect(out[3]!.t).toBe('gate');
   });
 
   it('passes a result event straight through and closes any open section', async () => {
@@ -421,35 +392,6 @@ describe('bridgeGraphStream', () => {
     });
   });
 
-
-  it('does not emit a retry when a gate is shown again', async () => {
-    await withAttempts('2', async () => {
-      const out = await bridge([
-        ['updates', { acceptGate: { gateAction: 'revise', acceptRevisionCount: 1, maxAttempts: 2, pipeline: 'architect', kernel: 'brep', attemptCount: 1, isValid: true, stlContent: 'solid' } }],
-        ['updates', { brepBuild: { attemptCount: 2, pipeline: 'architect', kernel: 'brep', isValid: true, stlContent: 'solid' } }],
-        ['updates', { validateBrep: { isValid: true, failureKind: 'none', stlContent: 'solid', pipeline: 'architect', kernel: 'brep', attemptCount: 2, maxAttempts: 2 } }],
-        ['updates', { visualCritic: { isValid: true, stlContent: 'solid', pipeline: 'architect', kernel: 'brep', attemptCount: 2 } }],
-        ['updates', { acceptGate: { gateAction: null, pipeline: 'architect', kernel: 'brep', attemptCount: 2, isValid: true, stlContent: 'solid' } }],
-      ], { state: { pipeline: 'architect', kernel: 'brep', attemptCount: 1, isValid: true, stlContent: 'solid', maxAttempts: 2 } });
-      expect(out.filter((e) => e.t === 'retry' && e.step === 'acceptGate')).toEqual([]);
-    });
-
-    const variants = [{ id: 'A', spec: { components: [{}, {}] }, needsRevision: false, review: { validated: false, findings: [] }, retries: 0 }];
-    const out = await bridge([
-      ['updates', { specGate: { gateAction: 'revise', gateFeedback: 'taller', specRevisionCount: 1, specVariants: variants } }],
-      ['updates', { architectNode: { pipeline: 'architect', specVariants: variants, specRevisionCount: 1 } }],
-      ['updates', { specReviewer: { specVariants: variants, specRevisionCount: 1 } }],
-      ['updates', { specGate: { gateAction: null, specRevisionCount: 1, specVariants: variants } }],
-    ], {
-      state: {
-        pipeline: 'architect',
-        assemblySpec: { components: [{}, {}] },
-        specVariants: variants,
-        specRevisionCount: 0,
-      },
-    });
-    expect(out.filter((e) => e.t === 'retry' && e.step === 'specGate')).toEqual([]);
-  });
 
   it('does not fail the architect section when the illustrator throws', async () => {
     const out: StreamEvent[] = [];

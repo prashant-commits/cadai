@@ -3,7 +3,6 @@ import type { ApiError, ErrorBody, ErrorCode } from '@/lib/contract/run-contract
 const STATUS: Record<ErrorCode, number> = {
   bad_request: 400,
   not_found: 404,
-  run_expired: 410,
   run_conflict: 409,
   cancelled: 409,
   model_unavailable: 503,

@@ -2,7 +2,6 @@ import { createHash } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { compileScad } from '@/lib/engine/scad-compiler';
 import { runBrep, type BrepPart } from '@/lib/engine/brep-runner';
-import { detectLanguage } from '@/lib/brep/language';
 import { checkPythonScript, MAX_SCRIPT_BYTES } from '@/lib/brep/body-check';
 import type { PartInfo, ResultArtifacts } from '@/lib/contract/run-contract';
 import { badRequest, compileFailed, compileStatus, errorBody, fromBrep } from '@/lib/contract/api-error';
@@ -66,13 +65,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(errorBody(wrapped), { status: 400 });
   }
 
-  let language: 'openscad' | 'build123d' = 'openscad';
+  let language: 'openscad' | 'build123d' = 'build123d';
   try {
     const code = body?.code;
     const requestedLanguage = body?.language;
-    language = requestedLanguage === 'build123d' || requestedLanguage === 'openscad'
-      ? requestedLanguage
-      : detectLanguage(typeof code === 'string' ? code : '');
+    language = requestedLanguage === 'openscad' ? 'openscad' : 'build123d';
 
     if (!code || typeof code !== 'string' || code.trim().length === 0) {
       const message = language === 'build123d' ? 'build123d code is required.' : 'OpenSCAD code is required.';

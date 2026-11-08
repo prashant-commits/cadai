@@ -66,9 +66,6 @@ export async function POST(req: NextRequest) {
       store: getRunStore(),
       runId,
       threadId: chatThreadId,
-      resumed: false,
-      // streamRun requires checkpointKey until Step 4 simplifies it
-      checkpointKey: runId,
       failLabel: 'Agent execution failed',
       invoke: async (signal) => {
         const agent = createDesignerAgent(effectiveModel);

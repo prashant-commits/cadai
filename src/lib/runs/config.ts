@@ -2,14 +2,12 @@ import * as os from 'os';
 import * as path from 'path';
 
 /**
- * Which storage backs run state (run records, event logs, LangGraph checkpoints).
+ * Which storage backs run state (run records, event logs).
  *
  *  - `local` (default): files on this machine's disk. Two server instances that
  *    share that disk (e.g. two `next start` processes, a mounted volume) see
- *    the same runs and checkpoints, so a resume can land on either.
- *  - A shared network store (Postgres / Redis) is NOT implemented yet. On
- *    Vercel every function instance has its own /tmp, so a paused run can only
- *    be resumed on the instance that paused it until that store exists.
+ *    the same runs.
+ *  - A shared network store (Postgres / Redis) is NOT implemented yet.
  */
 export type RunStoreKind = 'local';
 

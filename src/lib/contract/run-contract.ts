@@ -11,8 +11,7 @@
 export type ErrorCode =
   | 'bad_request' //        the request body is invalid (missing messages, bad JSON)
   | 'not_found' //          unknown runId / artifactId
-  | 'run_expired' //        the paused run's checkpoint is gone (TTL or evicted)
-  | 'run_conflict' //       resume of a run that is not paused, or cancel of a finished run
+  | 'run_conflict' //       cancel of a finished run
   | 'cancelled' //          the user stopped the run
   | 'model_unavailable' //  the model provider refused or is overloaded (retryable)
   | 'model_error' //        the model call failed or returned unusable output
@@ -36,7 +35,7 @@ export interface ErrorBody {
   apiError: ApiError;
 }
 
-export type RunStatus = 'running' | 'paused' | 'done' | 'failed' | 'cancelled';
+export type RunStatus = 'running' | 'done' | 'failed' | 'cancelled';
 
 /** GET /api/runs/:runId */
 export interface RunInfo {
@@ -46,7 +45,6 @@ export interface RunInfo {
   startedAt: number; //         epoch ms
   updatedAt: number;
   lastSeq: number; //           highest event seq stored
-  expiresAt?: number; //        paused runs: when the checkpoint may be deleted
   error?: ApiError; //          failed / cancelled
 }
 
@@ -71,22 +69,6 @@ export interface ResultArtifacts {
   step?: ArtifactRef; //        B-rep kernel only
 }
 
-/**
- * `artifacts` on the `gate` event. Refs for the payload's large fields, which are
- * inlined in the payload only while CADAI_INLINE_PAYLOADS=1 (when off they are
- * null / absent).
- *  - spec gate: `sheetSvg` is the recommended variant's sheet (unset when it has none), `sheets` has every
- *    variant's sheet by variant id.
- *  - accept gate: `stl` is the model under review.
- *  - `images` is reserved for PNG previews and is empty today.
- */
-export interface GateArtifacts {
-  sheetSvg?: ArtifactRef;
-  sheets?: Record<string, ArtifactRef>;
-  stl?: ArtifactRef;
-  images?: ArtifactRef[];
-}
-
 /** Measurement of one part (R2): from the geometry service, or measured frames on OpenSCAD. */
 export interface PartInfo {
   label: string;
@@ -99,11 +81,11 @@ export interface PartInfo {
 /**
  * New / extended stream events. These EXTEND the existing StreamEvent union in
  * src/lib/agent/stream-events.ts (R2 merges them there):
- *  - `run` is always the first event of a stream (also on resume and replay).
+ *  - `run` is always the first event of a stream (also on replay).
  *  - section open/close gain timing, step index, attempt and a failed status.
  *  - `retry` announces that a step is being re-run and why.
  *  - `error` gains `apiError`; `message` stays for old clients.
- *  - `result` and `gate` gain artifact refs; the inline stl/step/svg fields remain
+ *  - `result` gains artifact refs; the inline stl/step fields remain
  *    only while CADAI_INLINE_PAYLOADS=1 (default off after R3).
  */
 export type ContractEvent =

@@ -2,7 +2,6 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { ApiError, RunInfo, RunStatus } from '@/lib/contract/run-contract';
-import { checkpointTtlMs } from '@/lib/agent/checkpointer';
 import { runStoreDir, runStoreKind } from './config';
 
 /** An event as stored: the payload plus its envelope. */
@@ -49,8 +48,7 @@ export interface RunStore {
   /** Also reaps a `running` run whose owner stopped heartbeating (-> failed). */
   get(runId: string): Promise<RunInfo | undefined>;
   /**
-   * `paused` also sets expiresAt (now + checkpoint TTL); every other status
-   * clears it. Returns false (and changes nothing) when `expect` does not match.
+   * Sets status and optional error. Returns false (and changes nothing) when `expect` does not match.
    */
   setStatus(runId: string, status: RunStatus, error?: ApiError, opts?: Transition): Promise<boolean>;
   /**
@@ -65,7 +63,7 @@ export interface RunStore {
   events(runId: string, afterSeq: number): Promise<StoredEvent[]>;
   /** Like events(), but resumable: pass the returned cursor to read only new events. */
   eventsSince(runId: string, afterSeq: number, cursor?: string): Promise<EventPage>;
-  /** Raises the cancel flag if the run is running or paused; false when it already ended. */
+  /** Raises the cancel flag if the run is running; false when it already ended. */
   requestCancel(runId: string): Promise<boolean>;
   isCancelled(runId: string): Promise<boolean>;
   /** The owner's liveness signal: bumps updatedAt of a running run. */
@@ -74,7 +72,7 @@ export interface RunStore {
 
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 /** Names that are store files or directories. Never valid run ids, whatever the layout. */
-const RESERVED = new Set(['checkpoints', 'runs', 'events', 'cancel', 'locks', 'tmp']);
+const RESERVED = new Set(['runs', 'events', 'cancel', 'locks', 'tmp']);
 
 export function isSafeRunId(id: string): boolean {
   return typeof id === 'string' && SAFE_ID.test(id) && !RESERVED.has(id.toLowerCase());
@@ -261,9 +259,7 @@ export class LocalRunStore implements RunStore {
   private withStatus(meta: Meta, status: RunStatus, error?: ApiError): Meta {
     const now = Date.now();
     const next: Meta = { ...meta, status, updatedAt: now };
-    delete next.expiresAt;
     delete next.error;
-    if (status === 'paused') next.expiresAt = now + checkpointTtlMs();
     if (error) next.error = error;
     return next;
   }
@@ -483,9 +479,8 @@ export class LocalRunStore implements RunStore {
   }
 
   /**
-   * Deletes finished runs (and orphan logs) not updated for CADAI_RUN_TTL_MS,
-   * and fails paused runs whose checkpoint expired (run_expired). Returns the
-   * deleted run ids.
+   * Deletes finished runs (and orphan logs) not updated for CADAI_RUN_TTL_MS.
+   * Returns the deleted run ids.
    */
   async prune(now = Date.now()): Promise<string[]> {
     const ttl = runTtlMs();
@@ -510,10 +505,6 @@ export class LocalRunStore implements RunStore {
       if (meta.status === 'running') {
         if (this.looksLost(meta, now)) await this.reapLost(id, meta.beat ?? 0).catch((e) => console.warn('Run reap failed:', e));
         continue; // a reaped run is deleted by a later prune, once it is older than the TTL
-      }
-      if (meta.status === 'paused' && meta.expiresAt !== undefined && meta.expiresAt < now) {
-        await this.setStatus(id, 'failed', { code: 'run_expired', message: 'The paused run expired before it was resumed.' }, { expect: ['paused'] });
-        continue;
       }
       if (isTerminal(meta.status) && now - meta.updatedAt > ttl) {
         await this.locked(id, async () => {

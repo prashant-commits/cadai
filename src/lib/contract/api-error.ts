@@ -34,10 +34,6 @@ export function geometryFailed(message: string, opts?: { unreachable?: boolean }
   return named(opts?.unreachable ? 'GeometryUnavailableError' : 'GeometryFailedError', message);
 }
 
-export function runExpired(message: string): Error {
-  return named('RunExpiredError', message);
-}
-
 /**
  * A runBrep `ok: false` result.
  * `failure` wins when the runner set it. Otherwise the string is classified from
@@ -247,9 +243,6 @@ export function toApiError(err: unknown): ApiError {
     );
   }
   if (name === 'GeometryFailedError') return scriptError('geometry_failed', message, GEOMETRY_FAILED);
-  if (name === 'RunExpiredError') {
-    return { code: 'run_expired', message: clip(message, 300) || 'This paused run expired or was not found on this server.' };
-  }
   if (name === 'UnusableReplyError') {
     const stop = err && typeof err === 'object' && 'stop' in err ? String((err as { stop: unknown }).stop) : '';
     return {
