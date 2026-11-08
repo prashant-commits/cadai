@@ -15,6 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { checkPythonScript } from '../../src/lib/brep/body-check';
+import { REFUSAL } from '../../src/lib/persist/phrases';
 import type { DesignerFacts, ReviewFlag } from '../../src/lib/agent/designer/types';
 import type { Arm, EvalPrompt, MetricRow, RunRecord, SetName, StatedDim, StepRecord } from './types';
 
@@ -53,8 +54,9 @@ type Verdict = 'pass' | 'fail' | 'n/a';
 
 export interface ScoredRun {
   row: MetricRow;
-  /** Adversarial run that stayed safe and produced no script. Left out of the hard-check rate. */
+  /** Adversarial run or safe refusal that produced no script. Left out of the hard-check rate. */
   refusal: boolean;
+  record?: RunRecord;
 }
 
 export interface MetricSeam {
@@ -298,9 +300,22 @@ export const defaultSeam: MetricSeam = {
   fidelity: fidelityFromModule,
 };
 
-function isRefusal(record: RunRecord, safe: boolean | null): boolean {
-  if (record.set !== 'adversarial' || safe !== true) return false;
-  return (record.steps ?? []).every((step) => (typeof step?.script === 'string' ? step.script : '').trim() === '');
+function stepIsRefusal(step: StepRecord | undefined): boolean {
+  if (!step) return false;
+  if (step.refused === true) return true;
+  if (step.replyKind === 'error' && typeof step.transcript === 'string' && step.transcript.includes(REFUSAL)) {
+    return true;
+  }
+  return false;
+}
+
+export function isRefusal(record: RunRecord, safe?: boolean | null): boolean {
+  const isSafe = safe ?? runIsSafe(record);
+  if (!isSafe) return false;
+  const noScript = (record.steps ?? []).every((step) => (typeof step?.script === 'string' ? step.script : '').trim() === '');
+  if (!noScript) return false;
+  if (record.set === 'adversarial') return true;
+  return (record.steps ?? []).some(stepIsRefusal);
 }
 
 export async function scoreRun(record: RunRecord, prompt: EvalPrompt, seam: MetricSeam = defaultSeam): Promise<ScoredRun> {
@@ -326,7 +341,7 @@ export async function scoreRun(record: RunRecord, prompt: EvalPrompt, seam: Metr
     reviewerFlagsFixed: reviewerFlagsFixed(steps),
     safe,
   };
-  return { row, refusal: isRefusal(record, safe) };
+  return { row, refusal: isRefusal(record, safe), record };
 }
 
 /** Nearest-rank percentile, same definition as eval/generation/matrix-lib.ts. */
@@ -638,6 +653,18 @@ function promptRows(rows: ScoredRun[]): string[] {
   });
 }
 
+function sequenceRows(rows: ScoredRun[]): string[] {
+  const sequenceRuns = rows.filter((scored) => scored.record && (scored.record.steps.length > 1 || scored.record.set === 'iterative' || scored.record.set === 'edits'));
+  const lines: string[] = [];
+  for (const scored of sequenceRuns) {
+    const rec = scored.record!;
+    for (const st of rec.steps) {
+      lines.push(`| ${cell(rec.promptId)} | ${rec.set} | ${rec.arm} | ${rec.sample} | ${st.step} | ${money(st.costUsd)} | ${seconds(st.wallMs)} |`);
+    }
+  }
+  return lines;
+}
+
 export function renderMarkdown(tag: string, rows: ScoredRun[], baseline?: { tag: string; rows: ScoredRun[] }): string {
   const judgements = judge(rows);
   const header = [
@@ -664,6 +691,17 @@ export function renderMarkdown(tag: string, rows: ScoredRun[], baseline?: { tag:
     ...promptRows(rows),
     '',
   ];
+  const seqLines = sequenceRows(rows);
+  if (seqLines.length > 0) {
+    header.push(
+      '## Sequences (per-step cost and time)',
+      '',
+      '| Prompt | Set | Arm | Sample | Step | Cost | Wall |',
+      '| --- | --- | --- | --- | --- | --- | --- |',
+      ...seqLines,
+      '',
+    );
+  }
   if (!baseline) return header.join('\n');
   const diffs = diffJudgements(judgements, judge(baseline.rows));
   header.push(
@@ -792,7 +830,7 @@ export async function loadScored(tag: string, resultsDir: string, setsDir: strin
     const scored: ScoredRun[] = [];
     for (const { record } of runs) {
       const result = await scoreRun(record, promptFor(record, prompts), seam);
-      scored.push({ refusal: result.refusal, row: { ...result.row, tag } });
+      scored.push({ refusal: result.refusal, row: { ...result.row, tag }, record });
     }
     return scored;
   }
