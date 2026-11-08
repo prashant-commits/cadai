@@ -76,8 +76,14 @@ export const runDesigner: RunDesignerFn = async (input: DesignerInput, deps: Des
   let finished = false;
   let summary = '';
   let cap: 'turns' | 'wall' | 'cost' | undefined;
+  let stopReason: 'refusal' | 'max_tokens' | 'model_context_window_exceeded' | 'pause_turn' | undefined;
   let reviewRejections = 0;
   let pendingRevision = false;
+
+  const referenceImages: RenderImage[] = (input.attachments ?? []).map((att, idx) => ({
+    view: `reference:${idx + 1}`,
+    dataUrl: `data:image/png;base64,${att.base64}`,
+  }));
 
   const startingBody = isEdit ? toBody(input.priorScript as string) : '';
   const startingScript = withGeneratedPrelude(startingBody);
@@ -96,9 +102,23 @@ export const runDesigner: RunDesignerFn = async (input: DesignerInput, deps: Des
   const model = getChatModel(deps.model, { role: 'build' });
   const bound = typeof model.bindTools === 'function' ? model.bindTools(tools, { tool_choice: 'auto' }) : model;
 
+  const firstUserBlocks: Array<
+    | { type: 'image_url'; image_url: { url: string } }
+    | { type: 'text'; text: string }
+  > = [];
+  if (input.attachments && input.attachments.length > 0) {
+    for (const att of input.attachments) {
+      firstUserBlocks.push({
+        type: 'image_url',
+        image_url: { url: `data:image/png;base64,${att.base64}` },
+      });
+    }
+  }
+  firstUserBlocks.push({ type: 'text', text: buildFirstUserMessage(input, startingBody) });
+
   const conversation: BaseMessage[] = [
     cachedSystemMessage(DESIGNER_SYSTEM_PROMPT),
-    new HumanMessage({ content: [{ type: 'text', text: buildFirstUserMessage(input, startingBody) }] }),
+    new HumanMessage({ content: firstUserBlocks as never }),
   ];
   let cachedMsg: BaseMessage | null = null;
 
@@ -124,7 +144,8 @@ export const runDesigner: RunDesignerFn = async (input: DesignerInput, deps: Des
     if (!deps.review) return null;
     let flags: ReviewFlag[] = [];
     try {
-      const out = await deps.review({ request: reviewRequest, images, facts, final, signal, buildId: input.buildId });
+      const reviewImages = referenceImages.length > 0 ? [...referenceImages, ...images] : images;
+      const out = await deps.review({ request: reviewRequest, images: reviewImages, facts, final, signal, buildId: input.buildId });
       costUsd += Number.isFinite(out.costUsd) ? out.costUsd : 0;
       flags = (out.flags ?? []).slice(0, 3);
     } catch {
@@ -165,6 +186,7 @@ export const runDesigner: RunDesignerFn = async (input: DesignerInput, deps: Des
 
       const stop = unusableStop(reply);
       if (stop) {
+        stopReason = stop;
         emit({ kind: 'note', text: 'The model reply was unusable' });
         break;
       }
@@ -371,6 +393,7 @@ export const runDesigner: RunDesignerFn = async (input: DesignerInput, deps: Des
     costUsd,
   };
   if (cap && !finished) result.capped = cap;
+  if (stopReason) result.stop = stopReason;
   if (failed) result.failed = true;
   return result;
 };

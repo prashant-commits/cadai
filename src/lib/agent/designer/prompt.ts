@@ -47,17 +47,30 @@ ${BREP_CHEATSHEET}`.trim();
 
 /** The first user message: the request on a fresh build, or the current script plus the edit on a follow-up. */
 export function buildFirstUserMessage(input: DesignerInput, startingBody: string): string {
+  const hasAttachments = !!(input.attachments && input.attachments.length > 0);
   if (input.priorScript && input.editRequest) {
-    return [
+    const parts = [
       `Original request:\n${input.request}`,
       `Current design:\n\`\`\`python\n${startingBody}\n\`\`\``,
       `Edit request:\n${input.editRequest}`,
-      'Apply the edit to the current design. Keep everything the user did not ask to change. Call `run_script` with your updated design code, `render` to inspect it, and `finish` when done.',
-    ].join('\n\n');
+    ];
+    if (hasAttachments) {
+      parts.push("The images above are the user's reference images.");
+    }
+    parts.push(
+      'Apply the edit to the current design. Keep everything the user did not ask to change. Call `run_script` with your updated design code, `render` to inspect it, and `finish` when done.'
+    );
+    return parts.join('\n\n');
   }
-  return [
+  const parts = [
     `Request:\n${input.request}`,
     `Starting design:\n\`\`\`python\n${startingBody}\`\`\``,
-    'Design the parametric build123d model for this request. Call `run_script` with your design code, `render` to inspect clearances and motion, and `finish` when done.',
-  ].join('\n\n');
+  ];
+  if (hasAttachments) {
+    parts.push("The images above are the user's reference images.");
+  }
+  parts.push(
+    'Design the parametric build123d model for this request. Call `run_script` with your design code, `render` to inspect clearances and motion, and `finish` when done.'
+  );
+  return parts.join('\n\n');
 }

@@ -8,6 +8,7 @@ import { cachedSystemMessage } from '../system-prompt';
 import type {
   DesignerFacts,
   FlagSeverity,
+  RenderImage,
   ReviewFlag,
   ReviewFn,
   ReviewInput,
@@ -44,6 +45,7 @@ export const ReviewerReplySchema = z.object({
 
 const REVIEWER_PREAMBLE = [
   'You are an independent senior product-design reviewer. Judge whether this design works for the request in real use: it does the job, it is stable when it should stand, it is reachable, moving parts work, it can be made, and the form is coherent.',
+  'Reference images, when present, show what the user wants, and are not renders.',
   'Return at most 3 concrete flags, most severe first.',
   'Never flag differences in style or interpretation, or a mismatch with any plan.',
   'There is no floor or z = 0 rule.',
@@ -210,7 +212,21 @@ function humanContent(input: ReviewInput): Array<
       text: `Request:\n${input.request}\n\nFacts:\n${formatFactsTable(input.facts)}`,
     },
   ];
+  const referenceImages: RenderImage[] = [];
+  const renderImages: RenderImage[] = [];
   for (const image of input.images) {
+    if (image.view.startsWith('reference:')) {
+      referenceImages.push(image);
+    } else {
+      renderImages.push(image);
+    }
+  }
+  for (const image of referenceImages) {
+    const n = image.view.slice('reference:'.length);
+    content.push({ type: 'text', text: `User's reference image ${n}` });
+    content.push({ type: 'image_url', image_url: { url: image.dataUrl } });
+  }
+  for (const image of renderImages) {
     content.push({ type: 'text', text: `View: ${image.view}` });
     content.push({ type: 'image_url', image_url: { url: image.dataUrl } });
   }

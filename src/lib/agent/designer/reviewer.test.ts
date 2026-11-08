@@ -307,4 +307,46 @@ describe('formatFlags', () => {
       '**Final reviewer (major):** jams — it will not open'
     );
   });
+
+  it('an attachment reaches the designer and the reviewer as an image block', async () => {
+    const rev = makeReviewer();
+    const refDataUrl = 'data:image/png;base64,REF1';
+    const isoDataUrl = 'data:image/png;base64,ISO';
+    await rev(
+      input({
+        images: [
+          { view: 'iso', dataUrl: isoDataUrl },
+          { view: 'reference:1', dataUrl: refDataUrl },
+        ],
+      })
+    );
+    const call = lastCall();
+    const humanMsg = (call.messages as unknown[])[1] as HumanMessage;
+    const content = humanMsg.content as Array<{ type: string; [k: string]: unknown }>;
+
+    const refIndex = content.findIndex(
+      (b) => b.type === 'text' && b.text === "User's reference image 1"
+    );
+    expect(refIndex).toBeGreaterThan(-1);
+    expect(content[refIndex + 1]).toEqual({
+      type: 'image_url',
+      image_url: { url: refDataUrl },
+    });
+
+    const isoIndex = content.findIndex(
+      (b) => b.type === 'text' && b.text === 'View: iso'
+    );
+    expect(isoIndex).toBeGreaterThan(-1);
+    expect(content[isoIndex + 1]).toEqual({
+      type: 'image_url',
+      image_url: { url: isoDataUrl },
+    });
+
+    expect(refIndex).toBeLessThan(isoIndex);
+
+    const sysMsg = (call.messages as unknown[])[0] as SystemMessage;
+    expect(textOf(sysMsg.content)).toContain(
+      'Reference images, when present, show what the user wants, and are not renders.'
+    );
+  });
 });

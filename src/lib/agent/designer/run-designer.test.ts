@@ -1,13 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AIMessage, ToolMessage, type BaseMessage } from '@langchain/core/messages';
+import { AIMessage, HumanMessage, ToolMessage, type BaseMessage } from '@langchain/core/messages';
 import { checkPythonScript, GENERATED_PRELUDE, MAX_SCRIPT_BYTES, PRELUDE_SENTINEL } from '../../brep/body-check';
 import type { BrepResult } from '../../engine/brep-runner';
 import { runBrep } from '../../engine/brep-runner';
 import { getChatModel } from '../model-provider';
 import { MAX_COST_USD, MAX_TURNS, runDesigner } from './run-designer';
-import type { DesignerEvent, ReviewFn, ReviewFlag } from './types';
+import type { DesignerEvent, ReviewFn, ReviewFlag, ReviewInput } from './types';
 import { DESIGNER_SYSTEM_PROMPT } from './prompt';
 import { withGeneratedPrelude } from '../../brep/prelude';
+import { createDesignerNode } from './node';
+import { REFUSAL } from '../../persist/phrases';
 
 vi.mock('../../engine/brep-runner', () => ({ runBrep: vi.fn() }));
 vi.mock('../model-provider', async (orig) => ({
@@ -456,5 +458,76 @@ describe('body-only model interface', () => {
     expect(DESIGNER_SYSTEM_PROMPT).toContain(
       'Write only the design code; the tool adds the prelude; `_round`/`_bevel` are available.'
     );
+  });
+
+  it('an attachment reaches the designer and the reviewer as an image block', async () => {
+    let capturedReviewInput: ReviewInput | null = null;
+    const fakeReview: ReviewFn = async (input) => {
+      capturedReviewInput = input;
+      return { flags: [], costUsd: 0 };
+    };
+
+    const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    const m = installModel([
+      reply([run(PLAIN), run(PLAIN), render()]),
+      reply([finish('ok')]),
+    ]);
+
+    await runDesigner(
+      {
+        request: 'a box with reference',
+        attachments: [{ mediaType: 'image/png', base64: b64 }],
+      },
+      { review: fakeReview }
+    );
+
+    const firstHumanMsg = m.seen[0][1];
+    expect(Array.isArray(firstHumanMsg.content)).toBe(true);
+    const content = firstHumanMsg.content as Array<{ type: string; text?: string; [k: string]: unknown }>;
+    expect(content).toHaveLength(2);
+    expect(content[0]).toEqual({
+      type: 'image_url',
+      image_url: { url: `data:image/png;base64,${b64}` },
+    });
+    expect(content[1].type).toBe('text');
+    expect(content[1].text).toContain("The images above are the user's reference images.");
+
+    expect(capturedReviewInput).not.toBeNull();
+    expect(capturedReviewInput!.images[0]).toEqual({
+      view: 'reference:1',
+      dataUrl: `data:image/png;base64,${b64}`,
+    });
+  });
+
+  it('no attachments → text only', async () => {
+    const m = installModel([reply([finish('ok')])]);
+    await runDesigner({ request: 'a box' }, {});
+    const firstHumanMsg = m.seen[0][1];
+    expect(Array.isArray(firstHumanMsg.content)).toBe(true);
+    const content = firstHumanMsg.content as Array<{ type: string; text?: string }>;
+    expect(content).toHaveLength(1);
+    expect(content[0].type).toBe('text');
+    expect(content[0].text).not.toContain('reference images');
+  });
+
+  it('a designer refusal sets stop and maps to REFUSAL', async () => {
+    const refusalReply = new AIMessage({
+      content: 'I cannot help with that.',
+      response_metadata: { stop_reason: 'refusal' },
+    });
+    installModel([refusalReply]);
+
+    const result = await runDesigner({ request: 'make something unsafe' }, {});
+    expect(result.stop).toBe('refusal');
+
+    const node = createDesignerNode({
+      runDesigner: vi.fn().mockResolvedValue(result),
+    });
+    const state = {
+      messages: [new HumanMessage('make something unsafe')],
+    } as never;
+    const res = await node(state);
+    expect(res.outcome?.replyKind).toBe('error');
+    expect(res.outcome?.replyMarkdown).toBe(REFUSAL);
   });
 });
