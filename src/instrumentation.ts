@@ -7,5 +7,10 @@ export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
     const { initLangfuseTracing } = await import('@/lib/tracing/langfuse');
     initLangfuseTracing();
+
+    const { shouldStartLoop, startLoop } = await import('@/lib/persist/loop');
+    if (shouldStartLoop()) {
+      await startLoop();
+    }
   }
 }
