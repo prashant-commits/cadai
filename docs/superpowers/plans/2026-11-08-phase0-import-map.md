@@ -1338,3 +1338,16 @@ Before publishing this import map, the following four automated checks were veri
 4. **Git Cleanliness Invariant:**  
    - *Check:* `git -C /home/claude/work/wt-p0a status --short`  
    - *Result:* **PASS.** Only `docs/superpowers/plans/2026-11-08-phase0-import-map.md` is modified/created in the working tree. All scratch scripts and raw cruiser JSON outputs are preserved in `/home/claude/work/cadai/.cadai/scratch/p0a/`.
+
+## Approval (user, 2026-11-08)
+The user approved this map as proposed. That settles the open decisions:
+1. **UI (1.16):**
+   - KEEP: the viewport panel, cad-model, toolbar and annotator; the design panel with param-control (sliders and pins); print-analysis; the code editor; the header; split-pane; the chat panel, input and bubble; and the thread drawer.
+   - REMOVE: `gate-dock`, `contract-diff-banner` and `transcript-view`.
+2. **The 32 "expected REMOVE" modules in 1.17** are confirmed REMOVE: the spec, audit, placement, OpenSCAD compiler and language, spec-sheet and blockout modules, and the old brep emit path.
+3. **Section 8:**
+   - `src/lib/brep/test-run.ts` is REMOVE;
+   - `chat/resume/route.ts` stays out of the entries and is deleted in 0b;
+   - `src/types/index.ts` is split as the map says.
+4. **SPLIT tests** whose kept cases only cover confirmed-REMOVE modules become REMOVE. Examples: `emit-script.*`, `parameter-block.test`, `scad-compiler.test`, `spec-sheet/*.test`, `mating-cuts.test` and `python-names.test`.
+5. **Before deleting anything, 0b re-runs dependency-cruiser after EXTRACT** (Step 1) and diffs the result against `keep-after-worklist.json`. Any module that stays reachable after EXTRACT is reported, not deleted.
