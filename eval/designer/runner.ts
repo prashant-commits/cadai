@@ -39,7 +39,9 @@ import { factsFromRun } from '@/lib/agent/designer/tools';
 import { stlToAscii } from '@/lib/brep/measurements';
 import type { DesignerNodeDeps } from '@/lib/agent/designer/node';
 import type { DesignerCheckDeps } from '@/lib/agent/designer/check';
+import type { DesignerTriageDeps } from '@/lib/agent/designer/triage';
 import type { DesignerFacts, DesignerResult, RunDesignerFn } from '@/lib/agent/designer/types';
+import { toBody } from '@/lib/brep/prelude';
 import type { Arm, EvalPrompt, RunRecord, StepRecord } from './types';
 
 export const DEFAULT_RESULTS_DIR = path.join(__dirname, 'results');
@@ -59,7 +61,9 @@ export interface RunnerOptions {
 }
 
 /** Test seams: replace the designer loop, the geometry runner, or the reviewer factory. */
-export type RunnerDeps = Pick<DesignerNodeDeps & DesignerCheckDeps, 'runDesigner' | 'runBrep' | 'makeReviewer'>;
+export type RunnerDeps = Pick<DesignerNodeDeps & DesignerCheckDeps, 'runDesigner' | 'runBrep' | 'makeReviewer'> & {
+  classify?: DesignerTriageDeps['classify'];
+};
 
 export const defaultOptions = (): RunnerOptions => ({
   tag: 'run',
@@ -215,7 +219,13 @@ export async function runOne(prompt: EvalPrompt, arm: Arm, sample: number, ctx: 
     budget.add(result.costUsd);
     return result;
   };
-  const agent = createDesignerAgent(opts.model, { runDesigner, runBrep: deps.runBrep, makeReviewer: deps.makeReviewer, model: opts.model });
+  const agent = createDesignerAgent(opts.model, {
+    runDesigner,
+    runBrep: deps.runBrep,
+    makeReviewer: deps.makeReviewer,
+    model: opts.model,
+    classify: deps.classify ?? (async () => 'edit'),
+  });
   const threadKey = `evd-${opts.tag}-${arm}-${base}-${Date.now()}`;
   const config = { configurable: { thread_id: threadKey }, signal: budget.controller.signal, recursionLimit: 100 };
 
@@ -227,10 +237,19 @@ export async function runOne(prompt: EvalPrompt, arm: Arm, sample: number, ctx: 
       const firstCall = calls.length;
       const t0 = Date.now();
       const input = step === 0
-        ? { messages: [new HumanMessage(messages[0])] }
+        ? {
+            messages: [new HumanMessage(messages[0])],
+            baseVersion: null,
+            baseBody: null,
+            baseRequest: null,
+            attachments: [],
+          }
         : {
             messages: [...(lastValues?.messages ?? []), new HumanMessage(messages[step])],
-            acceptedDesignerScript: lastValues?.acceptedDesignerScript ?? null,
+            baseVersion: step,
+            baseBody: lastValues?.outcome?.design?.body ?? (lastValues?.currentCode ? toBody(lastValues.currentCode) : null),
+            baseRequest: messages[0],
+            attachments: [],
           };
       const { transcript, values } = await drive(agent, input, config);
       lastValues = values;

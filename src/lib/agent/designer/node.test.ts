@@ -3,6 +3,8 @@ import { HumanMessage } from '@langchain/core/messages';
 import { createDesignerNode } from './node';
 import type { AgentStateType } from './state';
 import type { DesignerResult, DesignerEvent, ReviewFlag } from './types';
+import { BUILD_FAILED, REFUSAL } from '../../persist/phrases';
+import { UnusableReplyError } from '../llm-schemas';
 
 function createMockState(overrides: Partial<AgentStateType> = {}): AgentStateType {
   return {
@@ -25,9 +27,16 @@ function createMockState(overrides: Partial<AgentStateType> = {}): AgentStateTyp
     designerRetryCount: 0,
     designerCheckFailures: null,
     designerCheckCompleted: false,
-    acceptedDesignerScript: null,
     designerSummary: '',
     designerTurns: 0,
+    baseVersion: null,
+    baseBody: null,
+    baseRequest: null,
+    attachments: [],
+    outcome: null,
+    triageKind: null,
+    startedAt: null,
+    designerCheckSentences: [],
     ...overrides,
   };
 }
@@ -90,7 +99,6 @@ describe('designerNode', () => {
     expect(result.designerFlags).toEqual(mockResult.reviewerFlags);
     expect(result.designerCostUsd).toBe(0.05);
     expect(result.designerSummary).toBe(mockResult.summary);
-    expect(result.acceptedDesignerScript).toBe(mockResult.script);
   });
 
   it('disables reviewer when CADAI_REVIEWER=off', async () => {
@@ -156,12 +164,14 @@ describe('designerNode', () => {
     }));
   });
 
-  it('routes follow-up user edit with priorScript and editRequest', async () => {
+  it('a follow-up edit gets priorScript from baseBody', async () => {
     const runDesignerMock = vi.fn().mockResolvedValue(mockResult);
     const node = createDesignerNode({ runDesigner: runDesignerMock });
 
     const state = createMockState({
-      acceptedDesignerScript: 'def original_bracket(): pass',
+      triageKind: 'edit',
+      baseBody: 'def original_bracket(): pass',
+      baseRequest: 'make a 50mm mounting bracket',
       messages: [
         new HumanMessage('make a 50mm mounting bracket'),
         new HumanMessage('make it 60mm instead'),
@@ -174,6 +184,74 @@ describe('designerNode', () => {
     expect(input.request).toBe('make a 50mm mounting bracket');
     expect(input.priorScript).toBe('def original_bracket(): pass');
     expect(input.editRequest).toBe('make it 60mm instead');
+  });
+
+  it('an attachment in graph input reaches runDesigner', async () => {
+    const runDesignerMock = vi.fn().mockResolvedValue(mockResult);
+    const node = createDesignerNode({ runDesigner: runDesignerMock });
+
+    const state = createMockState({
+      attachments: [{ mediaType: 'image/png', base64: 'PNG-DATA' }],
+      messages: [new HumanMessage('make this image as CAD')],
+    });
+
+    await node(state);
+
+    const [input] = runDesignerMock.mock.calls[0];
+    expect(input.attachments).toEqual([{ mediaType: 'image/png', base64: 'PNG-DATA' }]);
+  });
+
+  it('a refusal → REFUSAL', async () => {
+    // Case 1: runDesigner result with failed, no script, and stop refusal
+    const runDesignerMock1 = vi.fn().mockResolvedValue({
+      failed: true,
+      script: '',
+      stop: 'refusal',
+      facts: { ok: false, parts: [], interferences: [], disconnected: [], dimensions: [] },
+      summary: '',
+      reviewerFlags: [],
+      turns: 1,
+      costUsd: 0.01,
+    });
+    const node1 = createDesignerNode({ runDesigner: runDesignerMock1 });
+    const res1 = await node1(createMockState({ triageKind: 'new' }));
+    expect(res1.outcome?.replyKind).toBe('error');
+    expect(res1.outcome?.replyMarkdown).toBe(REFUSAL);
+    expect(res1.outcome?.design).toBeUndefined();
+
+    // Case 2: UnusableReplyError with stop refusal
+    const runDesignerMock2 = vi.fn().mockRejectedValue(new UnusableReplyError('refusal'));
+    const node2 = createDesignerNode({ runDesigner: runDesignerMock2 });
+    const res2 = await node2(createMockState({ triageKind: 'edit' }));
+    expect(res2.outcome?.replyKind).toBe('error');
+    expect(res2.outcome?.replyMarkdown).toBe(REFUSAL);
+    expect(res2.outcome?.design).toBeUndefined();
+  });
+
+  it('unusable output → BUILD_FAILED', async () => {
+    // Case 1: failed with empty script and no stop
+    const runDesignerMock1 = vi.fn().mockResolvedValue({
+      failed: true,
+      script: '',
+      facts: { ok: false, parts: [], interferences: [], disconnected: [], dimensions: [] },
+      summary: '',
+      reviewerFlags: [],
+      turns: 1,
+      costUsd: 0.01,
+    });
+    const node1 = createDesignerNode({ runDesigner: runDesignerMock1 });
+    const res1 = await node1(createMockState());
+    expect(res1.outcome?.replyKind).toBe('error');
+    expect(res1.outcome?.replyMarkdown).toBe(BUILD_FAILED);
+    expect(res1.outcome?.design).toBeUndefined();
+
+    // Case 2: thrown UnusableReplyError with other stop reason
+    const runDesignerMock2 = vi.fn().mockRejectedValue(new UnusableReplyError('max_tokens'));
+    const node2 = createDesignerNode({ runDesigner: runDesignerMock2 });
+    const res2 = await node2(createMockState());
+    expect(res2.outcome?.replyKind).toBe('error');
+    expect(res2.outcome?.replyMarkdown).toBe(BUILD_FAILED);
+    expect(res2.outcome?.design).toBeUndefined();
   });
 
   it('routes check failure retry with priorScript and failures text', async () => {

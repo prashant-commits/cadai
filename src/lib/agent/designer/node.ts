@@ -10,6 +10,9 @@ import type {
 } from './types';
 import { firstHumanText, latestHumanText } from './message-utils';
 import { escapeMarkers } from '../transcript';
+import { UnusableReplyError } from '../llm-schemas';
+import { BUILD_FAILED, REFUSAL } from '../../persist/phrases';
+import type { UserKind } from '../../persist/types';
 
 export interface DesignerNodeDeps {
   runDesigner?: RunDesignerFn;
@@ -47,6 +50,7 @@ export function createDesignerNode(deps: DesignerNodeDeps = {}) {
       });
     }
 
+    const startedAt = state.startedAt ?? Date.now();
     const resolved = await getDeps(deps);
     const messages = state.messages ?? [];
     const latestText = latestHumanText(messages);
@@ -54,22 +58,25 @@ export function createDesignerNode(deps: DesignerNodeDeps = {}) {
 
     let priorScript: string | undefined;
     let editRequest: string | undefined;
-    let request: string = firstText;
+    let request: string = latestText;
     let isCheckRetry = false;
 
     if (state.designerCheckFailures && (state.designerRetryCount ?? 0) === 1 && !state.designerCheckCompleted) {
-      // Check failure retry
+      // Check retry (existing retry condition): priorScript = state.currentCode, editRequest = designerCheckFailures,
+      // request unchanged from the attempt being retried.
       priorScript = state.currentCode;
       editRequest = state.designerCheckFailures;
-      request = firstText;
+      request = state.triageKind === 'edit'
+        ? (state.baseRequest ?? firstText)
+        : latestText;
       isCheckRetry = true;
-    } else if (state.acceptedDesignerScript) {
-      // Follow-up edit from user
-      priorScript = state.acceptedDesignerScript;
+    } else if (state.triageKind === 'edit') {
+      // Edit (triage edit): request = baseRequest ?? firstHumanText, editRequest = latest human text, priorScript = baseBody.
+      priorScript = state.baseBody ?? undefined;
       editRequest = latestText;
-      request = firstText;
+      request = state.baseRequest ?? firstText;
     } else {
-      // Fresh new design
+      // Fresh (new or no base): no priorScript; request = latest human text.
       request = latestText;
     }
 
@@ -77,6 +84,7 @@ export function createDesignerNode(deps: DesignerNodeDeps = {}) {
       request,
       ...(priorScript ? { priorScript } : {}),
       ...(editRequest ? { editRequest } : {}),
+      ...(state.attachments && state.attachments.length > 0 ? { attachments: state.attachments } : {}),
       buildId: (config?.configurable as { thread_id?: string } | undefined)?.thread_id,
     };
 
@@ -96,17 +104,75 @@ export function createDesignerNode(deps: DesignerNodeDeps = {}) {
     };
 
     const review = process.env.CADAI_REVIEWER === 'off' ? undefined : resolved.makeReviewer();
-    const result: DesignerResult = await resolved.runDesigner(input, {
-      review,
-      signal: config?.signal,
-      onEvent,
-      model: deps.model,
-    });
+    const userKind: UserKind = state.triageKind === 'edit' ? 'edit' : 'request';
 
-    if (config?.signal?.aborted) {
-      throw Object.assign(new Error('The run was stopped during the designer run.'), {
-        name: 'AbortError',
+    let result: DesignerResult;
+    try {
+      result = await resolved.runDesigner(input, {
+        review,
+        signal: config?.signal,
+        onEvent,
+        model: deps.model,
       });
+
+      if (config?.signal?.aborted) {
+        throw Object.assign(new Error('The run was stopped during the designer run.'), {
+          name: 'AbortError',
+        });
+      }
+
+      if (result.stop === 'refusal') {
+        const totalCost = (state.designerCostUsd ?? 0) + (result.costUsd ?? 0);
+        const wallMs = Date.now() - startedAt;
+        return {
+          outcome: {
+            replyKind: 'error',
+            replyMarkdown: REFUSAL,
+            userKind,
+            costUsd: totalCost,
+            wallMs,
+            turns: (state.designerTurns ?? 0) + (result.turns ?? 1),
+          },
+          designerCostUsd: totalCost,
+          startedAt,
+        };
+      }
+
+      if ((result.failed || result.stop !== undefined) && (!result.script || result.script.trim() === '')) {
+        const totalCost = (state.designerCostUsd ?? 0) + (result.costUsd ?? 0);
+        const wallMs = Date.now() - startedAt;
+        return {
+          outcome: {
+            replyKind: 'error',
+            replyMarkdown: BUILD_FAILED,
+            userKind,
+            costUsd: totalCost,
+            wallMs,
+            turns: (state.designerTurns ?? 0) + (result.turns ?? 1),
+          },
+          designerCostUsd: totalCost,
+          startedAt,
+        };
+      }
+    } catch (err) {
+      if (err instanceof UnusableReplyError) {
+        const isRefusal = err.stop === 'refusal';
+        const totalCost = state.designerCostUsd ?? 0;
+        const wallMs = Date.now() - startedAt;
+        return {
+          outcome: {
+            replyKind: 'error',
+            replyMarkdown: isRefusal ? REFUSAL : BUILD_FAILED,
+            userKind,
+            costUsd: totalCost,
+            wallMs,
+            turns: state.designerTurns ?? 0,
+          },
+          designerCostUsd: totalCost,
+          startedAt,
+        };
+      }
+      throw err;
     }
 
     const totalCost = (state.designerCostUsd ?? 0) + (result.costUsd ?? 0);
@@ -121,10 +187,10 @@ export function createDesignerNode(deps: DesignerNodeDeps = {}) {
       designerCostUsd: totalCost,
       designerSummary: result.summary,
       designerTurns: turns,
-      acceptedDesignerScript: state.acceptedDesignerScript ?? (result.failed ? null : result.script),
       designerCheckFailures: null,
       ...(!isCheckRetry ? { designerRetryCount: 0, designerCheckCompleted: false } : {}),
       attemptCount: (state.attemptCount ?? 0) + 1,
+      startedAt,
     };
   };
 }

@@ -218,6 +218,19 @@ describe('executeRun', () => {
     expect(rec.steps[1].priorScriptSha).toBe(expectedSha);
     expect(runDesigner.mock.calls[1][0].priorScript).toBe(rec.steps[0].script);
   });
+
+  it("the runner seeds step 2 with step 1's script", async () => {
+    let n = 0;
+    const runDesigner = vi.fn<RunDesignerFn>().mockImplementation(async () => result(++n));
+    const runBrep = vi.fn().mockResolvedValue(brepOk);
+    const classify = vi.fn().mockResolvedValue('edit');
+    const summary = await executeRun([prompts[0]], opts({ arms: ['designer'] }), { runDesigner, runBrep, classify });
+
+    expect(summary.records).toHaveLength(1);
+    expect(runDesigner).toHaveBeenCalledTimes(3);
+    const thirdCall = runDesigner.mock.calls[2][0];
+    expect(thirdCall.priorScript).toBe(result(2).script);
+  });
 });
 
 describe('Budget', () => {

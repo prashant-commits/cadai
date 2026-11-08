@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { HumanMessage } from '@langchain/core/messages';
-import { createDesignerAgent } from './graph';
+import { createDesignerAgent, createRespondToUser } from './graph';
 import type { AgentStateType } from './state';
 import type { DesignerResult, RunDesignerFn } from './types';
 import type { BrepResult } from '../../engine/brep-runner';
+import { BUILD_FAILED, COMPILE_FAILED, FAILED_CHECKS, NO_CHANGE, REFUSAL } from '../../persist/phrases';
+import type { RunOutcome } from '../../persist/types';
+import { PRELUDE_VERSION } from '../../brep/prelude';
+import { UnusableReplyError } from '../llm-schemas';
 
 const callMock = vi.fn();
 
@@ -86,7 +90,8 @@ describe('designer mode graph wiring', () => {
     expect(state.stlContent).toContain('solid model');
     expect(state.stepContent).toBe('STEP-DATA-SUCCESS');
     expect(state.currentCode).toBe(mockSuccessDesignerResult.script);
-    expect(state.acceptedDesignerScript).toBe(mockSuccessDesignerResult.script);
+    expect(state.outcome?.replyKind).toBe('result');
+    expect(state.outcome?.design).toBeDefined();
   });
 
   it('routes follow-up message to designerNode as an edit with priorScript and editRequest', async () => {
@@ -108,6 +113,7 @@ describe('designer mode graph wiring', () => {
     const agent = createDesignerAgent('gpt-6-sol', {
       runDesigner: runDesignerMock,
       runBrep: runBrepMock,
+      classify: async () => (turn === 1 ? 'new' : 'edit'),
     });
 
     // Turn 1
@@ -120,7 +126,9 @@ describe('designer mode graph wiring', () => {
     turn = 2;
     await agent.invoke({
       messages: [...(res1.messages ?? []), new HumanMessage('make it 20mm')],
-      acceptedDesignerScript: res1.acceptedDesignerScript,
+      baseVersion: 1,
+      baseBody: res1.outcome?.design?.body ?? res1.currentCode,
+      baseRequest: 'make a 10mm cube',
     });
 
     expect(runDesignerMock).toHaveBeenCalledTimes(2);
@@ -160,18 +168,18 @@ describe('designer mode graph wiring', () => {
 
     const state = (await agent.invoke({ messages: [new HumanMessage('make a part')] })) as AgentStateType;
 
-    // Check failed on v1, retried with v2, failed on v2, ended with honest message
     expect(runDesignerMock).toHaveBeenCalledTimes(2);
     expect(runBrepMock).toHaveBeenCalledTimes(2);
 
-    // Verify retry input on second call
     const [secondInput] = runDesignerMock.mock.calls[1];
     expect(secondInput.priorScript).toBe('script_v1');
     expect(secondInput.editRequest).toContain('disconnected parts: floating_boss');
 
     expect(state.isValid).toBe(false);
-    expect(state.explanation).toMatch(/^Built, but failed checks: disconnected parts: floating_boss/);
+    expect(state.explanation).toContain(FAILED_CHECKS);
+    expect(state.explanation).toContain('`floating_boss`');
     expect(state.explanation).not.toContain('did not compile');
+    expect(state.outcome?.replyKind).toBe('error');
   });
 
   it('outputs "The script did not compile: ..." ONLY when it did not compile', async () => {
@@ -195,8 +203,11 @@ describe('designer mode graph wiring', () => {
     const state = (await agent.invoke({ messages: [new HumanMessage('make a part')] })) as AgentStateType;
 
     expect(state.isValid).toBe(false);
-    expect(state.explanation).toContain('The script did not compile: NameError: name Box is not defined');
+    expect(state.explanation).toBe(COMPILE_FAILED);
     expect(state.explanation).not.toContain('Built, but failed checks:');
+    expect(state.explanation).not.toContain('NameError');
+    expect(state.outcome?.replyKind).toBe('error');
+    expect(state.outcome?.replyMarkdown).toContain(COMPILE_FAILED);
   });
 
   it('cancellation via AbortSignal halts execution', async () => {
@@ -219,5 +230,352 @@ describe('designer mode graph wiring', () => {
         { signal: controller.signal }
       )
     ).rejects.toThrow();
+  });
+
+  it('a question goes to designerAnswer and never through designerCheck', async () => {
+    const runDesignerMock = vi.fn();
+    const runBrepMock = vi.fn();
+    const answerMock = vi.fn().mockResolvedValue('The cube is 10mm.');
+
+    const agent = createDesignerAgent('gpt-6-sol', {
+      runDesigner: runDesignerMock,
+      runBrep: runBrepMock,
+      classify: async () => 'question',
+      answer: answerMock,
+    });
+
+    const state = (await agent.invoke({
+      messages: [new HumanMessage('what is this?')],
+      baseBody: 'box = Box(10, 10, 10)',
+      baseVersion: 1,
+    })) as AgentStateType;
+
+    expect(answerMock).toHaveBeenCalledTimes(1);
+    expect(runDesignerMock).not.toHaveBeenCalled();
+    expect(runBrepMock).not.toHaveBeenCalled();
+    expect(state.outcome?.replyKind).toBe('answer');
+    expect(state.outcome?.replyMarkdown).toBe('The cube is 10mm.');
+    expect(state.outcome?.design).toBeUndefined();
+  });
+
+  it('new → parent_version null', async () => {
+    const runDesignerMock = vi.fn<RunDesignerFn>().mockResolvedValue(mockSuccessDesignerResult);
+    const runBrepMock = vi.fn().mockResolvedValue(mockSuccessBrep);
+
+    const agent = createDesignerAgent('gpt-6-sol', {
+      runDesigner: runDesignerMock,
+      runBrep: runBrepMock,
+      classify: async () => 'new',
+    });
+
+    const state = (await agent.invoke({
+      messages: [new HumanMessage('now make a desk lamp')],
+      baseBody: 'box = Box(10, 10, 10)',
+      baseVersion: 5,
+    })) as AgentStateType;
+
+    expect(state.outcome?.design?.parentVersion).toBeNull();
+  });
+
+  it('a second edit builds on the first', async () => {
+    let callCount = 0;
+    const runDesignerMock = vi.fn<RunDesignerFn>().mockImplementation(async () => {
+      callCount++;
+      return {
+        ...mockSuccessDesignerResult,
+        script: `box = Box(${callCount * 10}, 10, 10)\n_cadai_parts = [box]`,
+      };
+    });
+    const runBrepMock = vi.fn().mockResolvedValue(mockSuccessBrep);
+
+    const agent = createDesignerAgent('gpt-6-sol', {
+      runDesigner: runDesignerMock,
+      runBrep: runBrepMock,
+      classify: async () => 'edit',
+    });
+
+    // Run 1: fresh build
+    const state1 = (await agent.invoke({
+      messages: [new HumanMessage('make a 10mm box')],
+    })) as AgentStateType;
+
+    expect(state1.outcome?.design?.body).toBeDefined();
+
+    // Run 2: second edit seeded from run 1
+    await agent.invoke({
+      messages: [new HumanMessage('make a 10mm box'), new HumanMessage('make it 20mm')],
+      baseBody: state1.outcome?.design?.body,
+      baseVersion: 1,
+    });
+
+    expect(runDesignerMock).toHaveBeenCalledTimes(2);
+    const secondCall = runDesignerMock.mock.calls[1][0];
+    expect(secondCall.priorScript).toBe(state1.outcome?.design?.body);
+  });
+
+  it('until C1, respondToUser renders each outcome kind', async () => {
+    const respond = createRespondToUser();
+
+    // 1. result with design
+    const writerResult = vi.fn();
+    await respond(
+      {
+        outcome: {
+          replyKind: 'result',
+          replyMarkdown: '**Designer**\n\nDone',
+          userKind: 'request',
+          design: {
+            parentVersion: null,
+            origin: 'designer',
+            baseRequest: 'box',
+            edits: [],
+            body: 'box = Box(10, 10, 10)',
+            preludeVersion: '1',
+            summary: 'Done',
+            facts: null,
+            flags: [],
+            stl: 'solid ...',
+            step: 'step ...',
+          },
+          costUsd: 0.1,
+          wallMs: 100,
+          turns: 1,
+        },
+      } as unknown as AgentStateType,
+      { writer: writerResult } as never
+    );
+    expect(writerResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        t: 'result',
+        summary: '**Designer**\n\nDone',
+        code: expect.stringContaining('box = Box(10, 10, 10)'),
+        stl: 'solid ...',
+        step: 'step ...',
+      })
+    );
+
+    // 2. answer
+    const writerAnswer = vi.fn();
+    await respond(
+      {
+        outcome: {
+          replyKind: 'answer',
+          replyMarkdown: 'It is a 10mm cube.',
+          userKind: 'question',
+          costUsd: 0.05,
+          wallMs: 50,
+          turns: 0,
+        },
+      } as unknown as AgentStateType,
+      { writer: writerAnswer } as never
+    );
+    expect(writerAnswer).toHaveBeenCalledWith({
+      t: 'result',
+      summary: 'It is a 10mm cube.',
+      node: 'respondToUser',
+    });
+
+    // 3. nochange
+    const writerNoChange = vi.fn();
+    await respond(
+      {
+        outcome: {
+          replyKind: 'nochange',
+          replyMarkdown: NO_CHANGE,
+          userKind: 'edit',
+          costUsd: 0.05,
+          wallMs: 50,
+          turns: 1,
+        },
+      } as unknown as AgentStateType,
+      { writer: writerNoChange } as never
+    );
+    expect(writerNoChange).toHaveBeenCalledWith({
+      t: 'result',
+      summary: NO_CHANGE,
+      node: 'respondToUser',
+    });
+
+    // 4. error
+    const writerError = vi.fn();
+    await respond(
+      {
+        outcome: {
+          replyKind: 'error',
+          replyMarkdown: REFUSAL,
+          userKind: 'unknown',
+          costUsd: 0,
+          wallMs: 10,
+          turns: 0,
+        },
+      } as unknown as AgentStateType,
+      { writer: writerError } as never
+    );
+    expect(writerError).toHaveBeenCalledWith({
+      t: 'error',
+      message: REFUSAL,
+      node: 'respondToUser',
+    });
+  });
+
+  it('every path that reaches END sets outcome', async () => {
+    // We test each of the distinct paths in the graph to confirm outcome is set on all:
+    // Path 1: fresh build succeeds
+    const agentPass = createDesignerAgent('gpt-6-sol', {
+      runDesigner: vi.fn<RunDesignerFn>().mockResolvedValue(mockSuccessDesignerResult),
+      runBrep: vi.fn().mockResolvedValue(mockSuccessBrep),
+    });
+    const s1 = (await agentPass.invoke({ messages: [new HumanMessage('make a box')] })) as AgentStateType;
+    expect(s1.outcome).toBeDefined();
+    expect(s1.outcome?.replyKind).toBe('result');
+
+    // Path 2: question
+    const agentQuestion = createDesignerAgent('gpt-6-sol', {
+      classify: async () => 'question',
+      answer: async () => 'answered',
+    });
+    const s2 = (await agentQuestion.invoke({
+      messages: [new HumanMessage('what is this?')],
+      baseBody: 'box = Box(10, 10, 10)',
+    })) as AgentStateType;
+    expect(s2.outcome).toBeDefined();
+    expect(s2.outcome?.replyKind).toBe('answer');
+
+    // Path 3: triage refusal
+    const agentTriageRefusal = createDesignerAgent('gpt-6-sol', {
+      classify: async () => {
+        throw new UnusableReplyError('refusal');
+      },
+    });
+    const s3 = (await agentTriageRefusal.invoke({
+      messages: [new HumanMessage('bad request')],
+      baseBody: 'box = Box(10, 10, 10)',
+    })) as AgentStateType;
+    expect(s3.outcome).toBeDefined();
+    expect(s3.outcome?.replyKind).toBe('error');
+    expect(s3.outcome?.replyMarkdown).toBe(REFUSAL);
+
+    // Path 4: designer refusal
+    const agentDesignerRefusal = createDesignerAgent('gpt-6-sol', {
+      runDesigner: vi.fn().mockRejectedValue(new UnusableReplyError('refusal')),
+    });
+    const s4 = (await agentDesignerRefusal.invoke({
+      messages: [new HumanMessage('bad request')],
+    })) as AgentStateType;
+    expect(s4.outcome).toBeDefined();
+    expect(s4.outcome?.replyKind).toBe('error');
+    expect(s4.outcome?.replyMarkdown).toBe(REFUSAL);
+
+    // Path 5: designer unusable output
+    const agentDesignerUnusable = createDesignerAgent('gpt-6-sol', {
+      runDesigner: vi.fn().mockRejectedValue(new UnusableReplyError('max_tokens')),
+    });
+    const s5 = (await agentDesignerUnusable.invoke({
+      messages: [new HumanMessage('make a complex part')],
+    })) as AgentStateType;
+    expect(s5.outcome).toBeDefined();
+    expect(s5.outcome?.replyKind).toBe('error');
+    expect(s5.outcome?.replyMarkdown).toBe(BUILD_FAILED);
+
+    // Path 6: check fail twice with mesh
+    const failBrepWithMesh: BrepResult = {
+      ok: true,
+      parts: [
+        { label: 'box', valid: true, volume: 1000, min: [0, 0, 0], max: [10, 10, 10] },
+        { label: 'isolated', valid: true, volume: 100, min: [20, 0, 0], max: [30, 10, 10] },
+      ],
+      solids: 2,
+      disconnected: ['isolated'],
+      interferences: [],
+      stl: Buffer.from('solid ...\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid').toString('base64'),
+      ms: 50,
+    };
+    const agentFailMesh = createDesignerAgent('gpt-6-sol', {
+      runDesigner: vi.fn<RunDesignerFn>().mockResolvedValue(mockSuccessDesignerResult),
+      runBrep: vi.fn().mockResolvedValue(failBrepWithMesh),
+    });
+    const s6 = (await agentFailMesh.invoke({ messages: [new HumanMessage('make a box')] })) as AgentStateType;
+    expect(s6.outcome).toBeDefined();
+    expect(s6.outcome?.replyKind).toBe('error');
+    expect(s6.outcome?.design?.flags).toContain('failed_checks');
+
+    // Path 7: check fail twice without mesh
+    const agentFailNoMesh = createDesignerAgent('gpt-6-sol', {
+      runDesigner: vi.fn<RunDesignerFn>().mockResolvedValue(mockSuccessDesignerResult),
+      runBrep: vi.fn().mockResolvedValue({ ok: false, error: 'compile error', ms: 20, parts: [], solids: 0 }),
+    });
+    const s7 = (await agentFailNoMesh.invoke({ messages: [new HumanMessage('make a box')] })) as AgentStateType;
+    expect(s7.outcome).toBeDefined();
+    expect(s7.outcome?.replyKind).toBe('error');
+    expect(s7.outcome?.design).toBeUndefined();
+
+    // Path 8: edit unchanged body
+    const body = 'box = Box(10, 10, 10)\n_cadai_parts = [box]';
+    const agentNoChange = createDesignerAgent('gpt-6-sol', {
+      runDesigner: vi.fn<RunDesignerFn>().mockResolvedValue({
+        ...mockSuccessDesignerResult,
+        script: body,
+      }),
+      runBrep: vi.fn().mockResolvedValue(mockSuccessBrep),
+      classify: async () => 'edit',
+    });
+    const s8 = (await agentNoChange.invoke({
+      messages: [new HumanMessage('make a box'), new HumanMessage('keep it same')],
+      baseBody: body,
+      baseVersion: 1,
+    })) as AgentStateType;
+    expect(s8.outcome).toBeDefined();
+    expect(s8.outcome?.replyKind).toBe('nochange');
+  });
+
+  it('a stale outcome in the input does not short-circuit the next run', async () => {
+    const runDesignerMock = vi.fn().mockResolvedValue({
+      script: 'def box(): pass\n_cadai_parts = [box]',
+      summary: 'New fresh design summary',
+      facts: { ok: true, parts: [{ label: 'box', valid: true, size: [10, 10, 10] }], interferences: [], disconnected: [], dimensions: [] },
+      reviewerFlags: [],
+      turns: 1,
+      costUsd: 0.02,
+      failed: false,
+    });
+
+    const agent = createDesignerAgent('gpt-6-sol', {
+      runDesigner: runDesignerMock,
+      runBrep: vi.fn().mockResolvedValue(mockSuccessBrep),
+      classify: async () => 'edit',
+    });
+
+    const staleOutcome: RunOutcome = {
+      replyKind: 'result',
+      replyMarkdown: '**Designer**\n\nStale old summary',
+      userKind: 'request',
+      costUsd: 0.05,
+      wallMs: 2000,
+      turns: 2,
+      design: {
+        parentVersion: null,
+        origin: 'designer',
+        baseRequest: 'make a box',
+        edits: [],
+        body: 'def old_box(): pass',
+        preludeVersion: PRELUDE_VERSION,
+        summary: 'Stale old summary',
+        facts: null,
+        flags: [],
+      },
+    };
+
+    const finalState = (await agent.invoke({
+      messages: [new HumanMessage('make a box'), new HumanMessage('make it taller')],
+      baseBody: 'def old_box(): pass',
+      baseVersion: 1,
+      outcome: staleOutcome,
+    })) as AgentStateType;
+
+    expect(runDesignerMock).toHaveBeenCalled();
+    expect(finalState.outcome).toBeDefined();
+    expect(finalState.outcome?.replyMarkdown).not.toContain('Stale old summary');
+    expect(finalState.outcome?.replyMarkdown).toContain('New fresh design summary');
+    expect(finalState.outcome).not.toEqual(staleOutcome);
   });
 });

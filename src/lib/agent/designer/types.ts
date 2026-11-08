@@ -70,6 +70,7 @@ export interface DesignerInput {
   priorScript?: string;
   editRequest?: string;
   buildId?: string;
+  attachments?: { mediaType: 'image/png'; base64: string }[];
 }
 
 /** Progress lines for the UI. Fixed, rendered phrases only — never raw model text, code or tool JSON. */
@@ -100,6 +101,7 @@ export interface DesignerResult {
   capped?: 'turns' | 'wall' | 'cost';
   /** True when no script ever passed the hard checks. */
   failed?: boolean;
+  stop?: 'refusal' | 'max_tokens' | 'model_context_window_exceeded' | 'pause_turn';
 }
 
 export type RunDesignerFn = (input: DesignerInput, deps: DesignerDeps) => Promise<DesignerResult>;

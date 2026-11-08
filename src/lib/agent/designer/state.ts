@@ -1,6 +1,7 @@
 import { Annotation } from '@langchain/langgraph';
 import type { BaseMessage } from '@langchain/core/messages';
 import type { DesignContract, ModelInfo } from '@/types/designer';
+import type { RunOutcome } from '@/lib/persist/types';
 import type { DesignerFacts, ReviewFlag } from './types';
 
 export const AgentState = Annotation.Root({
@@ -80,10 +81,6 @@ export const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => false,
   }),
-  acceptedDesignerScript: Annotation<string | null>({
-    reducer: (_, y) => y,
-    default: () => null,
-  }),
   designerSummary: Annotation<string>({
     reducer: (_, y) => y,
     default: () => '',
@@ -91,6 +88,38 @@ export const AgentState = Annotation.Root({
   designerTurns: Annotation<number>({
     reducer: (_, y) => y,
     default: () => 0,
+  }),
+  baseVersion: Annotation<number | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  baseBody: Annotation<string | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  baseRequest: Annotation<string | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  attachments: Annotation<Array<{ mediaType: 'image/png'; base64: string }>>({
+    reducer: (_, y) => y,
+    default: () => [],
+  }),
+  outcome: Annotation<RunOutcome | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  triageKind: Annotation<'edit' | 'new' | 'question' | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  startedAt: Annotation<number | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  designerCheckSentences: Annotation<string[]>({
+    reducer: (_, y) => y,
+    default: () => [],
   }),
 });
 
