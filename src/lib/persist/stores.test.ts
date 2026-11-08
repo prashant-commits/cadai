@@ -117,7 +117,38 @@ describe('stores', () => {
     expect(list.find((t) => t.id === threadId)).toBeUndefined();
   });
 
-  it('rename trims, caps at 80 and bumps updated_at', async () => {
+  it('list pages by keyset (updated_at, id)', async () => {
+    const db = getDb();
+    const ownerKey = `owner_${crypto.randomUUID()}`;
+    const id1 = '00000000-0000-4000-8000-000000000001';
+    const id2 = '00000000-0000-4000-8000-000000000002';
+    const id3 = '00000000-0000-4000-8000-000000000003';
+
+    // id1 and id2 have the same updated_at, id3 is newer
+    await db.query(
+      `insert into threads(id, owner_key, title, updated_at) values
+       ($1, $4, 'T1', '2026-01-01T10:00:00Z'),
+       ($2, $4, 'T2', '2026-01-01T10:00:00Z'),
+       ($3, $4, 'T3', '2026-01-01T12:00:00Z')`,
+      [id1, id2, id3, ownerKey]
+    );
+
+    // First page, limit 2: should get T3, then T2 (since id2 > id1)
+    const page1 = await ThreadStore.list(db, ownerKey, { limit: 2 });
+    expect(page1).toHaveLength(2);
+    expect(page1[0].id).toBe(id3);
+    expect(page1[1].id).toBe(id2);
+
+    // Second page, passing before = { updatedAt: page1[1].updatedAt, id: page1[1].id }
+    const page2 = await ThreadStore.list(db, ownerKey, {
+      limit: 2,
+      before: { updatedAt: page1[1].updatedAt, id: page1[1].id },
+    });
+    expect(page2).toHaveLength(1);
+    expect(page2[0].id).toBe(id1);
+  });
+
+  it('rename trims, caps at 120 and bumps updated_at', async () => {
     const db = getDb();
     const ownerKey = `owner_${crypto.randomUUID()}`;
     const threadId = crypto.randomUUID();
@@ -141,12 +172,12 @@ describe('stores', () => {
     const empty = await ThreadStore.get(db, ownerKey, threadId);
     expect(empty?.title).toBeNull();
 
-    // Caps at 80 chars
-    const longTitle = 'a'.repeat(100);
+    // Caps at 120 chars
+    const longTitle = 'a'.repeat(140);
     await ThreadStore.rename(db, ownerKey, threadId, longTitle);
     const capped = await ThreadStore.get(db, ownerKey, threadId);
-    expect(capped?.title).toBe('a'.repeat(80));
-    expect(capped?.title?.length).toBe(80);
+    expect(capped?.title).toBe('a'.repeat(120));
+    expect(capped?.title?.length).toBe(120);
   });
 
   it('rows map timestamps to epoch ms and numerics to numbers', async () => {

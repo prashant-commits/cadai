@@ -4,7 +4,7 @@ import { DbRunStore } from '@/lib/runs/db-run-store';
 
 export interface ThreadListOptions {
   limit?: number;
-  before?: number; // updatedAt in epoch ms
+  before?: { updatedAt: number; id: string };
 }
 
 export const ThreadStore = {
@@ -33,10 +33,10 @@ export const ThreadStore = {
       const res = await q.query(
         `SELECT id, owner_key, title, active_run_id, created_at, updated_at, archived_at
          FROM threads
-         WHERE owner_key = $1 AND archived_at IS NULL AND updated_at < $2::timestamptz
-         ORDER BY updated_at DESC
-         LIMIT $3`,
-        [ownerKey, new Date(opts.before).toISOString(), limit]
+         WHERE owner_key = $1 AND archived_at IS NULL AND (updated_at, id) < ($2::timestamptz, $3)
+         ORDER BY updated_at DESC, id DESC
+         LIMIT $4`,
+        [ownerKey, new Date(opts.before.updatedAt).toISOString(), opts.before.id, limit]
       );
       return res.rows.map(rowToThread);
     }
@@ -45,7 +45,7 @@ export const ThreadStore = {
       `SELECT id, owner_key, title, active_run_id, created_at, updated_at, archived_at
        FROM threads
        WHERE owner_key = $1 AND archived_at IS NULL
-       ORDER BY updated_at DESC
+       ORDER BY updated_at DESC, id DESC
        LIMIT $2`,
       [ownerKey, limit]
     );
@@ -59,7 +59,7 @@ export const ThreadStore = {
     title: string
   ): Promise<boolean> {
     const trimmed = title.trim();
-    const cleanTitle = trimmed.length === 0 ? null : trimmed.slice(0, 80);
+    const cleanTitle = trimmed.length === 0 ? null : trimmed.slice(0, 120);
 
     const res = await q.query(
       `UPDATE threads
