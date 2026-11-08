@@ -150,7 +150,7 @@ export const runDesigner: RunDesignerFn = async (input: DesignerInput, deps: Des
 
       let reply: AIMessage;
       try {
-        reply = await bound.invoke(conversation, { signal });
+        reply = await bound.invoke(conversation, { signal, tags: ['nostream'] });
       } catch (err) {
         if (isAbortOrTimeout(err) || signal.aborted) {
           if (wall.signal.aborted && !deps.signal?.aborted) cap = 'wall';

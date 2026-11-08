@@ -67,7 +67,8 @@ function reply(calls: Call[], opts: { text?: string; outputTokens?: number } = {
 /** Installs a scripted model. Each turn pops the next reply; the last one repeats when `repeat` is set. */
 function installModel(script: AIMessage[] | ((turn: number) => AIMessage)) {
   const seen: BaseMessage[][] = [];
-  const invoke = vi.fn(async (msgs: BaseMessage[]) => {
+  const invoke = vi.fn(async (msgs: BaseMessage[], options?: unknown) => {
+    void options;
     seen.push([...msgs]);
     const n = seen.length - 1;
     const next = typeof script === 'function' ? script(n) : script[n];
@@ -381,6 +382,14 @@ describe('events', () => {
     installModel([reply([run(PLAIN), run(PLAIN), render(), finish('ok')])]);
     const res = await runDesigner({ request: 'a box' }, { onEvent: () => { throw new Error('ui'); } });
     expect(res.summary).toBe('ok');
+  });
+
+  it('invokes the designer model with nostream tag', async () => {
+    const m = installModel([reply([run(PLAIN), run(PLAIN), render(), finish()])]);
+    await runDesigner({ request: 'a box' }, {});
+    expect(m.invoke).toHaveBeenCalled();
+    const options = m.invoke.mock.calls[0]?.[1] as { tags?: string[] } | undefined;
+    expect(options?.tags).toContain('nostream');
   });
 });
 
