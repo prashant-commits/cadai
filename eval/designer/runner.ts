@@ -31,7 +31,8 @@ for (const f of ['.env', '.env.local']) {
   try { process.loadEnvFile(f); } catch { /* absent is fine */ }
 }
 
-import { createCadAgent, type AgentStateType } from '@/lib/agent/graph';
+import { createCadAgent } from '@/lib/agent/graph';
+import type { AgentStateType } from '@/lib/agent/designer/state';
 import { runCheckpointKey, getCheckpointer } from '@/lib/agent/checkpointer';
 import { DEFAULT_MODEL, isOfferedModel } from '@/lib/agent/models';
 import { runBrep as realRunBrep } from '@/lib/engine/brep-runner';

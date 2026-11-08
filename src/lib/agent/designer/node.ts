@@ -1,5 +1,5 @@
 import type { LangGraphRunnableConfig } from '@langchain/langgraph';
-import type { AgentStateType } from '../graph';
+import type { AgentStateType } from './state';
 import type {
   DesignerEvent,
   DesignerInput,
@@ -8,7 +8,7 @@ import type {
   ReviewFn,
   RunDesignerFn,
 } from './types';
-import { firstHumanText, latestHumanText } from '../graph-route';
+import { firstHumanText, latestHumanText } from './message-utils';
 import { escapeMarkers } from '../transcript';
 
 export interface DesignerNodeDeps {

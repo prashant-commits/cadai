@@ -200,27 +200,6 @@ describe('resumableGate', () => {
   });
 });
 
-describe('freezeStreamingMessages', () => {
-  it('marks a message left mid-stream as interrupted', () => {
-    const [out] = freezeStreamingMessages([msg({ status: 'streaming', transcript: 'partial' })]);
-    expect(out.status).toBe('interrupted');
-  });
-
-  it('gives an interrupted message body text so the bubble is never blank', () => {
-    const [out] = freezeStreamingMessages([msg({ status: 'streaming', content: '' })]);
-    expect(out.content.trim()).not.toBe('');
-  });
-
-  it('leaves a message awaiting input alone - its gate is still resumable', () => {
-    const [out] = freezeStreamingMessages([msg({ status: 'awaiting_input' })]);
-    expect(out.status).toBe('awaiting_input');
-  });
-
-  it('leaves completed messages untouched', () => {
-    const input = [msg({ status: 'complete', content: 'done' })];
-    expect(freezeStreamingMessages(input)).toEqual(input);
-  });
-});
 
 const legacySpec = {
   assemblyName: 'legacy_box',

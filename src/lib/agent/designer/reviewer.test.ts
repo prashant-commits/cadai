@@ -1,6 +1,6 @@
 import { AIMessage, HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { estimateCostUsd } from '../nodes/brep-agent-build';
+import { estimateCostUsd } from './cost-params';
 import type { DesignerFacts, ReviewInput } from './types';
 
 const ORIGINAL_REVIEWER_MODEL = process.env.CADAI_REVIEWER_MODEL;

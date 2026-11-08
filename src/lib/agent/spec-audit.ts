@@ -2,57 +2,8 @@ import { AssemblySpec } from './assembly-spec';
 import { ValidationResult, SILENT_CORRUPTION_CODES } from '../engine/scad-compiler';
 import { ModelInfo, DesignContract } from '@/types';
 
-export interface SpecViolation {
-  kind:
-    | 'compile'
-    | 'bbox'
-    | 'manifold'
-    | 'shells'
-    /** One component's own module is more than one solid piece: a cut runs through that part. */
-    | 'severed'
-    /** One component is a single solid that encloses an empty void. */
-    | 'sealed_cavity'
-    | 'empty'
-    | 'dimensionality'
-    | 'buildplate'
-    | 'interference'
-    | 'clearance'
-    | 'unknown_symbol'
-    | 'standing'
-    /** Whole-model min z is not 0: something hangs below or hovers above the floor. */
-    | 'floor'
-    /** A placed component does not rest on the floor or on any other component. */
-    | 'floating'
-    /** A module's min corner is not at its local origin (informational once corrected). */
-    | 'local_frame'
-    /** The build replaced or dropped something the model wrote (B-rep emitter notes). Always a warning. */
-    | 'build'
-    /** A module's measured size disagrees with the spec's localExtents. */
-    | 'extents'
-    /** The spec contradicts itself: declared envelope vs the one its placements imply. */
-    | 'coherence'
-    /** A component module is mirrored as a whole, so the part is the wrong hand. */
-    | 'handedness'
-    /** A hole the spec declared is missing, displaced or the wrong size. */
-    | 'feature'
-    /** A shape schema constraint was violated (e.g. tube without innerD). */
-    | 'shape'
-    /** Emitted by the Design Inspector from rendered views. Always a warning. */
-    | 'visual'
-    /** Parameter leaves bbox and volume unchanged when swept. Always a warning. */
-    | 'dead_parameter'
-    /** Parameter variant fails compile, non-manifold, or goes below z = 0. Always a warning. */
-    | 'sweep_failure'
-    /** Numeric literal in module body equals a parameter value. Always a warning. */
-    | 'literal_param';
-  field: string;
-  expected: number | string | boolean;
-  measured: number | string | boolean;
-  deltaMm?: number;
-  tolerance?: number;
-  severity: 'error' | 'warning';
-  message: string;
-}
+import type { SpecViolation } from '@/types/designer';
+export type { SpecViolation };
 
 import { checkStanding } from '../design/contract';
 import { parseParams } from '../design/parse-params';

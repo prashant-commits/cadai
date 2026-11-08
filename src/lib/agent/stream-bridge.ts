@@ -4,7 +4,7 @@ import { sanitizeText, toApiError } from '@/lib/contract/api-error';
 import type { StreamEvent } from './stream-events';
 import type { SectionStatus } from './transcript';
 import { checkpointTtlMs } from './checkpointer';
-import type { AgentStateType } from './graph';
+import type { AgentStateType } from './designer/state';
 import { nextStep } from './graph-route';
 import { contentText } from './message-text';
 
@@ -191,7 +191,7 @@ export async function bridgeGraphStream(
   }
 
   function applyRoute(node: string, partial: Record<string, unknown>) {
-    const next = nextStep(node, box.state, '');
+    const next = nextStep(node, box.state as unknown as Parameters<typeof nextStep>[1], '');
     const reason = oneLine(sanitizeText(routeReason(node, partial, box.state)));
     const revisits = Boolean(next && !GATES.has(next) && (runs.get(next) ?? 0) > 0 && next !== node);
     if (next && revisits) {

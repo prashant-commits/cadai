@@ -29,6 +29,7 @@ import {
   routeStart,
 } from './graph-route';
 import type { DesignerFacts, ReviewFlag } from './designer/types';
+import { AgentState as DesignerAgentState } from './designer/state';
 import { createDesignerNode, type DesignerNodeDeps } from './designer/node';
 import { createDesignerCheck, type DesignerCheckDeps } from './designer/check';
 import { formatFlags } from './designer/reviewer';
@@ -442,6 +443,15 @@ export interface AttemptRecord {
 }
 
 export const AgentState = Annotation.Root({
+  ...DesignerAgentState.spec,
+  designContract: Annotation<DesignContract | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
+  validation: Annotation<ValidationResult | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
   specBrief: Annotation<SpecBrief | null>({
     reducer: (_, y) => y,
     default: () => null,
@@ -483,31 +493,7 @@ export const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => null,
   }),
-  messages: Annotation<BaseMessage[]>({
-    reducer: (x, y) => x.concat(y),
-    default: () => [],
-  }),
   assemblySpec: Annotation<AssemblySpec | null>({
-    reducer: (_, y) => y,
-    default: () => null,
-  }),
-  designContract: Annotation<DesignContract | null>({
-    reducer: (_, y) => y,
-    default: () => null,
-  }),
-  currentCode: Annotation<string>({
-    reducer: (_, y) => y,
-    default: () => '',
-  }),
-  explanation: Annotation<string>({
-    reducer: (_, y) => y,
-    default: () => '',
-  }),
-  modelInfo: Annotation<ModelInfo | null>({
-    reducer: (_, y) => y,
-    default: () => null,
-  }),
-  validation: Annotation<ValidationResult | null>({
     reducer: (_, y) => y,
     default: () => null,
   }),
@@ -533,41 +519,6 @@ export const AgentState = Annotation.Root({
       return merged;
     },
     default: () => [],
-  }),
-  attemptCount: Annotation<number>({
-    reducer: (_, y) => y,
-    default: () => 0,
-  }),
-  maxAttempts: Annotation<number>({
-    reducer: (_, y) => y,
-    // Parked: automatic repair is off by default while generation quality is
-    // the focus. A human can still ask for a revision at the accept gate.
-    default: () => Number(process.env.CADAI_MAX_ATTEMPTS ?? 1),
-  }),
-  failureKind: Annotation<'none'|'no_code'|'truncated'|'compile'|'semantic'|'interference'>({
-    reducer: (_, y) => y,
-    default: () => 'none',
-  }),
-  isValid: Annotation<boolean>({
-    reducer: (_, y) => y,
-    default: () => false,
-  }),
-  stlContent: Annotation<string | null>({
-    reducer: (_, y) => y,
-    default: () => null,
-  }),
-  /** STEP file of the latest B-rep build, base64. Null on the OpenSCAD kernel. */
-  stepContent: Annotation<string | null>({
-    reducer: (_, y) => y,
-    default: () => null,
-  }),
-  gateAction: Annotation<'approve' | 'revise' | 'cancel' | null>({
-    reducer: (_, y) => y,
-    default: () => null,
-  }),
-  gateFeedback: Annotation<string | null>({
-    reducer: (_, y) => y,
-    default: () => null,
   }),
   specRevisionCount: Annotation<number>({
     reducer: (_, y) => y,
@@ -601,64 +552,6 @@ export const AgentState = Annotation.Root({
   buildNotes: Annotation<{ name: string; reason: string }[]>({
     reducer: (_, y) => y,
     default: () => [],
-  }),
-  /** Set once, on the thread's first architectNode or designerNode entry, from CADAI_PIPELINE (default architect). Never changes afterwards. */
-  pipeline: Annotation<'drafter' | 'architect' | 'designer' | null>({
-    reducer: (_, y) => y,
-    default: () => null,
-  }),
-  /** Measured geometric facts from the designer run. */
-  designerFacts: Annotation<DesignerFacts | null>({
-    reducer: (_, y) => y,
-    default: () => null,
-  }),
-  /** Reviewer flags accumulated across designer iterations. */
-  designerFlags: Annotation<Array<ReviewFlag & { round: number; final: boolean }>>({
-    reducer: (_, y) => y,
-    default: () => [],
-  }),
-  /** Cumulative cost in USD of designer model calls. */
-  designerCostUsd: Annotation<number>({
-    reducer: (_, y) => y,
-    default: () => 0,
-  }),
-  /** Number of check retries in designerCheck (capped at 1). */
-  designerRetryCount: Annotation<number>({
-    reducer: (_, y) => y,
-    default: () => 0,
-  }),
-  /** Check failures in plain words when designerCheck fails. */
-  designerCheckFailures: Annotation<string | null>({
-    reducer: (_, y) => y,
-    default: () => null,
-  }),
-  /** True when designerCheck has completed (either successfully or after spending its retry). */
-  designerCheckCompleted: Annotation<boolean>({
-    reducer: (_, y) => y,
-    default: () => false,
-  }),
-  /** Accepted designer script preserved for follow-up turns on this thread. */
-  acceptedDesignerScript: Annotation<string | null>({
-    reducer: (_, y) => y,
-    default: () => null,
-  }),
-  /** Summary markdown produced by the designer loop. */
-  designerSummary: Annotation<string>({
-    reducer: (_, y) => y,
-    default: () => '',
-  }),
-  /** Total designer turns in this run. */
-  designerTurns: Annotation<number>({
-    reducer: (_, y) => y,
-    default: () => 0,
-  }),
-  /**
-   * Geometry kernel, pinned once per run beside `pipeline` from CADAI_KERNEL (default brep).
-   * 'brep' (build123d, STEP export) needs the Architect pipeline; the Drafter stays on OpenSCAD.
-   */
-  kernel: Annotation<'openscad' | 'brep' | null>({
-    reducer: (_, y) => y,
-    default: () => null,
   }),
   /** Total wall time in ms accumulated across all brepAgentBuild visits in this run. */
   buildWallMs: Annotation<number>({

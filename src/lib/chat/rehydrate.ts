@@ -132,23 +132,4 @@ export function stripUnchosenSheets(payload: GatePayload, decision: GateDecision
   };
 }
 
-/**
- * Freezes any message the page was still streaming when it went away.
- *
- * Rejoining a live generation would need a server-side run registry and replay
- * buffer, which per-instance /tmp checkpoints would undermine anyway. Saying so
- * plainly beats leaving a bubble that looks like it is still thinking.
- */
-export function freezeStreamingMessages(messages: ChatMessage[]): ChatMessage[] {
-  return messages.map((m) =>
-    m.status === 'streaming'
-      ? {
-          ...m,
-          status: 'interrupted' as const,
-          content: m.content?.trim()
-            ? m.content
-            : '_This run was interrupted before it finished. Send the request again to retry._',
-        }
-      : m
-  );
-}
+export { freezeStreamingMessages } from './chat-messages';

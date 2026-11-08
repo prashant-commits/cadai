@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { checkPythonBody, checkPythonScript, PRELUDE_SENTINEL, GENERATED_PRELUDE } from './body-check';
-import { applyParameterOverrides } from '../agent/nodes/brep-agent-build';
+import { applyParameterOverrides } from '../agent/designer/cost-params';
 
 describe('Grok review probe-guard regressions', () => {
   it('rejects direct banned names and introspection in scripts', () => {

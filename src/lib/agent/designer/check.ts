@@ -1,5 +1,5 @@
 import type { LangGraphRunnableConfig } from '@langchain/langgraph';
-import type { AgentStateType } from '../graph';
+import type { AgentStateType } from './state';
 import { runBrep, type BrepResult } from '../../engine/brep-runner';
 import { checkPythonScript, type BodyCheck } from '../../brep/body-check';
 import { stlToAscii, toModelInfo } from '../../brep/measurements';

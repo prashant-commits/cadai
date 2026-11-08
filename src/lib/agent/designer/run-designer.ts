@@ -4,7 +4,7 @@ import { runBrep, type BrepResult } from '../../engine/brep-runner';
 import { unusableStop } from '../llm-schemas';
 import { DEFAULT_MODEL, isOfferedModel } from '../models';
 import { getChatModel, isAbortOrTimeout } from '../model-provider';
-import { applyParameterOverrides, estimateCostUsd } from '../nodes/brep-agent-build';
+import { applyParameterOverrides, estimateCostUsd } from './cost-params';
 import { cachedSystemMessage } from '../system-prompt';
 import { buildFirstUserMessage, DESIGNER_SYSTEM_PROMPT } from './prompt';
 import {

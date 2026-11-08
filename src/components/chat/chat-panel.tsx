@@ -10,11 +10,11 @@ import { readStream, streamMessagePatch } from '@/lib/stream-reader';
 import { serializeTranscript } from '@/lib/agent/transcript';
 import {
   resumableGate,
-  freezeStreamingMessages,
   stripUnchosenSheets,
   ensureGateOpenedAt,
   closedExpiredGateUpdate,
 } from '@/lib/chat/rehydrate';
+import { freezeStreamingMessages } from '@/lib/chat/chat-messages';
 import { compileModel } from '@/lib/engine/openscad-bridge';
 import { parseStlToGeometry } from '@/lib/engine/geometry-utils';
 import { ChatMessage, GatePayload, GateDecision, GateRecord } from '@/types';

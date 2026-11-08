@@ -1,5 +1,11 @@
-import { ScadParam, StandingConstraints, DesignContract, ContractDiff, ModelInfo } from '../../types';
-import { SpecViolation } from '../agent/spec-audit';
+import {
+  ScadParam,
+  StandingConstraints,
+  DesignContract,
+  ContractDiff,
+  ModelInfo,
+  SpecViolation,
+} from '@/types/designer';
 import { setParamValue } from './write-params';
 import { parseParams } from './parse-params';
 
