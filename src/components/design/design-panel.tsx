@@ -4,6 +4,28 @@ import { PrintAnalysisPanel } from '@/components/print-analysis/print-analysis-p
 import { ParamControl } from './param-control';
 import { Code2, ChevronDown, ChevronRight, Settings2, Shield, Target, SlidersHorizontal } from 'lucide-react';
 import { ParamValue } from '@/types';
+import { setParamValue } from '@/lib/design/write-params';
+
+/**
+ * The panel's onChange for a param. Numeric slider moves write nothing here:
+ * ParamControl follows every move with onPin, and pinParam writes the value
+ * into the code and the draft's pinnedParams (never editedBody). Non-numeric
+ * params (bool/string) cannot be pins, so they edit the body.
+ */
+export function changeParamValue(name: string, value: ParamValue) {
+  if (typeof value === 'number') return;
+  const { code, setCode } = useAppStore.getState();
+  const newCode = setParamValue(code, name, value);
+  if (newCode !== code) {
+    setCode(newCode, undefined, 'user');
+  }
+}
+
+/** One slider move exactly as ParamControl sends it: onChange, then onPin. */
+export function applyParamMove(name: string, value: ParamValue) {
+  changeParamValue(name, value);
+  useAppStore.getState().pinParam(name, value);
+}
 
 export function DesignPanel() {
   const { 
@@ -14,8 +36,7 @@ export function DesignPanel() {
     pinParam, 
     unpinParam, 
     setStanding,
-    setCode,
-    code
+    activeDraft,
   } = useAppStore();
 
   const activeThread = threads.find(t => t.id === activeThreadId);
@@ -30,16 +51,6 @@ export function DesignPanel() {
 
   const toggleSection = (key: keyof typeof openSections) => {
     setOpenSections(prev => ({ ...prev, [key]: !prev[key] }));
-  };
-
-  const handleParamChange = (name: string, value: ParamValue) => {
-    // In a real app we'd dispatch to write-params to update the code
-    import('@/lib/design/write-params').then(({ setParamValue }) => {
-      const newCode = setParamValue(code, name, value);
-      if (newCode !== code) {
-        setCode(newCode, undefined, 'user');
-      }
-    });
   };
 
   // Group params
@@ -170,10 +181,10 @@ export function DesignPanel() {
                         <ParamControl 
                           key={p.name} 
                           param={p}
-                          pinned={!!contract?.pinnedParams?.[p.name]}
+                          pinned={!!activeDraft?.pinnedParams?.[p.name]}
                           onPin={(val) => pinParam(p.name, val)}
                           onUnpin={() => unpinParam(p.name)}
-                          onChange={(val) => handleParamChange(p.name, val)}
+                          onChange={(val) => changeParamValue(p.name, val)}
                         />
                       ))}
                     </div>

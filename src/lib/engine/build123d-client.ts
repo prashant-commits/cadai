@@ -9,7 +9,10 @@ let compileTimeout: ReturnType<typeof setTimeout> | null = null;
 let currentCompileId = 0;
 let activeAbortController: AbortController | null = null;
 
-export function compileModel(code: string): Promise<CompileResult> {
+export function compileModel(
+  code: string,
+  opts?: { preludeVersion?: string }
+): Promise<CompileResult> {
   return new Promise((resolve) => {
     if (compileTimeout) clearTimeout(compileTimeout);
     
@@ -35,10 +38,15 @@ export function compileModel(code: string): Promise<CompileResult> {
       }
 
       try {
+        const payload: Record<string, unknown> = { code, language: 'build123d' };
+        if (opts?.preludeVersion !== undefined) {
+          payload.preludeVersion = opts.preludeVersion;
+        }
+
         const response = await fetch('/api/compile', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code, language: 'build123d' }),
+          body: JSON.stringify(payload),
           signal,
         });
 

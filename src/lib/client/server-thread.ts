@@ -61,6 +61,8 @@ export function buildChatRequest(params: {
   text: string;
   viewingVersion: number | null;
   attachmentIds?: string[];
+  pinnedParams?: Record<string, number>;
+  editedBody?: string;
   model?: string;
 }): ChatRequest {
   const req: ChatRequest = {
@@ -71,6 +73,12 @@ export function buildChatRequest(params: {
   };
   if (params.attachmentIds !== undefined && params.attachmentIds.length > 0) {
     req.attachmentIds = params.attachmentIds;
+  }
+  if (params.pinnedParams !== undefined && Object.keys(params.pinnedParams).length > 0) {
+    req.pinnedParams = params.pinnedParams;
+  }
+  if (params.editedBody !== undefined) {
+    req.editedBody = params.editedBody;
   }
   if (params.model !== undefined) {
     req.model = params.model;

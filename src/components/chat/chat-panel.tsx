@@ -5,6 +5,7 @@ import { useAppStore } from '@/store/app-store';
 import { MessageBubble } from './message-bubble';
 import { ChatInput } from './chat-input';
 import { ThreadDrawer } from './thread-drawer';
+import { VersionList } from './version-list';
 import { freezeStreamingMessages } from '@/lib/chat/chat-messages';
 import { isServerThreadId } from '@/lib/client/server-thread';
 import { LEGACY } from '@/lib/persist/phrases';
@@ -23,6 +24,7 @@ export function ChatPanel() {
     isGenerating,
     generatingThreadId,
     inFlightRunId,
+    runsByThread,
     threads,
     activeThreadId,
     createNewThread,
@@ -61,7 +63,8 @@ export function ChatPanel() {
   }, [activeThreadId]);
 
   const activeThread = threads.find((t) => t.id === activeThreadId);
-  const isCurrentThreadGenerating = isGenerating && generatingThreadId === activeThreadId;
+  const activeRunId = runsByThread?.[activeThreadId] ?? inFlightRunId;
+  const isCurrentThreadGenerating = Boolean(runsByThread?.[activeThreadId]) || (isGenerating && generatingThreadId === activeThreadId);
   const isLegacy = activeThread ? !isServerThreadId(activeThread.id) : false;
 
   const scrollToBottom = () => {
@@ -143,7 +146,7 @@ export function ChatPanel() {
                     <Loader2 className="w-3 h-3 animate-spin" />
                     <span>Generating...</span>
                   </span>
-                  {inFlightRunId && (
+                  {activeRunId && (
                     <button
                       onClick={() => void stopCurrentRun()}
                       aria-label="Stop"
@@ -179,6 +182,11 @@ export function ChatPanel() {
         >
           {LEGACY}
         </div>
+      )}
+
+      {/* Version List */}
+      {!isLegacy && activeThread?.versions && activeThread.versions.length > 0 && (
+        <VersionList />
       )}
 
       {/* Message List */}
