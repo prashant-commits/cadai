@@ -2,9 +2,12 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { useAppStore } from '@/store/app-store';
-import { Send, Loader2, Sparkles, X, Image as ImageIcon, Square } from 'lucide-react';
+import { ArrowUp, Square, Loader2, Sparkles, X } from 'lucide-react';
+import { ImageButton } from '@/components/input/image-button';
+import { ModelSelect } from '@/components/input/model-select';
+import { cn } from '@/lib/utils';
 
-interface ChatInputProps {
+export interface ChatInputProps {
   onSendMessage: (
     message: string,
     attachment?: { id: string; kind: 'markup' | 'reference'; localUrl: string } | string
@@ -13,6 +16,7 @@ interface ChatInputProps {
   disabled?: boolean;
   isGenerating?: boolean;
   initialText?: string;
+  showPromptChips?: boolean;
 }
 
 const QUICK_PROMPTS = [
@@ -28,6 +32,7 @@ export function ChatInput({
   disabled = false,
   isGenerating = false,
   initialText = '',
+  showPromptChips = false,
 }: ChatInputProps) {
   const { pendingAttachment, removeAttachment, retryAttachment } = useAppStore();
   const [input, setInput] = useState(initialText);
@@ -48,7 +53,7 @@ export function ChatInput({
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (isSendDisabled) return;
+    if (isGenerating || isSendDisabled) return;
 
     const attToSend =
       pendingAttachment && pendingAttachment.status === 'ready' && pendingAttachment.id
@@ -72,12 +77,12 @@ export function ChatInput({
   };
 
   return (
-    <div className="p-3 bg-slate-950 border-t border-slate-800 space-y-2">
+    <div className="p-3 space-y-2 select-none">
       {/* Quick suggestions */}
-      {!pendingAttachment && (
+      {showPromptChips && !pendingAttachment && (
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none text-[11px]">
-          <span className="text-slate-500 flex items-center gap-1 shrink-0 px-1 font-medium">
-            <Sparkles className="w-3 h-3 text-indigo-400" />
+          <span className="text-muted-foreground flex items-center gap-1 shrink-0 px-1 font-medium">
+            <Sparkles className="size-3 text-primary" />
             Try:
           </span>
           {QUICK_PROMPTS.map((prompt, idx) => (
@@ -86,7 +91,7 @@ export function ChatInput({
               type="button"
               disabled={disabled}
               onClick={() => onSendMessage(prompt)}
-              className="shrink-0 px-2.5 py-1 rounded-full bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-300 transition-colors disabled:opacity-50"
+              className="glass shrink-0 px-2.5 py-1 rounded-[var(--radius-pill)] hover:bg-accent text-foreground/80 hover:text-foreground transition-colors disabled:opacity-50 cursor-pointer"
             >
               {prompt}
             </button>
@@ -94,25 +99,26 @@ export function ChatInput({
         </div>
       )}
 
-      {/* Input Form */}
-      <form onSubmit={handleSubmit} className="relative flex flex-col gap-2 bg-slate-900 border border-slate-800 focus-within:border-indigo-500/80 rounded-xl p-2 transition-all">
-        
-        {/* Attachment Preview / Chip */}
+      {/* Input Form Box */}
+      <form onSubmit={handleSubmit} data-slot="chat-input" className="glass rounded-3xl p-3 flex flex-col gap-2 relative">
+        {/* Task 17: layer chip */}
+
+        {/* Attachment Chip */}
         {pendingAttachment && (
-          <div className="relative self-start mt-1 ml-1 group flex items-center gap-2 p-1.5 rounded-lg border border-slate-700 bg-slate-950">
+          <div className="relative self-start group flex items-center gap-2 p-1.5 rounded-xl border border-border/50 bg-card/40">
             {pendingAttachment.status === 'uploading' && (
-              <div className="flex items-center gap-2 px-2 py-1 text-xs text-slate-300">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+              <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin text-primary" />
                 <span>Uploading…</span>
               </div>
             )}
             {pendingAttachment.status === 'failed' && (
-              <div className="flex items-center gap-2 px-2 py-1 text-xs text-rose-300">
+              <div className="flex items-center gap-2 px-2 py-1 text-xs text-destructive">
                 <span>Upload failed</span>
                 <button
                   type="button"
                   onClick={retryAttachment}
-                  className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-medium transition-colors"
+                  className="px-2 py-0.5 rounded-md bg-accent hover:bg-accent/80 text-foreground text-[11px] font-medium transition-colors cursor-pointer"
                 >
                   Retry
                 </button>
@@ -124,71 +130,71 @@ export function ChatInput({
                 <img
                   src={pendingAttachment.localUrl}
                   alt="Attachment preview"
-                  className="h-20 rounded-md border border-slate-700 shadow-md object-contain bg-slate-950"
+                  className="h-16 rounded-md border border-border/50 object-contain bg-background/50"
                 />
-                <div className="absolute bottom-1 right-1 bg-black/60 rounded px-1 text-[9px] text-white flex items-center gap-1">
-                  <ImageIcon className="w-2.5 h-2.5" /> Annotated
-                </div>
               </div>
             )}
             <button
               type="button"
               onClick={removeAttachment}
-              className="p-1 rounded-full bg-slate-800 text-slate-300 hover:text-white hover:bg-rose-500 transition-colors shadow-sm"
-              title="Remove attachment"
+              aria-label="Remove image"
+              className="p-1 rounded-full bg-accent/80 text-muted-foreground hover:text-foreground hover:bg-destructive transition-colors cursor-pointer"
             >
-              <X className="w-3 h-3" />
+              <X className="size-3 text-current" />
             </button>
           </div>
         )}
 
-        <div className="flex items-end gap-2 w-full">
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={disabled}
-            placeholder={
-              disabled
-                ? 'CAD AI is generating & validating model...'
-                : pendingAttachment
-                ? 'Describe the changes marked in the image...'
-                : 'Describe a 3D model, mechanical feature, or print tuning request...'
-            }
-            rows={2}
-            className="flex-1 bg-transparent resize-none text-sm text-slate-100 placeholder-slate-500 focus:outline-none scrollbar-thin px-1 py-0.5"
-          />
+        <textarea
+          ref={textareaRef}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={disabled}
+          placeholder={
+            disabled
+              ? 'CAD AI is generating & validating model...'
+              : pendingAttachment
+              ? 'Describe the changes marked in the image...'
+              : 'Ask the AI to edit, or describe a feature...'
+          }
+          rows={2}
+          className="w-full resize-none border-none bg-transparent p-1 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:outline-none focus-visible:ring-0 field-sizing-content min-h-[44px]"
+        />
 
-          {isGenerating && onStop ? (
+        <div className="flex items-center justify-between pt-1">
+          <div className="flex items-center gap-2">
+            <ImageButton disabled={disabled || isGenerating} />
+            <ModelSelect />
+          </div>
+
+          {isGenerating ? (
             <button
               type="button"
               onClick={onStop}
               aria-label="Stop"
-              title="Stop"
-              className="px-3 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow-md shadow-rose-600/30 transition-all shrink-0 cursor-pointer"
+              data-slot="send-button"
+              className="inline-flex size-8 items-center justify-center rounded-[var(--radius-pill)] bg-destructive text-destructive-foreground hover:opacity-90 transition-opacity cursor-pointer shadow-xs"
             >
-              <Square className="w-3.5 h-3.5 fill-current" />
-              <span>Stop</span>
+              <Square className="size-3.5 fill-current" />
             </button>
           ) : (
             <button
               type="submit"
               disabled={isSendDisabled}
               aria-label="Send prompt"
-              className="p-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-600 text-white shadow-md shadow-indigo-600/30 transition-all shrink-0 cursor-pointer disabled:cursor-not-allowed"
-              title="Send prompt (Enter)"
-            >
-              {disabled ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Send className="w-4 h-4" />
+              data-slot="send-button"
+              className={cn(
+                'inline-flex size-8 items-center justify-center rounded-[var(--radius-pill)] bg-[image:var(--accent-gradient)] text-primary-foreground text-xs font-semibold shadow-[0_0_24px_var(--accent-glow)] hover:opacity-90 transition-opacity cursor-pointer disabled:pointer-events-none disabled:opacity-50'
               )}
+            >
+              <ArrowUp className="size-4" />
             </button>
           )}
         </div>
       </form>
-      <div className="flex justify-between items-center text-[10px] text-slate-500 px-1">
+
+      <div className="flex justify-between items-center text-[10px] text-muted-foreground px-1">
         <span>Enter to send, Shift+Enter for new line</span>
         <span>Validation runs before live preview</span>
       </div>
