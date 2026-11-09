@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { DesignContract, ModelInfo } from './designer';
 import type { ServerThreadVersion } from '@/lib/client/server-thread';
+import type { PartInfo } from '@/lib/contract/run-contract';
 export * from './designer';
 
 /** How far the assistant message's own turn got. */
@@ -59,6 +60,7 @@ export interface CompileResult {
   aborted?: boolean;
   step?: string;
   language?: 'build123d';
+  parts?: PartInfo[];
 }
 
 export interface ViewportSettings {

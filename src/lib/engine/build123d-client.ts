@@ -75,6 +75,7 @@ export function compileModel(
           modelInfo,
           step: data.step,
           language: 'build123d',
+          parts: Array.isArray(data.parts) ? data.parts : [],
           compileTimeMs: typeof data.compileTimeMs === 'number' ? data.compileTimeMs : Math.round(performance.now() - startTime),
         });
       } catch (err: unknown) {

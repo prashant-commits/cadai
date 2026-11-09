@@ -10,6 +10,7 @@ import {
   ParamValue,
   StandingConstraints,
 } from '@/types';
+import type { PartInfo } from '@/lib/contract/run-contract';
 import {
   clearThreadMessages,
   deleteThreadCascade,
@@ -74,6 +75,7 @@ async function resolveVersionState(
   stlContent: string | null;
   modelInfo: ModelInfo | null;
   step: null;
+  parts: PartInfo[];
 }> {
   const draft = await getDraft(threadId, version.version);
   const baseBody = draft?.editedBody ?? version.body;
@@ -90,6 +92,7 @@ async function resolveVersionState(
   let newStl: string | null = null;
   let newGeometry: THREE.BufferGeometry | null = null;
   let newModelInfo: ModelInfo | null = null;
+  let newParts: PartInfo[] = [];
 
   const hasEdits =
     draft &&
@@ -119,8 +122,10 @@ async function resolveVersionState(
       newStl = res.stlContent || null;
       newGeometry = res.geometry || null;
       newModelInfo = res.modelInfo || null;
+      newParts = res.parts ?? [];
     } catch (err) {
       console.warn('Failed to compile version code:', err);
+      newParts = [];
     }
   }
 
@@ -131,6 +136,7 @@ async function resolveVersionState(
     stlContent: newStl,
     modelInfo: newModelInfo,
     step: null,
+    parts: newParts,
   };
 }
 
@@ -153,6 +159,8 @@ export interface AppState extends ProjectsSlice {
   stlContent: string | null;
   modelInfo: ModelInfo | null;
   step: string | null;
+  /** Labelled parts from the geometry service (compile result or version facts). */
+  parts: PartInfo[];
   viewingVersion: number | null;
   activeDraft: LocalDraft | null;
 
@@ -247,6 +255,7 @@ export const useAppStore = create<AppState>((set, get, api) => ({
   messages: [],
   code: '',
   geometry: null,
+  parts: [],
   stlContent: null,
   modelInfo: null,
   step: null,
@@ -339,6 +348,7 @@ export const useAppStore = create<AppState>((set, get, api) => ({
       params: parseParams(toBody(resolved.code)),
       stlContent: resolved.stlContent,
       geometry: resolved.geometry,
+      parts: resolved.parts,
       modelInfo: resolved.modelInfo,
       step: null,
       compileStatus: 'idle',
@@ -378,6 +388,9 @@ export const useAppStore = create<AppState>((set, get, api) => ({
           code: nextActive.code ? toBody(nextActive.code) : '',
           stlContent: nextActive.stlContent || null,
           geometry: null,
+          parts: [],
+          selectedLayerId: null,
+          highlightedVersion: null,
           modelInfo: nextActive.modelInfo || null,
           step: nextActive.step || null,
           viewingVersion: nextActive.viewingVersion ?? null,
@@ -446,6 +459,7 @@ export const useAppStore = create<AppState>((set, get, api) => ({
     let newModelInfo = currentThread?.modelInfo || null;
     let newStep = currentThread?.step || null;
     let activeDraft: LocalDraft | null = null;
+    let newParts: PartInfo[] = threadId === activeThreadId ? get().parts : [];
 
     if (serverThread.versions && serverThread.versions.length > 0) {
       if (
@@ -478,6 +492,7 @@ export const useAppStore = create<AppState>((set, get, api) => ({
       newModelInfo = resolved.modelInfo;
       newStep = null;
       activeDraft = resolved.draft;
+      newParts = resolved.parts;
     } else {
       viewingVersion = null;
       const draft = await getDraft(threadId, null);
@@ -485,6 +500,7 @@ export const useAppStore = create<AppState>((set, get, api) => ({
         newCode = toBody(draft.editedBody);
       }
       activeDraft = draft;
+      newParts = [];
     }
 
     const updatedThread: ChatThread = {
@@ -518,6 +534,7 @@ export const useAppStore = create<AppState>((set, get, api) => ({
         params: parseParams(toBody(newCode)),
         stlContent: newStl,
         geometry: newGeometry,
+        parts: newParts,
         modelInfo: newModelInfo,
         step: newStep,
         compileStatus: 'idle',
@@ -867,6 +884,9 @@ export const useAppStore = create<AppState>((set, get, api) => ({
       activeDraft: null,
       params: parseParams(initialCode),
       geometry: null,
+      parts: [],
+      selectedLayerId: null,
+      highlightedVersion: null,
       stlContent: target.stlContent || null,
       modelInfo: target.modelInfo || null,
       step: target.step || null,
@@ -928,6 +948,9 @@ export const useAppStore = create<AppState>((set, get, api) => ({
       activeDraft: null,
       params: parseParams(initialCode),
       geometry: null,
+      parts: [],
+      selectedLayerId: null,
+      highlightedVersion: null,
       stlContent: newActive.stlContent || null,
       modelInfo: newActive.modelInfo || null,
       step: newActive.step || null,
@@ -1115,6 +1138,7 @@ export const useAppStore = create<AppState>((set, get, api) => ({
         step: activeT?.step || null,
         compileTimeMs: result.compileTimeMs || 0,
         threads: updatedThreads,
+        parts: result.success ? (result.parts ?? []) : get().parts,
       });
     } else {
       set({
@@ -1388,6 +1412,9 @@ export const useAppStore = create<AppState>((set, get, api) => ({
       code: '',
       params: [],
       geometry: null,
+      parts: [],
+      selectedLayerId: null,
+      highlightedVersion: null,
       stlContent: null,
       modelInfo: null,
       step: null,

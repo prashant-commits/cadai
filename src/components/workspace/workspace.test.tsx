@@ -40,8 +40,8 @@ vi.mock('@/components/editor/code-editor-panel', () => ({
 vi.mock('@/components/chat/chat-panel', () => ({
   ChatPanel: () => <div data-stub="chat" />,
 }));
-vi.mock('@/components/design/design-panel', () => ({
-  DesignPanel: () => <div data-stub="design" />,
+vi.mock('@/components/inspector/inspector', () => ({
+  Inspector: () => <div data-stub="inspector" />,
 }));
 
 const origUseSyncExternalStore = React.useSyncExternalStore;
@@ -112,7 +112,7 @@ describe('workspace shell', () => {
   it('the inspector is on the right', () => {
     const wsHtml = renderToStaticMarkup(<Workspace />);
     expect(wsHtml).toMatch(
-      /<[^>]+data-side="right"[^>]*>[\s\S]*?<div data-stub="design">/
+      /<[^>]+data-side="right"[^>]*>[\s\S]*?<div data-stub="inspector">/
     );
   });
 
