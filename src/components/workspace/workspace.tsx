@@ -87,7 +87,7 @@ export function Workspace() {
       </div>
 
       {/* Code Drawer */}
-      <CodeDrawer />
+      <CodeDrawer chatCollapsed={chatCollapsed} inspectorCollapsed={inspectorCollapsed} />
 
       {/* App Header top-left */}
       <AppHeader />

@@ -28,15 +28,25 @@ export const EXPORT_FORMATS: readonly ExportFormat[] = [
   { id: '3mf', label: '3MF', ext: '3mf', hint: 'Mesh with units' },
 ] as const;
 
+const SLUG_MAX = 48;
+
 export function exportFileName(
   designTitle: string,
   version: number | null,
   ext: ExportExt
 ): string {
-  const slug = designTitle
+  const full = designTitle
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '') || 'design';
+    .replace(/^-+|-+$/g, '');
+  // Thread titles are often the whole first prompt: cap the slug at a word boundary.
+  let slug = full;
+  if (slug.length > SLUG_MAX) {
+    const cut = slug.slice(0, SLUG_MAX + 1);
+    const lastDash = cut.lastIndexOf('-');
+    slug = (lastDash > 0 ? cut.slice(0, lastDash) : slug.slice(0, SLUG_MAX)).replace(/-+$/, '');
+  }
+  slug = slug || 'design';
 
   if (version !== null && version !== undefined) {
     return `${slug}-v${version}.${ext}`;

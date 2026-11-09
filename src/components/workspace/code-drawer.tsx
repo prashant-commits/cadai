@@ -5,7 +5,26 @@ import { useAppStore } from '@/store/app-store';
 import { CodeEditorPanel } from '@/components/editor/code-editor-panel';
 import { X } from 'lucide-react';
 
-export function CodeDrawer() {
+const GUTTER_PX = 16;
+const CHAT_WIDTH_PX = 380;
+const INSPECTOR_WIDTH_PX = 340;
+
+/** The drawer spans the gap between the floating panels, so its header is never under them. */
+export function codeDrawerInsets(chatCollapsed: boolean, inspectorCollapsed: boolean) {
+  return {
+    left: chatCollapsed ? GUTTER_PX : GUTTER_PX + CHAT_WIDTH_PX + GUTTER_PX,
+    right: inspectorCollapsed ? GUTTER_PX : GUTTER_PX + INSPECTOR_WIDTH_PX + GUTTER_PX,
+  };
+}
+
+export function CodeDrawer({
+  chatCollapsed,
+  inspectorCollapsed,
+}: {
+  chatCollapsed: boolean;
+  inspectorCollapsed: boolean;
+}) {
+  const insets = codeDrawerInsets(chatCollapsed, inspectorCollapsed);
   const { codeDrawerOpen, setCodeDrawerOpen } = useAppStore();
   const [hasOpened, setHasOpened] = useState(codeDrawerOpen);
 
@@ -30,7 +49,8 @@ export function CodeDrawer() {
       aria-label="Code drawer"
       aria-hidden={!codeDrawerOpen}
       inert={!codeDrawerOpen ? true : undefined}
-      className={`glass absolute left-4 right-4 bottom-4 z-10 h-[46vh] rounded-[24px] flex flex-col overflow-hidden transition-transform duration-300 ease-in-out ${
+      style={{ left: insets.left, right: insets.right, background: 'var(--drawer-bg)' }}
+      className={`glass absolute bottom-4 z-10 h-[46vh] rounded-[24px] flex flex-col overflow-hidden transition-[transform,left,right] duration-300 ease-in-out ${
         codeDrawerOpen ? 'translate-y-0' : 'translate-y-[calc(100%+1rem)] pointer-events-none'
       }`}
     >

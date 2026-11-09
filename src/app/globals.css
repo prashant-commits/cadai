@@ -25,6 +25,7 @@
   --fg: #eef1f6;
   --fg-muted: #9ba3b0;
   --grid-line: #ffffff06;
+  --drawer-bg: #0f131bf0;
 
   --background: var(--bg);
   --foreground: var(--fg);

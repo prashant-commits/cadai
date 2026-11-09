@@ -13,6 +13,17 @@ describe('export menu and file naming', () => {
     expect(exportFileName('Motor Mount', 3, 'step')).toBe('motor-mount-v3.step');
   });
 
+  it('exportFileName caps a long title at a word boundary', () => {
+    const name = exportFileName(
+      'A 60 x 40 x 5 mm mounting plate with four M4 holes 5 mm from each corner',
+      1,
+      'stl'
+    );
+    expect(name).toBe('a-60-x-40-x-5-mm-mounting-plate-with-four-m4-v1.stl');
+    expect(name.replace(/-v1\.stl$/, '').length).toBeLessThanOrEqual(48);
+    expect(exportFileName('x'.repeat(80), 2, 'step')).toBe(`${'x'.repeat(48)}-v2.step`);
+  });
+
   it('exportFileName with a null version ends in -draft', () => {
     expect(exportFileName('Motor mount', null, 'stl')).toBe('motor-mount-draft.stl');
     // Symbols fallback to 'design-draft'
