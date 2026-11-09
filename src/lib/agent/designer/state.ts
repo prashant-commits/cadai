@@ -105,7 +105,7 @@ export const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => [],
   }),
-  attachments: Annotation<Array<{ mediaType: 'image/png'; base64: string }>>({
+  attachments: Annotation<Array<{ mediaType: 'image/png'; base64: string; kind?: 'markup' | 'reference' }>>({
     reducer: (_, y) => y,
     default: () => [],
   }),

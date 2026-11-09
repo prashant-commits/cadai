@@ -129,6 +129,7 @@ describe('run-input', () => {
       {
         mediaType: 'image/png',
         base64: imageBytes.toString('base64'),
+        kind: 'reference',
       },
     ]);
 
@@ -165,5 +166,85 @@ describe('run-input', () => {
     await expect(
       loadRunInput(db, ownerA, archivedThreadId, null, [], { objectStore })
     ).rejects.toThrow('thread not found');
+  });
+
+  it("loadRunInput keeps each attachment's kind", async () => {
+    const db = getDb();
+    const owner = `owner_kinds_${crypto.randomUUID()}`;
+    const threadId = crypto.randomUUID();
+
+    await db.query(
+      `insert into threads(id, owner_key, title) values ($1, $2, $3)`,
+      [threadId, owner, 'Kind Test Thread']
+    );
+
+    const msgId = crypto.randomUUID();
+    await db.query(
+      `insert into messages(id, thread_id, seq, role, kind, content, client_message_id) values
+       ($1, $2, 1, 'user', 'request', 'Attachments message', $3)`,
+      [msgId, threadId, crypto.randomUUID()]
+    );
+
+    const scratchDir = process.env.TMPDIR || '/home/claude/work/cadai/.cadai/scratch/pa/u1/tmp';
+    const storeDir = `${scratchDir}/run-input-kinds-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const objectStore = new LocalObjectStore(storeDir);
+
+    const imageBytes = Buffer.from('test-image-content');
+
+    // 1. Explicit object attachments: one markup, one reference
+    const artMarkup = newArtifactId();
+    const keyMarkup = `image/${artMarkup}`;
+    await objectStore.put(keyMarkup, imageBytes);
+    await db.query(
+      `insert into artifacts(id, owner_key, thread_id, run_id, kind, bytes, object_key) values ($1, $2, $3, null, 'image', $4, $5)`,
+      [artMarkup, owner, threadId, imageBytes.byteLength, keyMarkup]
+    );
+
+    const artRef = newArtifactId();
+    const keyRef = `image/${artRef}`;
+    await objectStore.put(keyRef, imageBytes);
+    await db.query(
+      `insert into artifacts(id, owner_key, thread_id, run_id, kind, bytes, object_key) values ($1, $2, $3, null, 'image', $4, $5)`,
+      [artRef, owner, threadId, imageBytes.byteLength, keyRef]
+    );
+
+    const loadedObj = await loadRunInput(
+      db,
+      owner,
+      threadId,
+      null,
+      [
+        { id: artMarkup, kind: 'markup' },
+        { id: artRef, kind: 'reference' },
+      ],
+      { objectStore }
+    );
+    expect(loadedObj.attachments).toHaveLength(2);
+    expect(loadedObj.attachments[0].kind).toBe('markup');
+    expect(loadedObj.attachments[1].kind).toBe('reference');
+
+    // 2. Bare-id attachment reading kind from message_attachments
+    const artBareMarkup = newArtifactId();
+    const keyBareMarkup = `image/${artBareMarkup}`;
+    await objectStore.put(keyBareMarkup, imageBytes);
+    await db.query(
+      `insert into artifacts(id, owner_key, thread_id, run_id, kind, bytes, object_key) values ($1, $2, $3, null, 'image', $4, $5)`,
+      [artBareMarkup, owner, threadId, imageBytes.byteLength, keyBareMarkup]
+    );
+    await db.query(
+      `insert into message_attachments(message_id, artifact_id, kind) values ($1, $2, 'markup')`,
+      [msgId, artBareMarkup]
+    );
+
+    const loadedBare = await loadRunInput(
+      db,
+      owner,
+      threadId,
+      null,
+      [artBareMarkup],
+      { objectStore }
+    );
+    expect(loadedBare.attachments).toHaveLength(1);
+    expect(loadedBare.attachments[0].kind).toBe('markup');
   });
 });

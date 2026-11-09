@@ -4,7 +4,7 @@ import { createDesignerAgent } from './graph';
 import type { AgentStateType } from './state';
 import type { DesignerResult, RunDesignerFn } from './types';
 import type { BrepResult } from '../../engine/brep-runner';
-import { BUILD_FAILED, COMPILE_FAILED, FAILED_CHECKS, NO_CHANGE, REFUSAL } from '../../persist/phrases';
+import { BUILD_FAILED, COMPILE_FAILED, FAILED_CHECKS, REFUSAL } from '../../persist/phrases';
 import type { RunOutcome } from '../../persist/types';
 import { PRELUDE_VERSION } from '../../brep/prelude';
 import { UnusableReplyError } from '../llm-schemas';
@@ -358,7 +358,9 @@ describe('designer mode graph wiring', () => {
     })) as AgentStateType;
     expect(s3.outcome).toBeDefined();
     expect(s3.outcome?.replyKind).toBe('nochange');
-    expect(s3.outcome?.replyMarkdown).toBe(NO_CHANGE);
+    expect(s3.outcome?.replyMarkdown).toBe(
+      '**Designer**\n\nNo change\n\nThe design is unchanged (still vnull).'
+    );
 
     // 4. error
     const agentRefusal = createDesignerAgent('gpt-6-sol', {

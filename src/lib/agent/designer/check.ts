@@ -3,7 +3,7 @@ import type { AgentStateType } from './state';
 import { runBrep, type BrepResult } from '../../engine/brep-runner';
 import { checkPythonScript, type BodyCheck } from '../../brep/body-check';
 import { stlToAscii, toModelInfo } from '../../brep/measurements';
-import { COMPILE_FAILED, FAILED_CHECKS, NO_CHANGE } from '../../persist/phrases';
+import { COMPILE_FAILED, FAILED_CHECKS, NO_CHANGE, unchangedNote } from '../../persist/phrases';
 import type { RunOutcome, UserKind } from '../../persist/types';
 import { toBody, PRELUDE_VERSION } from '../../brep/prelude';
 import { formatFlags } from './reviewer';
@@ -41,14 +41,27 @@ export function buildOutcome(params: {
   const latestText = latestHumanText(messages);
   const firstText = firstHumanText(messages) || latestText;
 
+  const finalFlags = (state.designerFlags ?? []).filter((f) => f.final);
+  const reviewerText = finalFlags.length > 0 ? flagFormatter(finalFlags, true) : '';
+
   // Unchanged body check for edit
   if (isEdit && !failedChecks) {
     const newBody = toBody(script).trim();
     const baseBody = toBody(state.baseBody ?? '').trim();
     if (newBody === baseBody) {
+      const note = unchangedNote(state.baseVersion);
+      let replyMarkdown: string;
+      if (state.designerSummary && state.designerSummary.trim() !== '') {
+        replyMarkdown = `**Designer**\n\n${state.designerSummary}\n\n${note}`;
+      } else {
+        replyMarkdown = `${NO_CHANGE}\n\n${note}`;
+      }
+      if (reviewerText) {
+        replyMarkdown += `\n\n**Reviewer**\n\n${reviewerText}`;
+      }
       return {
         replyKind: 'nochange',
-        replyMarkdown: NO_CHANGE,
+        replyMarkdown,
         userKind: 'edit',
         costUsd,
         wallMs,
@@ -56,9 +69,6 @@ export function buildOutcome(params: {
       };
     }
   }
-
-  const finalFlags = (state.designerFlags ?? []).filter((f) => f.final);
-  const reviewerText = finalFlags.length > 0 ? flagFormatter(finalFlags, true) : '';
 
   if (failedChecks) {
     let replyMarkdown = `${FAILED_CHECKS}\n${(sentences ?? []).join('\n')}`;

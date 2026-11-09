@@ -1749,4 +1749,290 @@ describe('DbRunStore', () => {
       code: 'not_found',
     });
   });
+
+  it("commit stores the run's steps on the reply", async () => {
+    const db = getDb();
+    const threadId = crypto.randomUUID();
+    const ownerKey = `owner_${crypto.randomUUID()}`;
+
+    const started = await db.transaction((q) =>
+      DbRunStore.start(q, makeStartInput({ threadId, ownerKey }))
+    );
+    expect(started.replay).toBe(false);
+    if (started.replay) return;
+    const runId = started.runId;
+
+    // Append some section and delta events
+    await DbRunStore.append(db, runId, {
+      type: 'section',
+      payload: { t: 'section', id: 'planner', label: 'Planner', state: 'open' },
+    });
+    await DbRunStore.append(db, runId, {
+      type: 'delta',
+      payload: { t: 'delta', text: 'Step 1' },
+    });
+    await DbRunStore.append(db, runId, {
+      type: 'delta',
+      payload: { t: 'delta', text: 'Step 2' },
+    });
+    await DbRunStore.append(db, runId, {
+      type: 'section',
+      payload: { t: 'section', id: 'planner', state: 'close', status: 'ok', summary: 'Done' },
+    });
+
+    const commitPlan: CommitPlan = {
+      replyKind: 'result',
+      replyMarkdown: 'Done model',
+      userKind: 'request',
+      costUsd: 0.05,
+      wallMs: 1200,
+      turns: 2,
+    };
+
+    const res = await db.transaction((q) => DbRunStore.commit(q, runId, commitPlan));
+    expect(res.committed).toBe(true);
+
+    const msgRow = await db.query(
+      `SELECT steps FROM messages WHERE run_id = $1 AND role = 'assistant'`,
+      [runId]
+    );
+    expect(msgRow.rows.length).toBe(1);
+    const steps = typeof msgRow.rows[0].steps === 'string'
+      ? JSON.parse(msgRow.rows[0].steps)
+      : msgRow.rows[0].steps;
+    expect(steps).toBeDefined();
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toEqual({
+      kind: 'section',
+      id: 'planner',
+      label: 'Planner',
+      status: 'ok',
+      body: 'Step 1Step 2\n\nDone',
+    });
+  });
+
+  it("terminate stores the run's steps on the reply", async () => {
+    const db = getDb();
+    const threadId = crypto.randomUUID();
+    const ownerKey = `owner_${crypto.randomUUID()}`;
+
+    const started = await db.transaction((q) =>
+      DbRunStore.start(q, makeStartInput({ threadId, ownerKey }))
+    );
+    expect(started.replay).toBe(false);
+    if (started.replay) return;
+    const runId = started.runId;
+
+    await DbRunStore.append(db, runId, {
+      type: 'section',
+      payload: { t: 'section', id: 'designer', label: 'Designer', state: 'open' },
+    });
+    await DbRunStore.append(db, runId, {
+      type: 'delta',
+      payload: { t: 'delta', text: 'Writing CAD code...' },
+    });
+    await DbRunStore.append(db, runId, {
+      type: 'delta',
+      payload: { t: 'delta', text: 'Still writing...' },
+    });
+    await DbRunStore.append(db, runId, {
+      type: 'section',
+      payload: { t: 'section', id: 'designer', state: 'close', status: 'error', summary: 'Crashed' },
+    });
+
+    const termRes = await db.transaction((q) =>
+      DbRunStore.terminate(q, runId, 'failed', 'graph')
+    );
+    expect(termRes.ended).toBe(true);
+
+    const msgRow = await db.query(
+      `SELECT steps FROM messages WHERE run_id = $1 AND role = 'assistant'`,
+      [runId]
+    );
+    expect(msgRow.rows.length).toBe(1);
+    const steps = typeof msgRow.rows[0].steps === 'string'
+      ? JSON.parse(msgRow.rows[0].steps)
+      : msgRow.rows[0].steps;
+    expect(steps).toBeDefined();
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toEqual({
+      kind: 'section',
+      id: 'designer',
+      label: 'Designer',
+      status: 'error',
+      body: 'Writing CAD code...Still writing...\n\nCrashed',
+    });
+  });
+
+  it('steps keep only the last 200 events', async () => {
+    const db = getDb();
+    const threadId = crypto.randomUUID();
+    const ownerKey = `owner_${crypto.randomUUID()}`;
+
+    const started = await db.transaction((q) =>
+      DbRunStore.start(q, makeStartInput({ threadId, ownerKey }))
+    );
+    expect(started.replay).toBe(false);
+    if (started.replay) return;
+    const runId = started.runId;
+
+    // Append 250 delta events
+    for (let i = 1; i <= 250; i++) {
+      await DbRunStore.append(db, runId, {
+        type: 'delta',
+        payload: { t: 'delta', text: `d${i},` },
+      });
+    }
+
+    const commitPlan: CommitPlan = {
+      replyKind: 'result',
+      replyMarkdown: 'Done',
+      userKind: 'request',
+      costUsd: 0.01,
+      wallMs: 500,
+      turns: 1,
+    };
+    await db.transaction((q) => DbRunStore.commit(q, runId, commitPlan));
+
+    const msgRow = await db.query(
+      `SELECT steps FROM messages WHERE run_id = $1 AND role = 'assistant'`,
+      [runId]
+    );
+    const steps = typeof msgRow.rows[0].steps === 'string'
+      ? JSON.parse(msgRow.rows[0].steps)
+      : msgRow.rows[0].steps;
+
+    expect(steps).toHaveLength(1);
+    expect(steps[0].id).toBe('agent');
+    // First 50 deltas (d1 to d50) should be dropped; only d51..d250 present
+    expect(steps[0].body).not.toContain('d1,');
+    expect(steps[0].body).not.toContain('d50,');
+    expect(steps[0].body).toContain('d51,');
+    expect(steps[0].body).toContain('d250,');
+  });
+
+  it('start persists attachment kinds and links the artifact rows', async () => {
+    const db = getDb();
+    const threadId = crypto.randomUUID();
+    const ownerKey = `owner_${crypto.randomUUID()}`;
+    const artId1 = `art_${crypto.randomUUID()}`;
+    const artId2 = `art_${crypto.randomUUID()}`;
+
+    // Insert artifacts first
+    await db.query(
+      `INSERT INTO artifacts (id, owner_key, kind, bytes, object_key)
+       VALUES ($1, $2, 'image', 100, 'obj1'), ($3, $4, 'image', 200, 'obj2')`,
+      [artId1, ownerKey, artId2, ownerKey]
+    );
+
+    const started = await db.transaction((q) =>
+      DbRunStore.start(q, {
+        ...makeStartInput({ threadId, ownerKey }),
+        attachments: [
+          { id: artId1, kind: 'markup' },
+          { id: artId2, kind: 'reference' },
+        ],
+      })
+    );
+    expect(started.replay).toBe(false);
+    if (started.replay) return;
+    const runId = started.runId;
+
+    // Check message_attachments has kind
+    const attRows = await db.query(
+      `SELECT artifact_id, kind FROM message_attachments WHERE message_id = $1 ORDER BY artifact_id`,
+      [started.userMessageId]
+    );
+    const expected = [
+      { artifact_id: artId1, kind: 'markup' },
+      { artifact_id: artId2, kind: 'reference' },
+    ].sort((a, b) => a.artifact_id.localeCompare(b.artifact_id));
+    expect(attRows.rows).toEqual(expected);
+
+    // Check artifacts linked to thread_id and run_id
+    const updatedArts = await db.query(
+      `SELECT id, thread_id, run_id FROM artifacts WHERE id IN ($1, $2) ORDER BY id`,
+      [artId1, artId2]
+    );
+    const expectedArts = [
+      { id: artId1, thread_id: threadId, run_id: runId },
+      { id: artId2, thread_id: threadId, run_id: runId },
+    ].sort((a, b) => a.id.localeCompare(b.id));
+    expect(updatedArts.rows).toEqual(expectedArts);
+  });
+
+  it('kind is persisted with the message attachment', async () => {
+    const db = getDb();
+    const threadId = crypto.randomUUID();
+    const ownerKey = `owner_${crypto.randomUUID()}`;
+    const artId = `art_${crypto.randomUUID()}`;
+
+    await db.query(
+      `INSERT INTO artifacts (id, owner_key, kind, bytes, object_key)
+       VALUES ($1, $2, 'image', 100, 'obj')`,
+      [artId, ownerKey]
+    );
+
+    const started = await db.transaction((q) =>
+      DbRunStore.start(q, {
+        ...makeStartInput({ threadId, ownerKey }),
+        attachments: [{ id: artId, kind: 'markup' }],
+      })
+    );
+    expect(started.replay).toBe(false);
+    if (started.replay) return;
+
+    const attRows = await db.query(
+      `SELECT artifact_id, kind FROM message_attachments WHERE message_id = $1`,
+      [started.userMessageId]
+    );
+    expect(attRows.rows).toEqual([{ artifact_id: artId, kind: 'markup' }]);
+  });
+
+  it('the sweep keeps a linked image and sweeps an old unlinked one', async () => {
+    const db = getDb();
+    const ownerKey = `owner_${crypto.randomUUID()}`;
+    const linkedArtId = `art_linked_${crypto.randomUUID()}`;
+    const unlinkedArtId = `art_unlinked_${crypto.randomUUID()}`;
+    const threadId = crypto.randomUUID();
+
+    // Insert unlinked artifact older than 25 hours
+    const now = Date.now();
+    const oldTime = new Date(now - 25 * 3600 * 1000);
+    await db.query(
+      `INSERT INTO artifacts (id, owner_key, kind, bytes, object_key, created_at)
+       VALUES ($1, $2, 'image', 100, 'unlinked_key', $3)`,
+      [unlinkedArtId, ownerKey, oldTime]
+    );
+
+    // Insert linked artifact older than 25 hours
+    await db.query(
+      `INSERT INTO artifacts (id, owner_key, kind, bytes, object_key, created_at)
+       VALUES ($1, $2, 'image', 100, 'linked_key', $3)`,
+      [linkedArtId, ownerKey, oldTime]
+    );
+
+    // Create thread and message with message_attachments for linkedArtId
+    await db.query(`INSERT INTO threads (id, owner_key) VALUES ($1, $2)`, [threadId, ownerKey]);
+    const msgRes = await db.query(
+      `INSERT INTO messages (thread_id, seq, role, kind, content)
+       VALUES ($1, 1, 'user', 'request', 'hi') RETURNING id`,
+      [threadId]
+    );
+    const msgId = msgRes.rows[0].id;
+    await db.query(
+      `INSERT INTO message_attachments (message_id, artifact_id, kind) VALUES ($1, $2, 'reference')`,
+      [msgId, linkedArtId]
+    );
+
+    const sweepRes = await db.transaction((q) => sweep(q, now));
+    expect(sweepRes.objectKeys).toContain('unlinked_key');
+    expect(sweepRes.objectKeys).not.toContain('linked_key');
+
+    const remaining = await db.query(`SELECT id FROM artifacts WHERE id IN ($1, $2)`, [
+      unlinkedArtId,
+      linkedArtId,
+    ]);
+    expect(remaining.rows).toEqual([{ id: linkedArtId }]);
+  });
 });

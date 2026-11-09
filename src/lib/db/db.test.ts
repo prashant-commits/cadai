@@ -140,6 +140,24 @@ describe('Db (PGlite)', () => {
     expect(second).toEqual([]);
   });
 
+  it('migration 0002 applies', async () => {
+    const db = getDb();
+    // Verify columns from 0002_u1.sql
+    const stepsCheck = await db.query(
+      `SELECT column_name, data_type FROM information_schema.columns
+       WHERE table_name = 'messages' AND column_name = 'steps'`
+    );
+    expect(stepsCheck.rows).toHaveLength(1);
+    expect(stepsCheck.rows[0].column_name).toBe('steps');
+
+    const kindCheck = await db.query(
+      `SELECT column_name, data_type, column_default FROM information_schema.columns
+       WHERE table_name = 'message_attachments' AND column_name = 'kind'`
+    );
+    expect(kindCheck.rows).toHaveLength(1);
+    expect(kindCheck.rows[0].column_name).toBe('kind');
+  });
+
   it('getDb uses memory under VITEST and is cached', async () => {
     const db1 = getDb();
     const db2 = getDb();

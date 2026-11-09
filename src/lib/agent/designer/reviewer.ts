@@ -5,6 +5,7 @@ import { structuredFor, UnusableReplyError, unusableStop } from '../llm-schemas'
 import { getChatModel, isAbortOrTimeout } from '../model-provider';
 import { DEFAULT_MODEL, isOfferedModel } from '../models';
 import { cachedSystemMessage } from '../system-prompt';
+import { MARKUP_SENTENCE } from './prompt';
 import type {
   DesignerFacts,
   FlagSeverity,
@@ -212,14 +213,23 @@ function humanContent(input: ReviewInput): Array<
       text: `Request:\n${input.request}\n\nFacts:\n${formatFactsTable(input.facts)}`,
     },
   ];
+  const markupImages: RenderImage[] = [];
   const referenceImages: RenderImage[] = [];
   const renderImages: RenderImage[] = [];
   for (const image of input.images) {
-    if (image.view.startsWith('reference:')) {
+    if (image.view.startsWith('markup:')) {
+      markupImages.push(image);
+    } else if (image.view.startsWith('reference:')) {
       referenceImages.push(image);
     } else {
       renderImages.push(image);
     }
+  }
+  for (const image of markupImages) {
+    const n = image.view.slice('markup:'.length);
+    content.push({ type: 'text', text: `User's markup image ${n}` });
+    content.push({ type: 'image_url', image_url: { url: image.dataUrl } });
+    content.push({ type: 'text', text: MARKUP_SENTENCE });
   }
   for (const image of referenceImages) {
     const n = image.view.slice('reference:'.length);

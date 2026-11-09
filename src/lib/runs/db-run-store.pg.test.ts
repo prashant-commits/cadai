@@ -1101,4 +1101,50 @@ describe('DbRunStore (Postgres concurrency)', () => {
     expect(v2.edits).toEqual(['taller']);
     expect(v2.body).toBe('w = 60  # [0:100] W');
   });
+
+  it('start persists attachment kinds and links the artifact rows', async () => {
+    const threadId = crypto.randomUUID();
+    const ownerKey = `owner_${crypto.randomUUID()}`;
+    const artId1 = `art_${crypto.randomUUID()}`;
+    const artId2 = `art_${crypto.randomUUID()}`;
+
+    await db.query(
+      `INSERT INTO artifacts (id, owner_key, kind, bytes, object_key)
+       VALUES ($1, $2, 'image', 100, 'obj1'), ($3, $4, 'image', 200, 'obj2')`,
+      [artId1, ownerKey, artId2, ownerKey]
+    );
+
+    const started = await db.transaction((q) =>
+      DbRunStore.start(q, {
+        ...makeStartInput({ threadId, ownerKey }),
+        attachments: [
+          { id: artId1, kind: 'markup' },
+          { id: artId2, kind: 'reference' },
+        ],
+      })
+    );
+    expect(started.replay).toBe(false);
+    if (started.replay) return;
+    const runId = started.runId;
+
+    const attRows = await db.query(
+      `SELECT artifact_id, kind FROM message_attachments WHERE message_id = $1 ORDER BY artifact_id`,
+      [started.userMessageId]
+    );
+    const expected = [
+      { artifact_id: artId1, kind: 'markup' },
+      { artifact_id: artId2, kind: 'reference' },
+    ].sort((a, b) => a.artifact_id.localeCompare(b.artifact_id));
+    expect(attRows.rows).toEqual(expected);
+
+    const updatedArts = await db.query(
+      `SELECT id, thread_id, run_id FROM artifacts WHERE id IN ($1, $2) ORDER BY id`,
+      [artId1, artId2]
+    );
+    const expectedArts = [
+      { id: artId1, thread_id: threadId, run_id: runId },
+      { id: artId2, thread_id: threadId, run_id: runId },
+    ].sort((a, b) => a.id.localeCompare(b.id));
+    expect(updatedArts.rows).toEqual(expectedArts);
+  });
 });

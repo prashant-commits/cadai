@@ -39,3 +39,7 @@ export function userEditSummary(code: boolean, sliders: boolean): string {
   if (sliders) return 'Your edit (sliders)';
   return 'Your edit';
 }
+
+export function unchangedNote(v: number | null | undefined): string {
+  return `The design is unchanged (still v${v}).`;
+}

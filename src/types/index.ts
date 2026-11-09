@@ -21,6 +21,7 @@ export interface ChatMessage {
   /** The run that produced this message. */
   runId?: string;
   image?: string;
+  attachments?: { id: string; kind: 'markup' | 'reference' }[];
   code?: string;
   timestamp: number;
 }

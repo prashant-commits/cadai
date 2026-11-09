@@ -62,16 +62,19 @@ describe('Db (Postgres)', () => {
       const [res1, res2] = await Promise.all([migrate(db1), migrate(db2)]);
 
       const appliedCounts = [res1.length, res2.length].sort();
-      expect(appliedCounts).toEqual([0, 1]);
+      expect(appliedCounts).toEqual([0, 2]);
 
-      const winningRes = res1.length === 1 ? res1 : res2;
+      const winningRes = res1.length === 2 ? res1 : res2;
       const losingRes = res1.length === 0 ? res1 : res2;
-      expect(winningRes).toEqual(['0001_init.sql']);
+      expect(winningRes).toEqual(['0001_init.sql', '0002_u1.sql']);
       expect(losingRes).toEqual([]);
 
       const migrations = await db1.query('select name from schema_migrations');
-      expect(migrations.rows.length).toBe(1);
-      expect(migrations.rows[0]).toEqual({ name: '0001_init.sql' });
+      expect(migrations.rows.length).toBe(2);
+      expect(migrations.rows.map((r) => (r as { name: string }).name).sort()).toEqual([
+        '0001_init.sql',
+        '0002_u1.sql',
+      ]);
     } finally {
       await Promise.allSettled([db1.close(), db2.close()]);
       await fresh.drop();
@@ -85,5 +88,21 @@ describe('Db (Postgres)', () => {
 
       await expect(db.query('SELECT 1')).rejects.toThrow('db.query inside a transaction');
     });
+  });
+
+  it('migration 0002 applies', async () => {
+    const stepsCheck = await db.query(
+      `SELECT column_name, data_type FROM information_schema.columns
+       WHERE table_name = 'messages' AND column_name = 'steps'`
+    );
+    expect(stepsCheck.rows).toHaveLength(1);
+    expect(stepsCheck.rows[0].column_name).toBe('steps');
+
+    const kindCheck = await db.query(
+      `SELECT column_name, data_type, column_default FROM information_schema.columns
+       WHERE table_name = 'message_attachments' AND column_name = 'kind'`
+    );
+    expect(kindCheck.rows).toHaveLength(1);
+    expect(kindCheck.rows[0].column_name).toBe('kind');
   });
 });

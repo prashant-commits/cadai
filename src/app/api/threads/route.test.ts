@@ -110,9 +110,10 @@ describe('Threads API Routes', () => {
       role: 'user',
       kind: 'request',
       markdown: 'Create a 10mm box',
-      attachments: [userArtId],
+      attachments: [{ id: userArtId, kind: 'reference' }],
     });
     expect('designVersion' in data.messages[0]).toBe(false);
+    expect('steps' in data.messages[0]).toBe(false);
 
     expect(data.messages[1]).toEqual({
       id: assistantMsgId,
@@ -122,6 +123,7 @@ describe('Threads API Routes', () => {
       markdown: 'Here is the box design',
       designVersion: 1,
       attachments: [],
+      steps: [],
     });
 
     // Versions assertion
@@ -138,6 +140,82 @@ describe('Threads API Routes', () => {
       step: stepArtId,
       createdAt: expect.any(Number),
     });
+  });
+
+  it('GET thread returns per-message steps', async () => {
+    const db = getDb();
+    const owner = makeOwner();
+    const threadId = crypto.randomUUID();
+    const assistantMsgId = crypto.randomUUID();
+
+    await db.query(
+      `INSERT INTO threads (id, owner_key, title, created_at, updated_at)
+       VALUES ($1, $2, 'Steps Thread', now(), now())`,
+      [threadId, owner.key]
+    );
+
+    const stepsData = [
+      { kind: 'section', id: 'planner', label: 'Planner', status: 'ok', body: 'Plan text' },
+    ];
+
+    await db.query(
+      `INSERT INTO messages (id, thread_id, seq, role, kind, content, steps)
+       VALUES ($1, $2, 1, 'assistant', 'result', 'Reply text', $3)`,
+      [assistantMsgId, threadId, JSON.stringify(stepsData)]
+    );
+
+    const req = new NextRequest(`http://localhost:3000/api/threads/${threadId}`, {
+      method: 'GET',
+      headers: { cookie: owner.cookie },
+    });
+    const res = await getThread(req, { params: Promise.resolve({ id: threadId }) });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.messages).toHaveLength(1);
+    expect(data.messages[0].steps).toEqual(stepsData);
+  });
+
+  it('GET thread returns attachments with id and kind', async () => {
+    const db = getDb();
+    const owner = makeOwner();
+    const threadId = crypto.randomUUID();
+    const userMsgId = crypto.randomUUID();
+    const artId1 = `art_${crypto.randomUUID()}`;
+    const artId2 = `art_${crypto.randomUUID()}`;
+
+    await db.query(
+      `INSERT INTO threads (id, owner_key, title, created_at, updated_at)
+       VALUES ($1, $2, 'Atts Thread', now(), now())`,
+      [threadId, owner.key]
+    );
+    await db.query(
+      `INSERT INTO artifacts (id, owner_key, kind, bytes, object_key)
+       VALUES ($1, $2, 'image', 10, 'k1'), ($3, $4, 'image', 20, 'k2')`,
+      [artId1, owner.key, artId2, owner.key]
+    );
+    await db.query(
+      `INSERT INTO messages (id, thread_id, seq, role, kind, content)
+       VALUES ($1, $2, 1, 'user', 'request', 'User message')`,
+      [userMsgId, threadId]
+    );
+    await db.query(
+      `INSERT INTO message_attachments (message_id, artifact_id, kind)
+       VALUES ($1, $2, 'markup'), ($1, $3, 'reference')`,
+      [userMsgId, artId1, artId2]
+    );
+
+    const req = new NextRequest(`http://localhost:3000/api/threads/${threadId}`, {
+      method: 'GET',
+      headers: { cookie: owner.cookie },
+    });
+    const res = await getThread(req, { params: Promise.resolve({ id: threadId }) });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    const expected = [
+      { id: artId1, kind: 'markup' },
+      { id: artId2, kind: 'reference' },
+    ].sort((a, b) => a.id.localeCompare(b.id));
+    expect(data.messages[0].attachments).toEqual(expected);
   });
 
   it('another owner → 404', async () => {

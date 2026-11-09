@@ -23,6 +23,7 @@ import {
 import { applyPins, BadPinError } from '@/lib/design/write-params';
 import { maxRunning, dailyCostUsd } from '@/lib/runs/config';
 import { MAX_COST_USD } from '@/lib/agent/designer/cost-params';
+import { buildTranscript } from '@/lib/agent/transcript-build';
 
 export const RUN_START_LOCK_ID = BigInt('723948192847192842');
 
@@ -96,9 +97,21 @@ async function endRun(
   const replyInfo = TERMINATE_REPLY[resolvedCode];
 
   // 4. Assistant reply
+  const evRes = await q.query(
+    `SELECT type, payload FROM run_events
+     WHERE run_id = $1 AND type IN ('section', 'delta')
+     ORDER BY seq DESC LIMIT 200`,
+    [runId]
+  );
+  const events = evRes.rows.reverse().map((r) =>
+    typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload
+  );
+  const stepsNodes = buildTranscript(events, resolvedStatus);
+  const stepsJson = JSON.stringify(stepsNodes);
+
   const msgRes = await q.query(
     `INSERT INTO messages (
-      id, thread_id, seq, role, kind, content, run_id, design_version
+      id, thread_id, seq, role, kind, content, run_id, design_version, steps
     ) VALUES (
       gen_random_uuid(),
       $1,
@@ -107,9 +120,10 @@ async function endRun(
       $2,
       $3,
       $4,
-      null
+      null,
+      $5::jsonb
     ) RETURNING id`,
-    [threadId, replyInfo.kind, replyInfo.markdown, runId]
+    [threadId, replyInfo.kind, replyInfo.markdown, runId, stepsJson]
   );
   const assistantMessageId = String(msgRes.rows[0].id);
 
@@ -260,11 +274,15 @@ async function start(
   }
 
   // Step 6: Attachments validation
-  if (input.attachmentIds && input.attachmentIds.length > 0) {
-    for (const attId of input.attachmentIds) {
+  const rawAttachments =
+    input.attachments ??
+    (input.attachmentIds?.map((id) => ({ id, kind: 'reference' as const })) ?? []);
+
+  if (rawAttachments.length > 0) {
+    for (const att of rawAttachments) {
       const artRes = await q.query(
         `SELECT 1 FROM artifacts WHERE id = $1 AND owner_key = $2 AND kind = 'image'`,
-        [attId, input.ownerKey]
+        [att.id, input.ownerKey]
       );
       if (artRes.rows.length === 0) {
         throw notFound();
@@ -430,14 +448,20 @@ async function start(
   );
   const userMessageId = String(msgRes.rows[0].id);
 
-  if (input.attachmentIds && input.attachmentIds.length > 0) {
-    for (const attId of input.attachmentIds) {
+  if (rawAttachments.length > 0) {
+    const ids: string[] = [];
+    for (const att of rawAttachments) {
+      ids.push(att.id);
       await q.query(
-        `INSERT INTO message_attachments (message_id, artifact_id)
-         VALUES ($1, $2)`,
-        [userMessageId, attId]
+        `INSERT INTO message_attachments (message_id, artifact_id, kind)
+         VALUES ($1, $2, $3)`,
+        [userMessageId, att.id, att.kind]
       );
     }
+    await q.query(
+      `UPDATE artifacts SET thread_id = $1, run_id = $2 WHERE id = ANY($3) AND owner_key = $4`,
+      [input.threadId, runId, ids, input.ownerKey]
+    );
   }
 
   return {
@@ -526,9 +550,21 @@ async function commit(
   }
 
   // 5. Assistant reply and update user message kind
+  const evRes = await q.query(
+    `SELECT type, payload FROM run_events
+     WHERE run_id = $1 AND type IN ('section', 'delta')
+     ORDER BY seq DESC LIMIT 200`,
+    [runId]
+  );
+  const events = evRes.rows.reverse().map((r) =>
+    typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload
+  );
+  const stepsNodes = buildTranscript(events, 'done');
+  const stepsJson = JSON.stringify(stepsNodes);
+
   const msgRes = await q.query(
     `INSERT INTO messages (
-      id, thread_id, seq, role, kind, content, run_id, design_version
+      id, thread_id, seq, role, kind, content, run_id, design_version, steps
     ) VALUES (
       gen_random_uuid(),
       $1,
@@ -537,9 +573,10 @@ async function commit(
       $2,
       $3,
       $4,
-      $5
+      $5,
+      $6::jsonb
     ) RETURNING id`,
-    [threadId, plan.replyKind, plan.replyMarkdown, runId, nextVersion]
+    [threadId, plan.replyKind, plan.replyMarkdown, runId, nextVersion, stepsJson]
   );
   const assistantMessageId = String(msgRes.rows[0].id);
 

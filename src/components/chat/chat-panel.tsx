@@ -89,9 +89,12 @@ export function ChatPanel() {
     setIsEditingTitle(false);
   };
 
-  const handleSendMessage = async (userText: string, image?: string) => {
+  const handleSendMessage = async (
+    userText: string,
+    attachment?: { id: string; kind: 'markup' | 'reference'; localUrl: string } | string
+  ) => {
     if (isLegacy || isGenerating) return;
-    await sendMessage(userText, image);
+    await sendMessage(userText, attachment);
   };
 
   return (

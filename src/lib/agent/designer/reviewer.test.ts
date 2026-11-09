@@ -349,4 +349,37 @@ describe('formatFlags', () => {
       'Reference images, when present, show what the user wants, and are not renders.'
     );
   });
+
+  it('the reviewer labels a markup image markup:1 with the markup sentence', async () => {
+    const rev = makeReviewer();
+    const markupDataUrl = 'data:image/png;base64,markupbytes';
+    await rev(
+      input({
+        images: [
+          { view: 'markup:1', dataUrl: markupDataUrl },
+        ],
+      })
+    );
+    const call = lastCall();
+    const humanMsg = (call.messages as unknown[])[1] as HumanMessage;
+    const content = humanMsg.content as Array<{ type: string; [k: string]: unknown }>;
+
+    const markupIndex = content.findIndex(
+      (b) =>
+        b.type === 'text' &&
+        typeof b.text === 'string' &&
+        b.text === "User's markup image 1"
+    );
+    expect(markupIndex).toBeGreaterThan(-1);
+    expect(content[markupIndex + 1]).toEqual({
+      type: 'image_url',
+      image_url: { url: markupDataUrl },
+    });
+    // The sentence says "the image above", so it follows the image.
+    expect(content[markupIndex + 2]).toEqual({
+      type: 'text',
+      text: 'The image above is a screenshot of the current design that the user drew on. The marks show the change they want; everything under the marks is the current design, not a target.',
+    });
+    expect(JSON.stringify(content)).not.toContain('reference image');
+  });
 });

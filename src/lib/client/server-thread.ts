@@ -1,5 +1,6 @@
-import type { ChatRequest } from '@/lib/persist/types';
+import type { ChatRequest, MessageAttachmentRef } from '@/lib/persist/types';
 import { BAD_ATTACHMENT, STALE_CLIENT } from '@/lib/persist/phrases';
+import type { TranscriptSection } from '@/lib/agent/transcript';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -14,6 +15,11 @@ export interface ServerThreadSummary {
   activeRunId: string | null;
 }
 
+export interface ServerThreadAttachment {
+  id: string;
+  kind: 'markup' | 'reference';
+}
+
 export interface ServerThreadMessage {
   id: string;
   seq: number;
@@ -21,7 +27,8 @@ export interface ServerThreadMessage {
   kind: string;
   markdown: string;
   designVersion?: number;
-  attachments: string[];
+  attachments: ServerThreadAttachment[];
+  steps?: TranscriptSection[];
 }
 
 export interface ServerThreadVersion {
@@ -61,6 +68,7 @@ export function buildChatRequest(params: {
   text: string;
   viewingVersion: number | null;
   attachmentIds?: string[];
+  attachments?: MessageAttachmentRef[];
   pinnedParams?: Record<string, number>;
   editedBody?: string;
   model?: string;
@@ -71,7 +79,9 @@ export function buildChatRequest(params: {
     text: params.text,
     viewingVersion: params.viewingVersion,
   };
-  if (params.attachmentIds !== undefined && params.attachmentIds.length > 0) {
+  if (params.attachments !== undefined && params.attachments.length > 0) {
+    req.attachments = params.attachments;
+  } else if (params.attachmentIds !== undefined && params.attachmentIds.length > 0) {
     req.attachmentIds = params.attachmentIds;
   }
   if (params.pinnedParams !== undefined && Object.keys(params.pinnedParams).length > 0) {
@@ -130,7 +140,7 @@ export async function deleteThread(id: string): Promise<boolean> {
   }
 }
 
-export async function uploadAttachment(blob: Blob | File): Promise<string> {
+export async function uploadAttachment(blob: Blob | File, signal?: AbortSignal): Promise<string> {
   const formData = new FormData();
   if (blob instanceof File) {
     formData.append('file', blob);
@@ -141,6 +151,7 @@ export async function uploadAttachment(blob: Blob | File): Promise<string> {
   const res = await fetch('/api/attachments', {
     method: 'POST',
     body: formData,
+    signal,
   });
 
   if (!res.ok) {
