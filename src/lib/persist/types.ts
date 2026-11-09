@@ -4,6 +4,7 @@ import {
   STALE_CLIENT,
   type TerminateCode,
 } from './phrases';
+import type { TranscriptSection } from '../agent/transcript';
 
 export interface DesignDraft {
   parentVersion: number | null;
@@ -34,12 +35,18 @@ export type CommitPlan = Omit<RunOutcome, 'design'> & {
   design?: DesignDraft & { stlArtifact?: string; stepArtifact?: string };
 };
 
+export interface MessageAttachmentRef {
+  id: string;
+  kind: 'markup' | 'reference';
+}
+
 export interface ChatRequest {
   threadId: string;
   clientMessageId: string;
   text: string;
   viewingVersion: number | null;
   attachmentIds?: string[];
+  attachments?: MessageAttachmentRef[];
   pinnedParams?: Record<string, number>;
   editedBody?: string;
   model?: string;
@@ -52,7 +59,7 @@ export interface GraphInput {
   baseVersion: number | null;
   baseBody: string | null;
   baseRequest: string | null;
-  attachments: { mediaType: 'image/png'; base64: string }[];
+  attachments: { mediaType: 'image/png'; base64: string; kind: 'markup' | 'reference' }[];
 }
 
 export type RunStatus = 'running' | 'done' | 'failed' | 'cancelled';
@@ -106,6 +113,8 @@ export interface MessageRow {
   clientMessageId: string | null;
   createdAt: number;
   attachmentIds: string[];
+  attachments: MessageAttachmentRef[];
+  steps?: TranscriptSection[];
 }
 
 export interface DesignRow {
@@ -230,23 +239,50 @@ export function rowToRun(row: Record<string, unknown>): RunRow {
 
 export function rowToMessage(
   row: Record<string, unknown>,
-  attachmentIds?: string[]
+  attachments?: MessageAttachmentRef[] | string[]
 ): MessageRow {
-  const atts =
-    attachmentIds ??
-    parseJsonField<string[]>(row.attachment_ids ?? row.attachmentIds, []);
+  const rawAtts =
+    attachments ??
+    parseJsonField<unknown[]>(row.attachments ?? row.attachment_ids ?? row.attachmentIds, []);
+
+  const parsedAttachments: MessageAttachmentRef[] = Array.isArray(rawAtts)
+    ? rawAtts.map((item) => {
+        if (typeof item === 'string') {
+          return { id: item, kind: 'reference' };
+        }
+        if (item && typeof item === 'object') {
+          const rec = item as Record<string, unknown>;
+          return {
+            id: String(rec.id),
+            kind: rec.kind === 'markup' ? 'markup' : 'reference',
+          };
+        }
+        return { id: String(item), kind: 'reference' };
+      })
+    : [];
+
+  const attachmentIds = parsedAttachments.map((a) => a.id);
+  const role = row.role as 'user' | 'assistant';
+
+  let steps: TranscriptSection[] | undefined;
+  if (role === 'assistant') {
+    steps = parseJsonField<TranscriptSection[]>(row.steps, []);
+  }
+
   return {
     id: String(row.id),
     threadId: String(row.thread_id ?? row.threadId),
     seq: Number(row.seq),
-    role: row.role as 'user' | 'assistant',
+    role,
     kind: String(row.kind),
     content: String(row.content),
     runId: ((row.run_id ?? row.runId) as string | null) ?? null,
     designVersion: ((row.design_version ?? row.designVersion) as number | null) ?? null,
     clientMessageId: ((row.client_message_id ?? row.clientMessageId) as string | null) ?? null,
     createdAt: Number(row.created_at ?? row.createdAt),
-    attachmentIds: Array.isArray(atts) ? atts : [],
+    attachmentIds,
+    attachments: parsedAttachments,
+    ...(steps !== undefined ? { steps } : {}),
   };
 }
 

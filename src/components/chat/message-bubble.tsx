@@ -6,10 +6,33 @@ import remarkGfm from 'remark-gfm';
 import { ChatMessage } from '@/types';
 import { useAppStore } from '@/store/app-store';
 import { compileModel } from '@/lib/engine/build123d-client';
-import { Check, Copy, Play, User, Bot, Code } from 'lucide-react';
+import { parseTranscript } from '@/lib/agent/transcript';
+import { TranscriptView } from './transcript-view';
+import { Check, Copy, Play, User, Bot, Code, AlertCircle } from 'lucide-react';
 
 interface MessageBubbleProps {
   message: ChatMessage;
+}
+
+function AttachmentThumbnail({ id }: { id: string }) {
+  const [error, setError] = useState(false);
+  if (error) {
+    return (
+      <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-700 bg-slate-900/80 text-[11px] text-slate-400">
+        <AlertCircle className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+        <span>Image unavailable</span>
+      </div>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={`/api/artifacts/${encodeURIComponent(id)}`}
+      alt="Attachment thumbnail"
+      onError={() => setError(true)}
+      className="max-h-48 rounded-lg border border-indigo-400/30 object-contain bg-slate-950"
+    />
+  );
 }
 
 export function MessageBubble({ message }: MessageBubbleProps) {
@@ -124,7 +147,40 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           >
             {message.content}
           </ReactMarkdown>
+
+          {isUser && message.attachments && message.attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 mt-2">
+              {message.attachments.map((att) => (
+                <AttachmentThumbnail key={att.id} id={att.id} />
+              ))}
+            </div>
+          )}
+
+          {isUser && message.image && (!message.attachments || message.attachments.length === 0) && (
+            <div className="mt-2">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={message.image}
+                alt="Attachment preview"
+                className="max-h-48 rounded-lg border border-indigo-400/30 object-contain bg-slate-950"
+              />
+            </div>
+          )}
         </div>
+
+        {!isUser && message.transcript && parseTranscript(message.transcript).length > 0 && (
+          <details
+            open={message.status === 'streaming'}
+            className="rounded-lg border border-slate-800 bg-slate-950/60 overflow-hidden"
+          >
+            <summary className="flex items-center gap-1.5 px-3 py-1.5 cursor-pointer select-none text-[11px] text-slate-400 hover:text-slate-200 list-none font-medium">
+              <span>Steps</span>
+            </summary>
+            <div className="p-2 border-t border-slate-800/60">
+              <TranscriptView transcript={message.transcript} />
+            </div>
+          </details>
+        )}
 
         {message.code && (
           <details className="rounded-lg border border-slate-800 bg-slate-950 overflow-hidden">

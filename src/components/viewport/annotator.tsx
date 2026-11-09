@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { useAppStore } from '@/store/app-store';
 import { X, Check, Eraser, PenTool, Undo2 } from 'lucide-react';
 
@@ -17,57 +17,20 @@ interface Stroke {
 }
 
 export function Annotator() {
-  const { baseSnapshot, setIsAnnotating, setPendingAttachment } = useAppStore();
+  const { baseSnapshot, setIsAnnotating, attachImage } = useAppStore();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const [isDrawing, setIsDrawing] = useState(false);
   const [color, setColor] = useState('#ef4444');
-  const [lineWidth, setLineWidth] = useState(3);
+  const [lineWidth] = useState(3);
   const [isEraser, setIsEraser] = useState(false);
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [currentStroke, setCurrentStroke] = useState<Stroke | null>(null);
 
   const colors = ['#ef4444', '#22c55e', '#3b82f6', '#f59e0b', '#a855f7', '#ffffff', '#000000'];
 
-  // Initialize canvas with background
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const container = containerRef.current;
-    if (!canvas || !container || !baseSnapshot) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    // Set logical size to match container
-    const rect = container.getBoundingClientRect();
-    canvas.width = rect.width;
-    canvas.height = rect.height;
-
-    redrawCanvas();
-  }, [baseSnapshot, strokes, currentStroke]); // Redraw whenever strokes change
-
-  const redrawCanvas = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Draw background image
-    if (baseSnapshot) {
-      const img = new Image();
-      img.onload = () => {
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        // Draw strokes after background loads to ensure correct layering
-        drawStrokes(ctx);
-      };
-      img.src = baseSnapshot;
-    }
-  };
-
-  const drawStrokes = (ctx: CanvasRenderingContext2D) => {
+  const drawStrokes = useCallback((ctx: CanvasRenderingContext2D) => {
     const allStrokes = currentStroke ? [...strokes, currentStroke] : strokes;
 
     ctx.lineCap = 'round';
@@ -94,10 +57,47 @@ export function Annotator() {
       }
       ctx.stroke();
     });
-    
+
     // Reset global composite operation
     ctx.globalCompositeOperation = 'source-over';
-  };
+  }, [currentStroke, strokes]);
+
+  const redrawCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Draw background image
+    if (baseSnapshot) {
+      const img = new Image();
+      img.onload = () => {
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        // Draw strokes after background loads to ensure correct layering
+        drawStrokes(ctx);
+      };
+      img.src = baseSnapshot;
+    }
+  }, [baseSnapshot, drawStrokes]);
+
+  // Initialize canvas with background
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container || !baseSnapshot) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Set logical size to match container
+    const rect = container.getBoundingClientRect();
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+
+    redrawCanvas();
+  }, [baseSnapshot, redrawCanvas]); // Redraw whenever strokes change
 
   const getCoordinates = (e: React.PointerEvent<HTMLCanvasElement>): Point => {
     const canvas = canvasRef.current;
@@ -151,7 +151,7 @@ export function Annotator() {
       // Fortunately the canvas state is already currently visible to the user.
       // So we can just grab toDataURL right now!
       const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-      setPendingAttachment(dataUrl);
+      attachImage(dataUrl, 'markup');
       setIsAnnotating(false);
     }
   };

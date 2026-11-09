@@ -9,7 +9,7 @@ export async function loadRunInput(
   ownerKey: string,
   threadId: string,
   baseVersion: number | null,
-  attachmentIds: string[],
+  attachmentIds: Array<string | { id: string; kind?: 'markup' | 'reference' }>,
   deps?: { objectStore?: ObjectStore }
 ): Promise<GraphInput & { baseEdits: string[] }> {
   // 1. Thread must belong to ownerKey and not be archived, else throw
@@ -49,9 +49,26 @@ export async function loadRunInput(
 
   // 4. attachments: for each id, owner-artifacts.get(q, ownerKey, id) must return kind 'image'
   const objectStore = deps?.objectStore ?? getObjectStore();
-  const attachments: { mediaType: 'image/png'; base64: string }[] = [];
+  const attachments: GraphInput['attachments'] = [];
 
-  for (const id of attachmentIds) {
+  for (const item of attachmentIds) {
+    const id = typeof item === 'string' ? item : item.id;
+    let kind: 'markup' | 'reference' =
+      typeof item === 'object' && item.kind ? item.kind : 'reference';
+
+    if (typeof item === 'string' || !item.kind) {
+      const maRes = await q.query(
+        `SELECT kind FROM message_attachments WHERE artifact_id = $1 LIMIT 1`,
+        [id]
+      );
+      if (
+        maRes.rows.length > 0 &&
+        (maRes.rows[0].kind === 'markup' || maRes.rows[0].kind === 'reference')
+      ) {
+        kind = maRes.rows[0].kind as 'markup' | 'reference';
+      }
+    }
+
     const row = await getArtifact(q, ownerKey, id);
     if (!row || row.kind !== 'image') {
       throw new Error(`attachment ${id} not found or not an image`);
@@ -68,6 +85,7 @@ export async function loadRunInput(
     attachments.push({
       mediaType: 'image/png',
       base64: buf.toString('base64'),
+      kind,
     });
   }
 

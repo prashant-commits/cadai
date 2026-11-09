@@ -506,6 +506,40 @@ describe('body-only model interface', () => {
     });
   });
 
+  it('run-designer labels markup and reference images per kind', async () => {
+    let capturedReviewInput: ReviewInput | null = null;
+    const fakeReview: ReviewFn = async (input) => {
+      capturedReviewInput = input;
+      return { flags: [], costUsd: 0 };
+    };
+
+    installModel([
+      reply([run(PLAIN), run(PLAIN), render()]),
+      reply([finish('ok')]),
+    ]);
+
+    await runDesigner(
+      {
+        request: 'a box with attachments',
+        attachments: [
+          { mediaType: 'image/png', base64: 'b64_1', kind: 'markup' },
+          { mediaType: 'image/png', base64: 'b64_2', kind: 'reference' },
+          { mediaType: 'image/png', base64: 'b64_3', kind: 'markup' },
+        ],
+      },
+      { review: fakeReview }
+    );
+
+    expect(capturedReviewInput).not.toBeNull();
+    const views = capturedReviewInput!.images.map((img) => img.view);
+    expect(views).toContain('markup:1');
+    expect(views).toContain('reference:1');
+    expect(views).toContain('markup:2');
+    expect(capturedReviewInput!.images[0].view).toBe('markup:1');
+    expect(capturedReviewInput!.images[1].view).toBe('reference:1');
+    expect(capturedReviewInput!.images[2].view).toBe('markup:2');
+  });
+
   it('no attachments → text only', async () => {
     const m = installModel([reply([finish('ok')])]);
     await runDesigner({ request: 'a box' }, {});

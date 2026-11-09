@@ -100,10 +100,16 @@ export const runDesigner: RunDesignerFn = async (input: DesignerInput, deps: Des
   let reviewRejections = 0;
   let pendingRevision = false;
 
-  const referenceImages: RenderImage[] = (input.attachments ?? []).map((att, idx) => ({
-    view: `reference:${idx + 1}`,
-    dataUrl: `data:image/png;base64,${att.base64}`,
-  }));
+  let markupCount = 0;
+  let referenceCount = 0;
+  const referenceImages: RenderImage[] = (input.attachments ?? []).map((att) => {
+    const kind = att.kind === 'markup' ? 'markup' : 'reference';
+    const num = kind === 'markup' ? ++markupCount : ++referenceCount;
+    return {
+      view: `${kind}:${num}`,
+      dataUrl: `data:image/png;base64,${att.base64}`,
+    };
+  });
 
   const startingBody = isEdit ? toBody(input.priorScript as string) : '';
   const startingScript = withGeneratedPrelude(startingBody);

@@ -1,8 +1,9 @@
 import type { ChatMessage, DesignContract } from '@/types';
 import type { EndEvent } from '@/lib/persist/types';
 import type { StreamEvent } from './agent/stream-events';
-import type { TranscriptNode, TranscriptSection } from './agent/transcript';
-import { escapeMarkers, serializeTranscript } from './agent/transcript';
+import type { TranscriptNode } from './agent/transcript';
+import { serializeTranscript } from './agent/transcript';
+import { TranscriptBuilder } from './agent/transcript-build';
 
 export interface StreamState {
   nodes: TranscriptNode[];
@@ -49,41 +50,16 @@ export function streamMessagePatch(state: StreamState): Partial<ChatMessage> {
 export async function readStream(response: Response, callbacks: StreamCallbacks): Promise<void> {
   if (!response.body) throw new Error('No response stream received.');
 
-  const state: StreamState = { nodes: [], summary: '' };
-  let open: TranscriptSection | null = null;
-
-  /** A delta with no open section still has to land somewhere visible. */
-  function ensureOpen(): TranscriptSection {
-    if (open) return open;
-    open = { kind: 'section', id: 'agent', label: 'Agent', status: 'running', body: '' };
-    state.nodes.push(open);
-    return open;
-  }
+  const builder = new TranscriptBuilder();
+  const state: StreamState = { nodes: builder.nodes, summary: '' };
 
   function apply(event: StreamEvent) {
+    builder.apply(event);
     switch (event.t) {
-      case 'section':
-        if (event.state === 'open') {
-          open = { kind: 'section', id: event.id, label: event.label, status: 'running', body: '' };
-          state.nodes.push(open);
-        } else if (open) {
-          open.status = event.status;
-          if (event.summary) open.body += `\n\n${escapeMarkers(event.summary)}`;
-          open = null;
-        }
-        return;
-      case 'delta':
-        // Model text can contain `<!--`, which is how transcript sections are delimited.
-        ensureOpen().body += escapeMarkers(event.text);
-        return;
       case 'run':
         state.runId = event.runId;
         return;
       case 'end':
-        if (open) {
-          open.status = event.status === 'failed' ? 'error' : 'ok';
-          open = null;
-        }
         state.summary = event.reply.markdown;
         state.designVersion = event.designVersion;
         state.endEvent = event;

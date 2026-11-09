@@ -84,11 +84,40 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (b.attachmentIds !== undefined && b.attachmentIds !== null) {
+  const hasAttachmentIds = b.attachmentIds !== undefined && b.attachmentIds !== null;
+  const hasAttachments = b.attachments !== undefined && b.attachments !== null;
+
+  if (hasAttachmentIds && hasAttachments) {
+    return NextResponse.json(
+      { error: { code: 'bad_attachment', message: BAD_ATTACHMENT } },
+      { status: 400 }
+    );
+  }
+
+  if (hasAttachmentIds) {
     if (
       !Array.isArray(b.attachmentIds) ||
       b.attachmentIds.length > 4 ||
       !b.attachmentIds.every((id) => typeof id === 'string')
+    ) {
+      return NextResponse.json(
+        { error: { code: 'bad_attachment', message: BAD_ATTACHMENT } },
+        { status: 400 }
+      );
+    }
+  }
+
+  if (hasAttachments) {
+    if (
+      !Array.isArray(b.attachments) ||
+      b.attachments.length > 4 ||
+      !b.attachments.every(
+        (att) =>
+          att &&
+          typeof att === 'object' &&
+          typeof att.id === 'string' &&
+          (att.kind === 'markup' || att.kind === 'reference')
+      )
     ) {
       return NextResponse.json(
         { error: { code: 'bad_attachment', message: BAD_ATTACHMENT } },
@@ -135,7 +164,12 @@ export async function POST(req: NextRequest) {
   const text = b.text as string;
   const viewingVersion =
     b.viewingVersion === undefined ? undefined : (b.viewingVersion as number | null);
-  const attachmentIds = (b.attachmentIds as string[] | undefined) ?? undefined;
+  let normalizedAttachments: Array<{ id: string; kind: 'markup' | 'reference' }> | undefined = undefined;
+  if (b.attachments !== undefined && b.attachments !== null) {
+    normalizedAttachments = b.attachments as Array<{ id: string; kind: 'markup' | 'reference' }>;
+  } else if (b.attachmentIds !== undefined && b.attachmentIds !== null) {
+    normalizedAttachments = (b.attachmentIds as string[]).map((id) => ({ id, kind: 'reference' }));
+  }
   const pinnedParams = (b.pinnedParams as Record<string, number> | undefined) ?? undefined;
   const editedBody = (b.editedBody as string | undefined) ?? undefined;
   const model = typeof b.model === 'string' ? b.model : undefined;
@@ -159,7 +193,7 @@ export async function POST(req: NextRequest) {
         clientMessageId,
         text,
         viewingVersion: viewingVersion as unknown as number | null,
-        attachmentIds,
+        attachments: normalizedAttachments,
         pinnedParams,
         editedBody,
         model,
@@ -206,7 +240,7 @@ export async function POST(req: NextRequest) {
       ownerKey,
       threadId,
       r.baseVersion,
-      attachmentIds ?? []
+      normalizedAttachments ?? []
     );
 
     const lcMessages = input.messages.map((m) =>

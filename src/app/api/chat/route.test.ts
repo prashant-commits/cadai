@@ -363,6 +363,7 @@ describe('POST /api/chat lifecycle', () => {
     expect(callInput.attachments[0]).toEqual({
       mediaType: 'image/png',
       base64: imgBytes.toString('base64'),
+      kind: 'reference',
     });
   });
 
@@ -845,6 +846,54 @@ describe('POST /api/chat lifecycle', () => {
         langfuseProcessorMock.mockReset();
         langfuseProcessorMock.mockReturnValue(null);
       }
+    });
+
+    it('the route accepts attachments [{id, kind}]', async () => {
+      const owner = makeOwner();
+      const threadId = crypto.randomUUID();
+      const artId = await putArtifact(owner.key, 'image', Buffer.from('TEST-ATTACHMENT'));
+
+      const res = await callChat(owner, {
+        threadId,
+        clientMessageId: crypto.randomUUID(),
+        text: 'hello with attachment',
+        viewingVersion: null,
+        attachments: [{ id: artId, kind: 'markup' }],
+      });
+      expect(res.status).toBe(200);
+      await res.text();
+    });
+
+    it('the route rejects a bad kind with 400', async () => {
+      const owner = makeOwner();
+      const threadId = crypto.randomUUID();
+
+      const res = await callChat(owner, {
+        threadId,
+        clientMessageId: crypto.randomUUID(),
+        text: 'bad kind',
+        viewingVersion: null,
+        attachments: [{ id: 'art-1', kind: 'invalid-kind' as never }],
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body).toEqual({
+        error: { code: 'bad_attachment', message: BAD_ATTACHMENT },
+      });
+
+      // Both attachmentIds and attachments -> 400
+      const resBoth = await callChat(owner, {
+        threadId,
+        clientMessageId: crypto.randomUUID(),
+        text: 'both',
+        viewingVersion: null,
+        attachmentIds: ['art-1'],
+        attachments: [{ id: 'art-2', kind: 'reference' }],
+      });
+      expect(resBoth.status).toBe(400);
+      expect(await resBoth.json()).toEqual({
+        error: { code: 'bad_attachment', message: BAD_ATTACHMENT },
+      });
     });
   });
 });

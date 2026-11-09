@@ -305,6 +305,65 @@ describe('designerCheck', () => {
     expect(sentence).not.toContain('\n');
   });
 
+  it('the nochange reply contains the summary, the version note and the reviewer flags', async () => {
+    const check = createDesignerCheck({
+      runBrep: vi.fn().mockResolvedValue(validBrepResult),
+      checkPythonScript: vi.fn().mockReturnValue({ ok: true }),
+    });
+
+    const body = 'box = Box(10, 10, 10)\n_cadai_parts = [box]';
+    const state = createMockState({
+      triageKind: 'edit',
+      baseVersion: 2,
+      baseBody: body,
+      currentCode: body,
+      designerSummary: 'Already meets requirements.',
+      designerFlags: [
+        {
+          round: 1,
+          final: true,
+          severity: 'minor',
+          issue: 'Sharp corners',
+          whyItMatters: 'Might scratch in real use',
+        },
+      ],
+      designerRetryCount: 0,
+    });
+
+    const result = await check(state);
+
+    expect(result.isValid).toBe(true);
+    expect(result.outcome?.replyKind).toBe('nochange');
+    expect(result.outcome?.replyMarkdown).toContain('**Designer**\n\nAlready meets requirements.\n\nThe design is unchanged (still v2).');
+    expect(result.outcome?.replyMarkdown).toContain('**Reviewer**');
+    expect(result.outcome?.replyMarkdown).toContain('Sharp corners');
+    expect(result.outcome?.design).toBeUndefined();
+  });
+
+  it('an empty summary keeps NO_CHANGE plus the version note', async () => {
+    const check = createDesignerCheck({
+      runBrep: vi.fn().mockResolvedValue(validBrepResult),
+      checkPythonScript: vi.fn().mockReturnValue({ ok: true }),
+    });
+
+    const body = 'box = Box(10, 10, 10)\n_cadai_parts = [box]';
+    const state = createMockState({
+      triageKind: 'edit',
+      baseVersion: 3,
+      baseBody: body,
+      currentCode: body,
+      designerSummary: '',
+      designerRetryCount: 0,
+    });
+
+    const result = await check(state);
+
+    expect(result.isValid).toBe(true);
+    expect(result.outcome?.replyKind).toBe('nochange');
+    expect(result.outcome?.replyMarkdown).toBe(`${NO_CHANGE}\n\nThe design is unchanged (still v3).`);
+    expect(result.outcome?.design).toBeUndefined();
+  });
+
   it('an unchanged body → nochange, no version', async () => {
     const check = createDesignerCheck({
       runBrep: vi.fn().mockResolvedValue(validBrepResult),
@@ -314,8 +373,10 @@ describe('designerCheck', () => {
     const body = 'box = Box(10, 10, 10)\n_cadai_parts = [box]';
     const state = createMockState({
       triageKind: 'edit',
+      baseVersion: 1,
       baseBody: body,
       currentCode: body,
+      designerSummary: 'A simple box',
       designerRetryCount: 0,
     });
 
@@ -323,7 +384,9 @@ describe('designerCheck', () => {
 
     expect(result.isValid).toBe(true);
     expect(result.outcome?.replyKind).toBe('nochange');
-    expect(result.outcome?.replyMarkdown).toBe(NO_CHANGE);
+    expect(result.outcome?.replyMarkdown).toBe(
+      '**Designer**\n\nA simple box\n\nThe design is unchanged (still v1).'
+    );
     expect(result.outcome?.design).toBeUndefined();
   });
 

@@ -70,7 +70,7 @@ export interface DesignerInput {
   priorScript?: string;
   editRequest?: string;
   buildId?: string;
-  attachments?: { mediaType: 'image/png'; base64: string }[];
+  attachments?: { mediaType: 'image/png'; base64: string; kind?: 'markup' | 'reference' }[];
 }
 
 /** Progress lines for the UI. Fixed, rendered phrases only — never raw model text, code or tool JSON. */

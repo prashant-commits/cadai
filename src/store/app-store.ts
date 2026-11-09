@@ -48,7 +48,6 @@ import {
 import { parseStlToGeometry } from '@/lib/engine/geometry-utils';
 import { readStream, streamMessagePatch } from '@/lib/stream-reader';
 import { serializeTranscript } from '@/lib/agent/transcript';
-import { BAD_ATTACHMENT } from '@/lib/persist/phrases';
 
 function dataUrlToBlob(dataUrlOrBytes: string): Blob {
   if (!dataUrlOrBytes.startsWith('data:')) {
@@ -137,6 +136,13 @@ async function resolveVersionState(
   };
 }
 
+export interface PendingAttachment {
+  localUrl: string;
+  kind: 'markup' | 'reference';
+  status: 'uploading' | 'failed' | 'ready';
+  id?: string;
+}
+
 interface AppState {
   selectedModel: string;
   threads: ChatThread[];
@@ -169,7 +175,7 @@ interface AppState {
   // Annotation & Input State
   isAnnotating: boolean;
   baseSnapshot: string | null;
-  pendingAttachment: string | null;
+  pendingAttachment: PendingAttachment | null;
 
   // Thread Actions
   createNewThread: (title?: string) => string;
@@ -193,7 +199,10 @@ interface AppState {
     runId: string;
     reconnectCount?: number;
   }) => Promise<void>;
-  sendMessage: (text: string, image?: string) => Promise<void>;
+  sendMessage: (
+    text: string,
+    attachment?: { id: string; kind: 'markup' | 'reference'; localUrl: string } | string
+  ) => Promise<void>;
   setCode: (code: string, threadId?: string, source?: 'user' | 'agent') => void;
   setCompileResult: (result: CompileResult, threadId?: string) => void;
   setCompileStatus: (status: 'idle' | 'compiling' | 'success' | 'error', error?: string | null) => void;
@@ -208,11 +217,16 @@ interface AppState {
 
   setIsAnnotating: (isAnnotating: boolean) => void;
   setBaseSnapshot: (snapshot: string | null) => void;
-  setPendingAttachment: (image: string | null) => void;
+  attachImage: (dataUrl: string, kind: 'markup' | 'reference') => void;
+  retryAttachment: () => void;
+  removeAttachment: () => void;
+  setPendingAttachment: (image: PendingAttachment | string | null) => void;
 
   resetProject: () => void;
   initializeFromStorage: () => Promise<void>;
 }
+
+let attachAbortController: AbortController | null = null;
 
 export const useAppStore = create<AppState>((set, get) => ({
   selectedModel: DEFAULT_MODEL,
@@ -380,13 +394,34 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const mappedMessages: ChatMessage[] =
       serverThread.messages.length > 0
-        ? serverThread.messages.map((m) => ({
-            id: m.id,
-            role: m.role,
-            content: m.markdown,
-            status: 'complete',
-            timestamp: Date.now(),
-          }))
+        ? serverThread.messages.map((m) => {
+            const existing = currentThread?.messages.find((msg) => msg.id === m.id);
+            const isStreaming = existing?.status === 'streaming';
+            const transcript =
+              isStreaming && existing.transcript !== undefined
+                ? existing.transcript
+                : m.steps && m.steps.length > 0
+                ? serializeTranscript(m.steps)
+                : existing?.transcript;
+
+            const attachments =
+              m.attachments && m.attachments.length > 0
+                ? m.attachments
+                : undefined;
+
+            return {
+              id: m.id,
+              role: m.role,
+              content: m.markdown,
+              status: isStreaming ? 'streaming' : 'complete',
+              transcript,
+              attachments,
+              image: existing?.image,
+              code: existing?.code,
+              runId: existing?.runId,
+              timestamp: existing?.timestamp ?? Date.now(),
+            };
+          })
         : currentThread?.messages || [];
 
     let viewingVersion: number | null = null;
@@ -628,20 +663,28 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  sendMessage: async (userText: string, image?: string) => {
+  sendMessage: async (
+    userText: string,
+    attachment?: { id: string; kind: 'markup' | 'reference'; localUrl: string } | string
+  ) => {
     const targetThreadId = get().activeThreadId;
     if (!targetThreadId) return;
 
     if (!isServerThreadId(targetThreadId)) return;
     if (get().runsByThread[targetThreadId]) return;
-    if (!userText.trim() && !image) return;
+
+    const attObj =
+      typeof attachment === 'object' && attachment !== null ? attachment : undefined;
+    const localUrl = attObj ? attObj.localUrl : typeof attachment === 'string' ? attachment : undefined;
+
+    if (!userText.trim() && !localUrl) return;
 
     const userMsgId = 'user-' + Date.now();
     const userMsg: ChatMessage = {
       id: userMsgId,
       role: 'user',
       content: userText,
-      image,
+      image: localUrl,
       timestamp: Date.now(),
     };
     get().addMessage(userMsg, targetThreadId);
@@ -659,22 +702,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       targetThreadId
     );
 
-    let attachmentIds: string[] | undefined;
-    if (image) {
-      try {
-        const blob = dataUrlToBlob(image);
-        const attachmentId = await uploadAttachment(blob);
-        attachmentIds = [attachmentId];
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : BAD_ATTACHMENT;
-        get().updateMessage(
-          assistantMsgId,
-          { content: `**Error:** ${msg}`, status: 'error' },
-          targetThreadId
-        );
-        return;
-      }
-    }
+    const attachmentsToSend =
+      attObj && attObj.id ? [{ id: attObj.id, kind: attObj.kind }] : undefined;
 
     const targetThread = get().threads.find((t) => t.id === targetThreadId);
     const viewingVersion =
@@ -715,7 +744,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       threadId: targetThreadId,
       text: userText,
       viewingVersion,
-      attachmentIds,
+      attachments: attachmentsToSend,
       pinnedParams: pinnedParamsToSend,
       editedBody: editedBodyToSend,
       model: get().selectedModel,
@@ -1335,7 +1364,76 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setIsAnnotating: (isAnnotating) => set({ isAnnotating }),
   setBaseSnapshot: (snapshot) => set({ baseSnapshot: snapshot }),
-  setPendingAttachment: (image) => set({ pendingAttachment: image }),
+
+  attachImage: (dataUrl: string, kind: 'markup' | 'reference') => {
+    if (attachAbortController) {
+      attachAbortController.abort();
+    }
+    const controller = new AbortController();
+    attachAbortController = controller;
+
+    set({
+      pendingAttachment: {
+        localUrl: dataUrl,
+        kind,
+        status: 'uploading',
+      },
+    });
+
+    void (async () => {
+      try {
+        const blob = dataUrlToBlob(dataUrl);
+        const artifactId = await uploadAttachment(blob, controller.signal);
+        if (controller.signal.aborted || attachAbortController !== controller) {
+          return;
+        }
+        set({
+          pendingAttachment: {
+            localUrl: dataUrl,
+            kind,
+            status: 'ready',
+            id: artifactId,
+          },
+        });
+      } catch {
+        if (controller.signal.aborted || attachAbortController !== controller) {
+          return;
+        }
+        set({
+          pendingAttachment: {
+            localUrl: dataUrl,
+            kind,
+            status: 'failed',
+          },
+        });
+      }
+    })();
+  },
+
+  retryAttachment: () => {
+    const current = get().pendingAttachment;
+    if (current && current.status === 'failed') {
+      get().attachImage(current.localUrl, current.kind);
+    }
+  },
+
+  removeAttachment: () => {
+    if (attachAbortController) {
+      attachAbortController.abort();
+      attachAbortController = null;
+    }
+    set({ pendingAttachment: null });
+  },
+
+  setPendingAttachment: (image) => {
+    if (!image) {
+      get().removeAttachment();
+    } else if (typeof image === 'string') {
+      get().attachImage(image, 'markup');
+    } else {
+      set({ pendingAttachment: image });
+    }
+  },
 
   resetProject: () => {
     const { threads, activeThreadId } = get();

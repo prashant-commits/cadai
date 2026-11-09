@@ -45,17 +45,25 @@ If a tool result carries independent reviewer notes, weigh them against the requ
 # BUILD123D CHEAT SHEET
 ${BREP_CHEATSHEET}`.trim();
 
+export const MARKUP_SENTENCE =
+  'The image above is a screenshot of the current design that the user drew on. The marks show the change they want; everything under the marks is the current design, not a target.';
+export const REFERENCE_SENTENCE = "The images above are the user's reference images.";
+
 /** The first user message: the request on a fresh build, or the current script plus the edit on a follow-up. */
 export function buildFirstUserMessage(input: DesignerInput, startingBody: string): string {
-  const hasAttachments = !!(input.attachments && input.attachments.length > 0);
+  const hasMarkup = input.attachments?.some((a) => a.kind === 'markup');
+  const hasReference = input.attachments?.some((a) => !a.kind || a.kind === 'reference');
   if (input.priorScript && input.editRequest) {
     const parts = [
       `Original request:\n${input.request}`,
       `Current design:\n\`\`\`python\n${startingBody}\n\`\`\``,
       `Edit request:\n${input.editRequest}`,
     ];
-    if (hasAttachments) {
-      parts.push("The images above are the user's reference images.");
+    if (hasMarkup) {
+      parts.push(MARKUP_SENTENCE);
+    }
+    if (hasReference) {
+      parts.push(REFERENCE_SENTENCE);
     }
     parts.push(
       'Apply the edit to the current design. Keep everything the user did not ask to change. Call `run_script` with your updated design code, `render` to inspect it, and `finish` when done.'
@@ -66,8 +74,11 @@ export function buildFirstUserMessage(input: DesignerInput, startingBody: string
     `Request:\n${input.request}`,
     `Starting design:\n\`\`\`python\n${startingBody}\`\`\``,
   ];
-  if (hasAttachments) {
-    parts.push("The images above are the user's reference images.");
+  if (hasMarkup) {
+    parts.push(MARKUP_SENTENCE);
+  }
+  if (hasReference) {
+    parts.push(REFERENCE_SENTENCE);
   }
   parts.push(
     'Design the parametric build123d model for this request. Call `run_script` with your design code, `render` to inspect clearances and motion, and `finish` when done.'

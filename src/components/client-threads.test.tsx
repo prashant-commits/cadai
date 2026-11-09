@@ -6,6 +6,8 @@ import { __resetDbForTests, upsertThread, loadAllThreads } from '@/lib/storage/t
 import { DB_NAME } from '@/lib/storage/db-schema';
 import { DEADLINE, LEGACY, STALE_CLIENT, STOPPED } from '@/lib/persist/phrases';
 import { ChatPanel } from './chat/chat-panel';
+import { MessageBubble } from './chat/message-bubble';
+import type { ChatMessage } from '@/types';
 import type { StreamEvent } from '@/lib/agent/stream-events';
 
 const VALID_ASCII_STL = `solid box
@@ -990,5 +992,219 @@ describe('client threads and reconnect', () => {
 
     expect(threadReloaded).toBe(true);
     expect(useAppStore.getState().isGenerating).toBe(false);
+  });
+
+  it('steps render after loadServerThread', async () => {
+    const threadId = crypto.randomUUID();
+    const assistantMsgId = 'asst-1';
+
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === `/api/threads/${threadId}`) {
+        return new Response(
+          JSON.stringify({
+            id: threadId,
+            title: 'Test Steps',
+            activeRun: null,
+            messages: [
+              {
+                id: assistantMsgId,
+                seq: 1,
+                role: 'assistant',
+                kind: 'result',
+                markdown: 'Finished design',
+                attachments: [],
+                steps: [
+                  {
+                    kind: 'section',
+                    id: 'planner',
+                    label: 'Planner Step Label',
+                    status: 'ok',
+                    body: 'Planning details',
+                  },
+                ],
+              },
+            ],
+            versions: [],
+          }),
+          { status: 200 }
+        );
+      }
+      throw new Error(`Unhandled fetch URL: ${url}`);
+    });
+
+    useAppStore.setState({
+      threads: [
+        {
+          id: threadId,
+          title: 'Test Steps',
+          createdAt: 1000,
+          updatedAt: 1000,
+          code: '',
+          messages: [],
+        },
+      ],
+      activeThreadId: threadId,
+    });
+
+    await useAppStore.getState().loadServerThread(threadId);
+
+    const thread = useAppStore.getState().threads.find((t) => t.id === threadId);
+    expect(thread).toBeDefined();
+    const msg = thread!.messages.find((m) => m.id === assistantMsgId);
+    expect(msg).toBeDefined();
+
+    const markup = renderToStaticMarkup(<MessageBubble message={msg!} />);
+    expect(markup).toContain('Steps');
+    expect(markup).toContain('Planner Step Label');
+  });
+
+  it('a reload keeps the Steps block', async () => {
+    const threadId = crypto.randomUUID();
+    const assistantMsgId = 'asst-2';
+
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === `/api/threads/${threadId}`) {
+        return new Response(
+          JSON.stringify({
+            id: threadId,
+            title: 'Test Reload',
+            activeRun: null,
+            messages: [
+              {
+                id: assistantMsgId,
+                seq: 1,
+                role: 'assistant',
+                kind: 'result',
+                markdown: 'Finished',
+                attachments: [],
+                steps: [
+                  {
+                    kind: 'section',
+                    id: 'designer',
+                    label: 'Designer Step',
+                    status: 'ok',
+                    body: 'CAD generation',
+                  },
+                ],
+              },
+            ],
+            versions: [],
+          }),
+          { status: 200 }
+        );
+      }
+      throw new Error(`Unhandled fetch URL: ${url}`);
+    });
+
+    useAppStore.setState({
+      threads: [
+        {
+          id: threadId,
+          title: 'Test Reload',
+          createdAt: 1000,
+          updatedAt: 1000,
+          code: '',
+          messages: [],
+        },
+      ],
+      activeThreadId: threadId,
+    });
+
+    await useAppStore.getState().loadServerThread(threadId);
+    let msg = useAppStore.getState().threads[0].messages[0];
+    expect(msg.transcript).toBeDefined();
+
+    // Re-run loadServerThread
+    await useAppStore.getState().loadServerThread(threadId);
+    msg = useAppStore.getState().threads[0].messages[0];
+    expect(msg.transcript).toBeDefined();
+    expect(msg.transcript).toContain('Designer Step');
+  });
+
+  it('the Steps block is open while streaming and closed after', () => {
+    const streamingMsg: ChatMessage = {
+      id: 'm-stream',
+      role: 'assistant',
+      content: 'Thinking...',
+      transcript: '<!--s:agent|Agent|running-->Working...<!--/s-->',
+      status: 'streaming',
+      timestamp: Date.now(),
+    };
+    const streamMarkup = renderToStaticMarkup(<MessageBubble message={streamingMsg} />);
+    const matchStepsDetails = (html: string) => {
+      const match = html.match(/<details([^>]*)>\s*<summary[^>]*>\s*<span>Steps<\/span>/);
+      return match ? match[1] : null;
+    };
+    expect(matchStepsDetails(streamMarkup)).not.toBeNull();
+    expect(matchStepsDetails(streamMarkup)).toContain('open=""');
+
+    const completeMsg: ChatMessage = {
+      id: 'm-complete',
+      role: 'assistant',
+      content: 'Done!',
+      transcript: '<!--s:agent|Agent|ok-->Done!<!--/s-->',
+      status: 'complete',
+      timestamp: Date.now(),
+    };
+    const completeMarkup = renderToStaticMarkup(<MessageBubble message={completeMsg} />);
+    expect(matchStepsDetails(completeMarkup)).not.toBeNull();
+    expect(matchStepsDetails(completeMarkup)).not.toContain('open');
+  });
+
+  it('the user bubble renders an attachment thumbnail from the server thread', async () => {
+    const threadId = crypto.randomUUID();
+    const userMsgId = 'user-att-1';
+
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === `/api/threads/${threadId}`) {
+        return new Response(
+          JSON.stringify({
+            id: threadId,
+            title: 'Test Attachments',
+            activeRun: null,
+            messages: [
+              {
+                id: userMsgId,
+                seq: 1,
+                role: 'user',
+                kind: 'request',
+                markdown: 'Here is an image',
+                attachments: [{ id: 'art-xyz', kind: 'markup' }],
+              },
+            ],
+            versions: [],
+          }),
+          { status: 200 }
+        );
+      }
+      throw new Error(`Unhandled fetch URL: ${url}`);
+    });
+
+    useAppStore.setState({
+      threads: [
+        {
+          id: threadId,
+          title: 'Test Attachments',
+          createdAt: 1000,
+          updatedAt: 1000,
+          code: '',
+          messages: [],
+        },
+      ],
+      activeThreadId: threadId,
+    });
+
+    await useAppStore.getState().loadServerThread(threadId);
+
+    const thread = useAppStore.getState().threads.find((t) => t.id === threadId);
+    expect(thread).toBeDefined();
+    const userMsg = thread!.messages.find((m) => m.id === userMsgId);
+    expect(userMsg).toBeDefined();
+
+    const markup = renderToStaticMarkup(<MessageBubble message={userMsg!} />);
+    expect(markup).toContain('/api/artifacts/art-xyz');
   });
 });

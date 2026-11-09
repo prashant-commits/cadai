@@ -5,6 +5,7 @@ import { ThreadStore } from '@/lib/persist/threads';
 import { DbRunStore } from '@/lib/runs/db-run-store';
 import { MessageStore } from '@/lib/persist/messages';
 import { DesignStore } from '@/lib/persist/designs';
+import type { TranscriptSection } from '@/lib/agent/transcript';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -59,17 +60,21 @@ export async function GET(
       kind: string;
       markdown: string;
       designVersion?: number;
-      attachments: string[];
+      attachments: { id: string; kind: 'markup' | 'reference' }[];
+      steps?: TranscriptSection[];
     } = {
       id: m.id,
       seq: m.seq,
       role: m.role,
       kind: m.kind,
       markdown: m.content,
-      attachments: m.attachmentIds,
+      attachments: m.attachments ?? [],
     };
     if (m.designVersion !== null && m.designVersion !== undefined) {
       msg.designVersion = m.designVersion;
+    }
+    if (m.role === 'assistant') {
+      msg.steps = m.steps ?? [];
     }
     return msg;
   });
