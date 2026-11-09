@@ -4,7 +4,7 @@ import { rowToDesign, type DesignRow } from './types';
 const SELECT_DESIGN_FIELDS = `
   d.thread_id, d.version, d.parent_version, d.origin, d.run_id,
   d.base_request, d.edits, d.body, d.prelude_version, d.summary,
-  d.facts, d.flags, d.stl_artifact, d.step_artifact, d.created_at
+  d.facts, d.flags, d.stl_artifact, d.step_artifact, d.topo_artifact, d.created_at
 `;
 
 export const DesignStore = {

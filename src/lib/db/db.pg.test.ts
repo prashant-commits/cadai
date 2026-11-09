@@ -5,6 +5,14 @@ import { migrate } from './migrate';
 import { pgTestUrl, freshPgDatabase } from './test-pg';
 import type { Db } from './db';
 import type { Pool } from 'pg';
+import fs from 'node:fs';
+import path from 'node:path';
+
+/** Every migration file, in order; the test asserts all of them apply exactly once. */
+const ALL_MIGRATIONS = fs
+  .readdirSync(path.resolve(process.cwd(), 'db/migrations'))
+  .filter((f) => f.endsWith('.sql'))
+  .sort();
 
 describe('Db (Postgres)', () => {
   let db: Db & { pool: Pool };
@@ -62,20 +70,23 @@ describe('Db (Postgres)', () => {
       const [res1, res2] = await Promise.all([migrate(db1), migrate(db2)]);
 
       const appliedCounts = [res1.length, res2.length].sort();
-      expect(appliedCounts).toEqual([0, 3]);
-
-      const winningRes = res1.length === 3 ? res1 : res2;
-      const losingRes = res1.length === 0 ? res1 : res2;
-      expect(winningRes).toEqual(['0001_init.sql', '0002_u1.sql', '0003_projects.sql']);
-      expect(losingRes).toEqual([]);
-
-      const migrations = await db1.query('select name from schema_migrations');
-      expect(migrations.rows.length).toBe(3);
-      expect(migrations.rows.map((r) => (r as { name: string }).name).sort()).toEqual([
+      expect(ALL_MIGRATIONS.slice(0, 4)).toEqual([
         '0001_init.sql',
         '0002_u1.sql',
         '0003_projects.sql',
+        '0004_topology.sql',
       ]);
+      const n = ALL_MIGRATIONS.length;
+      expect(appliedCounts).toEqual([0, n]);
+
+      const winningRes = res1.length === n ? res1 : res2;
+      const losingRes = res1.length === 0 ? res1 : res2;
+      expect(winningRes).toEqual(ALL_MIGRATIONS);
+      expect(losingRes).toEqual([]);
+
+      const migrations = await db1.query('select name from schema_migrations');
+      expect(migrations.rows.length).toBe(n);
+      expect(migrations.rows.map((r) => (r as { name: string }).name).sort()).toEqual(ALL_MIGRATIONS);
     } finally {
       await Promise.allSettled([db1.close(), db2.close()]);
       await fresh.drop();

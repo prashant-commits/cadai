@@ -34,7 +34,7 @@ export interface RunOutcome {
 }
 
 export type CommitPlan = Omit<RunOutcome, 'design'> & {
-  design?: DesignDraft & { stlArtifact?: string; stepArtifact?: string };
+  design?: DesignDraft & { stlArtifact?: string; stepArtifact?: string; topoArtifact?: string };
 };
 
 export interface MessageAttachmentRef {
@@ -153,6 +153,8 @@ export interface DesignRow {
   flags: string[];
   stlArtifact: string | null;
   stepArtifact: string | null;
+  /** Gzipped topology JSON artifact (Task 10); null for versions built before topology. */
+  topoArtifact: string | null;
   createdAt: number;
 }
 
@@ -344,6 +346,7 @@ export function rowToDesign(row: Record<string, unknown>): DesignRow {
     flags: parseJsonField<string[]>(row.flags, []),
     stlArtifact: ((row.stl_artifact ?? row.stlArtifact) as string | null) ?? null,
     stepArtifact: ((row.step_artifact ?? row.stepArtifact) as string | null) ?? null,
+    topoArtifact: ((row.topo_artifact ?? row.topoArtifact) as string | null) ?? null,
     createdAt: Number(row.created_at ?? row.createdAt),
   };
 }

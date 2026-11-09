@@ -40,6 +40,8 @@ export type BrepResult = {
   interferences?: Array<{ a: string; b: string; volume: number }>;
   partMeshes?: Record<string, string>;
   disconnected?: string[] | 'not checked';
+  /** B-Rep topology (Task 10): raw JSON from the geo service, decoded by `src/lib/geometry/topology.ts`. */
+  topology?: Record<string, unknown>;
 };
 
 export interface RunBrepOptions {
@@ -50,6 +52,8 @@ export interface RunBrepOptions {
   interferences?: boolean;
   partMeshes?: boolean;
   connectivity?: boolean;
+  /** Ask the geo service for B-Rep topology (Task 10). Ignored by services that do not support it. */
+  topology?: boolean;
 }
 
 const cancelledResult = (t0: number): BrepResult => ({
@@ -113,6 +117,7 @@ async function runBrepHttp(
     interferences: Boolean(opts?.interferences),
     partMeshes: Boolean(opts?.partMeshes),
     connectivity: Boolean(opts?.connectivity),
+    topology: Boolean(opts?.topology),
   });
 
   let res: Response;
@@ -191,6 +196,10 @@ async function runBrepHttp(
         ? (data as { interferences: Array<{ a: string; b: string; volume: number }> }).interferences
         : undefined,
       partMeshes: (data.partMeshes ?? (data as Record<string, unknown>).part_meshes) as Record<string, string> | undefined,
+      topology:
+        data.topology && typeof data.topology === 'object'
+          ? (data.topology as Record<string, unknown>)
+          : undefined,
       disconnected: Array.isArray((data as { disconnected?: unknown }).disconnected)
         ? ((data as { disconnected: string[] }).disconnected)
         : (data as { disconnected?: unknown }).disconnected === 'not checked'
