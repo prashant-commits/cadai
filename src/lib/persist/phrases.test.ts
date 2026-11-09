@@ -15,6 +15,10 @@ import {
   BAD_ATTACHMENT,
   BAD_EDIT,
   BAD_PIN,
+  NEEDS_PROJECT,
+  WRONG_PROJECT,
+  DEFAULT_PROJECT_NAME,
+  BAD_PROJECT_NAME,
   TERMINATE_REPLY,
   userEditSummary,
 } from './phrases';
@@ -44,6 +48,12 @@ describe('phrases', () => {
       "The edited code uses something that isn't allowed, so it wasn't saved."
     );
     expect(BAD_PIN).toBe("A slider value isn't a valid number, so it wasn't applied.");
+    expect(NEEDS_PROJECT).toBe('A new thread needs a project.');
+    expect(WRONG_PROJECT).toBe(
+      'This thread belongs to another project. Reload the page and try again.'
+    );
+    expect(DEFAULT_PROJECT_NAME).toBe('My designs');
+    expect(BAD_PROJECT_NAME).toBe('A project name needs 1 to 120 characters.');
   });
 
   it('TERMINATE_REPLY maps all five codes', () => {

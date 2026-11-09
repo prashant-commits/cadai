@@ -3,14 +3,17 @@ import * as crypto from 'crypto';
 import { NextRequest } from 'next/server';
 import { getDb, closeDb } from '@/lib/db/db';
 import { DbRunStore } from '@/lib/runs/db-run-store';
-import { CADAI_OWNER_COOKIE } from '@/lib/owner';
+import { CADAI_OWNER_COOKIE, parseCookie, isValidUuid } from '@/lib/owner';
+import { ProjectStore } from '@/lib/persist/projects';
 import {
   BAD_ATTACHMENT,
   BAD_EDIT,
   BAD_PIN,
   LEGACY,
+  NEEDS_PROJECT,
   RUN_ACTIVE,
   STALE_CLIENT,
+  WRONG_PROJECT,
   BUSY,
   BUDGET_USED,
 } from '@/lib/persist/phrases';
@@ -79,8 +82,37 @@ const rawChat = (owner: { cookie?: string }, rawBody: string) =>
     })
   );
 
-const callChat = (owner: { cookie?: string }, body: unknown) =>
-  rawChat(owner, JSON.stringify(body));
+const callChat = async (owner: { cookie?: string; key?: string }, body: unknown) => {
+  if (body && typeof body === 'object' && !Array.isArray(body)) {
+    const b = { ...(body as Record<string, unknown>) };
+    if (!('projectId' in b) && typeof b.threadId === 'string' && isValidUuid(b.threadId)) {
+      let key = owner.key;
+      if (!key && owner.cookie) {
+        const val = parseCookie(owner.cookie, CADAI_OWNER_COOKIE);
+        if (val && isValidUuid(val)) {
+          key = crypto.createHash('sha256').update(val).digest('hex');
+        }
+      }
+      if (key) {
+        const db = getDb();
+        const threadRes = await db.query(
+          `SELECT project_id FROM threads WHERE id = $1`,
+          [b.threadId]
+        );
+        if (threadRes.rows.length > 0) {
+          if (threadRes.rows[0].project_id) {
+            b.projectId = String(threadRes.rows[0].project_id);
+          }
+        } else {
+          const p = await ProjectStore.create(db, key, 'Default Test Project');
+          b.projectId = p.id;
+        }
+      }
+    }
+    return rawChat(owner, JSON.stringify(b));
+  }
+  return rawChat(owner, JSON.stringify(body));
+};
 
 describe('POST /api/chat lifecycle', () => {
   beforeEach(() => {
@@ -370,6 +402,7 @@ describe('POST /api/chat lifecycle', () => {
   it('a chat request abort mid-stream leaves the run running, then it commits', async () => {
     const db = getDb();
     const owner = makeOwner();
+    const project = await ProjectStore.create(db, owner.key, 'Abort Test Project');
     const threadId = crypto.randomUUID();
     const clientMessageId = crypto.randomUUID();
 
@@ -408,6 +441,7 @@ describe('POST /api/chat lifecycle', () => {
       },
       body: JSON.stringify({
         threadId,
+        projectId: project.id,
         clientMessageId,
         text: 'build a box',
         viewingVersion: null,
@@ -894,6 +928,118 @@ describe('POST /api/chat lifecycle', () => {
       expect(await resBoth.json()).toEqual({
         error: { code: 'bad_attachment', message: BAD_ATTACHMENT },
       });
+    });
+
+    it('chat: a new thread without projectId is 400', async () => {
+      const db = getDb();
+      const owner = makeOwner();
+      const threadId = crypto.randomUUID();
+      const clientMessageId = crypto.randomUUID();
+
+      const res = await rawChat(
+        owner,
+        JSON.stringify({
+          threadId,
+          clientMessageId,
+          text: 'hello without project',
+          viewingVersion: null,
+        })
+      );
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body).toEqual({
+        error: { code: 'bad_request', message: NEEDS_PROJECT },
+      });
+
+      // No thread row created
+      const threadRow = (
+        await db.query(`SELECT id FROM threads WHERE id = $1`, [threadId])
+      ).rows;
+      expect(threadRow).toHaveLength(0);
+    });
+
+    it('chat: a new thread is created in the given project', async () => {
+      const db = getDb();
+      const owner = makeOwner();
+      const projectId = crypto.randomUUID();
+      await db.query(
+        `INSERT INTO projects (id, owner_key, name) VALUES ($1, $2, 'Test Project')`,
+        [projectId, owner.key]
+      );
+      const threadId = crypto.randomUUID();
+      const clientMessageId = crypto.randomUUID();
+
+      const res = await callChat(owner, {
+        threadId,
+        projectId,
+        clientMessageId,
+        text: 'hello with project',
+        viewingVersion: null,
+      });
+
+      expect(res.status).toBe(200);
+      await res.text();
+
+      const thread = (
+        await db.query(`SELECT project_id FROM threads WHERE id = $1`, [threadId])
+      ).rows[0];
+      expect(thread).toBeDefined();
+      expect(thread.project_id).toBe(projectId);
+    });
+
+    it('chat: a projectId that differs from the thread\'s project is 400', async () => {
+      const db = getDb();
+      const owner = makeOwner();
+      const projectA = crypto.randomUUID();
+      const projectB = crypto.randomUUID();
+      await db.query(
+        `INSERT INTO projects (id, owner_key, name) VALUES ($1, $2, 'PA'), ($3, $4, 'PB')`,
+        [projectA, owner.key, projectB, owner.key]
+      );
+      const threadId = crypto.randomUUID();
+      await db.query(
+        `INSERT INTO threads (id, owner_key, project_id) VALUES ($1, $2, $3)`,
+        [threadId, owner.key, projectA]
+      );
+
+      const res = await callChat(owner, {
+        threadId,
+        projectId: projectB,
+        clientMessageId: crypto.randomUUID(),
+        text: 'wrong project message',
+        viewingVersion: null,
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body).toEqual({
+        error: { code: 'bad_request', message: WRONG_PROJECT },
+      });
+    });
+
+    it('chat: another owner\'s projectId is 404', async () => {
+      const db = getDb();
+      const ownerA = makeOwner();
+      const ownerB = makeOwner();
+      const projectB = crypto.randomUUID();
+      await db.query(
+        `INSERT INTO projects (id, owner_key, name) VALUES ($1, $2, 'PB')`,
+        [projectB, ownerB.key]
+      );
+      const threadId = crypto.randomUUID();
+
+      const res = await callChat(ownerA, {
+        threadId,
+        projectId: projectB,
+        clientMessageId: crypto.randomUUID(),
+        text: 'attempting other owner project',
+        viewingVersion: null,
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error?.code).toBe('not_found');
     });
   });
 });

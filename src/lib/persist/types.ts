@@ -1,7 +1,9 @@
 import {
   BAD_PIN,
+  NEEDS_PROJECT,
   RUN_ACTIVE,
   STALE_CLIENT,
+  WRONG_PROJECT,
   type TerminateCode,
 } from './phrases';
 import type { TranscriptSection } from '../agent/transcript';
@@ -42,6 +44,7 @@ export interface MessageAttachmentRef {
 
 export interface ChatRequest {
   threadId: string;
+  projectId?: string;
   clientMessageId: string;
   text: string;
   viewingVersion: number | null;
@@ -75,11 +78,29 @@ export interface EndEvent {
 export interface ThreadRow {
   id: string;
   ownerKey: string;
+  projectId: string | null;
   title: string | null;
   activeRunId: string | null;
   createdAt: number;
   updatedAt: number;
   archivedAt: number | null;
+}
+
+export interface ProjectRow {
+  id: string;
+  ownerKey: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  archivedAt: number | null;
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  updatedAt: number;
+  threadCount: number;
+  thumbnailArtifactId: string | null;
 }
 
 export interface RunRow {
@@ -147,6 +168,7 @@ export interface ArtifactRow {
 }
 
 export type StoreErrorCode =
+  | 'bad_request'
   | 'not_found'
   | 'run_active'
   | 'stale_client'
@@ -180,6 +202,14 @@ export function notFound(): StoreError {
   return new StoreError(404, 'not_found', 'Not found.');
 }
 
+export function needsProject(): StoreError {
+  return new StoreError(400, 'bad_request', NEEDS_PROJECT);
+}
+
+export function wrongProject(): StoreError {
+  return new StoreError(400, 'bad_request', WRONG_PROJECT);
+}
+
 export function runActive(activeRunId: string): StoreError {
   return new StoreError(409, 'run_active', RUN_ACTIVE, activeRunId);
 }
@@ -208,8 +238,20 @@ export function rowToThread(row: Record<string, unknown>): ThreadRow {
   return {
     id: String(row.id),
     ownerKey: String(row.owner_key ?? row.ownerKey),
+    projectId: ((row.project_id ?? row.projectId) as string | null) ?? null,
     title: (row.title as string | null) ?? null,
     activeRunId: ((row.active_run_id ?? row.activeRunId) as string | null) ?? null,
+    createdAt: Number(row.created_at ?? row.createdAt),
+    updatedAt: Number(row.updated_at ?? row.updatedAt),
+    archivedAt: ((row.archived_at ?? row.archivedAt) as number | null) ?? null,
+  };
+}
+
+export function rowToProject(row: Record<string, unknown>): ProjectRow {
+  return {
+    id: String(row.id),
+    ownerKey: String(row.owner_key ?? row.ownerKey),
+    name: String(row.name),
     createdAt: Number(row.created_at ?? row.createdAt),
     updatedAt: Number(row.updated_at ?? row.updatedAt),
     archivedAt: ((row.archived_at ?? row.archivedAt) as number | null) ?? null,

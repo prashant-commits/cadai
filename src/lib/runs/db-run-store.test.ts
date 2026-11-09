@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import * as crypto from 'crypto';
-import { getDb, closeDb } from '@/lib/db/db';
+import { getDb, closeDb, type Queryable } from '@/lib/db/db';
 import { DbRunStore } from './db-run-store';
 import { ThreadStore } from '@/lib/persist/threads';
+import { ProjectStore } from '@/lib/persist/projects';
 import { sweep } from '@/lib/persist/sweep';
 import {
   StoreError,
@@ -42,6 +43,11 @@ describe('DbRunStore', () => {
     ...overrides,
   });
 
+  async function startNew(q: Queryable, input: StartInput) {
+    const proj = await ProjectStore.create(q, input.ownerKey, 'Test Project');
+    return DbRunStore.start(q, { ...input, projectId: proj.id });
+  }
+
   it('start refuses a second active run with 409 and writes nothing', async () => {
     const db = getDb();
     const threadId = crypto.randomUUID();
@@ -49,7 +55,7 @@ describe('DbRunStore', () => {
 
     // Start run A
     const resA = await db.transaction(async (q) => {
-      return DbRunStore.start(q, makeStartInput({ threadId, ownerKey }));
+      return startNew(q, makeStartInput({ threadId, ownerKey }));
     });
     expect(resA.replay).toBe(false);
     if (resA.replay) throw new Error('Expected replay=false');
@@ -102,7 +108,7 @@ describe('DbRunStore', () => {
 
     // Start run A
     const resA = await db.transaction(async (q) => {
-      return DbRunStore.start(q, makeStartInput({ threadId, ownerKey }));
+      return startNew(q, makeStartInput({ threadId, ownerKey }));
     });
     if (resA.replay) throw new Error('Expected replay=false');
     const runAId = resA.runId;
@@ -146,7 +152,7 @@ describe('DbRunStore', () => {
     // Second case: run C fresh heartbeat but deadline_at 61 s in the past
     const threadId2 = crypto.randomUUID();
     const resC = await db.transaction(async (q) => {
-      return DbRunStore.start(q, makeStartInput({ threadId: threadId2, ownerKey }));
+      return startNew(q, makeStartInput({ threadId: threadId2, ownerKey }));
     });
     if (resC.replay) throw new Error('Expected replay=false');
     const runCId = resC.runId;
@@ -181,7 +187,7 @@ describe('DbRunStore', () => {
     const clientMessageId = crypto.randomUUID();
 
     const input = makeStartInput({ threadId, ownerKey, clientMessageId });
-    const res1 = await db.transaction(async (q) => DbRunStore.start(q, input));
+    const res1 = await db.transaction(async (q) => startNew(q, input));
     expect(res1.replay).toBe(false);
     if (res1.replay) throw new Error('replay=false expected');
     const firstRunId = res1.runId;
@@ -387,7 +393,7 @@ describe('DbRunStore', () => {
     let err1: StoreError | null = null;
     try {
       await db.transaction(async (q) => {
-        await DbRunStore.start(q, makeStartInput({
+        await startNew(q, makeStartInput({
           threadId,
           ownerKey,
           attachmentIds: [foreignArtId],
@@ -402,7 +408,7 @@ describe('DbRunStore', () => {
     let err2: StoreError | null = null;
     try {
       await db.transaction(async (q) => {
-        await DbRunStore.start(q, makeStartInput({
+        await startNew(q, makeStartInput({
           threadId,
           ownerKey,
           attachmentIds: [ownStlArtId],
@@ -415,7 +421,7 @@ describe('DbRunStore', () => {
 
     // Own image attachment -> attached
     const res = await db.transaction(async (q) => {
-      return DbRunStore.start(q, makeStartInput({
+      return startNew(q, makeStartInput({
         threadId,
         ownerKey,
         attachmentIds: [ownImageArtId],
@@ -621,7 +627,7 @@ describe('DbRunStore', () => {
 
     // First message with multi-line text
     const res1 = await db.transaction(async (q) => {
-      return DbRunStore.start(q, makeStartInput({
+      return startNew(q, makeStartInput({
         threadId,
         ownerKey,
         text: 'Make a bracket\nwith holes',
@@ -659,7 +665,7 @@ describe('DbRunStore', () => {
     const threadId2 = crypto.randomUUID();
     const longLine = 'a'.repeat(120);
     await db.transaction(async (q) => {
-      return DbRunStore.start(q, makeStartInput({
+      return startNew(q, makeStartInput({
         threadId: threadId2,
         ownerKey,
         text: `${longLine}\nsecond line`,
@@ -807,7 +813,7 @@ describe('DbRunStore', () => {
     const ownerKey = `owner_${crypto.randomUUID()}`;
 
     const startRes = await db.transaction(async (q) => {
-      return DbRunStore.start(q, makeStartInput({ threadId, ownerKey }));
+      return startNew(q, makeStartInput({ threadId, ownerKey }));
     });
     if (startRes.replay) throw new Error('Expected replay=false');
     const runId = startRes.runId;
@@ -888,7 +894,7 @@ describe('DbRunStore', () => {
     const ownerKey = `owner_${crypto.randomUUID()}`;
 
     const startRes = await db.transaction(async (q) => {
-      return DbRunStore.start(q, makeStartInput({ threadId, ownerKey }));
+      return startNew(q, makeStartInput({ threadId, ownerKey }));
     });
     if (startRes.replay) throw new Error('Expected replay=false');
     const runId = startRes.runId;
@@ -921,7 +927,7 @@ describe('DbRunStore', () => {
     const ownerKey = `owner_${crypto.randomUUID()}`;
 
     const startRes1 = await db.transaction(async (q) => {
-      return DbRunStore.start(q, makeStartInput({ threadId: threadId1, ownerKey }));
+      return startNew(q, makeStartInput({ threadId: threadId1, ownerKey }));
     });
     if (startRes1.replay) throw new Error('Expected replay=false');
     const run1Id = startRes1.runId;
@@ -935,7 +941,7 @@ describe('DbRunStore', () => {
     // Heartbeat then terminate without cost keeps 0.05
     const threadId2 = crypto.randomUUID();
     const startRes2 = await db.transaction(async (q) => {
-      return DbRunStore.start(q, makeStartInput({ threadId: threadId2, ownerKey }));
+      return startNew(q, makeStartInput({ threadId: threadId2, ownerKey }));
     });
     if (startRes2.replay) throw new Error('Expected replay=false');
     const run2Id = startRes2.runId;
@@ -955,7 +961,7 @@ describe('DbRunStore', () => {
 
     // Test commit path + repeated commit
     const t1 = crypto.randomUUID();
-    const r1 = (await db.transaction(async (q) => DbRunStore.start(q, makeStartInput({ threadId: t1, ownerKey })))).runId!;
+    const r1 = (await db.transaction(async (q) => startNew(q, makeStartInput({ threadId: t1, ownerKey })))).runId!;
     await DbRunStore.append(db, r1, { type: 'chunk', payload: { delta: 'a' } });
     await db.transaction(async (q) => DbRunStore.commit(q, r1, { replyKind: 'result', replyMarkdown: 'M', userKind: 'request', costUsd: 0, wallMs: 0, turns: 1 }));
     // Try commit again
@@ -974,7 +980,7 @@ describe('DbRunStore', () => {
 
     // Test terminate path + repeated terminate
     const t2 = crypto.randomUUID();
-    const r2 = (await db.transaction(async (q) => DbRunStore.start(q, makeStartInput({ threadId: t2, ownerKey })))).runId!;
+    const r2 = (await db.transaction(async (q) => startNew(q, makeStartInput({ threadId: t2, ownerKey })))).runId!;
     await db.transaction(async (q) => DbRunStore.terminate(q, r2, 'cancelled', 'cancelled'));
     await db.transaction(async (q) => DbRunStore.terminate(q, r2, 'cancelled', 'cancelled'));
     const events2 = await DbRunStore.eventsSince(db, r2, 0);
@@ -983,7 +989,7 @@ describe('DbRunStore', () => {
 
     // Test reap path + repeated reap
     const t3 = crypto.randomUUID();
-    const r3 = (await db.transaction(async (q) => DbRunStore.start(q, makeStartInput({ threadId: t3, ownerKey })))).runId!;
+    const r3 = (await db.transaction(async (q) => startNew(q, makeStartInput({ threadId: t3, ownerKey })))).runId!;
     await db.query(`UPDATE runs SET heartbeat_at = now() - interval '2 minutes' WHERE id = $1`, [r3]);
     const reaped1 = await db.transaction(async (q) => DbRunStore.reap(q, r3));
     expect(reaped1).toBe(true);
@@ -994,7 +1000,7 @@ describe('DbRunStore', () => {
 
     // Test archive path
     const t4 = crypto.randomUUID();
-    const r4 = (await db.transaction(async (q) => DbRunStore.start(q, makeStartInput({ threadId: t4, ownerKey })))).runId!;
+    const r4 = (await db.transaction(async (q) => startNew(q, makeStartInput({ threadId: t4, ownerKey })))).runId!;
     await db.transaction(async (q) => ThreadStore.archive(q, ownerKey, t4));
     const events4 = await DbRunStore.eventsSince(db, r4, 0);
     expect(events4.filter((e) => e.type === 'end')).toHaveLength(1);
@@ -1007,7 +1013,7 @@ describe('DbRunStore', () => {
     const foreignOwner = `owner_foreign_${crypto.randomUUID()}`;
 
     const startRes = await db.transaction(async (q) => {
-      return DbRunStore.start(q, makeStartInput({ threadId, ownerKey }));
+      return startNew(q, makeStartInput({ threadId, ownerKey }));
     });
     if (startRes.replay) throw new Error('Expected replay=false');
     const runId = startRes.runId;
@@ -1061,7 +1067,7 @@ describe('DbRunStore', () => {
     const ownerKey = `owner_${crypto.randomUUID()}`;
 
     const startRes = await db.transaction(async (q) => {
-      return DbRunStore.start(q, makeStartInput({ threadId, ownerKey }));
+      return startNew(q, makeStartInput({ threadId, ownerKey }));
     });
     if (startRes.replay) throw new Error('Expected replay=false');
     const runId = startRes.runId;
@@ -1108,7 +1114,7 @@ describe('DbRunStore', () => {
     const ownerKey = `owner_${crypto.randomUUID()}`;
 
     const startRes = await db.transaction(async (q) => {
-      return DbRunStore.start(q, makeStartInput({ threadId, ownerKey }));
+      return startNew(q, makeStartInput({ threadId, ownerKey }));
     });
     if (startRes.replay) throw new Error('Expected replay=false');
     const runId = startRes.runId;
@@ -1261,7 +1267,7 @@ describe('DbRunStore', () => {
     const ownerKey = `owner_${crypto.randomUUID()}`;
 
     const startRes1 = await db.transaction(async (q) => {
-      return DbRunStore.start(q, makeStartInput({ threadId, ownerKey }));
+      return startNew(q, makeStartInput({ threadId, ownerKey }));
     });
     const run1Id = startRes1.runId!;
 
@@ -1286,7 +1292,7 @@ describe('DbRunStore', () => {
 
     // Test terminate
     const startRes2 = await db.transaction(async (q) => {
-      return DbRunStore.start(q, makeStartInput({ threadId: crypto.randomUUID(), ownerKey }));
+      return startNew(q, makeStartInput({ threadId: crypto.randomUUID(), ownerKey }));
     });
     if (startRes2.replay) throw new Error('Expected replay=false');
     const run2Id = startRes2.runId;
@@ -1308,7 +1314,7 @@ describe('DbRunStore', () => {
     const ownerKey = `owner_${crypto.randomUUID()}`;
 
     const startRes = await db.transaction(async (q) => {
-      return DbRunStore.start(q, makeStartInput({ threadId, ownerKey }));
+      return startNew(q, makeStartInput({ threadId, ownerKey }));
     });
     const runId = startRes.runId!;
 
@@ -1333,7 +1339,7 @@ describe('DbRunStore', () => {
     const ownerKey = `owner_${crypto.randomUUID()}`;
 
     const startRes = await db.transaction(async (q) => {
-      return DbRunStore.start(q, makeStartInput({ threadId, ownerKey }));
+      return startNew(q, makeStartInput({ threadId, ownerKey }));
     });
     const runId = startRes.runId!;
 
@@ -1362,7 +1368,7 @@ describe('DbRunStore', () => {
 
     // commit, reap and terminate refuse to run outside a transaction too, and write nothing
     const started = await db.transaction(async (q) =>
-      DbRunStore.start(q, makeStartInput({ threadId: crypto.randomUUID() }))
+      startNew(q, makeStartInput({ threadId: crypto.randomUUID() }))
     );
     if (started.replay) throw new Error('Expected replay=false');
     const plan: CommitPlan = {
@@ -1404,7 +1410,7 @@ describe('DbRunStore', () => {
       const db = getDb();
       try {
         await db.transaction(async (q) => {
-          await DbRunStore.start(q, input);
+          await startNew(q, input);
         });
       } catch (e) {
         if (e instanceof StoreError) return e;
@@ -1471,7 +1477,7 @@ describe('DbRunStore', () => {
 
       const db = getDb();
       const res = await db.transaction(async (q) =>
-        DbRunStore.start(q, makeStartInput({ ownerKey, viewingVersion: undefined as never }))
+        startNew(q, makeStartInput({ ownerKey, viewingVersion: undefined as never }))
       );
       expect(res.replay).toBe(false);
       if (res.replay) throw new Error('Expected replay=false');
@@ -1481,7 +1487,7 @@ describe('DbRunStore', () => {
     it('DT4: empty pinnedParams on a new thread are not pins', async () => {
       const db = getDb();
       const res = await db.transaction(async (q) =>
-        DbRunStore.start(q, makeStartInput({ pinnedParams: {} }))
+        startNew(q, makeStartInput({ pinnedParams: {} }))
       );
       expect(res.replay).toBe(false);
     });
@@ -1522,11 +1528,11 @@ describe('DbRunStore', () => {
     it('DT9: start records the model, or NULL', async () => {
       const db = getDb();
       const res1 = await db.transaction(async (q) =>
-        DbRunStore.start(q, makeStartInput({ model: 'm1' }))
+        startNew(q, makeStartInput({ model: 'm1' }))
       );
       if (res1.replay) throw new Error('Expected replay=false');
       expect((await db.query(`SELECT model FROM runs WHERE id = $1`, [res1.runId])).rows[0].model).toBe('m1');
-      const res2 = await db.transaction(async (q) => DbRunStore.start(q, makeStartInput()));
+      const res2 = await db.transaction(async (q) => startNew(q, makeStartInput()));
       if (res2.replay) throw new Error('Expected replay=false');
       expect((await db.query(`SELECT model FROM runs WHERE id = $1`, [res2.runId])).rows[0].model).toBeNull();
     });
@@ -1535,7 +1541,7 @@ describe('DbRunStore', () => {
       const db = getDb();
       const titleOf = async (text: string) => {
         const threadId = crypto.randomUUID();
-        await db.transaction(async (q) => DbRunStore.start(q, makeStartInput({ threadId, text })));
+        await db.transaction(async (q) => startNew(q, makeStartInput({ threadId, text })));
         return (await db.query(`SELECT title FROM threads WHERE id = $1`, [threadId])).rows[0].title;
       };
       expect(await titleOf('  Padded  \nrest')).toBe('Padded');
@@ -1547,7 +1553,7 @@ describe('DbRunStore', () => {
       const db = getDb();
       const run = async (design: Record<string, unknown>) => {
         const threadId = crypto.randomUUID();
-        const started = await db.transaction(async (q) => DbRunStore.start(q, makeStartInput({ threadId })));
+        const started = await db.transaction(async (q) => startNew(q, makeStartInput({ threadId })));
         if (started.replay) throw new Error('Expected replay=false');
         await db.transaction(async (q) =>
           DbRunStore.commit(q, started.runId, { ...plan, design: design as unknown as CommitPlan['design'] })
@@ -1587,12 +1593,12 @@ describe('DbRunStore', () => {
     const owner = `owner_${crypto.randomUUID()}`;
 
     const r1 = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId: thread1, ownerKey: owner }))
+      startNew(q, makeStartInput({ threadId: thread1, ownerKey: owner }))
     );
     expect(r1.replay).toBe(false);
 
     const r2 = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId: thread2, ownerKey: owner }))
+      startNew(q, makeStartInput({ threadId: thread2, ownerKey: owner }))
     );
     expect(r2.replay).toBe(false);
 
@@ -1600,7 +1606,7 @@ describe('DbRunStore', () => {
     let err: StoreError | null = null;
     try {
       await db.transaction((q) =>
-        DbRunStore.start(q, makeStartInput({ threadId: thread3, ownerKey: owner }))
+        startNew(q, makeStartInput({ threadId: thread3, ownerKey: owner }))
       );
     } catch (e) {
       if (e instanceof StoreError) err = e;
@@ -1622,7 +1628,7 @@ describe('DbRunStore', () => {
     await db.transaction((q) => DbRunStore.commit(q, r1.runId!, plan));
 
     const r3 = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId: thread3, ownerKey: owner }))
+      startNew(q, makeStartInput({ threadId: thread3, ownerKey: owner }))
     );
     expect(r3.replay).toBe(false);
   });
@@ -1639,10 +1645,10 @@ describe('DbRunStore', () => {
     const owner = `owner_${crypto.randomUUID()}`;
 
     const r1 = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId: thread1, ownerKey: owner }))
+      startNew(q, makeStartInput({ threadId: thread1, ownerKey: owner }))
     );
     await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId: thread2, ownerKey: owner }))
+      startNew(q, makeStartInput({ threadId: thread2, ownerKey: owner }))
     );
 
     // Make run 1 stale
@@ -1652,7 +1658,7 @@ describe('DbRunStore', () => {
 
     // Now start on thread3 succeeds because r1 is stale
     const r3 = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId: thread3, ownerKey: owner }))
+      startNew(q, makeStartInput({ threadId: thread3, ownerKey: owner }))
     );
     expect(r3.replay).toBe(false);
   });
@@ -1664,7 +1670,7 @@ describe('DbRunStore', () => {
 
     for (let i = 0; i < 5; i++) {
       const res = await db.transaction((q) =>
-        DbRunStore.start(q, makeStartInput({ threadId: crypto.randomUUID(), ownerKey: owner }))
+        startNew(q, makeStartInput({ threadId: crypto.randomUUID(), ownerKey: owner }))
       );
       expect(res.replay).toBe(false);
     }
@@ -1701,7 +1707,7 @@ describe('DbRunStore', () => {
     let err: StoreError | null = null;
     try {
       await db.transaction((q) =>
-        DbRunStore.start(q, makeStartInput({ threadId: crypto.randomUUID(), ownerKey: owner }))
+        startNew(q, makeStartInput({ threadId: crypto.randomUUID(), ownerKey: owner }))
       );
     } catch (e) {
       if (e instanceof StoreError) err = e;
@@ -1718,7 +1724,7 @@ describe('DbRunStore', () => {
     );
 
     const allowedRes = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId: crypto.randomUUID(), ownerKey: owner }))
+      startNew(q, makeStartInput({ threadId: crypto.randomUUID(), ownerKey: owner }))
     );
     expect(allowedRes.replay).toBe(false);
   });
@@ -1732,7 +1738,7 @@ describe('DbRunStore', () => {
 
     // Fill the cap with owner1
     await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId: crypto.randomUUID(), ownerKey: owner1 }))
+      startNew(q, makeStartInput({ threadId: crypto.randomUUID(), ownerKey: owner1 }))
     );
 
     // Create a thread belonging to owner1
@@ -1756,7 +1762,7 @@ describe('DbRunStore', () => {
     const ownerKey = `owner_${crypto.randomUUID()}`;
 
     const started = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId, ownerKey }))
+      startNew(q, makeStartInput({ threadId, ownerKey }))
     );
     expect(started.replay).toBe(false);
     if (started.replay) return;
@@ -1817,7 +1823,7 @@ describe('DbRunStore', () => {
     const ownerKey = `owner_${crypto.randomUUID()}`;
 
     const started = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId, ownerKey }))
+      startNew(q, makeStartInput({ threadId, ownerKey }))
     );
     expect(started.replay).toBe(false);
     if (started.replay) return;
@@ -1870,7 +1876,7 @@ describe('DbRunStore', () => {
     const ownerKey = `owner_${crypto.randomUUID()}`;
 
     const started = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId, ownerKey }))
+      startNew(q, makeStartInput({ threadId, ownerKey }))
     );
     expect(started.replay).toBe(false);
     if (started.replay) return;
@@ -1926,7 +1932,7 @@ describe('DbRunStore', () => {
     );
 
     const started = await db.transaction((q) =>
-      DbRunStore.start(q, {
+      startNew(q, {
         ...makeStartInput({ threadId, ownerKey }),
         attachments: [
           { id: artId1, kind: 'markup' },
@@ -1974,7 +1980,7 @@ describe('DbRunStore', () => {
     );
 
     const started = await db.transaction((q) =>
-      DbRunStore.start(q, {
+      startNew(q, {
         ...makeStartInput({ threadId, ownerKey }),
         attachments: [{ id: artId, kind: 'markup' }],
       })

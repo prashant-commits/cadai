@@ -2,6 +2,8 @@ import * as crypto from 'crypto';
 import { requireTransaction, type Queryable } from '@/lib/db/db';
 import {
   notFound,
+  needsProject,
+  wrongProject,
   runActive,
   staleClient,
   badPin,
@@ -172,14 +174,35 @@ async function start(
 > {
   requireTransaction();
 
-  // Step 1: Thread upsert and lock
-  await q.query(
-    `INSERT INTO threads(id, owner_key) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-    [input.threadId, input.ownerKey]
+  // Step 1: Thread check and lock
+  const preCheck = await q.query(
+    `SELECT owner_key, archived_at, project_id FROM threads WHERE id = $1`,
+    [input.threadId]
   );
 
+  if (preCheck.rows.length === 0) {
+    if (!input.projectId) {
+      throw needsProject();
+    }
+    const projRes = await q.query(
+      `SELECT owner_key, archived_at FROM projects WHERE id = $1 FOR SHARE`,
+      [input.projectId]
+    );
+    if (
+      projRes.rows.length === 0 ||
+      projRes.rows[0].owner_key !== input.ownerKey ||
+      projRes.rows[0].archived_at !== null
+    ) {
+      throw notFound();
+    }
+    await q.query(
+      `INSERT INTO threads(id, owner_key, project_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+      [input.threadId, input.ownerKey, input.projectId]
+    );
+  }
+
   const threadRes = await q.query(
-    `SELECT owner_key, archived_at, active_run_id FROM threads WHERE id = $1 FOR UPDATE`,
+    `SELECT owner_key, archived_at, active_run_id, project_id FROM threads WHERE id = $1 FOR UPDATE`,
     [input.threadId]
   );
 
@@ -192,6 +215,14 @@ async function start(
     threadRow.archived_at !== null
   ) {
     throw notFound();
+  }
+
+  if (
+    input.projectId !== undefined &&
+    input.projectId !== null &&
+    input.projectId !== threadRow.project_id
+  ) {
+    throw wrongProject();
   }
 
   // Step 2: Idempotency (replay)

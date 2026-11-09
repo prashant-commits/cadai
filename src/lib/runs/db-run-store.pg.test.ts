@@ -5,6 +5,7 @@ import { migrate } from '@/lib/db/migrate';
 import { pgTestUrl } from '@/lib/db/test-pg';
 import { DbRunStore } from './db-run-store';
 import { ThreadStore } from '@/lib/persist/threads';
+import { ProjectStore } from '@/lib/persist/projects';
 import { sweep } from '@/lib/persist/sweep';
 import {
   StoreError,
@@ -12,7 +13,7 @@ import {
   type CommitPlan,
 } from '@/lib/persist/types';
 import { STOPPED, BUSY } from '@/lib/persist/phrases';
-import { txRetryState, type Db } from '@/lib/db/db';
+import { txRetryState, type Db, type Queryable } from '@/lib/db/db';
 import type { Pool } from 'pg';
 
 function latch(): { promise: Promise<void>; open: () => void } {
@@ -62,6 +63,11 @@ describe('DbRunStore (Postgres concurrency)', () => {
     viewingVersion: null,
     ...overrides,
   });
+
+  async function startNew(q: Queryable, input: StartInput) {
+    const proj = await ProjectStore.create(q, input.ownerKey, 'Test Project');
+    return DbRunStore.start(q, { ...input, projectId: proj.id });
+  }
 
   it('two starts on two connections: one run, one 409', async () => {
     const threadId = crypto.randomUUID();
@@ -155,7 +161,7 @@ describe('DbRunStore (Postgres concurrency)', () => {
     const thread1 = crypto.randomUUID();
     const owner1 = `owner_${crypto.randomUUID()}`;
     const start1 = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId: thread1, ownerKey: owner1 }))
+      startNew(q, makeStartInput({ threadId: thread1, ownerKey: owner1 }))
     );
     if (start1.replay) throw new Error('replay=false expected');
     const run1Id = start1.runId;
@@ -209,7 +215,7 @@ describe('DbRunStore (Postgres concurrency)', () => {
     const thread2 = crypto.randomUUID();
     const owner2 = `owner_${crypto.randomUUID()}`;
     const start2 = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId: thread2, ownerKey: owner2 }))
+      startNew(q, makeStartInput({ threadId: thread2, ownerKey: owner2 }))
     );
     if (start2.replay) throw new Error('replay=false expected');
     const run2Id = start2.runId;
@@ -274,7 +280,7 @@ describe('DbRunStore (Postgres concurrency)', () => {
     const thread1 = crypto.randomUUID();
     const owner1 = `owner_${crypto.randomUUID()}`;
     const start1 = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId: thread1, ownerKey: owner1 }))
+      startNew(q, makeStartInput({ threadId: thread1, ownerKey: owner1 }))
     );
     if (start1.replay) throw new Error('replay=false expected');
     const run1Id = start1.runId;
@@ -314,7 +320,7 @@ describe('DbRunStore (Postgres concurrency)', () => {
     const thread2 = crypto.randomUUID();
     const owner2 = `owner_${crypto.randomUUID()}`;
     const start2 = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId: thread2, ownerKey: owner2 }))
+      startNew(q, makeStartInput({ threadId: thread2, ownerKey: owner2 }))
     );
     if (start2.replay) throw new Error('replay=false expected');
     const run2Id = start2.runId;
@@ -450,7 +456,7 @@ describe('DbRunStore (Postgres concurrency)', () => {
     const ownerKey = `owner_${crypto.randomUUID()}`;
 
     const startRes = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId, ownerKey }))
+      startNew(q, makeStartInput({ threadId, ownerKey }))
     );
     if (startRes.replay) throw new Error('replay=false expected');
     const runId = startRes.runId;
@@ -500,7 +506,7 @@ describe('DbRunStore (Postgres concurrency)', () => {
     const ownerKey = `owner_${crypto.randomUUID()}`;
 
     const startRes = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId, ownerKey, text: 'First user message' }))
+      startNew(q, makeStartInput({ threadId, ownerKey, text: 'First user message' }))
     );
     if (startRes.replay) throw new Error('replay=false expected');
     const runId = startRes.runId;
@@ -632,10 +638,10 @@ describe('DbRunStore (Postgres concurrency)', () => {
     const thread2 = crypto.randomUUID();
 
     const start1 = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId: thread1, ownerKey }))
+      startNew(q, makeStartInput({ threadId: thread1, ownerKey }))
     );
     const start2 = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId: thread2, ownerKey }))
+      startNew(q, makeStartInput({ threadId: thread2, ownerKey }))
     );
     const run1Id = start1.runId!;
     const run2Id = start2.runId!;
@@ -679,10 +685,10 @@ describe('DbRunStore (Postgres concurrency)', () => {
     const thread4 = crypto.randomUUID();
 
     const start3 = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId: thread3, ownerKey }))
+      startNew(q, makeStartInput({ threadId: thread3, ownerKey }))
     );
     const start4 = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId: thread4, ownerKey }))
+      startNew(q, makeStartInput({ threadId: thread4, ownerKey }))
     );
     const run3Id = start3.runId!;
     const run4Id = start4.runId!;
@@ -727,7 +733,7 @@ describe('DbRunStore (Postgres concurrency)', () => {
     const ownerKey = `owner_${crypto.randomUUID()}`;
 
     const startA = await db.transaction((q) =>
-      DbRunStore.start(q, makeStartInput({ threadId, ownerKey, text: 'Msg 1' }))
+      startNew(q, makeStartInput({ threadId, ownerKey, text: 'Msg 1' }))
     );
     if (startA.replay) throw new Error('Expected replay=false');
 
@@ -1036,7 +1042,7 @@ describe('DbRunStore (Postgres concurrency)', () => {
       const tx2Started = latch();
 
       const p1 = db.transaction(async (q) => {
-        const res = await DbRunStore.start(
+        const res = await startNew(
           q,
           makeStartInput({ threadId: thread1, ownerKey: owner })
         );
@@ -1048,7 +1054,7 @@ describe('DbRunStore (Postgres concurrency)', () => {
 
       const p2 = db.transaction(async (q) => {
         tx2Started.open();
-        return DbRunStore.start(
+        return startNew(
           q,
           makeStartInput({ threadId: thread2, ownerKey: owner })
         );
@@ -1115,7 +1121,7 @@ describe('DbRunStore (Postgres concurrency)', () => {
     );
 
     const started = await db.transaction((q) =>
-      DbRunStore.start(q, {
+      startNew(q, {
         ...makeStartInput({ threadId, ownerKey }),
         attachments: [
           { id: artId1, kind: 'markup' },
