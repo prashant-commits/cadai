@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import * as crypto from 'crypto';
 import { NextRequest } from 'next/server';
 import { getDb, closeDb } from '@/lib/db/db';
+import { DbRunStore } from '@/lib/runs/db-run-store';
 import { CADAI_OWNER_COOKIE } from '@/lib/owner';
 import {
   BAD_ATTACHMENT,
@@ -344,5 +345,86 @@ describe('POST /api/chat lifecycle', () => {
       mediaType: 'image/png',
       base64: imgBytes.toString('base64'),
     });
+  });
+
+  it('a chat request abort mid-stream leaves the run running, then it commits', async () => {
+    const db = getDb();
+    const owner = makeOwner();
+    const threadId = crypto.randomUUID();
+    const clientMessageId = crypto.randomUUID();
+
+    let designerSignalAborted = false;
+    runDesignerMock.mockImplementationOnce(
+      async (_args: unknown, config?: { signal?: AbortSignal }) => {
+        if (config?.signal) {
+          config.signal.addEventListener('abort', () => {
+            designerSignalAborted = true;
+          });
+        }
+        await new Promise((r) => setTimeout(r, 150));
+        return {
+          script: 'box = Box(10, 10, 10)\n_cadai_parts = [box]',
+          facts: {
+            ok: true,
+            parts: [{ label: 'box', size: [10, 10, 10], valid: true }],
+            interferences: [],
+            disconnected: [],
+            dimensions: [],
+          },
+          summary: '10mm cube',
+          reviewerFlags: [],
+          turns: 1,
+          costUsd: 0.01,
+        };
+      }
+    );
+
+    const abortController = new AbortController();
+    const req = new NextRequest('http://localhost/api/chat', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        cookie: owner.cookie,
+      },
+      body: JSON.stringify({
+        threadId,
+        clientMessageId,
+        text: 'build a box',
+        viewingVersion: null,
+      }),
+      signal: abortController.signal,
+    });
+
+    const res = await chatRoute(req);
+    expect(res.status).toBe(200);
+    const runId = res.headers.get('X-Run-Id')!;
+    expect(runId).toBeTruthy();
+
+    const reader = res.body!.getReader();
+    const firstChunk = await reader.read();
+    expect(firstChunk.done).toBe(false);
+
+    abortController.abort();
+    await reader.cancel();
+
+    const runRightAfter = await DbRunStore.get(db, runId);
+    expect(runRightAfter?.status).toBe('running');
+
+    const start = Date.now();
+    let finalRun = runRightAfter;
+    while (Date.now() - start < 5000) {
+      finalRun = await DbRunStore.get(db, runId);
+      if (finalRun?.status === 'done') break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(finalRun?.status).toBe('done');
+    expect(finalRun?.designVersion).toBe(1);
+
+    const designRes = await db.query(
+      `SELECT version FROM designs WHERE thread_id = $1 AND version = 1`,
+      [threadId]
+    );
+    expect(designRes.rows).toHaveLength(1);
+    expect(designerSignalAborted).toBe(false);
   });
 });

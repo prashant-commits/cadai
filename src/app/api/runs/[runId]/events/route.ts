@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db/db';
 import { DbRunStore } from '@/lib/runs/db-run-store';
 import { ownerKeyFrom } from '@/lib/owner';
-import { SSE_HEADERS, sse, toWire } from '@/lib/runs/stream-run';
+import { SSE_HEADERS, SSE_KEEPALIVE_MS, KEEPALIVE, sse, toWire } from '@/lib/runs/stream-run';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -44,14 +44,27 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ runI
 
   const encoder = new TextEncoder();
   let stopped = false;
+  let keepAliveTimer: NodeJS.Timeout | undefined;
 
   const stream = new ReadableStream<Uint8Array>(
     {
       async start(controller) {
         const stop = () => {
           stopped = true;
+          if (keepAliveTimer) clearInterval(keepAliveTimer);
         };
         req.signal.addEventListener('abort', stop);
+
+        const keepAliveBytes = encoder.encode(KEEPALIVE);
+        keepAliveTimer = setInterval(() => {
+          if (stopped) return;
+          try {
+            controller.enqueue(keepAliveBytes);
+          } catch {
+            stopped = true;
+            if (keepAliveTimer) clearInterval(keepAliveTimer);
+          }
+        }, SSE_KEEPALIVE_MS);
 
         const send = async (event: Record<string, unknown>) => {
           while (!stopped && (controller.desiredSize ?? 1) <= 0) {
@@ -99,6 +112,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ runI
         } catch (e) {
           console.error('Run event tail failed:', e);
         } finally {
+          if (keepAliveTimer) clearInterval(keepAliveTimer);
           req.signal.removeEventListener('abort', stop);
           try {
             controller.close();
@@ -109,6 +123,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ runI
       },
       cancel() {
         stopped = true;
+        if (keepAliveTimer) clearInterval(keepAliveTimer);
       },
     },
     new ByteLengthQueuingStrategy({ highWaterMark: 1024 * 1024 })

@@ -14,7 +14,11 @@ export const SSE_HEADERS = {
   'Content-Type': 'text/event-stream; charset=utf-8',
   'Cache-Control': 'no-cache, no-transform',
   Connection: 'keep-alive',
+  'X-Accel-Buffering': 'no',
 };
+
+export const SSE_KEEPALIVE_MS = 15_000;
+export const KEEPALIVE = ': keep-alive\n\n';
 
 export function sse(event: Record<string, unknown>): string {
   return `data: ${JSON.stringify(event)}\n\n`;
@@ -82,6 +86,7 @@ export function streamRun(o: StreamRunOptions): Response {
   const encoder = new TextEncoder();
   let client!: ReadableStreamDefaultController<Uint8Array>;
   let clientGone = false;
+  let keepAliveTimer: NodeJS.Timeout | undefined;
 
   const readable = new ReadableStream<Uint8Array>(
     {
@@ -90,6 +95,7 @@ export function streamRun(o: StreamRunOptions): Response {
       },
       cancel() {
         clientGone = true;
+        if (keepAliveTimer) clearInterval(keepAliveTimer);
       },
     },
     new ByteLengthQueuingStrategy({ highWaterMark: 64 * 1024 })
@@ -120,6 +126,23 @@ export function streamRun(o: StreamRunOptions): Response {
       client.enqueue(encoder.encode(sse(payload)));
     } catch {
       clientGone = true;
+    }
+  };
+
+  const keepAliveBytes = encoder.encode(KEEPALIVE);
+  const writeKeepAlive = () => {
+    if (clientGone) return;
+    try {
+      if ((client.desiredSize ?? 0) < -clientBacklogBytes()) {
+        clientGone = true;
+        if (keepAliveTimer) clearInterval(keepAliveTimer);
+        client.error(new Error('Client fell too far behind; reconnect with GET /api/runs/:runId/events.'));
+        return;
+      }
+      client.enqueue(keepAliveBytes);
+    } catch {
+      clientGone = true;
+      if (keepAliveTimer) clearInterval(keepAliveTimer);
     }
   };
 
@@ -221,6 +244,10 @@ export function streamRun(o: StreamRunOptions): Response {
         console.error('Heartbeat error:', err);
       }
     }, heartbeatMs());
+
+    keepAliveTimer = setInterval(() => {
+      writeKeepAlive();
+    }, SSE_KEEPALIVE_MS);
 
     let lastValues: AgentStateType | null = null;
     let graphThrew: unknown = null;
@@ -399,6 +426,7 @@ export function streamRun(o: StreamRunOptions): Response {
     } finally {
       if (deadlineTimer) clearTimeout(deadlineTimer);
       clearInterval(beatTimer);
+      if (keepAliveTimer) clearInterval(keepAliveTimer);
       unregisterRun(o.runId, controller);
       try {
         await o.onFinally?.();
