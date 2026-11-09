@@ -64,8 +64,21 @@ export function renderHoleOp(op: Extract<ToolOp, { kind: 'hole' }>): string {
     csDia = preset.countersinkDiaMm;
   }
 
+  const marker = {
+    id: op.id,
+    part: op.part,
+    plane: op.plane,
+    offset: op.offset,
+    rotationDeg: op.rotationDeg,
+    kind: 'hole' as const,
+    size: op.size,
+    diameterMm: op.diameterMm,
+    head: op.head,
+    depthMm: op.depthMm,
+  };
+
   const lines: string[] = [
-    `# cadai:op hole id=${id} ${JSON.stringify(op)}`,
+    `# cadai:op hole id=${id} ${JSON.stringify(marker)}`,
     ...renderPlaneParams(op),
     `${id}_diameter = ${formatNum(diameter)}  # clearance mm`,
     isThrough
@@ -113,8 +126,21 @@ export function renderCutRectOp(op: Extract<ToolOp, { kind: 'cut-rect' }>): stri
   const isThrough = depthMm === 'through';
   const depthVal = isThrough ? 1000.0 : depthMm;
 
+  const marker = {
+    id: op.id,
+    part: op.part,
+    plane: op.plane,
+    offset: op.offset,
+    rotationDeg: op.rotationDeg,
+    kind: 'cut-rect' as const,
+    widthMm: op.widthMm,
+    heightMm: op.heightMm,
+    cornerRadiusMm: op.cornerRadiusMm,
+    depthMm: op.depthMm,
+  };
+
   const lines: string[] = [
-    `# cadai:op cut-rect id=${id} ${JSON.stringify(op)}`,
+    `# cadai:op cut-rect id=${id} ${JSON.stringify(marker)}`,
     ...renderPlaneParams(op),
     `${id}_width = ${formatNum(widthMm)}  # width mm`,
     `${id}_height = ${formatNum(heightMm)}  # height mm`,
