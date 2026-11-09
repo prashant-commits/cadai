@@ -139,7 +139,44 @@ describe('Threads API Routes', () => {
       stl: stlArtId,
       step: stepArtId,
       createdAt: expect.any(Number),
+      partLabels: [],
     });
+  });
+
+  it('GET thread returns partLabels from facts and handles malformed facts', async () => {
+    const db = getDb();
+    const owner = makeOwner();
+    const threadId = crypto.randomUUID();
+
+    await db.query(
+      `INSERT INTO threads (id, owner_key, title, created_at, updated_at)
+       VALUES ($1, $2, 'Parts Thread', now(), now())`,
+      [threadId, owner.key]
+    );
+
+    await db.query(
+      `INSERT INTO designs (thread_id, version, parent_version, origin, base_request, edits, body, prelude_version, summary, facts, flags, created_at)
+       VALUES ($1, 1, null, 'designer', 'Req', '[]', 'body', 'v1', 'sum', $2, '[]', now())`,
+      [threadId, JSON.stringify({ parts: [{ label: 'base' }, { label: 'arm' }] })]
+    );
+
+    await db.query(
+      `INSERT INTO designs (thread_id, version, parent_version, origin, base_request, edits, body, prelude_version, summary, facts, flags, created_at)
+       VALUES ($1, 2, 1, 'designer', 'Req', '[]', 'body', 'v1', 'sum', $2, '[]', now())`,
+      [threadId, JSON.stringify('malformed-string')]
+    );
+
+    const req = new NextRequest(`http://localhost:3000/api/threads/${threadId}`, {
+      method: 'GET',
+      headers: { cookie: owner.cookie },
+    });
+    const res = await getThread(req, { params: Promise.resolve({ id: threadId }) });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    const v1 = data.versions.find((v: { version: number }) => v.version === 1);
+    const v2 = data.versions.find((v: { version: number }) => v.version === 2);
+    expect(v1.partLabels).toEqual(['base', 'arm']);
+    expect(v2.partLabels).toEqual([]);
   });
 
   it('GET thread returns per-message steps', async () => {

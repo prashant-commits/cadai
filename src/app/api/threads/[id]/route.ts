@@ -7,6 +7,26 @@ import { MessageStore } from '@/lib/persist/messages';
 import { DesignStore } from '@/lib/persist/designs';
 import type { TranscriptSection } from '@/lib/agent/transcript';
 
+function extractPartLabels(facts: unknown): string[] {
+  if (!facts || typeof facts !== 'object') return [];
+  const rawParts = (facts as { parts?: unknown }).parts;
+  if (!Array.isArray(rawParts)) return [];
+  const labels: string[] = [];
+  for (const p of rawParts) {
+    if (labels.length >= 64) break;
+    const label =
+      p && typeof p === 'object' && typeof (p as { label?: unknown }).label === 'string'
+        ? (p as { label: string }).label
+        : typeof p === 'string'
+          ? p
+          : null;
+    if (label && label.length >= 1 && label.length <= 80) {
+      labels.push(label);
+    }
+  }
+  return labels;
+}
+
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
@@ -91,6 +111,7 @@ export async function GET(
     stl: d.stlArtifact,
     step: d.stepArtifact,
     createdAt: d.createdAt,
+    partLabels: extractPartLabels(d.facts),
   }));
 
   return NextResponse.json({

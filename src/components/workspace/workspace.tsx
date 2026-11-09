@@ -1,11 +1,9 @@
 'use client';
 
 import React, { useState, useCallback } from 'react';
-import { useAppStore } from '@/store/app-store';
 import { ViewportPanel } from '@/components/viewport/viewport-panel';
 import { ChatPanel } from '@/components/chat/chat-panel';
-import { DesignPanel } from '@/components/design/design-panel';
-import { CodeEditorPanel } from '@/components/editor/code-editor-panel';
+import { Inspector } from '@/components/inspector/inspector';
 import { AppHeader } from './app-header';
 import { FloatingPanel } from './floating-panel';
 
@@ -32,8 +30,6 @@ export function writeCollapsed(key: string, collapsed: boolean): void {
 }
 
 export function Workspace() {
-  const { editorView } = useAppStore();
-
   const [chatCollapsed, setChatCollapsed] = useState(() =>
     readCollapsed(CHAT_COLLAPSED_KEY)
   );
@@ -114,7 +110,7 @@ export function Workspace() {
         widthPx={340}
       >
         <div data-panel="inspector" className="relative flex-1 min-h-0 flex flex-col">
-          {editorView === 'code' ? <CodeEditorPanel /> : <DesignPanel />}
+          <Inspector />
         </div>
       </FloatingPanel>
     </div>

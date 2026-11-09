@@ -42,6 +42,7 @@ export interface ServerThreadVersion {
   stl: string | null;
   step: string | null;
   createdAt: number;
+  partLabels?: string[];
 }
 
 export interface ServerThreadDetail {

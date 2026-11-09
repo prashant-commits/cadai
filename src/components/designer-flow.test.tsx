@@ -9,7 +9,7 @@ import { useAppStore } from '@/store/app-store';
 import { DB_NAME } from '@/lib/storage/db-schema';
 import { __resetDbForTests, getDraft } from '@/lib/storage/thread-storage';
 import type { StreamEvent } from '@/lib/agent/stream-events';
-import { DesignPanel } from './design/design-panel';
+import { PropertiesSection } from './inspector/properties-section';
 import { MessageBubble } from './chat/message-bubble';
 
 vi.mock('@/lib/engine/brep-runner', () => ({
@@ -246,9 +246,11 @@ describe('0c component test: designer run and slider recompilation', () => {
     expect(completedMsg?.status).toBe('complete');
     expect(completedMsg?.content).toBe('A parametric box with customizable width and depth.');
 
-    // Render <DesignPanel /> with react-dom/server renderToStaticMarkup
-    const designMarkup = renderToStaticMarkup(<DesignPanel />);
-    expect(designMarkup).toContain('type="range"');
+    // Render <PropertiesSection /> with react-dom/server renderToStaticMarkup
+    const designMarkup = renderToStaticMarkup(<PropertiesSection />);
+    expect(designMarkup).toContain('role="slider"');
+    expect(designMarkup).toMatch(/role="slider"[\s\S]*aria-valuemin="20"[\s\S]*aria-valuemax="80"/);
+    expect(designMarkup).toMatch(/role="slider"[\s\S]*aria-valuemin="30"[\s\S]*aria-valuemax="100"/);
     expect(designMarkup).toContain('Box Width');
     expect(designMarkup).toContain('Box Depth');
     expect(designMarkup).toMatch(/min="20"[\s\S]*max="80"/);
