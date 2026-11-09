@@ -779,6 +779,7 @@ describe('client versions, sliders and editor', () => {
   });
 
   it('a draft survives reload', async () => {
+    const projId = crypto.randomUUID();
     const threadId = crypto.randomUUID();
     const v1Body = 'width = 40  # [20:80] width\nbox = Box(width, 10, 10)';
     const versions: ServerThreadVersion[] = [
@@ -800,6 +801,37 @@ describe('client versions, sliders and editor', () => {
 
     vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
+
+      if (url === '/api/projects' || url.startsWith('/api/projects?')) {
+        return new Response(
+          JSON.stringify({
+            projects: [
+              {
+                id: projId,
+                name: 'My designs',
+                updatedAt: 1000,
+                threadCount: 1,
+                thumbnailArtifactId: null,
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+
+      if (
+        url === `/api/projects/${projId}/threads` ||
+        url.startsWith(`/api/projects/${projId}/threads?`)
+      ) {
+        return new Response(
+          JSON.stringify({
+            threads: [
+              { id: threadId, title: 'Parametric Box', updatedAt: 1000, activeRunId: null },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
 
       if (url === '/api/threads') {
         return new Response(
@@ -861,6 +893,7 @@ describe('client versions, sliders and editor', () => {
     });
 
     useAppStore.setState({
+      activeProjectId: projId,
       activeThreadId: threadId,
       threads: [
         {
@@ -887,6 +920,7 @@ describe('client versions, sliders and editor', () => {
 
     // Simulate a reload: reset zustand store to initial state, keep IndexedDB, call initializeFromStorage
     useAppStore.setState({
+      activeProjectId: projId,
       threads: [],
       activeThreadId: '',
       messages: [],

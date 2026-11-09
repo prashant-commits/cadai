@@ -19,6 +19,7 @@ import {
   WRONG_PROJECT,
   DEFAULT_PROJECT_NAME,
   BAD_PROJECT_NAME,
+  WELCOME,
   TERMINATE_REPLY,
   userEditSummary,
 } from './phrases';
@@ -54,6 +55,7 @@ describe('phrases', () => {
     );
     expect(DEFAULT_PROJECT_NAME).toBe('My designs');
     expect(BAD_PROJECT_NAME).toBe('A project name needs 1 to 120 characters.');
+    expect(WELCOME).toBe('Describe a part to start, or attach a sketch.');
   });
 
   it('TERMINATE_REPLY maps all five codes', () => {

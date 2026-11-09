@@ -5,7 +5,6 @@ import {
   clearThreadMessages,
   coerceModelSlug,
   createInitialThread,
-  DEFAULT_CODE,
   deleteThreadCascade,
   loadAllThreads,
   setActiveThreadId,
@@ -15,6 +14,7 @@ import {
 } from './thread-storage';
 import { DB_NAME } from './db-schema';
 import { DEFAULT_MODEL } from '@/lib/agent/models';
+import { WELCOME } from '@/lib/persist/phrases';
 
 function deleteDatabase(): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -51,34 +51,32 @@ describe('thread-storage', () => {
     const initial = createInitialThread();
 
     expect(initial.id).toBeDefined();
-    expect(initial.title).toBe('Demo Rounded Box');
-    expect(initial.messages.length).toBeGreaterThan(0);
-    expect(initial.code).toBe(DEFAULT_CODE);
-    expect(initial.code).toContain('RectangleRounded');
-    expect(initial.code).toContain('extrude');
+    expect(initial.title).toBe('New design');
+    expect(initial.messages.length).toBe(1);
+    expect(initial.messages[0].content).toBe(WELCOME);
+    expect(initial.code).toBe('');
   });
 
   it('bootstraps and persists an initial thread on an empty database', async () => {
     const first = await loadAllThreads();
-    expect(first.threads).toHaveLength(1);
-    expect(first.activeThreadId).toBe(first.threads[0].id);
+    expect(first.threads).toHaveLength(0);
+    expect(first.activeThreadId).toBe('');
 
-    // A second load must return the same persisted thread, not a new one.
+    // A second load must return the same empty state.
     const second = await loadAllThreads();
-    expect(second.threads).toHaveLength(1);
-    expect(second.threads[0].id).toBe(first.threads[0].id);
-    expect(second.threads[0].messages).toHaveLength(first.threads[0].messages.length);
+    expect(second.threads).toHaveLength(0);
+    expect(second.activeThreadId).toBe('');
   });
 
   it('bootstraps once when two loads race (React StrictMode double-invoke)', async () => {
     const [first, second] = await Promise.all([loadAllThreads(), loadAllThreads()]);
 
-    expect(first.threads).toHaveLength(1);
-    expect(second.threads).toHaveLength(1);
-    expect(first.threads[0].id).toBe(second.threads[0].id);
+    expect(first.threads).toHaveLength(0);
+    expect(second.threads).toHaveLength(0);
+    expect(first.activeThreadId).toBe('');
 
     const { threads } = await loadAllThreads();
-    expect(threads).toHaveLength(1);
+    expect(threads).toHaveLength(0);
   });
 
   it('round-trips threads, messages and per-message code across the three stores', async () => {

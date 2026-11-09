@@ -24,6 +24,7 @@ export const WRONG_PROJECT =
   'This thread belongs to another project. Reload the page and try again.';
 export const DEFAULT_PROJECT_NAME = 'My designs';
 export const BAD_PROJECT_NAME = 'A project name needs 1 to 120 characters.';
+export const WELCOME = 'Describe a part to start, or attach a sketch.';
 
 export type TerminateCode = 'cancelled' | 'run_lost' | 'deadline' | 'graph' | 'internal';
 

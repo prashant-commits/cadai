@@ -1,6 +1,7 @@
 import { IDBPDatabase, IDBPTransaction, openDB } from 'idb';
 import { ChatMessage, ChatThread } from '@/types';
 import { DEFAULT_MODEL, isOfferedModel } from '@/lib/agent/models';
+import { WELCOME } from '@/lib/persist/phrases';
 import { toBody } from '@/lib/brep/prelude';
 import {
   ACTIVE_THREAD_META_KEY,
@@ -13,6 +14,7 @@ import {
   rowId,
 } from './db-schema';
 
+// Sample body for tests; not used as a starting model in the UI.
 export const DEFAULT_CODE = `# CAD AI - Welcome Demo: Parametric Rounded Box with Center Bore
 
 width = 40  # [20:80] Width in mm
@@ -40,32 +42,19 @@ export function coerceModelSlug(slug: string | undefined): string {
 }
 
 export function createInitialThread(): ChatThread {
-  const initialId = 'thread-' + Date.now();
+  const initialId = crypto.randomUUID();
   return {
     id: initialId,
-    title: 'Demo Rounded Box',
+    title: 'New design',
     createdAt: Date.now(),
     updatedAt: Date.now(),
     selectedModel: DEFAULT_MODEL,
-    code: DEFAULT_CODE,
+    code: '',
     messages: [
       {
         id: 'welcome-msg',
         role: 'assistant',
-        content: `**Welcome to CAD AI!** I am your 3D parametric mechanical design assistant.
-
-I specialize in creating 3D printable objects for **FDM, SLA, and SLS** printing. You can describe any part or mechanical design in plain English, and I will:
-1. Plan and reason about the mechanics & printability
-2. Generate parametric build123d code
-3. Validate geometry & manifoldness before rendering
-4. Recommend slicing settings (walls, infill, layer height, orientation)
-
-**Try asking:**
-- *"Design a snap-fit lid enclosure for an Arduino Uno"*
-- *"Create a parametric phone stand tilted at 60 degrees with cable pass-through"*
-- *"Make a durable hex-grid storage container"*
-- *"Model a GT2 20-tooth timing pulley with 5mm shaft bore"*`,
-        code: DEFAULT_CODE,
+        content: WELCOME,
         timestamp: Date.now(),
       },
     ],
@@ -201,8 +190,7 @@ async function assembleThread(
 // --- Load --------------------------------------------------------------------
 
 function bootstrapInMemory(): { threads: ChatThread[]; activeThreadId: string } {
-  const initial = createInitialThread();
-  return { threads: [initial], activeThreadId: initial.id };
+  return { threads: [], activeThreadId: '' };
 }
 
 type LoadResult = { threads: ChatThread[]; activeThreadId: string };
@@ -235,11 +223,7 @@ async function readAllThreads(): Promise<LoadResult> {
     const rows = await db.getAll('threads');
 
     if (rows.length === 0) {
-      const initial = createInitialThread();
-      await upsertThread(initial);
-      await Promise.all(initial.messages.map((m) => upsertMessage(initial.id, m)));
-      await setActiveThreadId(initial.id);
-      return { threads: [initial], activeThreadId: initial.id };
+      return { threads: [], activeThreadId: '' };
     }
 
     // Newest first, matching the prepend order threads were created in.
