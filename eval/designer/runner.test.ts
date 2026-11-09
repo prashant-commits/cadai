@@ -340,6 +340,8 @@ describe('executeRun', () => {
     )).rows[0];
     expect(threadRow.owner_key).toBe(EVAL_OWNER_KEY);
     expect(process.env.CADAI_EVAL_RUNNER).toBe('1');
+    expect(process.env.CADAI_MAX_RUNNING).toBe('0');
+    expect(process.env.CADAI_DAILY_COST_USD).toBeUndefined();
   });
 
   it("the runner passes the run's deadline to streamRun and the graph", async () => {

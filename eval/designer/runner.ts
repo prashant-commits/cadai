@@ -596,6 +596,9 @@ export async function executeRun(
 ): Promise<RunSummary> {
   process.env.CADAI_EVAL_RUNNER = '1';
   process.env.CADAI_DB = 'pglite';
+  // The eval runs cases concurrently on a private DB: the app's running cap and daily ceiling (B4) do not apply.
+  process.env.CADAI_MAX_RUNNING = '0';
+  delete process.env.CADAI_DAILY_COST_USD;
   const appDir = path.join(opts.outDir, opts.tag, '.app');
   fs.mkdirSync(appDir, { recursive: true });
   process.env.CADAI_RUN_DIR = appDir;
