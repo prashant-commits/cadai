@@ -15,6 +15,7 @@ import {
   BAD_EDIT,
   BAD_PIN,
   LEGACY,
+  NEEDS_PROJECT,
   RUN_ACTIVE,
   STALE_CLIENT,
 } from '@/lib/persist/phrases';
@@ -64,6 +65,15 @@ export async function POST(req: NextRequest) {
       { error: { code: 'legacy', message: LEGACY } },
       { status: 400 }
     );
+  }
+
+  if (b.projectId !== undefined && b.projectId !== null) {
+    if (typeof b.projectId !== 'string' || !isValidUuid(b.projectId)) {
+      return NextResponse.json(
+        { error: { code: 'bad_request', message: NEEDS_PROJECT } },
+        { status: 400 }
+      );
+    }
   }
 
   if (typeof b.clientMessageId !== 'string' || !isValidUuid(b.clientMessageId)) {
@@ -160,6 +170,7 @@ export async function POST(req: NextRequest) {
   }
 
   const threadId = b.threadId as string;
+  const projectId = typeof b.projectId === 'string' ? b.projectId : undefined;
   const clientMessageId = b.clientMessageId as string;
   const text = b.text as string;
   const viewingVersion =
@@ -190,6 +201,7 @@ export async function POST(req: NextRequest) {
       DbRunStore.start(q, {
         ownerKey,
         threadId,
+        projectId,
         clientMessageId,
         text,
         viewingVersion: viewingVersion as unknown as number | null,

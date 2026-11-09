@@ -62,18 +62,19 @@ describe('Db (Postgres)', () => {
       const [res1, res2] = await Promise.all([migrate(db1), migrate(db2)]);
 
       const appliedCounts = [res1.length, res2.length].sort();
-      expect(appliedCounts).toEqual([0, 2]);
+      expect(appliedCounts).toEqual([0, 3]);
 
-      const winningRes = res1.length === 2 ? res1 : res2;
+      const winningRes = res1.length === 3 ? res1 : res2;
       const losingRes = res1.length === 0 ? res1 : res2;
-      expect(winningRes).toEqual(['0001_init.sql', '0002_u1.sql']);
+      expect(winningRes).toEqual(['0001_init.sql', '0002_u1.sql', '0003_projects.sql']);
       expect(losingRes).toEqual([]);
 
       const migrations = await db1.query('select name from schema_migrations');
-      expect(migrations.rows.length).toBe(2);
+      expect(migrations.rows.length).toBe(3);
       expect(migrations.rows.map((r) => (r as { name: string }).name).sort()).toEqual([
         '0001_init.sql',
         '0002_u1.sql',
+        '0003_projects.sql',
       ]);
     } finally {
       await Promise.allSettled([db1.close(), db2.close()]);

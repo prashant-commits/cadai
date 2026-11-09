@@ -42,6 +42,7 @@ import { stlToAscii } from '@/lib/brep/measurements';
 import { graphRecursionLimit } from '@/lib/agent/run-limits';
 import { getDb, closeDb } from '@/lib/db/db';
 import { DbRunStore } from '@/lib/runs/db-run-store';
+import { ProjectStore } from '@/lib/persist/projects';
 import { loadRunInput } from '@/lib/persist/run-input';
 import { DesignStore } from '@/lib/persist/designs';
 import { put as putArtifact, get as getArtifact } from '@/lib/runs/owner-artifacts';
@@ -312,6 +313,7 @@ export async function runOne(prompt: EvalPrompt, arm: Arm, sample: number, ctx: 
   ];
 
   let lastDesignVersion: number | null = null;
+  let projectId: string | null = null;
 
   try {
     for (let step = 0; step < stepItems.length; step++) {
@@ -335,17 +337,22 @@ export async function runOne(prompt: EvalPrompt, arm: Arm, sample: number, ctx: 
           };
 
       try {
-        r = await db.transaction((q) =>
-          DbRunStore.start(q, {
+        let txProjectId: string | null = null;
+        r = await db.transaction(async (q) => {
+          // Set the outer id only after commit: a rolled-back attempt must not keep it.
+          txProjectId = projectId ?? (await ProjectStore.create(q, ownerKey, 'Eval')).id;
+          return DbRunStore.start(q, {
             ownerKey,
             threadId,
+            projectId: txProjectId,
             clientMessageId,
             text: item.text,
             viewingVersion,
             attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
             model: opts.model,
-          })
-        );
+          });
+        });
+        projectId = txProjectId;
       } catch (err) {
         if (err instanceof StoreError) {
           throw new Error(`${err.code}: ${err.message}`);

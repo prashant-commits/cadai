@@ -19,6 +19,11 @@ export const BAD_EDIT =
 export const BAD_PIN = "A slider value isn't a valid number, so it wasn't applied.";
 export const BUSY = 'The server is busy. Try again in a minute.';
 export const BUDGET_USED = "Today's build budget is used up.";
+export const NEEDS_PROJECT = 'A new thread needs a project.';
+export const WRONG_PROJECT =
+  'This thread belongs to another project. Reload the page and try again.';
+export const DEFAULT_PROJECT_NAME = 'My designs';
+export const BAD_PROJECT_NAME = 'A project name needs 1 to 120 characters.';
 
 export type TerminateCode = 'cancelled' | 'run_lost' | 'deadline' | 'graph' | 'internal';
 

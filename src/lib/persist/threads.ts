@@ -5,6 +5,7 @@ import { DbRunStore } from '@/lib/runs/db-run-store';
 export interface ThreadListOptions {
   limit?: number;
   before?: { updatedAt: number; id: string };
+  projectId?: string;
 }
 
 export const ThreadStore = {
@@ -14,7 +15,7 @@ export const ThreadStore = {
     threadId: string
   ): Promise<ThreadRow | null> {
     const res = await q.query(
-      `SELECT id, owner_key, title, active_run_id, created_at, updated_at, archived_at
+      `SELECT id, owner_key, project_id, title, active_run_id, created_at, updated_at, archived_at
        FROM threads
        WHERE id = $1 AND owner_key = $2 AND archived_at IS NULL`,
       [threadId, ownerKey]
@@ -30,8 +31,19 @@ export const ThreadStore = {
   ): Promise<ThreadRow[]> {
     const limit = Math.min(Math.max(1, opts?.limit ?? 50), 200);
     if (opts?.before !== undefined) {
+      if (opts?.projectId) {
+        const res = await q.query(
+          `SELECT id, owner_key, project_id, title, active_run_id, created_at, updated_at, archived_at
+           FROM threads
+           WHERE owner_key = $1 AND project_id = $2 AND archived_at IS NULL AND (updated_at, id) < ($3::timestamptz, $4)
+           ORDER BY updated_at DESC, id DESC
+           LIMIT $5`,
+          [ownerKey, opts.projectId, new Date(opts.before.updatedAt).toISOString(), opts.before.id, limit]
+        );
+        return res.rows.map(rowToThread);
+      }
       const res = await q.query(
-        `SELECT id, owner_key, title, active_run_id, created_at, updated_at, archived_at
+        `SELECT id, owner_key, project_id, title, active_run_id, created_at, updated_at, archived_at
          FROM threads
          WHERE owner_key = $1 AND archived_at IS NULL AND (updated_at, id) < ($2::timestamptz, $3)
          ORDER BY updated_at DESC, id DESC
@@ -41,8 +53,20 @@ export const ThreadStore = {
       return res.rows.map(rowToThread);
     }
 
+    if (opts?.projectId) {
+      const res = await q.query(
+        `SELECT id, owner_key, project_id, title, active_run_id, created_at, updated_at, archived_at
+         FROM threads
+         WHERE owner_key = $1 AND project_id = $2 AND archived_at IS NULL
+         ORDER BY updated_at DESC, id DESC
+         LIMIT $3`,
+        [ownerKey, opts.projectId, limit]
+      );
+      return res.rows.map(rowToThread);
+    }
+
     const res = await q.query(
-      `SELECT id, owner_key, title, active_run_id, created_at, updated_at, archived_at
+      `SELECT id, owner_key, project_id, title, active_run_id, created_at, updated_at, archived_at
        FROM threads
        WHERE owner_key = $1 AND archived_at IS NULL
        ORDER BY updated_at DESC, id DESC
