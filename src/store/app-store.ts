@@ -11,11 +11,8 @@ import {
   StandingConstraints,
 } from '@/types';
 import {
-  DEFAULT_CODE,
   clearThreadMessages,
-  createInitialThread,
   deleteThreadCascade,
-  loadAllThreads,
   setActiveThreadId,
   setCodeDebounced,
   upsertMessage,
@@ -31,7 +28,6 @@ import { setParamValue } from '@/lib/design/write-params';
 import { compileModel } from '@/lib/engine/build123d-client';
 import { DEFAULT_MODEL } from '@/lib/agent/models';
 import {
-  listThreads,
   getThread,
   renameThread as renameServerThread,
   deleteThread as deleteServerThread,
@@ -48,6 +44,8 @@ import {
 import { parseStlToGeometry } from '@/lib/engine/geometry-utils';
 import { readStream, streamMessagePatch } from '@/lib/stream-reader';
 import { serializeTranscript } from '@/lib/agent/transcript';
+import { createProjectsSlice, isProjectOpened, type ProjectsSlice } from './projects-slice';
+import { NEEDS_PROJECT, WELCOME } from '@/lib/persist/phrases';
 
 function dataUrlToBlob(dataUrlOrBytes: string): Blob {
   if (!dataUrlOrBytes.startsWith('data:')) {
@@ -143,7 +141,7 @@ export interface PendingAttachment {
   id?: string;
 }
 
-interface AppState {
+export interface AppState extends ProjectsSlice {
   selectedModel: string;
   threads: ChatThread[];
   activeThreadId: string;
@@ -228,13 +226,14 @@ interface AppState {
 
 let attachAbortController: AbortController | null = null;
 
-export const useAppStore = create<AppState>((set, get) => ({
+export const useAppStore = create<AppState>((set, get, api) => ({
+  ...createProjectsSlice(set, get, api),
   selectedModel: DEFAULT_MODEL,
   threads: [],
   activeThreadId: '',
 
   messages: [],
-  code: toBody(DEFAULT_CODE),
+  code: '',
   geometry: null,
   stlContent: null,
   modelInfo: null,
@@ -362,7 +361,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           threads: remaining,
           activeThreadId: nextActive.id,
           messages: nextActive.messages,
-          code: toBody(nextActive.code || DEFAULT_CODE),
+          code: nextActive.code ? toBody(nextActive.code) : '',
           stlContent: nextActive.stlContent || null,
           geometry: null,
           modelInfo: nextActive.modelInfo || null,
@@ -380,7 +379,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({
           threads: [],
         });
-        get().createNewThread();
+        get().newThread();
       }
       return null;
     }
@@ -425,7 +424,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         : currentThread?.messages || [];
 
     let viewingVersion: number | null = null;
-    let newCode = toBody(currentThread?.code || DEFAULT_CODE);
+    let newCode = currentThread?.code ? toBody(currentThread.code) : '';
     let newStl = currentThread?.stlContent || null;
     let newGeometry: THREE.BufferGeometry | null =
       threadId === activeThreadId ? get().geometry : null;
@@ -689,6 +688,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
     get().addMessage(userMsg, targetThreadId);
 
+    const isNewThread = !get().threads.some((t) => t.id === targetThreadId);
+
     const assistantMsgId = 'assistant-' + Date.now();
     get().addMessage(
       {
@@ -701,6 +702,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       },
       targetThreadId
     );
+
+    if (!get().activeProjectId && isNewThread) {
+      get().updateMessage(
+        assistantMsgId,
+        { content: `**Error:** ${NEEDS_PROJECT}`, status: 'error' },
+        targetThreadId
+      );
+      return;
+    }
 
     const attachmentsToSend =
       attObj && attObj.id ? [{ id: attObj.id, kind: attObj.kind }] : undefined;
@@ -749,6 +759,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       editedBody: editedBodyToSend,
       model: get().selectedModel,
     });
+    if (get().activeProjectId) {
+      req.projectId = get().activeProjectId!;
+    }
 
     const sendRes = await sendChat(req);
 
@@ -807,134 +820,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   initializeFromStorage: async () => {
-    const { threads: cachedThreads, activeThreadId: cachedActiveId } = await loadAllThreads();
-    const active = cachedThreads.find((t) => t.id === cachedActiveId) || cachedThreads[0];
-    const initialCode = toBody(active?.code || DEFAULT_CODE);
-    const viewingVer = active?.viewingVersion ?? null;
-
-    let initialDraft: LocalDraft | null = null;
-    let resolvedCode = initialCode;
-    if (active) {
-      initialDraft = await getDraft(active.id, viewingVer);
-      if (initialDraft?.editedBody) {
-        resolvedCode = toBody(initialDraft.editedBody);
-      }
-      if (initialDraft?.pinnedParams) {
-        for (const [name, val] of Object.entries(initialDraft.pinnedParams)) {
-          if (typeof val === 'number' && Number.isFinite(val)) {
-            resolvedCode = toBody(setParamValue(resolvedCode, name, val));
-          }
-        }
-      }
+    const activeProjectId = get().activeProjectId;
+    if (!activeProjectId) {
+      return;
     }
-
-    set({
-      threads: cachedThreads,
-      activeThreadId: active ? active.id : '',
-      messages: active ? active.messages : [],
-      code: resolvedCode,
-      viewingVersion: viewingVer,
-      activeDraft: initialDraft,
-      params: parseParams(resolvedCode),
-      stlContent: active?.stlContent || null,
-      modelInfo: active?.modelInfo || null,
-      step: active?.step || null,
-      selectedModel: active?.selectedModel || DEFAULT_MODEL,
-    });
-
-    try {
-      const serverSummaries = await listThreads();
-      let legacyThreads = cachedThreads.filter((t) => !isServerThreadId(t.id));
-      if (serverSummaries.length > 0) {
-        legacyThreads = legacyThreads.filter(
-          (t) => !(t.messages.length <= 1 && t.messages[0]?.id === 'welcome-msg')
-        );
-      }
-
-      const serverIds = new Set(serverSummaries.map((s) => s.id));
-      const serverThreadsList: ChatThread[] = serverSummaries.map((summary) => {
-        const cached = cachedThreads.find((t) => t.id === summary.id);
-        if (cached) {
-          return {
-            ...cached,
-            title: summary.title || cached.title,
-            updatedAt: summary.updatedAt,
-            activeRunId: summary.activeRunId,
-          };
-        }
-        return {
-          id: summary.id,
-          title: summary.title || 'Design',
-          createdAt: summary.updatedAt,
-          updatedAt: summary.updatedAt,
-          activeRunId: summary.activeRunId,
-          messages: [],
-          code: toBody(DEFAULT_CODE),
-        };
-      });
-
-      for (const t of cachedThreads) {
-        if (isServerThreadId(t.id) && !serverIds.has(t.id)) {
-          void deleteThreadCascade(t.id);
-        }
-      }
-
-      const mergedThreads = [...serverThreadsList, ...legacyThreads];
-
-      if (mergedThreads.length === 0) {
-        set({ threads: [] });
-        get().createNewThread();
-        return;
-      }
-
-      let targetActiveId: string;
-      if (mergedThreads.some((t) => t.id === cachedActiveId)) {
-        targetActiveId = cachedActiveId;
-      } else if (serverSummaries.length > 0) {
-        targetActiveId = serverSummaries[0].id;
-      } else {
-        targetActiveId = mergedThreads[0].id;
-      }
-
-      const activeObj = mergedThreads.find((t) => t.id === targetActiveId) || mergedThreads[0];
-      set({
-        threads: mergedThreads,
-        activeThreadId: activeObj.id,
-        messages: activeObj.messages,
-        code: toBody(activeObj.code || DEFAULT_CODE),
-        viewingVersion: activeObj.viewingVersion ?? null,
-        stlContent: activeObj.stlContent || null,
-        modelInfo: activeObj.modelInfo || null,
-        step: activeObj.step || null,
-      });
-
-      if (isServerThreadId(activeObj.id)) {
-        await get().loadServerThread(activeObj.id);
-      }
-    } catch (err) {
-      console.warn('Failed to load threads from server:', err);
+    if (isProjectOpened(activeProjectId)) {
+      return;
     }
+    await get().openProject(activeProjectId);
   },
 
   createNewThread: () => {
-    const id = crypto.randomUUID();
-    const defaultBody = toBody(DEFAULT_CODE);
-    set({
-      activeThreadId: id,
-      messages: [],
-      code: defaultBody,
-      params: parseParams(defaultBody),
-      geometry: null,
-      stlContent: null,
-      modelInfo: null,
-      step: null,
-      compileStatus: 'idle',
-      compileError: null,
-      viewingVersion: null,
-      activeDraft: null,
-      inFlightRunId: null,
-    });
-    return id;
+    return get().newThread();
   },
 
   switchThread: (threadId) => {
@@ -943,7 +840,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const currentRuns = get().runsByThread;
     const targetRunId = currentRuns[threadId] ?? null;
-    const initialCode = toBody(target.code || DEFAULT_CODE);
+    const initialCode = target.code ? toBody(target.code) : '';
     const viewingVer = target.viewingVersion ?? null;
 
     set({
@@ -991,19 +888,19 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
       set({ threads: [] });
-      get().createNewThread();
+      get().newThread();
       return;
     }
 
     const filtered = threads.filter((t) => t.id !== threadId);
     if (filtered.length === 0) {
       set({ threads: [] });
-      get().createNewThread();
+      get().newThread();
       return;
     }
     const newActiveId = activeThreadId === threadId ? filtered[0].id : activeThreadId;
     const newActive = filtered.find((t) => t.id === newActiveId)!;
-    const initialCode = toBody(newActive.code || DEFAULT_CODE);
+    const initialCode = newActive.code ? toBody(newActive.code) : '';
 
     set({
       threads: filtered,
@@ -1437,17 +1334,22 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   resetProject: () => {
     const { threads, activeThreadId } = get();
-    const defaultBody = toBody(DEFAULT_CODE);
+    const welcomeMsg: ChatMessage = {
+      id: 'welcome-msg',
+      role: 'assistant',
+      content: WELCOME,
+      timestamp: Date.now(),
+    };
     const resetThreads = threads.map((t) =>
       t.id === activeThreadId
         ? {
             ...t,
-            code: defaultBody,
+            code: '',
             designContract: undefined,
             stlContent: null,
             modelInfo: null,
             step: null,
-            messages: createInitialThread().messages,
+            messages: [welcomeMsg],
             viewingVersion: null,
             updatedAt: Date.now(),
           }
@@ -1455,8 +1357,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     );
 
     set({
-      code: defaultBody,
-      params: parseParams(defaultBody),
+      code: '',
+      params: [],
       geometry: null,
       stlContent: null,
       modelInfo: null,
@@ -1465,6 +1367,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeDraft: null,
       compileStatus: 'idle',
       compileError: null,
+      messages: [welcomeMsg],
       threads: resetThreads,
     });
 

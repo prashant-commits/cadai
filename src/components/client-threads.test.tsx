@@ -3,8 +3,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { useAppStore } from '@/store/app-store';
 import { __resetDbForTests, upsertThread, loadAllThreads } from '@/lib/storage/thread-storage';
+import { __resetProjectsSliceForTests } from '@/store/projects-slice';
 import { DB_NAME } from '@/lib/storage/db-schema';
-import { DEADLINE, LEGACY, STALE_CLIENT, STOPPED } from '@/lib/persist/phrases';
+import { DEADLINE, LEGACY, STALE_CLIENT, STOPPED, WELCOME } from '@/lib/persist/phrases';
 import { ChatPanel } from './chat/chat-panel';
 import { MessageBubble } from './chat/message-bubble';
 import type { ChatMessage } from '@/types';
@@ -44,6 +45,7 @@ describe('client threads and reconnect', () => {
     };
 
     await __resetDbForTests();
+    __resetProjectsSliceForTests();
     await new Promise<void>((resolve) => {
       const request = indexedDB.deleteDatabase(DB_NAME);
       request.onsuccess = () => resolve();
@@ -74,12 +76,31 @@ describe('client threads and reconnect', () => {
   });
 
   it('cold reload mid-build resumes', async () => {
+    const projId = crypto.randomUUID();
     const threadId = crypto.randomUUID();
     const fetchedUrls: string[] = [];
 
     vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       fetchedUrls.push(url);
+
+      if (url === '/api/projects' || url.startsWith('/api/projects?')) {
+        return new Response(
+          JSON.stringify({
+            projects: [{ id: projId, name: 'My designs', updatedAt: 1000, threadCount: 1, thumbnailArtifactId: null }],
+          }),
+          { status: 200 }
+        );
+      }
+
+      if (url === `/api/projects/${projId}/threads` || url.startsWith(`/api/projects/${projId}/threads?`)) {
+        return new Response(
+          JSON.stringify({
+            threads: [{ id: threadId, title: 'Mid-build Gear', updatedAt: 1000, activeRunId: 'r1' }],
+          }),
+          { status: 200 }
+        );
+      }
 
       if (url === '/api/threads') {
         return new Response(
@@ -166,6 +187,7 @@ describe('client threads and reconnect', () => {
     });
 
     // Initialize store
+    useAppStore.setState({ activeProjectId: projId });
     await useAppStore.getState().initializeFromStorage();
 
     // Give asynchronous stream consumption time to complete
@@ -190,12 +212,31 @@ describe('client threads and reconnect', () => {
   });
 
   it('reload after done', async () => {
+    const projId = crypto.randomUUID();
     const threadId = crypto.randomUUID();
     const fetchedUrls: string[] = [];
 
     vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       fetchedUrls.push(url);
+
+      if (url === '/api/projects' || url.startsWith('/api/projects?')) {
+        return new Response(
+          JSON.stringify({
+            projects: [{ id: projId, name: 'My designs', updatedAt: 1000, threadCount: 1, thumbnailArtifactId: null }],
+          }),
+          { status: 200 }
+        );
+      }
+
+      if (url === `/api/projects/${projId}/threads` || url.startsWith(`/api/projects/${projId}/threads?`)) {
+        return new Response(
+          JSON.stringify({
+            threads: [{ id: threadId, title: 'Done Cylinder', updatedAt: 2000, activeRunId: null }],
+          }),
+          { status: 200 }
+        );
+      }
 
       if (url === '/api/threads') {
         return new Response(
@@ -242,6 +283,7 @@ describe('client threads and reconnect', () => {
       throw new Error(`Unhandled fetch URL: ${url}`);
     });
 
+    useAppStore.setState({ activeProjectId: projId });
     await useAppStore.getState().initializeFromStorage();
 
     // Verify messages and artifact
@@ -263,13 +305,23 @@ describe('client threads and reconnect', () => {
   });
 
   it('the open tab shows the committed version after end', async () => {
+    const projId = crypto.randomUUID();
     const threadId = crypto.randomUUID();
     let threadGetCount = 0;
 
     vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
 
-      if (url === '/api/threads') {
+      if (url === '/api/projects' || url.startsWith('/api/projects?')) {
+        return new Response(
+          JSON.stringify({
+            projects: [{ id: projId, name: 'My designs', updatedAt: 1000, threadCount: 1, thumbnailArtifactId: null }],
+          }),
+          { status: 200 }
+        );
+      }
+
+      if (url === '/api/threads' || (url.startsWith('/api/projects/') && url.endsWith('/threads'))) {
         return new Response(JSON.stringify({ threads: [{ id: threadId, title: 'Design', updatedAt: 1000, activeRunId: null }] }), { status: 200 });
       }
 
@@ -345,6 +397,7 @@ describe('client threads and reconnect', () => {
       throw new Error(`Unhandled fetch URL: ${url}`);
     });
 
+    useAppStore.setState({ activeProjectId: projId });
     await useAppStore.getState().initializeFromStorage();
     expect(threadGetCount).toBe(1);
 
@@ -366,13 +419,23 @@ describe('client threads and reconnect', () => {
   });
 
   it('a tail closed without end reloads the thread', async () => {
+    const projId = crypto.randomUUID();
     const threadId = crypto.randomUUID();
     let threadGetCount = 0;
 
     vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
 
-      if (url === '/api/threads') {
+      if (url === '/api/projects' || url.startsWith('/api/projects?')) {
+        return new Response(
+          JSON.stringify({
+            projects: [{ id: projId, name: 'My designs', updatedAt: 1000, threadCount: 1, thumbnailArtifactId: null }],
+          }),
+          { status: 200 }
+        );
+      }
+
+      if (url === '/api/threads' || (url.startsWith('/api/projects/') && url.endsWith('/threads'))) {
         return new Response(JSON.stringify({ threads: [{ id: threadId, title: 'Tail Test', updatedAt: 1000, activeRunId: 'r4' }] }), { status: 200 });
       }
 
@@ -404,6 +467,7 @@ describe('client threads and reconnect', () => {
       throw new Error(`Unhandled fetch URL: ${url}`);
     });
 
+    useAppStore.setState({ activeProjectId: projId });
     await useAppStore.getState().initializeFromStorage();
 
     // Give time to finish tail and re-fetch
@@ -447,10 +511,20 @@ describe('client threads and reconnect', () => {
       },
     });
 
+    const projId = crypto.randomUUID();
     vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
 
-      if (url === '/api/threads') {
+      if (url === '/api/projects' || url.startsWith('/api/projects?')) {
+        return new Response(
+          JSON.stringify({
+            projects: [{ id: projId, name: 'My designs', updatedAt: 1000, threadCount: 1, thumbnailArtifactId: null }],
+          }),
+          { status: 200 }
+        );
+      }
+
+      if (url === '/api/threads' || (url.startsWith('/api/projects/') && url.endsWith('/threads'))) {
         return new Response(JSON.stringify({ threads: [{ id: threadId, title: 'Stop Test', updatedAt: 1000, activeRunId: null }] }), { status: 200 });
       }
 
@@ -486,6 +560,7 @@ describe('client threads and reconnect', () => {
       throw new Error(`Unhandled fetch URL: ${url}`);
     });
 
+    useAppStore.setState({ activeProjectId: projId });
     await useAppStore.getState().initializeFromStorage();
 
     // Send chat (asynchronous in background)
@@ -523,6 +598,7 @@ describe('client threads and reconnect', () => {
   });
 
   it('409 attaches to the active run', async () => {
+    const projId = crypto.randomUUID();
     const threadId = crypto.randomUUID();
     const fetchedUrls: string[] = [];
 
@@ -531,7 +607,16 @@ describe('client threads and reconnect', () => {
       const url = typeof input === 'string' ? input : input.toString();
       fetchedUrls.push(url);
 
-      if (url === '/api/threads') {
+      if (url === '/api/projects' || url.startsWith('/api/projects?')) {
+        return new Response(
+          JSON.stringify({
+            projects: [{ id: projId, name: 'My designs', updatedAt: 1000, threadCount: 1, thumbnailArtifactId: null }],
+          }),
+          { status: 200 }
+        );
+      }
+
+      if (url === '/api/threads' || (url.startsWith('/api/projects/') && url.endsWith('/threads'))) {
         return new Response(JSON.stringify({ threads: [{ id: threadId, title: '409 Test', updatedAt: 1000, activeRunId: null }] }), { status: 200 });
       }
 
@@ -580,6 +665,7 @@ describe('client threads and reconnect', () => {
       throw new Error(`Unhandled fetch URL: ${url}`);
     });
 
+    useAppStore.setState({ activeProjectId: projId });
     await useAppStore.getState().initializeFromStorage();
     await useAppStore.getState().sendMessage('Message 1');
 
@@ -660,6 +746,7 @@ describe('client threads and reconnect', () => {
   });
 
   it('legacy banner', async () => {
+    const projId = 'proj-legacy';
     const legacyThreadId = 'thread-abc';
     await upsertThread({
       id: legacyThreadId,
@@ -680,6 +767,22 @@ describe('client threads and reconnect', () => {
     let chatCalled = false;
     vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/projects' || url.startsWith('/api/projects?')) {
+        return new Response(
+          JSON.stringify({
+            projects: [{ id: projId, name: 'My designs', updatedAt: 1000, threadCount: 1, thumbnailArtifactId: null }],
+          }),
+          { status: 200 }
+        );
+      }
+      if (url === `/api/projects/${projId}/threads` || url.startsWith(`/api/projects/${projId}/threads?`)) {
+        return new Response(
+          JSON.stringify({
+            threads: [{ id: legacyThreadId, title: 'Old Thread', updatedAt: 1000, activeRunId: null }],
+          }),
+          { status: 200 }
+        );
+      }
       if (url === '/api/threads') {
         // Server has no threads
         return new Response(JSON.stringify({ threads: [] }), { status: 200 });
@@ -691,6 +794,7 @@ describe('client threads and reconnect', () => {
       throw new Error(`Unhandled fetch URL: ${url}`);
     });
 
+    useAppStore.setState({ activeProjectId: projId });
     await useAppStore.getState().initializeFromStorage();
 
     const state = useAppStore.getState();
@@ -805,6 +909,7 @@ describe('client threads and reconnect', () => {
   });
 
   it('the first send adds the thread to the list', async () => {
+    useAppStore.setState({ activeProjectId: 'proj-1' });
     const draftId = useAppStore.getState().createNewThread();
     let threadReloaded = false;
     // The thread must be listed as soon as the send streams, before the reload after end adds it.
@@ -881,6 +986,7 @@ describe('client threads and reconnect', () => {
   });
 
   it('a send that fails leaves a draft', async () => {
+    useAppStore.setState({ activeProjectId: 'proj-1' });
     const draftId = useAppStore.getState().createNewThread();
     const countBefore = useAppStore.getState().threads.length;
 
@@ -1206,5 +1312,96 @@ describe('client threads and reconnect', () => {
 
     const markup = renderToStaticMarkup(<MessageBubble message={userMsg!} />);
     expect(markup).toContain('/api/artifacts/art-xyz');
+  });
+
+  it('the first load never shows a legacy banner or a disabled input', async () => {
+    const defaultProjectId = crypto.randomUUID();
+
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+
+      if (url === '/api/projects' || url.startsWith('/api/projects?')) {
+        return new Response(
+          JSON.stringify({
+            projects: [
+              {
+                id: defaultProjectId,
+                name: 'My designs',
+                updatedAt: 1000,
+                threadCount: 0,
+                thumbnailArtifactId: null,
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+
+      if (url === `/api/projects/${defaultProjectId}/threads` || url.startsWith(`/api/projects/${defaultProjectId}/threads?`)) {
+        return new Response(JSON.stringify({ threads: [] }), { status: 200 });
+      }
+
+      throw new Error(`Unhandled fetch URL: ${url}`);
+    });
+
+    await useAppStore.getState().openProject(defaultProjectId);
+
+    const markup = renderToStaticMarkup(<ChatPanel />);
+    expect(markup).not.toContain(LEGACY);
+    expect(markup).not.toMatch(/<textarea[^>]*disabled/);
+    expect(markup).toContain(WELCOME);
+  });
+
+  it('sendMessage on a thread includes projectId', async () => {
+    const projP = crypto.randomUUID();
+    const threadId = crypto.randomUUID();
+    let chatReqBody: Record<string, unknown> | null = null;
+
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+
+      if (url === '/api/chat' && init?.method === 'POST') {
+        chatReqBody = JSON.parse(init.body as string);
+        return new Response('{}', {
+          status: 200,
+          headers: { 'X-Run-Id': 'run-test-2' },
+        });
+      }
+
+      if (url === `/api/threads/${threadId}`) {
+        return new Response(
+          JSON.stringify({
+            id: threadId,
+            title: 'Design',
+            activeRun: null,
+            messages: [],
+            versions: [],
+          }),
+          { status: 200 }
+        );
+      }
+
+      throw new Error(`Unhandled fetch URL: ${url}`);
+    });
+
+    useAppStore.setState({
+      activeProjectId: projP,
+      activeThreadId: threadId,
+      threads: [
+        {
+          id: threadId,
+          title: 'Design',
+          createdAt: 1000,
+          updatedAt: 1000,
+          code: '',
+          messages: [],
+        },
+      ],
+    });
+
+    await useAppStore.getState().sendMessage('Make a cylinder');
+
+    expect(chatReqBody).toBeDefined();
+    expect(chatReqBody!.projectId).toBe(projP);
   });
 });
