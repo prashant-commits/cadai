@@ -52,13 +52,13 @@ export function createInitialThread(): ChatThread {
       {
         id: 'welcome-msg',
         role: 'assistant',
-        content: `👋 **Welcome to CAD AI!** I am your 3D parametric mechanical design assistant.
+        content: `**Welcome to CAD AI!** I am your 3D parametric mechanical design assistant.
 
 I specialize in creating 3D printable objects for **FDM, SLA, and SLS** printing. You can describe any part or mechanical design in plain English, and I will:
-1. 🧠 Plan and reason about the mechanics & printability
-2. ⚙️ Generate parametric build123d code
-3. 🔍 Validate geometry & manifoldness before rendering
-4. 🖨️ Recommend slicing settings (walls, infill, layer height, orientation)
+1. Plan and reason about the mechanics & printability
+2. Generate parametric build123d code
+3. Validate geometry & manifoldness before rendering
+4. Recommend slicing settings (walls, infill, layer height, orientation)
 
 **Try asking:**
 - *"Design a snap-fit lid enclosure for an Arduino Uno"*
