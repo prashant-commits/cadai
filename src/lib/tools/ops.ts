@@ -1,6 +1,6 @@
 import { renderHoleOp, renderCutRectOp } from './op-hole';
 import { renderTextOp } from './op-text';
-import { renderTextureOp } from './op-texture';
+import { renderTextureOp, textureDensityError } from './op-texture';
 import { renderMaterialOp } from './op-material';
 
 export type FontId = 'inter-bold' | 'roboto-mono-bold' | 'oswald-semibold';
@@ -186,6 +186,15 @@ export function validateToolOp(op: unknown): op is ToolOp {
       if (!validPatterns.includes(String(o.pattern))) return false;
       if (!isPositiveNumber(o.pitchMm) || !isPositiveNumber(o.depthMm)) return false;
       if (!Array.isArray(o.areaMm) || o.areaMm.length !== 2 || !o.areaMm.every(isPositiveNumber)) {
+        return false;
+      }
+      if (
+        textureDensityError({
+          pattern: o.pattern as 'knurl' | 'hex' | 'ribs' | 'dimples',
+          pitchMm: o.pitchMm as number,
+          areaMm: o.areaMm as [number, number],
+        }) !== null
+      ) {
         return false;
       }
       return true;

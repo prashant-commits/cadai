@@ -11,7 +11,7 @@ const PATTERN_NAMES: Record<string, string> = {
   dimples: 'Dimples',
 };
 
-const MATERIAL_NAMES: Record<string, string> = {
+export const MATERIAL_NAMES: Record<string, string> = {
   'brushed-metal': 'Brushed metal',
   'matte-plastic': 'Matte plastic',
   wood: 'Wood',

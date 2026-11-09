@@ -3,7 +3,9 @@
 import React from 'react';
 import { useAppStore } from '@/store/app-store';
 import { exportStep, exportStl } from '@/lib/export/stl-exporter';
-import { export3mf } from '@/lib/export/threemf-exporter';
+import { export3mf, partsFromTopology } from '@/lib/export/threemf-exporter';
+import { parseOpBlocks, type ToolOp } from '@/lib/tools/ops';
+import { partVariableForLabel } from '@/components/tools/tool-registry';
 import { fetchArtifactText } from '@/lib/client/server-thread';
 import { Download } from 'lucide-react';
 import {
@@ -179,7 +181,7 @@ export function downloadStl(): void {
   }
 }
 
-export function download3mf(): void {
+export async function download3mf(): Promise<void> {
   const state = useAppStore.getState();
   if (!state.geometry) return;
   const title = getExportDesignTitle(state);
@@ -187,6 +189,35 @@ export function download3mf(): void {
   const filename = exportFileName(title, versionNum, '3mf');
 
   try {
+    const activeThread = state.threads?.find((t) => t.id === state.activeThreadId);
+    const version = activeThread?.versions?.find((v) => v.version === state.viewingVersion);
+    const currentCode =
+      state.code !== undefined && state.code !== ''
+        ? state.code
+        : activeThread?.code;
+
+    const ops = parseOpBlocks(currentCode ?? '').map((p) => p.op);
+    const materials = ops.filter(
+      (op): op is Extract<ToolOp, { kind: 'material' }> => op.kind === 'material'
+    );
+
+    if (materials.length > 0) {
+      if (version?.topo) {
+        const topo = await state.loadVersionTopology(version.topo);
+        if (topo) {
+          const rawParts = partsFromTopology(topo);
+          const parts = rawParts.map((p) => ({
+            ...p,
+            name: partVariableForLabel(currentCode ?? '', p.name) ?? p.name,
+          }));
+          export3mf(state.geometry, filename, { parts, materials });
+          return;
+        }
+      }
+      export3mf(state.geometry, filename, { materials });
+      return;
+    }
+
     export3mf(state.geometry, filename);
   } catch (err) {
     console.error('Failed to download 3MF file:', err);
@@ -200,7 +231,7 @@ export function ExportMenu() {
   const handleSelect = (ext: ExportExt) => {
     if (ext === 'stl') downloadStl();
     else if (ext === 'step') void downloadStep();
-    else if (ext === '3mf') download3mf();
+    else if (ext === '3mf') void download3mf();
   };
 
   return (

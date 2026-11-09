@@ -8,6 +8,8 @@ import { layerRows } from '@/components/inspector/layers-section';
 import { FacePicker } from '@/components/tools/face-picker';
 import { OpPreview } from '@/components/tools/op-preview';
 import { getTool, toolForOpKind } from '@/components/tools/tool-registry';
+import { parseOpBlocks, parseCadaiParts } from '@/lib/tools/ops';
+import { viewerMaterial } from './material-presets';
 import type { TopoPart } from '@/lib/geometry/topology';
 
 interface CadModelProps {
@@ -28,11 +30,18 @@ export function CadModel({ geometry }: CadModelProps) {
     draftOp,
     preview,
     loadVersionTopology,
+    code,
   } = useAppStore();
   const { camera, controls } = useThree();
 
   const activeThread = threads.find((t) => t.id === activeThreadId);
   const currentVersion = activeThread?.versions?.find((v) => v.version === viewingVersion);
+
+  const vm = useMemo(() => {
+    const ops = parseOpBlocks(code || '').map((p) => p.op);
+    const parsedParts = parseCadaiParts(code || '');
+    return viewerMaterial(ops, parsedParts);
+  }, [code]);
 
   const selectedPart = useMemo(() => {
     if (!selectedLayerId) return null;
@@ -171,9 +180,9 @@ export function CadModel({ geometry }: CadModelProps) {
           receiveShadow
         >
           <meshStandardMaterial
-            color="#94a3b8" // Slate 400 CAD plastic
-            roughness={0.3}
-            metalness={0.08}
+            color={vm.color}
+            roughness={vm.roughness}
+            metalness={vm.metalness}
             wireframe={viewportSettings.wireframe}
             side={THREE.DoubleSide}
             polygonOffset
