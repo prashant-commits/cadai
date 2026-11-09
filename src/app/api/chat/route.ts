@@ -169,6 +169,32 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  if (b.layer !== undefined && b.layer !== null) {
+    if (typeof b.layer !== 'object' || Array.isArray(b.layer)) {
+      return NextResponse.json(
+        { error: { code: 'bad_request', message: 'layer must be an object' } },
+        { status: 400 }
+      );
+    }
+    const l = b.layer as Record<string, unknown>;
+    if (typeof l.id !== 'string' || l.id.length < 1 || l.id.length > 80) {
+      return NextResponse.json(
+        { error: { code: 'bad_request', message: 'layer id must be 1..80 characters' } },
+        { status: 400 }
+      );
+    }
+    if (
+      typeof l.name !== 'string' ||
+      l.name.trim().length === 0 ||
+      l.name.length > 80
+    ) {
+      return NextResponse.json(
+        { error: { code: 'bad_request', message: 'layer name must be non-empty and <= 80 characters' } },
+        { status: 400 }
+      );
+    }
+  }
+
   const threadId = b.threadId as string;
   const projectId = typeof b.projectId === 'string' ? b.projectId : undefined;
   const clientMessageId = b.clientMessageId as string;
@@ -184,6 +210,13 @@ export async function POST(req: NextRequest) {
   const pinnedParams = (b.pinnedParams as Record<string, number> | undefined) ?? undefined;
   const editedBody = (b.editedBody as string | undefined) ?? undefined;
   const model = typeof b.model === 'string' ? b.model : undefined;
+  const layer =
+    b.layer !== undefined && b.layer !== null
+      ? {
+          id: (b.layer as { id: string }).id,
+          name: (b.layer as { name: string }).name,
+        }
+      : undefined;
 
   const db = getDb();
   let r:
@@ -209,6 +242,7 @@ export async function POST(req: NextRequest) {
         pinnedParams,
         editedBody,
         model,
+        layer,
       })
     );
   } catch (err) {
@@ -268,6 +302,7 @@ export async function POST(req: NextRequest) {
       baseRequest: input.baseRequest,
       attachments: input.attachments,
       baseEdits: input.baseEdits,
+      layer: input.layer,
     };
 
     const effectiveModel = coerceRouteModel(model);

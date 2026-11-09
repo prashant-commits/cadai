@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildFirstUserMessage } from './prompt';
+import { buildFirstUserMessage, DESIGNER_SYSTEM_PROMPT } from './prompt';
 import type { DesignerInput } from './types';
 
 describe('designer prompt markup framing', () => {
@@ -38,5 +38,26 @@ describe('designer prompt markup framing', () => {
     const msg = buildFirstUserMessage(input, 'body');
     expect(msg).toContain(MARKUP_SENTENCE);
     expect(msg).toContain(REFERENCE_SENTENCE);
+  });
+
+  it('the designer prompt contains the op-block rule', () => {
+    const expected =
+      'Blocks between `# cadai:op` and `# cadai:end` lines are the user\'s manual edits. Keep each block and its marker lines. To change one, edit its parameter values; never delete or rewrite a block unless the user asks.';
+    expect(DESIGNER_SYSTEM_PROMPT).toContain(expected);
+  });
+
+  it('a selected layer reaches the designer as the fixed sentence', () => {
+    const withLayer: DesignerInput = {
+      request: 'make a bracket',
+      layer: { id: 'l1', name: 'Base plate' },
+    };
+    const msgWith = buildFirstUserMessage(withLayer, 'body');
+    expect(msgWith).toContain('The user selected the layer "Base plate"; apply the request to it.');
+
+    const withoutLayer: DesignerInput = {
+      request: 'make a bracket',
+    };
+    const msgWithout = buildFirstUserMessage(withoutLayer, 'body');
+    expect(msgWithout).not.toContain('selected the layer');
   });
 });

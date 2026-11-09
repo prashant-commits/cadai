@@ -28,6 +28,7 @@ export interface ChatMessage {
   designVersion?: number;
   /** A manual tool edit renders as a small inline line, not a bubble (Task 11 produces them). */
   kind?: 'tool_edit';
+  layer?: { id: string; name: string } | null;
   timestamp: number;
 }
 

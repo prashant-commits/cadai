@@ -2,10 +2,11 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { useAppStore } from '@/store/app-store';
-import { ArrowUp, Square, Loader2, Sparkles, X } from 'lucide-react';
+import { ArrowUp, Square, Loader2, Sparkles, X, Layers } from 'lucide-react';
 import { ImageButton } from '@/components/input/image-button';
 import { ModelSelect } from '@/components/input/model-select';
 import { cn } from '@/lib/utils';
+import { resolveSelectedLayer } from '@/lib/tools/layers';
 
 export interface ChatInputProps {
   onSendMessage: (
@@ -34,9 +35,24 @@ export function ChatInput({
   initialText = '',
   showPromptChips = false,
 }: ChatInputProps) {
-  const { pendingAttachment, removeAttachment, retryAttachment } = useAppStore();
+  const {
+    pendingAttachment,
+    removeAttachment,
+    retryAttachment,
+    selectedLayerId,
+    setSelectedLayerId,
+    code,
+    parts,
+    threads,
+    activeThreadId,
+    viewingVersion,
+  } = useAppStore();
   const [input, setInput] = useState(initialText);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const activeThread = threads.find((t) => t.id === activeThreadId);
+  const currentVersion = activeThread?.versions?.find((v) => v.version === viewingVersion);
+  const selectedLayer = resolveSelectedLayer(code, parts, currentVersion, selectedLayerId);
 
   const isUploadingOrFailed =
     pendingAttachment?.status === 'uploading' || pendingAttachment?.status === 'failed';
@@ -102,6 +118,23 @@ export function ChatInput({
       {/* Input Form Box */}
       <form onSubmit={handleSubmit} data-slot="chat-input" className="glass rounded-3xl p-3 flex flex-col gap-2 relative">
         {/* Task 17: layer chip */}
+        {selectedLayer && (
+          <div
+            data-slot="layer-chip"
+            className="self-start inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[var(--radius-pill)] border border-border/50 bg-card/40 text-xs text-foreground font-medium"
+          >
+            <Layers className="size-3 text-muted-foreground shrink-0" />
+            <span>Layer {selectedLayer.name}</span>
+            <button
+              type="button"
+              onClick={() => setSelectedLayerId(null)}
+              aria-label="Clear layer"
+              className="p-0.5 rounded-full hover:bg-accent text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+            >
+              <X className="size-3 text-current" />
+            </button>
+          </div>
+        )}
 
         {/* Attachment Chip */}
         {pendingAttachment && (

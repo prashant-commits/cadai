@@ -73,7 +73,35 @@ export function replaceOpInBody(body: string, op: ToolOp): string {
   if (!match) {
     throw new OpTargetError(`Op "${op.id}" not found in body`);
   }
-  const rendered = renderOpBlock(op);
+  let rendered = renderOpBlock(op);
+
+  if (op.kind === 'text' && match.op.kind === 'text') {
+    const oldTextOp = match.op;
+    const newTextOp = op;
+    if (newTextOp.color === oldTextOp.color) {
+      const oldBlockText = body.slice(match.start, match.end);
+      const matStartMarker = `# cadai:op material id=${op.id}_color`;
+      const matEndMarker = `# cadai:end ${op.id}_color`;
+      const oldMatStart = oldBlockText.indexOf(matStartMarker);
+      const oldMatEnd = oldMatStart !== -1 ? oldBlockText.indexOf(matEndMarker, oldMatStart) : -1;
+      if (oldMatStart !== -1 && oldMatEnd !== -1) {
+        const oldLineEnd = oldBlockText.indexOf('\n', oldMatEnd);
+        const oldMatBlockText = oldBlockText.slice(
+          oldMatStart,
+          oldLineEnd === -1 ? oldBlockText.length : oldLineEnd + 1
+        );
+
+        const newMatStart = rendered.indexOf(matStartMarker);
+        const newMatEnd = newMatStart !== -1 ? rendered.indexOf(matEndMarker, newMatStart) : -1;
+        if (newMatStart !== -1 && newMatEnd !== -1) {
+          const newLineEnd = rendered.indexOf('\n', newMatEnd);
+          const newMatBlockEnd = newLineEnd === -1 ? rendered.length : newLineEnd + 1;
+          rendered = rendered.slice(0, newMatStart) + oldMatBlockText + rendered.slice(newMatBlockEnd);
+        }
+      }
+    }
+  }
+
   const before = body.slice(0, match.start);
   const after = body.slice(match.end);
   const hasTrailingNewline = body.slice(match.start, match.end).endsWith('\n');

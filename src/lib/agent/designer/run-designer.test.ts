@@ -17,6 +17,7 @@ import { DESIGNER_SYSTEM_PROMPT } from './prompt';
 import { withGeneratedPrelude } from '../../brep/prelude';
 import { createDesignerNode } from './node';
 import { REFUSAL } from '../../persist/phrases';
+import { applyOp, parseOpBlocks, type ToolOp } from '../../tools/ops';
 
 vi.mock('../../engine/brep-runner', () => ({ runBrep: vi.fn() }));
 vi.mock('../model-provider', async (orig) => ({
@@ -219,6 +220,47 @@ describe('edit mode', () => {
     const m = installModel([reply([run(PLAIN), render(), finish()]), reply([run(PLAIN), render(), finish('ok')])]);
     await runDesigner({ request: 'a box' }, {});
     expect(toolResults(m.seen[1]).join('\n')).toMatch(/at least 2 run_script calls/);
+  });
+
+  it('an AI body edit keeps a manual op block with its edited parameter', async () => {
+    const basePlateBody = body([
+      'plate_w = 60  # plate width',
+      'plate = Box(plate_w, 40, 5)',
+      'plate.label = "plate"',
+      '_cadai_parts = [plate]',
+      'result = plate',
+    ]);
+    const holeOp: ToolOp = {
+      kind: 'hole',
+      id: 'op_hole01',
+      part: 'plate',
+      plane: {
+        origin: [0, 0, 5],
+        normal: [0, 0, 1],
+        xDir: [1, 0, 0],
+      },
+      offset: [0, 0],
+      rotationDeg: 0,
+      size: 'custom',
+      diameterMm: 5,
+      head: 'none',
+      depthMm: 5,
+    };
+    const priorScript = applyOp(basePlateBody, holeOp);
+    const parsedPrior = parseOpBlocks(priorScript);
+    expect(parsedPrior).toHaveLength(1);
+    expect((parsedPrior[0].op as Extract<ToolOp, { kind: 'hole' }>).diameterMm).toBe(5);
+
+    const editedScript = priorScript.replace('op_hole01_diameter = 5.0', 'op_hole01_diameter = 8.0');
+
+    installModel([reply([run(editedScript), render(), finish('enlarged hole')])]);
+    const res = await runDesigner({ request: 'plate with hole', priorScript, editRequest: 'make the hole 8mm' }, {});
+    expect(res.failed).toBeUndefined();
+    const parsedResult = parseOpBlocks(res.script);
+    expect(parsedResult).toHaveLength(1);
+    const op = parsedResult[0].op as Extract<ToolOp, { kind: 'hole' }>;
+    expect(op.id).toBe('op_hole01');
+    expect(op.diameterMm).toBe(8);
   });
 });
 

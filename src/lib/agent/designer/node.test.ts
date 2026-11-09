@@ -38,6 +38,7 @@ function createMockState(overrides: Partial<AgentStateType> = {}): AgentStateTyp
     triageKind: null,
     startedAt: null,
     designerCheckSentences: [],
+    layer: null,
     ...overrides,
   };
 }

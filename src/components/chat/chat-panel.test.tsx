@@ -248,4 +248,39 @@ describe('ChatPanel and related components', () => {
     expect(html).toMatch(/data-design-version="2"[^>]*data-highlighted="true"/);
     expect(html).not.toMatch(/data-design-version="1"[^>]*data-highlighted="true"/);
   });
+
+  it('the user bubble shows the layer chip', () => {
+    const msg = {
+      id: 'm-user',
+      role: 'user' as const,
+      content: 'make it wider',
+      layer: { id: 'layer-1', name: 'Hole Ø5' },
+      timestamp: Date.now(),
+    };
+    const html = renderToStaticMarkup(<MessageBubble message={msg} />);
+    expect(html).toContain('data-slot="layer-chip"');
+    expect(html).toContain('Layer');
+    expect(html).toContain('Hole Ø5');
+  });
+
+  it('a selected layer shows a chip in the input', () => {
+    useAppStore.setState({
+      selectedLayerId: 'base',
+      parts: [
+        {
+          label: 'base',
+          min: [0, 0, 0],
+          max: [10, 10, 10],
+          volume: 1000,
+          valid: true,
+        },
+      ],
+      code: 'base = Box(10, 10, 10)\n_cadai_parts = [base]\nresult = base',
+    });
+    const html = renderToStaticMarkup(<ChatInput onSendMessage={() => {}} />);
+    expect(html).toContain('data-slot="layer-chip"');
+    expect(html).toContain('Layer');
+    expect(html).toContain('base');
+    expect(html).toContain('aria-label="Clear layer"');
+  });
 });

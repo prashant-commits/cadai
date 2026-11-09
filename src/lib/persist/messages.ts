@@ -9,7 +9,7 @@ export const MessageStore = {
   ): Promise<MessageRow[]> {
     const res = await q.query(
       `SELECT m.id, m.thread_id, m.seq, m.role, m.kind, m.content, m.run_id,
-              m.design_version, m.client_message_id, m.created_at, m.steps,
+              m.design_version, m.client_message_id, m.created_at, m.steps, m.layer,
               COALESCE(
                 (SELECT json_agg(json_build_object('id', ma.artifact_id, 'kind', ma.kind) ORDER BY ma.artifact_id)
                  FROM message_attachments ma

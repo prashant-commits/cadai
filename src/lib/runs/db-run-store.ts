@@ -466,7 +466,7 @@ async function start(
   // Step 9: Insert user message and message_attachments
   const msgRes = await q.query(
     `INSERT INTO messages (
-      id, thread_id, seq, role, kind, content, run_id, client_message_id
+      id, thread_id, seq, role, kind, content, run_id, client_message_id, layer
     ) VALUES (
       gen_random_uuid(),
       $1,
@@ -475,9 +475,16 @@ async function start(
       'unknown',
       $2,
       $3,
-      $4
+      $4,
+      $5
     ) RETURNING id`,
-    [input.threadId, input.text, runId, input.clientMessageId]
+    [
+      input.threadId,
+      input.text,
+      runId,
+      input.clientMessageId,
+      input.layer ? JSON.stringify(input.layer) : null,
+    ]
   );
   const userMessageId = String(msgRes.rows[0].id);
 
