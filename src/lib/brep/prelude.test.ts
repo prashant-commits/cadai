@@ -8,11 +8,27 @@ import {
   toBody,
 } from './prelude';
 import { checkPythonScript } from './body-check';
+import { DEFAULT_CODE } from '@/lib/storage/thread-storage';
 
 describe('prelude', () => {
   it('exports PRELUDE_VERSION as 1 and defines PRELUDES[1]', () => {
     expect(PRELUDE_VERSION).toBe('1');
     expect(PRELUDES[PRELUDE_VERSION]).toBeDefined();
+  });
+
+  it('toBody keeps a header comment and drops the build123d import below it', () => {
+    const script = '# Demo: a box\nfrom build123d import *\n\nwidth = 40  # [20:80] Width\nresult = Box(width, 1, 1)\n';
+    expect(toBody(script)).toBe('# Demo: a box\n\nwidth = 40  # [20:80] Width\nresult = Box(width, 1, 1)\n');
+    expect(checkPythonScript(withGeneratedPrelude(toBody(script), PRELUDE_VERSION)).ok).toBe(true);
+  });
+
+  it('a body that starts with a comment and code is unchanged', () => {
+    const body = '# my bracket\n\nwidth = 10\nresult = Box(width, 1, 1)';
+    expect(toBody(body)).toBe(body);
+  });
+
+  it('the default demo passes the script check as a body', () => {
+    expect(checkPythonScript(withGeneratedPrelude(toBody(DEFAULT_CODE), PRELUDE_VERSION))).toEqual({ ok: true });
   });
 
   it('a copied prelude without a sentinel is stripped', () => {

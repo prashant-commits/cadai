@@ -152,11 +152,14 @@ function matchAndStripCandidate(lines: string[], targetText: string, allowSkipCo
 }
 
 function stripAllowedPreludeLines(lines: string[]): string[] {
+  // The user's own header comments stay in place; prelude lines below them are still stripped.
+  const kept: string[] = [];
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
     const trimmed = line.trim();
     if (!trimmed) {
+      if (kept.length > 0 && kept[kept.length - 1].trim() !== '') kept.push(line);
       i++;
       continue;
     }
@@ -169,7 +172,9 @@ function stripAllowedPreludeLines(lines: string[]): string[] {
         i++;
         continue;
       }
-      break;
+      kept.push(line);
+      i++;
+      continue;
     }
     if (ALLOWED_PRELUDE_EXACT_LINES.has(trimmed)) {
       i++;
@@ -195,7 +200,7 @@ function stripAllowedPreludeLines(lines: string[]): string[] {
     }
     break;
   }
-  return lines.slice(i);
+  return [...kept, ...lines.slice(i)];
 }
 
 /**

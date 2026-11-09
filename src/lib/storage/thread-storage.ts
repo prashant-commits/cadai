@@ -14,7 +14,6 @@ import {
 } from './db-schema';
 
 export const DEFAULT_CODE = `# CAD AI - Welcome Demo: Parametric Rounded Box with Center Bore
-from build123d import *
 
 width = 40  # [20:80] Width in mm
 depth = 40  # [20:80] Depth in mm
