@@ -78,7 +78,10 @@ export async function POST(req: NextRequest) {
     if (!check.ok) {
       return NextResponse.json(errorBody(badRequest(check.reason)), { status: 400 });
     }
-    const result = await runBrep(finalCode);
+    const wantTopology = (body as { topology?: unknown })?.topology === true;
+    const result = wantTopology
+      ? await runBrep(finalCode, { topology: true })
+      : await runBrep(finalCode);
     if (!result.ok) {
       const err = fromBrep(result.error || 'build123d compilation failed.', result.failure);
       const line =
@@ -94,14 +97,19 @@ export async function POST(req: NextRequest) {
       stlAscii = Buffer.from(result.stl, 'base64').toString('utf-8');
     }
 
-    return NextResponse.json({
+    const responsePayload: Record<string, unknown> = {
       success: true,
       stl: stlAscii,
       step: result.step,
       compileTimeMs: result.ms,
       language: 'build123d',
       parts: partInfo(result.parts ?? []),
-    });
+    };
+    if (wantTopology) {
+      responsePayload.topology = result.topology;
+    }
+
+    return NextResponse.json(responsePayload);
   } catch (err: unknown) {
     const wrapped = err instanceof SyntaxError
       ? new Error(err.message)

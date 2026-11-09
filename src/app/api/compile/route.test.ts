@@ -162,4 +162,44 @@ describe('/api/compile API Route', () => {
       spy.mockRestore();
     }
   });
+
+  it('/api/compile requests topology only when topology: true is in request body', async () => {
+    const spy = vi.spyOn(brepRunner, 'runBrep').mockImplementation(async () => ({
+      ok: true,
+      stl: Buffer.from('solid test').toString('base64'),
+      step: 'STEP',
+      parts: [],
+      solids: 1,
+      ms: 10,
+      topology: { mesh: { positions: [], indices: [], faceIds: [] }, faces: [], edges: [], parts: [] },
+    }));
+
+    try {
+      // Without topology: true
+      const req1 = new NextRequest('http://localhost:3000/api/compile', {
+        method: 'POST',
+        headers: { cookie: OWNER_COOKIE },
+        body: JSON.stringify({ code: 'result = Box(10, 10, 10)' }),
+      });
+      const res1 = await POST(req1);
+      expect(res1.status).toBe(200);
+      expect(spy).toHaveBeenLastCalledWith(expect.any(String));
+      const json1 = await res1.json();
+      expect(json1.topology).toBeUndefined();
+
+      // With topology: true
+      const req2 = new NextRequest('http://localhost:3000/api/compile', {
+        method: 'POST',
+        headers: { cookie: OWNER_COOKIE },
+        body: JSON.stringify({ code: 'result = Box(10, 10, 10)', topology: true }),
+      });
+      const res2 = await POST(req2);
+      expect(res2.status).toBe(200);
+      expect(spy).toHaveBeenLastCalledWith(expect.any(String), { topology: true });
+      const json2 = await res2.json();
+      expect(json2.topology).toBeDefined();
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });

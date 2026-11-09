@@ -630,6 +630,53 @@ describe('DbRunStore (Postgres concurrency)', () => {
     expect(pDeletes.rows.map((r) => r.object_key)).toEqual(['key_y']);
   });
 
+  it('sweep keeps a topo artifact referenced by a design', async () => {
+    const ownerKey = `owner_${crypto.randomUUID()}`;
+    const referencedTopoId = `art_topo_ref_${crypto.randomUUID()}`;
+    const unreferencedTopoId = `art_topo_unref_${crypto.randomUUID()}`;
+    const threadId = crypto.randomUUID();
+
+    const now = Date.now();
+    const oldTime = new Date(now - 25 * 3600 * 1000);
+
+    // Insert unreferenced topo artifact older than 25 hours
+    await db.query(
+      `INSERT INTO artifacts (id, owner_key, kind, bytes, object_key, created_at)
+       VALUES ($1, $2, 'topo', 200, 'unref_topo_key', $3)`,
+      [unreferencedTopoId, ownerKey, oldTime]
+    );
+
+    // Insert referenced topo artifact older than 25 hours
+    await db.query(
+      `INSERT INTO artifacts (id, owner_key, kind, bytes, object_key, created_at)
+       VALUES ($1, $2, 'topo', 200, 'ref_topo_key', $3)`,
+      [referencedTopoId, ownerKey, oldTime]
+    );
+
+    // Create thread and design referencing referencedTopoId in topo_artifact
+    await db.query(`INSERT INTO threads (id, owner_key) VALUES ($1, $2)`, [threadId, ownerKey]);
+    await db.query(
+      `INSERT INTO designs (
+        thread_id, version, parent_version, origin, base_request, edits,
+        body, prelude_version, summary, topo_artifact
+      ) VALUES (
+        $1, 1, null, 'designer', 'test', '[]'::jsonb,
+        'result = Box(1,1,1)', 'v1', 'summary', $2
+      )`,
+      [threadId, referencedTopoId]
+    );
+
+    const sweepRes = await db.transaction((q) => sweep(q, now));
+    expect(sweepRes.objectKeys).toContain('unref_topo_key');
+    expect(sweepRes.objectKeys).not.toContain('ref_topo_key');
+
+    const remaining = await db.query(`SELECT id FROM artifacts WHERE id IN ($1, $2)`, [
+      unreferencedTopoId,
+      referencedTopoId,
+    ]);
+    expect(remaining.rows).toEqual([{ id: referencedTopoId }]);
+  });
+
   it('start, commit and terminate never deadlock across two threads', async () => {
     const ownerKey = `owner_${crypto.randomUUID()}`;
 

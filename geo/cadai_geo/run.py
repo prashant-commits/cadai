@@ -1249,6 +1249,7 @@ def measure_and_export(
     interferences: bool = False,
     part_meshes: bool = False,
     connectivity: bool = False,
+    topology: bool = False,
 ) -> dict:
     """Trusted stage: load BREP from ``scratch``, measure it, write exports into ``outdir``.
 
@@ -1285,6 +1286,13 @@ def measure_and_export(
             failure = _checked_export(result, parts, step_path, stl_path, part_shapes, extras)
             if failure is not None:
                 return failure
+            if topology:
+                try:
+                    from cadai_geo.topology import write_topology
+                    write_topology(result, part_shapes, outdir)
+                except Exception:
+                    existing = extras.get("notes", [])
+                    extras["notes"] = existing + ["topology skipped: error"]
             try:
                 notes_bytes = _read_regular_at(scratch_fd, "notes.json", 64 * 1024)
                 if notes_bytes:
@@ -1328,6 +1336,7 @@ def run(
     interferences: bool = False,
     part_meshes: bool = False,
     connectivity: bool = False,
+    topology: bool = False,
 ) -> dict:
     """Execute ``script_path`` and write ``model.step`` / ``model.stl`` into ``outdir``."""
     try:
@@ -1358,6 +1367,13 @@ def run(
         )
         if failure is not None:
             return failure
+        if topology:
+            try:
+                from cadai_geo.topology import write_topology
+                write_topology(result, part_shapes, outdir)
+            except Exception:
+                existing = extras.get("notes", [])
+                extras["notes"] = existing + ["topology skipped: error"]
         cadai_notes = namespace.get("_cadai_notes")
         if isinstance(cadai_notes, list) and cadai_notes:
             existing = extras.get("notes", [])
@@ -1384,6 +1400,8 @@ def run(
                 payload["part_meshes"] = part_meshes_dict
             except ValueError:
                 return {"ok": False, "error": "output too large"}
+        if topology and os.path.isfile(os.path.join(os.fspath(outdir), "topology.json")):
+            payload["topology_file"] = "topology.json"
         return payload
     except Exception as exc:
         return {"ok": False, "error": _last_line(exc)}
@@ -1415,8 +1433,11 @@ def main(argv: list[str] | None = None) -> None:
         args.remove("--part-meshes")
     if "--partMeshes" in args:
         args.remove("--partMeshes")
+    topology = "--topology" in args
+    if topology:
+        args.remove("--topology")
     if len(args) != 3:
-        payload = {"ok": False, "error": "usage: python -m cadai_geo <script.py> <outdir> [--interferences] [--connectivity] [--part-meshes]"}
+        payload = {"ok": False, "error": "usage: python -m cadai_geo <script.py> <outdir> [--interferences] [--connectivity] [--part-meshes] [--topology]"}
     else:
         try:
             from cadai_geo.isolate import _DEFAULT_AS_LIMIT, _disable_core, _limit_and_drop
@@ -1429,7 +1450,7 @@ def main(argv: list[str] | None = None) -> None:
         os.makedirs(args[2], exist_ok=True)
         sink = io.StringIO()
         with contextlib.redirect_stdout(sink):
-            payload = run(args[1], args[2], interferences=interferences, part_meshes=part_meshes, connectivity=connectivity)
+            payload = run(args[1], args[2], interferences=interferences, part_meshes=part_meshes, connectivity=connectivity, topology=topology)
             try:
                 write_result(args[2], payload)
             except OSError:

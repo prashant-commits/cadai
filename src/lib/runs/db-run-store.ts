@@ -556,11 +556,11 @@ async function commit(
       `INSERT INTO designs (
         thread_id, version, parent_version, origin, run_id,
         base_request, edits, body, prelude_version, summary,
-        facts, flags, stl_artifact, step_artifact
+        facts, flags, stl_artifact, step_artifact, topo_artifact
       ) VALUES (
         $1, $2, $3, 'designer', $4,
         $5, $6, $7, $8, $9,
-        $10, $11, $12, $13
+        $10, $11, $12, $13, $14
       )`,
       [
         threadId,
@@ -576,6 +576,7 @@ async function commit(
         JSON.stringify(plan.design.flags ?? []),
         plan.design.stlArtifact ?? null,
         plan.design.stepArtifact ?? null,
+        plan.design.topoArtifact ?? null,
       ]
     );
   }

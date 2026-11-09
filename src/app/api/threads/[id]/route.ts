@@ -110,6 +110,7 @@ export async function GET(
     preludeVersion: d.preludeVersion,
     stl: d.stlArtifact,
     step: d.stepArtifact,
+    topo: d.topoArtifact,
     createdAt: d.createdAt,
     partLabels: extractPartLabels(d.facts),
   }));

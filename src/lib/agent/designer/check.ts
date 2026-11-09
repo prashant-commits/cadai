@@ -25,11 +25,12 @@ export function buildOutcome(params: {
   hasMesh: boolean;
   stlAscii?: string;
   stepBase64?: string;
+  topology?: Record<string, unknown>;
   failedChecks?: boolean;
   sentences?: string[];
   formatFlagsFn?: (flags: ReviewFlag[], final: boolean) => string;
 }): RunOutcome {
-  const { state, script, hasMesh, stlAscii, stepBase64, failedChecks, sentences } = params;
+  const { state, script, hasMesh, stlAscii, stepBase64, topology, failedChecks, sentences } = params;
   const flagFormatter = params.formatFlagsFn ?? formatFlags;
   const isEdit = state.triageKind === 'edit';
   const userKind: UserKind = isEdit ? 'edit' : 'request';
@@ -109,6 +110,7 @@ export function buildOutcome(params: {
         flags: ['failed_checks'],
         stl: stlAscii,
         step: stepBase64,
+        topology,
       },
       costUsd,
       wallMs,
@@ -141,6 +143,7 @@ export function buildOutcome(params: {
       flags: [],
       stl: hasMesh ? stlAscii : undefined,
       step: stepBase64,
+      topology,
     },
     costUsd,
     wallMs,
@@ -196,6 +199,7 @@ export function createDesignerCheck(deps: DesignerCheckDeps = {}) {
           signal: config?.signal,
           interferences: true,
           connectivity: true,
+          topology: true,
         });
 
         if (config?.signal?.aborted) {
@@ -263,6 +267,7 @@ export function createDesignerCheck(deps: DesignerCheckDeps = {}) {
         hasMesh,
         stlAscii: hasMesh ? ascii : undefined,
         stepBase64: r.step ?? undefined,
+        topology: r.topology,
         failedChecks: false,
         formatFlagsFn: deps.formatFlags,
       });
@@ -316,6 +321,7 @@ export function createDesignerCheck(deps: DesignerCheckDeps = {}) {
       hasMesh,
       stlAscii: hasMesh ? ascii : undefined,
       stepBase64: r?.step ?? undefined,
+      topology: r?.topology,
       failedChecks: true,
       sentences,
       formatFlagsFn: deps.formatFlags,

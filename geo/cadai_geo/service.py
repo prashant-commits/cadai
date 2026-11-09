@@ -201,6 +201,7 @@ class RunRequest(BaseModel):
     connectivity: bool = False
     partMeshes: bool = False
     part_meshes: bool = False
+    topology: bool = False
 
 
 class _TooLarge(Exception):
@@ -335,6 +336,7 @@ def _read_result(outdir: str) -> dict | None:
 def _attach_exports(payload: dict, outdir: str, max_bytes: int) -> dict:
     for key, _name in _EXPORTS:
         payload.pop(key, None)
+    payload.pop("topology", None)
     if isinstance(payload.get("error"), str):
         payload["error"] = redact(payload["error"])
     dir_fd = _open_owned_dir(outdir)
@@ -366,6 +368,21 @@ def _attach_exports(payload: dict, outdir: str, max_bytes: int) -> dict:
                 part_meshes[label] = base64.b64encode(raw).decode("ascii")
             payload["partMeshes"] = part_meshes
             payload["part_meshes"] = part_meshes
+
+        try:
+            raw_topo = _read_at(dir_fd, "topology.json", max_bytes)
+        except _TooLarge:
+            existing = payload.get("notes")
+            if not isinstance(existing, list):
+                existing = []
+            payload["notes"] = existing + ["topology skipped: too large"]
+            raw_topo = None
+        if raw_topo is not None:
+            try:
+                payload["topology"] = json.loads(raw_topo.decode("utf-8"))
+            except Exception:
+                pass
+
         return payload
     finally:
         os.close(dir_fd)
@@ -389,7 +406,7 @@ def _remove_tree(path: str) -> None:
         time.sleep(0.05)
 
 
-def _run_cli(script: str, timeout_s: float, interferences: bool = False, part_meshes: bool = False, connectivity: bool = False) -> dict:
+def _run_cli(script: str, timeout_s: float, interferences: bool = False, part_meshes: bool = False, connectivity: bool = False, topology: bool = False) -> dict:
     timeout_s = clamp_timeout(timeout_s)
     deadline = time.monotonic() + timeout_s
     slot = _acquire_slot(deadline)
@@ -429,6 +446,7 @@ def _run_cli(script: str, timeout_s: float, interferences: bool = False, part_me
             "interferences": interferences,
             "partMeshes": part_meshes,
             "connectivity": connectivity,
+            "topology": topology,
         }
         path = os.environ.get("PATH")
         if path:
@@ -477,4 +495,4 @@ def run_route(
         raise HTTPException(status_code=401)
     if len(body.script.encode("utf-8")) > _MAX_SCRIPT_BYTES:
         raise HTTPException(status_code=413, detail="script too large")
-    return _run_cli(body.script, body.timeout_s, body.interferences, body.partMeshes or body.part_meshes, body.connectivity)
+    return _run_cli(body.script, body.timeout_s, body.interferences, body.partMeshes or body.part_meshes, body.connectivity, body.topology)
