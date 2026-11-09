@@ -16,10 +16,10 @@ interface ChatInputProps {
 }
 
 const QUICK_PROMPTS = [
-  '📱 Phone stand with 60° angle & cable notch',
-  '📦 Snap-fit enclosure with 2mm walls',
-  '🔩 Mounting bracket with M3 screw holes',
-  '⚙️ Parametric 16-tooth GT2 pulley',
+  'Phone stand with 60° angle & cable notch',
+  'Snap-fit enclosure with 2mm walls',
+  'Mounting bracket with M3 screw holes',
+  'Parametric 16-tooth GT2 pulley',
 ];
 
 export function ChatInput({
