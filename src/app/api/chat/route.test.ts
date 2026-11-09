@@ -11,7 +11,10 @@ import {
   LEGACY,
   RUN_ACTIVE,
   STALE_CLIENT,
+  BUSY,
+  BUDGET_USED,
 } from '@/lib/persist/phrases';
+import { StoreError } from '@/lib/persist/types';
 import { put as putArtifact } from '@/lib/runs/owner-artifacts';
 
 const runDesignerMock = vi.fn();
@@ -426,5 +429,41 @@ describe('POST /api/chat lifecycle', () => {
     );
     expect(designRes.rows).toHaveLength(1);
     expect(designerSignalAborted).toBe(false);
+  });
+
+  it('chat: 429 busy and budget bodies use the fixed phrases', async () => {
+    const owner = makeOwner();
+    const threadId = crypto.randomUUID();
+    const clientMessageId = crypto.randomUUID();
+
+    vi.spyOn(DbRunStore, 'start').mockRejectedValueOnce(
+      new StoreError(429, 'busy', BUSY)
+    );
+
+    const resBusy = await callChat(owner, {
+      threadId,
+      clientMessageId,
+      text: 'hi',
+      viewingVersion: null,
+    });
+    expect(resBusy.status).toBe(429);
+    expect(await resBusy.json()).toEqual({
+      error: { code: 'busy', message: BUSY },
+    });
+
+    vi.spyOn(DbRunStore, 'start').mockRejectedValueOnce(
+      new StoreError(429, 'budget', BUDGET_USED)
+    );
+
+    const resBudget = await callChat(owner, {
+      threadId,
+      clientMessageId: crypto.randomUUID(),
+      text: 'hi',
+      viewingVersion: null,
+    });
+    expect(resBudget.status).toBe(429);
+    expect(await resBudget.json()).toEqual({
+      error: { code: 'budget', message: BUDGET_USED },
+    });
   });
 });

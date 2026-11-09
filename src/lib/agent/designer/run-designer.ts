@@ -52,7 +52,8 @@ export {
 };
 
 export const MAX_TURNS = 18;
-export const MAX_COST_USD = 1.5;
+export { MAX_COST_USD } from './cost-params';
+import { MAX_COST_USD } from './cost-params';
 
 /** One geometry run never waits longer than this (it is also clipped to the wall time left). */
 export const RUN_TIMEOUT_MS = 120_000;

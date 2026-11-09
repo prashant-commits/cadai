@@ -478,6 +478,77 @@ async function runBrepLocal(
   }
 }
 
+interface GeoQueueItem {
+  run: () => void;
+  abort: () => void;
+}
+
+class GeoSemaphore {
+  private active = 0;
+  private readonly max = 2;
+  private readonly queue: GeoQueueItem[] = [];
+
+  acquire(signal?: AbortSignal): Promise<() => void> {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new Error('cancelled'));
+        return;
+      }
+
+      const release = () => {
+        this.active--;
+        this.next();
+      };
+
+      if (this.active < this.max) {
+        this.active++;
+        resolve(release);
+        return;
+      }
+
+      let item: GeoQueueItem | null = null;
+
+      const onAbort = () => {
+        if (item) {
+          const idx = this.queue.indexOf(item);
+          if (idx !== -1) {
+            this.queue.splice(idx, 1);
+          }
+        }
+        signal?.removeEventListener('abort', onAbort);
+        reject(new Error('cancelled'));
+      };
+
+      item = {
+        run: () => {
+          signal?.removeEventListener('abort', onAbort);
+          this.active++;
+          resolve(release);
+        },
+        abort: onAbort,
+      };
+
+      signal?.addEventListener('abort', onAbort);
+      this.queue.push(item);
+    });
+  }
+
+  private next() {
+    if (this.active < this.max && this.queue.length > 0) {
+      const item = this.queue.shift()!;
+      item.run();
+    }
+  }
+}
+
+function getGeoSemaphore(): GeoSemaphore {
+  const g = globalThis as unknown as { __cadaiGeoQueue?: GeoSemaphore };
+  if (!g.__cadaiGeoQueue) {
+    g.__cadaiGeoQueue = new GeoSemaphore();
+  }
+  return g.__cadaiGeoQueue;
+}
+
 export async function runBrep(
   script: string,
   opts?: RunBrepOptions
@@ -486,7 +557,15 @@ export async function runBrep(
   const timeoutMs = opts?.timeoutMs ?? 60000;
   if (opts?.signal?.aborted) return cancelledResult(t0);
 
+  let release: (() => void) | undefined;
   try {
+    release = await getGeoSemaphore().acquire(opts?.signal);
+  } catch {
+    return cancelledResult(t0);
+  }
+
+  try {
+    if (opts?.signal?.aborted) return cancelledResult(t0);
     if (process.env.CADAI_GEO_URL && process.env.CADAI_GEO_URL.trim().length > 0) {
       return await runBrepHttp(script, timeoutMs, opts?.fetchImpl, t0, opts?.signal, opts);
     }
@@ -500,6 +579,8 @@ export async function runBrep(
         ? 'unreachable'
         : 'script';
     return brepFailed(message, failure, t0);
+  } finally {
+    release?.();
   }
 }
 

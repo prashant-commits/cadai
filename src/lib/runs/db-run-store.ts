@@ -6,6 +6,7 @@ import {
   staleClient,
   badPin,
   rowToRun,
+  StoreError,
   type StartInput,
   type CommitPlan,
   type RunRow,
@@ -15,9 +16,15 @@ import {
 import {
   TERMINATE_REPLY,
   userEditSummary,
+  BUSY,
+  BUDGET_USED,
   type TerminateCode,
 } from '@/lib/persist/phrases';
 import { applyPins, BadPinError } from '@/lib/design/write-params';
+import { maxRunning, dailyCostUsd } from '@/lib/runs/config';
+import { MAX_COST_USD } from '@/lib/agent/designer/cost-params';
+
+export const RUN_START_LOCK_ID = BigInt('723948192847192842');
 
 interface EndRunOptions {
   status?: 'cancelled' | 'failed';
@@ -261,6 +268,49 @@ async function start(
       );
       if (artRes.rows.length === 0) {
         throw notFound();
+      }
+    }
+  }
+
+  // Running cap and Daily cost ceiling checks
+  const maxRun = maxRunning();
+  const capOn = maxRun > 0;
+  const dailyCost = dailyCostUsd();
+  const ceilingOn = dailyCost !== null;
+
+  if (capOn || ceilingOn) {
+    await q.query(`SELECT pg_advisory_xact_lock(${RUN_START_LOCK_ID})`);
+
+    // 1. Busy check
+    if (capOn) {
+      const staleMs = Number(process.env.CADAI_STALE_MS) || 90000;
+      const runningRes = await q.query<{ count: string | number }>(
+        `SELECT count(*) as count FROM runs
+         WHERE status = 'running'
+           AND NOT (
+             heartbeat_at < now() - ($1 * interval '1 millisecond')
+             OR deadline_at + interval '60 seconds' <= now()
+           )`,
+        [staleMs]
+      );
+      const runningCount = Number(runningRes.rows[0].count);
+      if (runningCount >= maxRun) {
+        throw new StoreError(429, 'busy', BUSY);
+      }
+    }
+
+    // 2. Budget check
+    if (ceilingOn) {
+      const costRes = await q.query<{ spent: string | number }>(
+        `SELECT coalesce(sum(cost_usd), 0) as spent
+         FROM runs
+         WHERE status <> 'running'
+           AND ended_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`
+      );
+      const spent = Number(costRes.rows[0].spent);
+      const maxRunningForBudget = maxRun > 0 ? maxRun : 4;
+      if (spent + maxRunningForBudget * MAX_COST_USD >= dailyCost) {
+        throw new StoreError(429, 'budget', BUDGET_USED);
       }
     }
   }
