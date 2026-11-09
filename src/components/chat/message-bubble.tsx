@@ -8,7 +8,8 @@ import { useAppStore } from '@/store/app-store';
 import { compileModel } from '@/lib/engine/build123d-client';
 import { parseTranscript } from '@/lib/agent/transcript';
 import { TranscriptView } from './transcript-view';
-import { Check, Copy, Play, User, Bot, Code, AlertCircle } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { Check, Copy, Play, User, Bot, Code, AlertCircle, PenLine } from 'lucide-react';
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -18,8 +19,8 @@ function AttachmentThumbnail({ id }: { id: string }) {
   const [error, setError] = useState(false);
   if (error) {
     return (
-      <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-700 bg-slate-900/80 text-[11px] text-slate-400">
-        <AlertCircle className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+      <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border bg-card/40 text-[11px] text-muted-foreground">
+        <AlertCircle className="size-3.5 text-muted-foreground shrink-0" />
         <span>Image unavailable</span>
       </div>
     );
@@ -30,7 +31,7 @@ function AttachmentThumbnail({ id }: { id: string }) {
       src={`/api/artifacts/${encodeURIComponent(id)}`}
       alt="Attachment thumbnail"
       onError={() => setError(true)}
-      className="max-h-48 rounded-lg border border-indigo-400/30 object-contain bg-slate-950"
+      className="max-h-48 rounded-lg border border-border object-contain bg-background/50"
     />
   );
 }
@@ -40,6 +41,23 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   const { setCode, setCompileResult, setCompileStatus } = useAppStore();
   const [copied, setCopied] = useState(false);
   const [messageCopied, setMessageCopied] = useState(false);
+
+  if (message.kind === 'tool_edit') {
+    return (
+      <div
+        data-kind="tool_edit"
+        className="flex items-center gap-2 py-2 px-3 text-xs text-muted-foreground"
+      >
+        <PenLine className="size-3.5 text-muted-foreground shrink-0" />
+        <span className="truncate">{message.content}</span>
+        {message.designVersion != null && (
+          <span className="font-mono text-[11px] text-muted-foreground shrink-0">
+            · v{message.designVersion}
+          </span>
+        )}
+      </div>
+    );
+  }
 
   const handleCopy = (code: string) => {
     navigator.clipboard.writeText(code);
@@ -65,41 +83,42 @@ export function MessageBubble({ message }: MessageBubbleProps) {
       onClick={handleCopyMessage}
       title="Copy message"
       aria-label="Copy message"
-      className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-slate-500 opacity-0 transition-all hover:bg-slate-800 hover:text-slate-300 focus-visible:opacity-100 group-hover:opacity-100"
+      className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground opacity-0 transition-all hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 cursor-pointer"
     >
-      {messageCopied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+      {messageCopied ? <Check className="size-3 text-primary" /> : <Copy className="size-3" />}
       <span>{messageCopied ? 'Copied' : 'Copy'}</span>
     </button>
   );
 
   return (
-    <div className={`group flex gap-3 py-4 ${isUser ? 'justify-end' : 'justify-start'}`}>
+    <div className={cn('group flex gap-3 py-3', isUser ? 'justify-end' : 'justify-start')}>
       {!isUser && (
-        <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-600 to-purple-600 flex items-center justify-center shrink-0 shadow-sm mt-0.5">
-          <Bot className="w-4 h-4 text-white" />
+        <div className="size-7 rounded-xl bg-[image:var(--accent-gradient)] flex items-center justify-center shrink-0 shadow-xs mt-0.5">
+          <Bot className="size-3.5 text-primary-foreground" />
         </div>
       )}
 
-      <div className={`max-w-[88%] space-y-2 ${isUser ? 'items-end' : 'items-start'}`}>
+      <div className={cn('max-w-[88%] space-y-2', isUser ? 'items-end' : 'items-start')}>
         {/* Message body */}
         <div
-          className={`rounded-xl px-4 py-3 text-sm leading-relaxed ${
+          className={cn(
+            'rounded-2xl px-4 py-3 text-sm leading-relaxed',
             isUser
-              ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20'
-              : 'bg-slate-900 border border-slate-800 text-slate-200'
-          }`}
+              ? 'bg-[image:linear-gradient(135deg,color-mix(in_srgb,var(--accent-from)_22%,transparent),color-mix(in_srgb,var(--accent-to)_16%,transparent))] border border-primary/30 text-foreground shadow-xs'
+              : 'glass text-foreground'
+          )}
         >
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
               p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-              h1: ({ children }) => <h1 className="text-base font-bold text-slate-100 mb-2">{children}</h1>,
-              h2: ({ children }) => <h2 className="text-sm font-semibold text-slate-100 mb-1.5">{children}</h2>,
-              h3: ({ children }) => <h3 className="text-xs font-semibold text-slate-200 mb-1">{children}</h3>,
+              h1: ({ children }) => <h1 className="text-base font-bold text-foreground mb-2">{children}</h1>,
+              h2: ({ children }) => <h2 className="text-sm font-semibold text-foreground mb-1.5">{children}</h2>,
+              h3: ({ children }) => <h3 className="text-xs font-semibold text-foreground/90 mb-1">{children}</h3>,
               ul: ({ children }) => <ul className="list-disc pl-4 mb-2 space-y-1 text-xs">{children}</ul>,
               ol: ({ children }) => <ol className="list-decimal pl-4 mb-2 space-y-1 text-xs">{children}</ol>,
-              li: ({ children }) => <li className="text-slate-300">{children}</li>,
-              strong: ({ children }) => <strong className="font-semibold text-slate-100">{children}</strong>,
+              li: ({ children }) => <li className="text-foreground/90">{children}</li>,
+              strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
               code: ({ inline, className, children, ...props }: React.ComponentPropsWithoutRef<'code'> & { inline?: boolean }) => {
                 const match = /language-(\w+)/.exec(className || '');
                 const language = match ? match[1] : '';
@@ -107,30 +126,30 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
                 if (!inline && (language === 'python' || language === 'build123d')) {
                   return (
-                    <div className="my-3 rounded-lg overflow-hidden border border-slate-800 bg-slate-950">
-                      <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900/90 border-b border-slate-800 text-xs">
-                        <div className="flex items-center gap-1.5 text-indigo-400 font-mono">
-                          <Code className="w-3.5 h-3.5" />
+                    <div className="my-3 rounded-lg overflow-hidden border border-border bg-card/60">
+                      <div className="flex items-center justify-between px-3 py-1.5 bg-muted/60 border-b border-border text-xs">
+                        <div className="flex items-center gap-1.5 text-primary font-mono">
+                          <Code className="size-3.5" />
                           <span>build123d</span>
                         </div>
                         <div className="flex items-center gap-2">
                           <button
                             onClick={() => handleCopy(codeString)}
-                            className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                            className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded bg-accent hover:bg-accent/80 text-foreground transition-colors cursor-pointer"
                           >
-                            {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                            {copied ? <Check className="size-3 text-primary" /> : <Copy className="size-3" />}
                             <span>{copied ? 'Copied' : 'Copy'}</span>
                           </button>
                           <button
                             onClick={() => handleApplyCode(codeString)}
-                            className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white shadow-xs transition-colors"
+                            className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded bg-[image:var(--accent-gradient)] text-primary-foreground shadow-xs hover:opacity-90 transition-opacity cursor-pointer"
                           >
-                            <Play className="w-3 h-3 fill-current" />
+                            <Play className="size-3 fill-current" />
                             <span>Render</span>
                           </button>
                         </div>
                       </div>
-                      <pre className="p-3 text-xs font-mono text-cyan-300 overflow-x-auto max-h-60 bg-slate-950/80">
+                      <pre className="p-3 text-xs font-mono text-foreground/90 overflow-x-auto max-h-60 bg-background/60">
                         <code>{codeString}</code>
                       </pre>
                     </div>
@@ -138,7 +157,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                 }
 
                 return (
-                  <code className="bg-slate-800/80 px-1.5 py-0.5 rounded text-xs font-mono text-indigo-300" {...props}>
+                  <code className="bg-accent px-1.5 py-0.5 rounded text-xs font-mono text-primary" {...props}>
                     {children}
                   </code>
                 );
@@ -162,7 +181,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               <img
                 src={message.image}
                 alt="Attachment preview"
-                className="max-h-48 rounded-lg border border-indigo-400/30 object-contain bg-slate-950"
+                className="max-h-48 rounded-lg border border-border object-contain bg-background/50"
               />
             </div>
           )}
@@ -171,32 +190,32 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         {!isUser && message.transcript && parseTranscript(message.transcript).length > 0 && (
           <details
             open={message.status === 'streaming'}
-            className="rounded-lg border border-slate-800 bg-slate-950/60 overflow-hidden"
+            className="rounded-lg border border-border/50 bg-card/30 overflow-hidden"
           >
-            <summary className="flex items-center gap-1.5 px-3 py-1.5 cursor-pointer select-none text-[11px] text-slate-400 hover:text-slate-200 list-none font-medium">
+            <summary className="flex items-center gap-1.5 px-3 py-1.5 cursor-pointer select-none text-[11px] text-muted-foreground hover:text-foreground list-none font-medium">
               <span>Steps</span>
             </summary>
-            <div className="p-2 border-t border-slate-800/60">
+            <div className="p-2 border-t border-border/40">
               <TranscriptView transcript={message.transcript} />
             </div>
           </details>
         )}
 
         {message.code && (
-          <details className="rounded-lg border border-slate-800 bg-slate-950 overflow-hidden">
-            <summary className="flex items-center gap-1.5 px-3 py-1.5 cursor-pointer select-none text-[11px] text-indigo-300 list-none">
-              <Code className="w-3.5 h-3.5" />
+          <details className="rounded-lg border border-border bg-card/30 overflow-hidden">
+            <summary className="flex items-center gap-1.5 px-3 py-1.5 cursor-pointer select-none text-[11px] text-primary list-none">
+              <Code className="size-3.5" />
               <span>View code</span>
             </summary>
-            <pre className="p-3 text-xs font-mono text-cyan-300 overflow-x-auto max-h-60">
+            <pre className="p-3 text-xs font-mono text-foreground/90 overflow-x-auto max-h-60">
               <code>{message.code}</code>
             </pre>
           </details>
         )}
 
-        <div className={`flex items-center gap-1 px-1 ${isUser ? 'justify-end' : 'justify-start'}`}>
+        <div className={cn('flex items-center gap-1 px-1', isUser ? 'justify-end' : 'justify-start')}>
           {isUser && copyMessageButton}
-          <span className="text-[10px] text-slate-500">
+          <span className="text-[10px] text-muted-foreground">
             {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </span>
           {!isUser && copyMessageButton}
@@ -204,8 +223,8 @@ export function MessageBubble({ message }: MessageBubbleProps) {
       </div>
 
       {isUser && (
-        <div className="w-7 h-7 rounded-lg bg-indigo-600/80 flex items-center justify-center shrink-0 shadow-sm mt-0.5">
-          <User className="w-4 h-4 text-white" />
+        <div className="size-7 rounded-full bg-primary/20 border border-primary/30 flex items-center justify-center shrink-0 shadow-xs mt-0.5">
+          <User className="size-3.5 text-primary" />
         </div>
       )}
     </div>

@@ -1,43 +1,30 @@
 'use client';
 
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { useAppStore } from '@/store/app-store';
 import { MessageBubble } from './message-bubble';
 import { ChatInput } from './chat-input';
-import { ThreadDrawer } from './thread-drawer';
-import { VersionList } from './version-list';
+import { ThreadsMenu } from './threads-menu';
 import { freezeStreamingMessages } from '@/lib/chat/chat-messages';
 import { isServerThreadId } from '@/lib/client/server-thread';
 import { LEGACY } from '@/lib/persist/phrases';
-import {
-  FolderKanban,
-  Plus,
-  Edit2,
-  Check,
-  Loader2,
-  Square,
-} from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 export function ChatPanel() {
   const {
     messages,
     isGenerating,
     generatingThreadId,
-    inFlightRunId,
     runsByThread,
     threads,
     activeThreadId,
-    createNewThread,
-    renameThread,
+    highlightedVersion,
     initializeFromStorage,
     updateMessage,
     sendMessage,
     stopCurrentRun,
   } = useAppStore();
 
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-  const [isEditingTitle, setIsEditingTitle] = useState(false);
-  const [tempTitle, setTempTitle] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Initialize threads from IndexedDB on client mount
@@ -63,8 +50,9 @@ export function ChatPanel() {
   }, [activeThreadId]);
 
   const activeThread = threads.find((t) => t.id === activeThreadId);
-  const activeRunId = runsByThread?.[activeThreadId] ?? inFlightRunId;
-  const isCurrentThreadGenerating = Boolean(runsByThread?.[activeThreadId]) || (isGenerating && generatingThreadId === activeThreadId);
+  const isCurrentThreadGenerating =
+    Boolean(runsByThread?.[activeThreadId]) ||
+    (isGenerating && generatingThreadId === activeThreadId);
   const isLegacy = activeThread ? !isServerThreadId(activeThread.id) : false;
 
   const scrollToBottom = () => {
@@ -75,19 +63,16 @@ export function ChatPanel() {
     scrollToBottom();
   }, [messages]);
 
-  const handleStartRename = () => {
-    if (activeThread) {
-      setTempTitle(activeThread.title);
-      setIsEditingTitle(true);
-    }
-  };
+  // Scroll highlighted message into view when inspector highlights a version
+  useEffect(() => {
+    if (highlightedVersion == null) return;
+    const el = document.querySelector(`[data-design-version="${highlightedVersion}"]`);
+    el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [highlightedVersion]);
 
-  const handleSaveRename = () => {
-    if (activeThread && tempTitle.trim()) {
-      renameThread(activeThread.id, tempTitle.trim());
-    }
-    setIsEditingTitle(false);
-  };
+  const showPromptChips =
+    messages.length === 0 ||
+    (messages.length === 1 && messages[0].id === 'welcome-msg');
 
   const handleSendMessage = async (
     userText: string,
@@ -98,105 +83,48 @@ export function ChatPanel() {
   };
 
   return (
-    <div className="relative h-full flex flex-col bg-slate-950">
-      {/* Thread Drawer Overlay */}
-      <ThreadDrawer
-        isOpen={isDrawerOpen}
-        onClose={() => setIsDrawerOpen(false)}
-      />
-
-      {/* Header with Thread Title & Drawer toggle */}
-      <div className="px-3.5 py-2 border-b border-slate-800 flex items-center justify-between bg-slate-900/60 select-none">
-        <div className="flex items-center gap-2 min-w-0">
-          <button
-            onClick={() => setIsDrawerOpen(!isDrawerOpen)}
-            className="p-1 rounded-md bg-slate-800/80 hover:bg-slate-700 text-slate-300 transition-colors flex items-center gap-1.5 text-xs shrink-0 cursor-pointer"
-            title="View saved design threads"
-          >
-            <FolderKanban className="w-3.5 h-3.5 text-indigo-400" />
-            <span className="font-mono text-[11px] hidden sm:inline">Threads</span>
-          </button>
-
-          {/* Active Thread Title */}
-          {isEditingTitle ? (
-            <div className="flex items-center gap-1 min-w-0">
-              <input
-                type="text"
-                value={tempTitle}
-                onChange={(e) => setTempTitle(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSaveRename()}
-                className="bg-slate-950 border border-indigo-500 rounded px-1.5 py-0.5 text-xs text-slate-100 focus:outline-none font-semibold w-40"
-                autoFocus
-              />
-              <button
-                onClick={handleSaveRename}
-                className="p-1 rounded bg-indigo-600 text-white hover:bg-indigo-500 cursor-pointer"
-              >
-                <Check className="w-3 h-3" />
-              </button>
-            </div>
-          ) : (
-            <div
-              onClick={handleStartRename}
-              className="flex items-center gap-1.5 text-xs font-semibold text-slate-200 truncate cursor-pointer hover:text-indigo-300 transition-colors group"
-              title="Click to rename design thread"
-            >
-              <span className="truncate">{activeThread?.title || 'New design'}</span>
-              <Edit2 className="w-3 h-3 opacity-0 group-hover:opacity-100 text-slate-500 transition-opacity shrink-0" />
-              {isCurrentThreadGenerating && (
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <span className="flex items-center gap-1 text-[10px] text-indigo-400 font-mono">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    <span>Generating...</span>
-                  </span>
-                  {activeRunId && (
-                    <button
-                      onClick={() => void stopCurrentRun()}
-                      aria-label="Stop"
-                      title="Stop"
-                      className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-semibold flex items-center gap-1 cursor-pointer transition-colors"
-                    >
-                      <Square className="w-2.5 h-2.5 fill-current" />
-                      <span>Stop</span>
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Quick New Design button */}
-        <button
-          onClick={() => createNewThread()}
-          className="flex items-center gap-1 px-2 py-1 rounded bg-slate-800/80 hover:bg-slate-700 text-indigo-300 hover:text-indigo-200 text-xs font-medium transition-colors shrink-0 cursor-pointer"
-          title="Start a new 3D design"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          <span className="text-[11px] hidden sm:inline">New</span>
-        </button>
+    <div className="relative h-full flex flex-col bg-transparent">
+      {/* Header with ThreadsMenu on the left, leaving ~44px on the right (pr-12) for Hide button */}
+      <div className="px-3.5 py-2 border-b border-border flex items-center justify-between pr-12 select-none min-h-[44px]">
+        <ThreadsMenu />
       </div>
 
       {/* Legacy Thread Banner */}
       {isLegacy && (
         <div
           role="alert"
-          className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-2.5 text-xs text-amber-300 font-medium text-center"
+          className="bg-destructive/10 border-b border-destructive/20 px-4 py-2.5 text-xs text-destructive font-medium text-center"
         >
           {LEGACY}
         </div>
       )}
 
-      {/* Version List */}
-      {!isLegacy && activeThread?.versions && activeThread.versions.length > 0 && (
-        <VersionList />
-      )}
-
       {/* Message List */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-2 scrollbar-thin">
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
-        ))}
+      <div className="flex-1 overflow-y-auto p-4 space-y-2">
+        {messages.map((msg) => {
+          const isHighlighted =
+            msg.designVersion !== undefined &&
+            msg.designVersion !== null &&
+            highlightedVersion === msg.designVersion;
+
+          return (
+            <div
+              key={msg.id}
+              data-design-version={
+                msg.designVersion !== undefined && msg.designVersion !== null
+                  ? msg.designVersion
+                  : undefined
+              }
+              data-highlighted={isHighlighted ? 'true' : undefined}
+              className={cn(
+                'transition-all duration-200 rounded-2xl',
+                isHighlighted && 'ring-1 ring-primary'
+              )}
+            >
+              <MessageBubble message={msg} />
+            </div>
+          );
+        })}
 
         <div ref={messagesEndRef} />
       </div>
@@ -207,6 +135,7 @@ export function ChatPanel() {
         onStop={() => void stopCurrentRun()}
         disabled={isCurrentThreadGenerating || isLegacy}
         isGenerating={isCurrentThreadGenerating}
+        showPromptChips={showPromptChips}
       />
     </div>
   );

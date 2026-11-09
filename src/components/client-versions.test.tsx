@@ -5,7 +5,6 @@ import { useAppStore } from '@/store/app-store';
 import { __resetDbForTests, upsertThread, loadAllThreads, getDraft } from '@/lib/storage/thread-storage';
 import { DB_NAME } from '@/lib/storage/db-schema';
 import { ChatPanel } from './chat/chat-panel';
-import { VersionList, FAILED_CHECKS_LABEL, DESIGNER_LABEL } from './chat/version-list';
 import { CodeEditorPanel, PRELUDE_NOTE, compileEditorCode } from './editor/code-editor-panel';
 import { downloadStep } from './viewport/viewport-toolbar';
 import { applyParamMove } from './design/design-panel';
@@ -950,64 +949,6 @@ describe('client versions, sliders and editor', () => {
     expect((chatRequestBody as Record<string, unknown> | null)?.viewingVersion).toBe(1);
     expect((chatRequestBody as Record<string, unknown> | null)?.editedBody).toBe(editedBody);
     expect((chatRequestBody as Record<string, unknown> | null)?.pinnedParams).toEqual({ width: 55 });
-  });
-
-  it('a failed_checks version is labeled', async () => {
-    const threadId = crypto.randomUUID();
-    const versions: ServerThreadVersion[] = [
-      {
-        version: 1,
-        parentVersion: null,
-        origin: 'designer',
-        summary: 'First clean version',
-        flags: [],
-        body: 'box = Box(10, 10, 10)',
-        preludeVersion: '1',
-        stl: 'stl-1',
-        step: 'step-1',
-        createdAt: 1000,
-      },
-      {
-        version: 2,
-        parentVersion: 1,
-        origin: 'designer',
-        summary: 'Second broken version',
-        flags: ['failed_checks'],
-        body: 'box = Box(20, 20, 20)',
-        preludeVersion: '1',
-        stl: 'stl-2',
-        step: 'step-2',
-        createdAt: 2000,
-      },
-    ];
-
-    useAppStore.setState({
-      activeThreadId: threadId,
-      threads: [
-        {
-          id: threadId,
-          title: 'Check Thread',
-          createdAt: 1000,
-          updatedAt: 2000,
-          code: versions[1].body,
-          messages: [],
-          versions,
-        },
-      ],
-      viewingVersion: 2,
-    });
-
-    const markup = renderToStaticMarkup(<VersionList versions={versions} selectedVersion={2} onSelect={() => {}} />);
-    expect(markup).toContain(FAILED_CHECKS_LABEL);
-    expect(markup).toContain(DESIGNER_LABEL);
-    // Summary is dropped from the row
-    expect(markup).not.toContain('First clean version');
-    expect(markup).not.toContain('Second broken version');
-
-    // Only v2 has the label, not v1
-    const v1OnlyMarkup = renderToStaticMarkup(<VersionList versions={[versions[0]]} selectedVersion={1} onSelect={() => {}} />);
-    expect(v1OnlyMarkup).not.toContain(FAILED_CHECKS_LABEL);
-    expect(v1OnlyMarkup).not.toContain('First clean version');
   });
 
   it('a version without an STL compiles on view', async () => {
