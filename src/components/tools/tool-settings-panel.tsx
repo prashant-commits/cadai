@@ -55,10 +55,10 @@ export function ToolSettingsPanel() {
     }
   }
 
-  const blockerPhrase = tool.applyBlocker?.(draftOp) ?? null;
+  const applyBlocker = tool.applyBlocker?.(draftOp) ?? null;
 
   const isApplyDisabled =
-    !draftOp || applyStatus === 'applying' || preview.status === 'error' || Boolean(blockerPhrase);
+    !draftOp || applyStatus === 'applying' || preview.status === 'error' || applyBlocker !== null;
 
   return (
     <div className="flex flex-col h-full overflow-hidden text-xs text-[var(--fg)]">
@@ -76,12 +76,6 @@ export function ToolSettingsPanel() {
           </div>
         )}
 
-        {blockerPhrase && (
-          <div className="text-xs text-[var(--fg-muted)] p-2 rounded bg-[var(--card)] border border-[var(--glass-border)]">
-            {blockerPhrase}
-          </div>
-        )}
-
         <div className="tool-settings-body">
           <tool.Settings draft={draftOp} onChange={updateDraft} />
         </div>
@@ -96,6 +90,12 @@ export function ToolSettingsPanel() {
         {applyError && (
           <div className="text-xs text-[var(--destructive)] p-2 rounded bg-[var(--card)] border border-[var(--glass-border)]">
             {applyError}
+          </div>
+        )}
+
+        {applyBlocker && (
+          <div className="text-xs text-[var(--destructive)] p-2 rounded bg-[var(--card)] border border-[var(--glass-border)]">
+            {applyBlocker}
           </div>
         )}
       </div>

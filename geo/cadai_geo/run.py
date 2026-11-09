@@ -841,8 +841,82 @@ def _step_label(label: str) -> str:
 
 _FUSED_STEP_NOTE = "STEP exported as separate solids (fused shape did not survive STEP export)"
 
+_MATERIAL_OP_RE = re.compile(r"^#\s*cadai:op\s+material\s+id=([^\s]+)\s+(.+)$")
+_COLOR_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
-def _export_unfused_step(part_shapes: list[tuple[str, object]], step_path: str):
+
+def _hex_to_rgb(hex_str: str) -> tuple[float, float, float]:
+    r = int(hex_str[1:3], 16) / 255.0
+    g = int(hex_str[3:5], 16) / 255.0
+    b = int(hex_str[5:7], 16) / 255.0
+    return (r, g, b)
+
+
+def _material_colors(source: str) -> dict[str, tuple[float, float, float]]:
+    """Parse # cadai:op material lines from source into {target: (r, g, b)}."""
+    colors: dict[str, tuple[float, float, float]] = {}
+    try:
+        for line in source.splitlines():
+            line_s = line.strip()
+            if not line_s.startswith("#"):
+                continue
+            match = _MATERIAL_OP_RE.match(line_s)
+            if not match:
+                continue
+            json_str = match.group(2)
+            try:
+                data = json.loads(json_str)
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            target = data.get("target")
+            color = data.get("color")
+            if not isinstance(target, str) or not isinstance(color, str):
+                continue
+            if target != "model" and not _IDENTIFIER_RE.match(target):
+                continue
+            if not _COLOR_HEX_RE.match(color):
+                continue
+            if len(colors) >= 64 and target not in colors:
+                continue
+            colors[target] = _hex_to_rgb(color)
+    except Exception:
+        pass
+    return colors
+
+
+def _validate_material_colors_dict(raw: object) -> dict[str, tuple[float, float, float]]:
+    colors: dict[str, tuple[float, float, float]] = {}
+    if not isinstance(raw, dict):
+        return colors
+    try:
+        for target, val in raw.items():
+            if not isinstance(target, str):
+                continue
+            if target != "model" and not _IDENTIFIER_RE.match(target):
+                continue
+            if isinstance(val, (list, tuple)) and len(val) == 3:
+                r, g, b = val
+                if all(isinstance(x, (int, float)) and 0.0 <= x <= 1.0 for x in (r, g, b)):
+                    if len(colors) >= 64 and target not in colors:
+                        continue
+                    colors[target] = (float(r), float(g), float(b))
+            elif isinstance(val, str) and _COLOR_HEX_RE.match(val):
+                if len(colors) >= 64 and target not in colors:
+                    continue
+                colors[target] = _hex_to_rgb(val)
+    except Exception:
+        pass
+    return colors
+
+
+def _export_unfused_step(
+    part_shapes: list[tuple[str, object]],
+    step_path: str,
+    material_colors: dict[str, tuple[float, float, float]] | None = None,
+):
     """Write the individually valid parts as one multi-solid STEP, labels kept.
 
     Returns the re-imported shape when it is valid, else None. The parts are the same shapes
@@ -859,6 +933,15 @@ def _export_unfused_step(part_shapes: list[tuple[str, object]], step_path: str):
             shape.label = _step_label(label)
         except Exception:
             pass
+        if material_colors:
+            try:
+                from build123d import Color
+                if label in material_colors:
+                    shape.color = Color(*material_colors[label])
+                elif "model" in material_colors:
+                    shape.color = Color(*material_colors["model"])
+            except Exception:
+                pass
         children.append(shape)
     if not children:
         return None
@@ -875,6 +958,7 @@ def _checked_export(
     stl_path: str,
     part_shapes: list[tuple[str, object]] | None = None,
     extras: dict | None = None,
+    material_colors: dict[str, tuple[float, float, float]] | None = None,
 ) -> dict | None:
     """Validate, try to fix, then export ``result``. None on success; else the failure payload.
 
@@ -891,6 +975,16 @@ def _checked_export(
     if bad:
         return _invalid(bad, "part" if len(bad) == 1 else "parts", parts)
     result, fused_ok = _fixed_if_invalid(result)
+
+    if material_colors:
+        try:
+            from build123d import Color
+            if "model" in material_colors:
+                result.color = Color(*material_colors["model"])
+            elif len(parts) == 1 and parts[0]["label"] in material_colors:
+                result.color = Color(*material_colors[parts[0]["label"]])
+        except Exception:
+            pass
 
     reread = None
     for attempt in range(2 if fused_ok else 0):
@@ -910,7 +1004,10 @@ def _checked_export(
 
     if not fused_ok:
         _discard_exports(step_path, stl_path)
-        separate = _export_unfused_step(part_shapes or [], step_path)
+        if material_colors is not None:
+            separate = _export_unfused_step(part_shapes or [], step_path, material_colors)
+        else:
+            separate = _export_unfused_step(part_shapes or [], step_path)
         if separate is None:
             _discard_exports(step_path, stl_path)
             return _invalid(
@@ -962,6 +1059,9 @@ def _discard_geometry(scratch: str) -> None:
     notes_path = os.path.join(scratch, "notes.json")
     if os.path.lexists(notes_path):
         os.unlink(notes_path)
+    materials_path = os.path.join(scratch, "materials.json")
+    if os.path.lexists(materials_path):
+        os.unlink(materials_path)
 
 
 def _write_shapes(scratch: str, name: str, shapes: list[tuple[str, object]]) -> bool:
@@ -1035,6 +1135,16 @@ def capture_geometry(script_path: str, scratch: str, on_error) -> None:
             if capped:
                 with open(notes_path, "w", encoding="utf-8") as handle:
                     json.dump(capped, handle)
+        try:
+            with open(os.fspath(script_path), "r", encoding="utf-8") as handle:
+                src_text = handle.read()
+            mat_colors = _material_colors(src_text)
+            if mat_colors:
+                materials_path = os.path.join(scratch, "materials.json")
+                with open(materials_path, "w", encoding="utf-8") as handle:
+                    json.dump(mat_colors, handle)
+        except Exception:
+            pass
     except SystemExit as exc:
         _discard_geometry(scratch)
         on_error(_exit_message(exc))
@@ -1284,7 +1394,17 @@ def measure_and_export(
             _replace_output(step_path)
             _replace_output(stl_path)
             extras: dict = {}
-            failure = _checked_export(result, parts, step_path, stl_path, part_shapes, extras)
+            mat_colors = None
+            try:
+                mat_bytes = _read_regular_at(scratch_fd, "materials.json", 16 * 1024)
+                if mat_bytes:
+                    raw_data = json.loads(mat_bytes.decode("utf-8"))
+                    mat_colors = _validate_material_colors_dict(raw_data)
+            except Exception:
+                mat_colors = None
+            failure = _checked_export(
+                result, parts, step_path, stl_path, part_shapes, extras, material_colors=mat_colors
+            )
             if failure is not None:
                 return failure
             if topology:
@@ -1363,8 +1483,15 @@ def run(
         parts = _parts(result, namespace.get("_cadai_parts"))
         part_shapes = _part_shapes(result, namespace.get("_cadai_parts"))
         extras: dict = {}
+        mat_colors = None
+        try:
+            with open(os.fspath(script_path), "r", encoding="utf-8") as handle:
+                src_text = handle.read()
+            mat_colors = _material_colors(src_text)
+        except Exception:
+            pass
         failure = _checked_export(
-            result, parts, step_path, stl_path, part_shapes, extras
+            result, parts, step_path, stl_path, part_shapes, extras, material_colors=mat_colors
         )
         if failure is not None:
             return failure
