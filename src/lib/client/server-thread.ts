@@ -29,6 +29,7 @@ export interface ServerThreadMessage {
   designVersion?: number;
   attachments: ServerThreadAttachment[];
   steps?: TranscriptSection[];
+  layer?: { id: string; name: string } | null;
 }
 
 export interface ServerThreadVersion {
@@ -74,6 +75,7 @@ export function buildChatRequest(params: {
   pinnedParams?: Record<string, number>;
   editedBody?: string;
   model?: string;
+  layer?: { id: string; name: string };
 }): ChatRequest {
   const req: ChatRequest = {
     threadId: params.threadId,
@@ -94,6 +96,9 @@ export function buildChatRequest(params: {
   }
   if (params.model !== undefined) {
     req.model = params.model;
+  }
+  if (params.layer !== undefined) {
+    req.layer = params.layer;
   }
   return req;
 }

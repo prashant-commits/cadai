@@ -53,6 +53,7 @@ export interface ChatRequest {
   pinnedParams?: Record<string, number>;
   editedBody?: string;
   model?: string;
+  layer?: { id: string; name: string };
 }
 
 export type StartInput = ChatRequest & { ownerKey: string };
@@ -63,6 +64,7 @@ export interface GraphInput {
   baseBody: string | null;
   baseRequest: string | null;
   attachments: { mediaType: 'image/png'; base64: string; kind: 'markup' | 'reference' }[];
+  layer?: { id: string; name: string } | null;
 }
 
 export type RunStatus = 'running' | 'done' | 'failed' | 'cancelled';
@@ -136,6 +138,7 @@ export interface MessageRow {
   attachmentIds: string[];
   attachments: MessageAttachmentRef[];
   steps?: TranscriptSection[];
+  layer?: { id: string; name: string } | null;
 }
 
 export interface DesignRow {
@@ -314,6 +317,19 @@ export function rowToMessage(
     steps = parseJsonField<TranscriptSection[]>(row.steps, []);
   }
 
+  const rawLayer = row.layer;
+  let layer: { id: string; name: string } | null = null;
+  if (rawLayer) {
+    const parsedLayer = parseJsonField<{ id?: unknown; name?: unknown } | null>(rawLayer, null);
+    if (
+      parsedLayer &&
+      typeof parsedLayer.id === 'string' &&
+      typeof parsedLayer.name === 'string'
+    ) {
+      layer = { id: parsedLayer.id, name: parsedLayer.name };
+    }
+  }
+
   return {
     id: String(row.id),
     threadId: String(row.thread_id ?? row.threadId),
@@ -328,6 +344,7 @@ export function rowToMessage(
     attachmentIds,
     attachments: parsedAttachments,
     ...(steps !== undefined ? { steps } : {}),
+    layer,
   };
 }
 

@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useAppStore } from '@/store/app-store';
-import { __resetToolsSliceForTests, draftBody } from './tools-slice';
+import { __resetToolsSliceForTests, draftBody, replaceOpInBody } from './tools-slice';
 import { TOOLS, type ToolDef, facePlane } from '@/components/tools/tool-registry';
-import { isValidOpId, type ToolOp } from '@/lib/tools/ops';
+import { isValidOpId, type ToolOp, applyOp, parseOpBlocks } from '@/lib/tools/ops';
 import { RUN_ACTIVE } from '@/lib/persist/phrases';
 import type { Topology, TopoFace } from '@/lib/geometry/topology';
 import { Wrench } from 'lucide-react';
@@ -355,5 +355,70 @@ describe('tools-slice', () => {
     expect(state.preview.status).toBe('idle');
     expect(state.applyStatus).toBe('idle');
     expect(state.applyError).toBeNull();
+  });
+
+  it('re-editing a text keeps a material changed by the Texture tool', () => {
+    const initialCode =
+      'plate = Box(60, 40, 5)\nplate.label = "plate"\n_cadai_parts = [plate]\nresult = plate\n';
+    const textOpA: ToolOp = {
+      kind: 'text',
+      id: 'op_text123456',
+      part: 'plate',
+      plane: { origin: [0, 0, 5], normal: [0, 0, 1], xDir: [1, 0, 0] },
+      offset: [0, 0],
+      rotationDeg: 0,
+      text: 'HELLO',
+      font: 'inter-bold',
+      sizeMm: 10,
+      mode: 'emboss',
+      depthMm: 2,
+      color: '#112233',
+    };
+
+    // 1. apply a text op with color A
+    const body1 = applyOp(initialCode, textOpA);
+    const parsed1 = parseOpBlocks(body1);
+    expect(parsed1).toHaveLength(2); // text op + nested material op
+    const matOp1 = parsed1.find((p) => p.op.kind === 'material');
+    expect(matOp1).toBeDefined();
+    expect((matOp1!.op as Extract<ToolOp, { kind: 'material' }>).color).toBe('#112233');
+
+    // 2. replace the <id>_color material with color B (via replaceOpInBody)
+    const matOpB: ToolOp = {
+      kind: 'material',
+      id: 'op_text123456_color',
+      target: 'plate',
+      material: 'matte-plastic',
+      color: '#445566',
+    };
+    const body2 = replaceOpInBody(body1, matOpB);
+    const parsed2 = parseOpBlocks(body2);
+    const matOp2 = parsed2.find((p) => p.op.kind === 'material');
+    expect(matOp2).toBeDefined();
+    expect((matOp2!.op as Extract<ToolOp, { kind: 'material' }>).color).toBe('#445566');
+
+    // 3. re-edit the text (e.g. change size, same color A)
+    const textOpAEdited: ToolOp = {
+      ...textOpA,
+      sizeMm: 14,
+    };
+    const body3 = replaceOpInBody(body2, textOpAEdited);
+    const parsed3 = parseOpBlocks(body3);
+    const textParsed3 = parsed3.find((p) => p.op.kind === 'text');
+    const matParsed3 = parsed3.find((p) => p.op.kind === 'material');
+
+    // assert parseOpBlocks gives the material color B and the new size
+    expect((textParsed3!.op as Extract<ToolOp, { kind: 'text' }>).sizeMm).toBe(14);
+    expect((matParsed3!.op as Extract<ToolOp, { kind: 'material' }>).color).toBe('#445566');
+
+    // 4. second assertion/test that changing the text Color to C does write C
+    const textOpC: ToolOp = {
+      ...textOpAEdited,
+      color: '#778899',
+    };
+    const body4 = replaceOpInBody(body3, textOpC);
+    const parsed4 = parseOpBlocks(body4);
+    const matParsed4 = parsed4.find((p) => p.op.kind === 'material');
+    expect((matParsed4!.op as Extract<ToolOp, { kind: 'material' }>).color).toBe('#778899');
   });
 });

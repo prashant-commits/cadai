@@ -62,6 +62,7 @@ vi.mock('@/lib/agent/model-provider', () => ({
 }));
 
 import { POST as chatRoute, runtime, dynamic } from './route';
+import { GET as threadGet } from '../threads/[id]/route';
 
 function makeOwner() {
   const uuid = crypto.randomUUID();
@@ -1040,6 +1041,52 @@ describe('POST /api/chat lifecycle', () => {
       expect(res.status).toBe(404);
       const body = await res.json();
       expect(body.error?.code).toBe('not_found');
+    });
+
+    it('the route stores layer on the message and GET returns it', async () => {
+      const owner = makeOwner();
+      const threadId = crypto.randomUUID();
+      const clientMessageId = crypto.randomUUID();
+
+      const res = await callChat(owner, {
+        threadId,
+        clientMessageId,
+        text: 'make a plate with hole',
+        viewingVersion: null,
+        layer: { id: 'layer-1', name: 'Base Plate' },
+      });
+
+      expect(res.status).toBe(200);
+      await res.text();
+
+      const getReq = new NextRequest(`http://localhost/api/threads/${threadId}`, {
+        method: 'GET',
+        headers: { cookie: owner.cookie },
+      });
+      const getRes = await threadGet(getReq, { params: Promise.resolve({ id: threadId }) });
+      expect(getRes.status).toBe(200);
+      const data = await getRes.json();
+      const userMsg = data.messages.find((m: { role: string }) => m.role === 'user');
+      expect(userMsg).toBeDefined();
+      expect(userMsg.layer).toEqual({ id: 'layer-1', name: 'Base Plate' });
+    });
+
+    it('the route rejects a layer with an empty name (400)', async () => {
+      const owner = makeOwner();
+      const threadId = crypto.randomUUID();
+      const clientMessageId = crypto.randomUUID();
+
+      const res = await callChat(owner, {
+        threadId,
+        clientMessageId,
+        text: 'make a plate with hole',
+        viewingVersion: null,
+        layer: { id: 'layer-1', name: '   ' },
+      });
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error.code).toBe('bad_request');
     });
   });
 });

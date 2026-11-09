@@ -82,6 +82,7 @@ export async function GET(
       designVersion?: number;
       attachments: { id: string; kind: 'markup' | 'reference' }[];
       steps?: TranscriptSection[];
+      layer?: { id: string; name: string } | null;
     } = {
       id: m.id,
       seq: m.seq,
@@ -95,6 +96,9 @@ export async function GET(
     }
     if (m.role === 'assistant') {
       msg.steps = m.steps ?? [];
+    }
+    if (m.layer !== undefined && m.layer !== null) {
+      msg.layer = m.layer;
     }
     return msg;
   });

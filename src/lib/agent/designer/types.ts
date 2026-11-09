@@ -71,6 +71,7 @@ export interface DesignerInput {
   editRequest?: string;
   buildId?: string;
   attachments?: { mediaType: 'image/png'; base64: string; kind?: 'markup' | 'reference' }[];
+  layer?: { id: string; name: string };
 }
 
 /** Progress lines for the UI. Fixed, rendered phrases only — never raw model text, code or tool JSON. */

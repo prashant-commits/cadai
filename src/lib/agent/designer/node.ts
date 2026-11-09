@@ -98,6 +98,7 @@ export function createDesignerNode(deps: DesignerNodeDeps = {}) {
       request,
       ...(priorScript ? { priorScript } : {}),
       ...(editRequest ? { editRequest } : {}),
+      ...(!isCheckRetry && state.layer ? { layer: state.layer } : {}),
       ...(state.attachments && state.attachments.length > 0 ? { attachments: state.attachments } : {}),
       buildId: (config?.configurable as { thread_id?: string } | undefined)?.thread_id,
     };

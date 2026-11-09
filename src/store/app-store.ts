@@ -28,6 +28,7 @@ import { toBody, PRELUDE_VERSION } from '@/lib/brep/prelude';
 import { setParamValue } from '@/lib/design/write-params';
 import { compileModel } from '@/lib/engine/build123d-client';
 import { DEFAULT_MODEL } from '@/lib/agent/models';
+import { resolveSelectedLayer } from '@/lib/tools/layers';
 import {
   getThread,
   renameThread as renameServerThread,
@@ -449,6 +450,7 @@ export const useAppStore = create<AppState>((set, get, api) => ({
               code: existing?.code,
               runId: existing?.runId,
               designVersion: m.designVersion,
+              layer: m.layer ?? existing?.layer ?? undefined,
               timestamp: existing?.timestamp ?? Date.now(),
             };
           })
@@ -714,12 +716,22 @@ export const useAppStore = create<AppState>((set, get, api) => ({
 
     if (!userText.trim() && !localUrl) return;
 
+    const activeThread = get().threads.find((t) => t.id === targetThreadId);
+    const viewingVer =
+      get().activeThreadId === targetThreadId
+        ? get().viewingVersion
+        : activeThread?.viewingVersion ?? null;
+    const curVer = activeThread?.versions?.find((v) => v.version === viewingVer);
+    const layerToSend =
+      resolveSelectedLayer(get().code, get().parts, curVer, get().selectedLayerId) ?? undefined;
+
     const userMsgId = 'user-' + Date.now();
     const userMsg: ChatMessage = {
       id: userMsgId,
       role: 'user',
       content: userText,
       image: localUrl,
+      layer: layerToSend,
       timestamp: Date.now(),
     };
     get().addMessage(userMsg, targetThreadId);
@@ -794,6 +806,7 @@ export const useAppStore = create<AppState>((set, get, api) => ({
       pinnedParams: pinnedParamsToSend,
       editedBody: editedBodyToSend,
       model: get().selectedModel,
+      layer: layerToSend,
     });
     if (get().activeProjectId) {
       req.projectId = get().activeProjectId!;

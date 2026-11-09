@@ -11,7 +11,7 @@ export async function loadRunInput(
   baseVersion: number | null,
   attachmentIds: Array<string | { id: string; kind?: 'markup' | 'reference' }>,
   deps?: { objectStore?: ObjectStore }
-): Promise<GraphInput & { baseEdits: string[] }> {
+): Promise<GraphInput & { baseEdits: string[]; layer: { id: string; name: string } | null }> {
   // 1. Thread must belong to ownerKey and not be archived, else throw
   const threadRes = await q.query(
     `SELECT id FROM threads WHERE id = $1 AND owner_key = $2 AND archived_at IS NULL`,
@@ -23,7 +23,7 @@ export async function loadRunInput(
 
   // 2. messages: history from messages table ONLY for this thread, ordered by seq
   const messagesRes = await q.query(
-    `SELECT role, kind, content FROM messages WHERE thread_id = $1 ORDER BY seq ASC`,
+    `SELECT role, kind, content, layer FROM messages WHERE thread_id = $1 ORDER BY seq ASC`,
     [threadId]
   );
   const messages: GraphInput['messages'] = messagesRes.rows.map((row) => ({
@@ -31,6 +31,25 @@ export async function loadRunInput(
     kind: String(row.kind),
     content: String(row.content),
   }));
+
+  let layer: { id: string; name: string } | null = null;
+  for (let i = messagesRes.rows.length - 1; i >= 0; i--) {
+    if (messagesRes.rows[i].role === 'user') {
+      const rawLayer = messagesRes.rows[i].layer;
+      if (rawLayer) {
+        const parsed = typeof rawLayer === 'string' ? JSON.parse(rawLayer) : rawLayer;
+        if (
+          parsed &&
+          typeof parsed === 'object' &&
+          typeof parsed.id === 'string' &&
+          typeof parsed.name === 'string'
+        ) {
+          layer = { id: parsed.id, name: parsed.name };
+        }
+      }
+      break;
+    }
+  }
 
   // 3. baseBody, baseRequest, baseEdits from designs at (threadId, baseVersion)
   let baseBody: string | null = null;
@@ -96,5 +115,6 @@ export async function loadRunInput(
     baseRequest,
     baseEdits,
     attachments,
+    layer,
   };
 }

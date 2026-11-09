@@ -125,6 +125,10 @@ export const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => [],
   }),
+  layer: Annotation<{ id: string; name: string } | null>({
+    reducer: (_, y) => y,
+    default: () => null,
+  }),
 });
 
 export type AgentStateType = typeof AgentState.State;

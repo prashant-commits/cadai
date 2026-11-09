@@ -33,7 +33,7 @@ Name the key dimensions as top-level variables and derive the geometry from them
 ${SCRIPT_CONTRACT}
 
 ## Editing
-When the user message contains a current script and an edit request, change only what the edit asks for. Keep every other dimension, part, label, pose parameter and detail exactly as it is.
+When the user message contains a current script and an edit request, change only what the edit asks for. Keep every other dimension, part, label, pose parameter and detail exactly as it is. Blocks between \`# cadai:op\` and \`# cadai:end\` lines are the user's manual edits. Keep each block and its marker lines. To change one, edit its parameter values; never delete or rewrite a block unless the user asks.
 
 ## Process
 Build, look, then improve. Render from several angles and in the open pose, criticise your own design against the request and real use, and revise at least once before finishing. Tools:
@@ -48,6 +48,10 @@ ${BREP_CHEATSHEET}`.trim();
 export const MARKUP_SENTENCE =
   'The image above is a screenshot of the current design that the user drew on. The marks show the change they want; everything under the marks is the current design, not a target.';
 export const REFERENCE_SENTENCE = "The images above are the user's reference images.";
+
+export function layerSentence(name: string): string {
+  return `The user selected the layer "${name}"; apply the request to it.`;
+}
 
 /** The first user message: the request on a fresh build, or the current script plus the edit on a follow-up. */
 export function buildFirstUserMessage(input: DesignerInput, startingBody: string): string {
@@ -65,6 +69,9 @@ export function buildFirstUserMessage(input: DesignerInput, startingBody: string
     if (hasReference) {
       parts.push(REFERENCE_SENTENCE);
     }
+    if (input.layer) {
+      parts.push(layerSentence(input.layer.name));
+    }
     parts.push(
       'Apply the edit to the current design. Keep everything the user did not ask to change. Call `run_script` with your updated design code, `render` to inspect it, and `finish` when done.'
     );
@@ -79,6 +86,9 @@ export function buildFirstUserMessage(input: DesignerInput, startingBody: string
   }
   if (hasReference) {
     parts.push(REFERENCE_SENTENCE);
+  }
+  if (input.layer) {
+    parts.push(layerSentence(input.layer.name));
   }
   parts.push(
     'Design the parametric build123d model for this request. Call `run_script` with your design code, `render` to inspect clearances and motion, and `finish` when done.'

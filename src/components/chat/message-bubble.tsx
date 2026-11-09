@@ -9,7 +9,7 @@ import { compileModel } from '@/lib/engine/build123d-client';
 import { parseTranscript } from '@/lib/agent/transcript';
 import { TranscriptView } from './transcript-view';
 import { cn } from '@/lib/utils';
-import { Check, Copy, Play, User, Bot, Code, AlertCircle, PenLine } from 'lucide-react';
+import { Check, Copy, Play, User, Bot, Code, AlertCircle, PenLine, Layers } from 'lucide-react';
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -108,6 +108,15 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               : 'glass text-foreground'
           )}
         >
+          {isUser && message.layer && (
+            <div
+              data-slot="layer-chip"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 mb-2 rounded-[var(--radius-pill)] border border-border/50 bg-card/40 text-xs text-foreground font-medium"
+            >
+              <Layers className="size-3 text-muted-foreground shrink-0" />
+              <span>Layer {message.layer.name}</span>
+            </div>
+          )}
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
