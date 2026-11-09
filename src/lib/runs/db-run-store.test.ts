@@ -527,6 +527,7 @@ describe('DbRunStore', () => {
     expect(res3.baseVersion).toBe(4);
     const v4 = (await db.query(`SELECT * FROM designs WHERE thread_id = $1 AND version = 4`, [threadId])).rows[0];
     expect(v4.summary).toBe('Your edit (code)');
+    expect(v4.body).toBe('w = 80  # [0:100] W\nh = 30');
 
     await db.transaction(async (q) => {
       await DbRunStore.commit(q, res3.runId, {
@@ -735,6 +736,8 @@ describe('DbRunStore', () => {
     expect(d3.run_id).toBe(runId);
     expect(d3.parent_version).toBe(2);
     expect(d3.summary).toBe('Wider box');
+    expect(d3.edits).toEqual(['wider']);
+    expect(d3.flags).toEqual(['failed_checks']);
 
     // Run done
     const run = await DbRunStore.get(db, runId);
@@ -1356,6 +1359,221 @@ describe('DbRunStore', () => {
     await expect(DbRunStore.start(db, input)).rejects.toThrow(
       'store method requires a transaction'
     );
+
+    // commit, reap and terminate refuse to run outside a transaction too, and write nothing
+    const started = await db.transaction(async (q) =>
+      DbRunStore.start(q, makeStartInput({ threadId: crypto.randomUUID() }))
+    );
+    if (started.replay) throw new Error('Expected replay=false');
+    const plan: CommitPlan = {
+      replyKind: 'result',
+      replyMarkdown: 'Done',
+      userKind: 'request',
+      costUsd: 0,
+      wallMs: 0,
+      turns: 1,
+    };
+    await expect(DbRunStore.commit(db, started.runId, plan)).rejects.toThrow(
+      'store method requires a transaction'
+    );
+    await expect(DbRunStore.reap(db, started.runId)).rejects.toThrow(
+      'store method requires a transaction'
+    );
+    await expect(
+      DbRunStore.terminate(db, started.runId, 'cancelled', 'cancelled')
+    ).rejects.toThrow('store method requires a transaction');
+    expect((await DbRunStore.get(db, started.runId))?.status).toBe('running');
+    const asst = await db.query(
+      `SELECT count(*)::int AS c FROM messages WHERE run_id = $1 AND role = 'assistant'`,
+      [started.runId]
+    );
+    expect(asst.rows[0].c).toBe(0);
+  });
+
+  describe('start/commit edge cases', () => {
+    const plan: CommitPlan = {
+      replyKind: 'result',
+      replyMarkdown: 'Done',
+      userKind: 'request',
+      costUsd: 0,
+      wallMs: 0,
+      turns: 1,
+    };
+
+    const startError = async (input: StartInput): Promise<StoreError> => {
+      const db = getDb();
+      try {
+        await db.transaction(async (q) => {
+          await DbRunStore.start(q, input);
+        });
+      } catch (e) {
+        if (e instanceof StoreError) return e;
+        throw e;
+      }
+      throw new Error('Expected start to throw a StoreError');
+    };
+
+    const seedDesign = async (threadId: string, ownerKey: string, body: string, edits = '[]') => {
+      const db = getDb();
+      await db.query(`INSERT INTO threads(id, owner_key) VALUES ($1, $2)`, [threadId, ownerKey]);
+      await db.query(
+        `INSERT INTO designs(thread_id, version, parent_version, origin, base_request, edits, body, prelude_version, summary, flags)
+         VALUES ($1, 1, null, 'designer', 'box', $2::jsonb, $3, 'v1', 'box', '[]')`,
+        [threadId, edits, body]
+      );
+    };
+
+    it('DT1: terminate, reap and commit of an unknown run report nothing happened', async () => {
+      const db = getDb();
+      await db.transaction(async (q) => {
+        expect(await DbRunStore.terminate(q, 'run_missing', 'cancelled', 'cancelled')).toEqual({ ended: false });
+        expect(await DbRunStore.reap(q, 'run_missing')).toBe(false);
+        expect(await DbRunStore.commit(q, 'run_missing', plan)).toEqual({ committed: false });
+      });
+    });
+
+    it('DT2: a dangling or finished active_run_id does not block start', async () => {
+      const db = getDb();
+      const ownerKey = `owner_${crypto.randomUUID()}`;
+
+      // (i) pointer to a run row that does not exist
+      const ghostThread = crypto.randomUUID();
+      await db.query(`INSERT INTO threads(id, owner_key, active_run_id) VALUES ($1, $2, 'run_ghost')`, [ghostThread, ownerKey]);
+      const res1 = await db.transaction(async (q) =>
+        DbRunStore.start(q, makeStartInput({ threadId: ghostThread, ownerKey }))
+      );
+      if (res1.replay) throw new Error('Expected replay=false');
+      const t1 = (await db.query(`SELECT active_run_id FROM threads WHERE id = $1`, [ghostThread])).rows[0];
+      expect(t1.active_run_id).toBe(res1.runId);
+
+      // (ii) pointer to a run that is already done
+      const doneThread = crypto.randomUUID();
+      const doneRun = `run_${crypto.randomUUID()}`;
+      await db.query(`INSERT INTO threads(id, owner_key, active_run_id) VALUES ($1, $2, $3)`, [doneThread, ownerKey, doneRun]);
+      await db.query(
+        `INSERT INTO runs(id, thread_id, status, deadline_at) VALUES ($1, $2, 'done', now() + interval '15 minutes')`,
+        [doneRun, doneThread]
+      );
+      const res2 = await db.transaction(async (q) =>
+        DbRunStore.start(q, makeStartInput({ threadId: doneThread, ownerKey }))
+      );
+      if (res2.replay) throw new Error('Expected replay=false');
+      const t2 = (await db.query(`SELECT active_run_id FROM threads WHERE id = $1`, [doneThread])).rows[0];
+      expect(t2.active_run_id).toBe(res2.runId);
+      expect((await DbRunStore.get(db, doneRun))?.status).toBe('done');
+    });
+
+    it('DT3: a viewingVersion on a thread with no design is 404; an omitted one is fine', async () => {
+      const ownerKey = `owner_${crypto.randomUUID()}`;
+      const err = await startError(makeStartInput({ ownerKey, viewingVersion: 1 }));
+      expect(err.status).toBe(404);
+      expect(err.code).toBe('not_found');
+
+      const db = getDb();
+      const res = await db.transaction(async (q) =>
+        DbRunStore.start(q, makeStartInput({ ownerKey, viewingVersion: undefined as never }))
+      );
+      expect(res.replay).toBe(false);
+      if (res.replay) throw new Error('Expected replay=false');
+      expect(res.baseVersion).toBeNull();
+    });
+
+    it('DT4: empty pinnedParams on a new thread are not pins', async () => {
+      const db = getDb();
+      const res = await db.transaction(async (q) =>
+        DbRunStore.start(q, makeStartInput({ pinnedParams: {} }))
+      );
+      expect(res.replay).toBe(false);
+    });
+
+    it('DT5: pins on a thread with nothing to pin are BAD_PIN', async () => {
+      const err = await startError(makeStartInput({ pinnedParams: { w: 1 } }));
+      expect(err.status).toBe(400);
+      expect(err.code).toBe('bad_pin');
+    });
+
+    it('DT6: an edited body on a thread with no design is STALE_CLIENT, nothing written', async () => {
+      const db = getDb();
+      const threadId = crypto.randomUUID();
+      const ownerKey = `owner_${crypto.randomUUID()}`;
+      const err = await startError(makeStartInput({ threadId, ownerKey, editedBody: 'w = 1' }));
+      expect(err.status).toBe(400);
+      expect(err.code).toBe('stale_client');
+      const runs = await db.query(`SELECT count(*)::int AS c FROM runs WHERE thread_id = $1`, [threadId]);
+      expect(runs.rows[0].c).toBe(0);
+      const msgs = await db.query(`SELECT count(*)::int AS c FROM messages WHERE thread_id = $1`, [threadId]);
+      expect(msgs.rows[0].c).toBe(0);
+    });
+
+    it('DT7: a pin equal to the current value creates no version', async () => {
+      const db = getDb();
+      const threadId = crypto.randomUUID();
+      const ownerKey = `owner_${crypto.randomUUID()}`;
+      await seedDesign(threadId, ownerKey, 'w = 40  # [0:100] W\nh = 10');
+      const res = await db.transaction(async (q) =>
+        DbRunStore.start(q, makeStartInput({ threadId, ownerKey, viewingVersion: 1, pinnedParams: { w: 40 } }))
+      );
+      if (res.replay) throw new Error('Expected replay=false');
+      expect(res.baseVersion).toBe(1);
+      const n = await db.query(`SELECT count(*)::int AS c FROM designs WHERE thread_id = $1`, [threadId]);
+      expect(n.rows[0].c).toBe(1);
+    });
+
+    it('DT9: start records the model, or NULL', async () => {
+      const db = getDb();
+      const res1 = await db.transaction(async (q) =>
+        DbRunStore.start(q, makeStartInput({ model: 'm1' }))
+      );
+      if (res1.replay) throw new Error('Expected replay=false');
+      expect((await db.query(`SELECT model FROM runs WHERE id = $1`, [res1.runId])).rows[0].model).toBe('m1');
+      const res2 = await db.transaction(async (q) => DbRunStore.start(q, makeStartInput()));
+      if (res2.replay) throw new Error('Expected replay=false');
+      expect((await db.query(`SELECT model FROM runs WHERE id = $1`, [res2.runId])).rows[0].model).toBeNull();
+    });
+
+    it('DT10: the title is the trimmed first line; a blank first line leaves it unset', async () => {
+      const db = getDb();
+      const titleOf = async (text: string) => {
+        const threadId = crypto.randomUUID();
+        await db.transaction(async (q) => DbRunStore.start(q, makeStartInput({ threadId, text })));
+        return (await db.query(`SELECT title FROM threads WHERE id = $1`, [threadId])).rows[0].title;
+      };
+      expect(await titleOf('  Padded  \nrest')).toBe('Padded');
+      expect(await titleOf('   \nreal')).toBeNull();
+      expect(await titleOf('')).toBeNull();
+    });
+
+    it('DT12: commit stores a design\'s edits and flags, defaulting both to []', async () => {
+      const db = getDb();
+      const run = async (design: Record<string, unknown>) => {
+        const threadId = crypto.randomUUID();
+        const started = await db.transaction(async (q) => DbRunStore.start(q, makeStartInput({ threadId })));
+        if (started.replay) throw new Error('Expected replay=false');
+        await db.transaction(async (q) =>
+          DbRunStore.commit(q, started.runId, { ...plan, design: design as unknown as CommitPlan['design'] })
+        );
+        return (await db.query(`SELECT edits, flags FROM designs WHERE thread_id = $1`, [threadId])).rows[0];
+      };
+      const base = {
+        parentVersion: null,
+        origin: 'designer',
+        baseRequest: 'box',
+        body: 'b = 1',
+        preludeVersion: 'p1',
+        summary: 's',
+        facts: null,
+      };
+      const full = await run({ ...base, edits: ['a', 'b'], flags: ['failed_checks'] });
+      expect(full.edits).toEqual(['a', 'b']);
+      expect(full.flags).toEqual(['failed_checks']);
+      const bare = await run({ ...base });
+      expect(bare.edits).toEqual([]);
+      expect(bare.flags).toEqual([]);
+    });
+
+    it('DT13: get of an unknown run is null', async () => {
+      expect(await DbRunStore.get(getDb(), 'run_missing')).toBeNull();
+    });
   });
 
   it('start over CADAI_MAX_RUNNING → 429 BUSY', async () => {

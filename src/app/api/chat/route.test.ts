@@ -16,6 +16,18 @@ import {
 } from '@/lib/persist/phrases';
 import { StoreError } from '@/lib/persist/types';
 import { put as putArtifact } from '@/lib/runs/owner-artifacts';
+import * as graphMod from '@/lib/agent/designer/graph';
+import { coerceRouteModel } from '@/lib/agent/models';
+import { graphRecursionLimit } from '@/lib/agent/run-limits';
+import { BaseCallbackHandler } from '@langchain/core/callbacks/base';
+import { AIMessage, HumanMessage, type BaseMessage } from '@langchain/core/messages';
+
+const langfuseHandlerMock = vi.fn<(...args: unknown[]) => unknown>(() => null);
+const langfuseProcessorMock = vi.fn<() => unknown>(() => null);
+vi.mock('@/lib/tracing/langfuse', () => ({
+  getLangfuseCallbackHandler: (...args: unknown[]) => langfuseHandlerMock(...args),
+  getLangfuseSpanProcessor: () => langfuseProcessorMock(),
+}));
 
 const runDesignerMock = vi.fn();
 vi.mock('@/lib/agent/designer/run-designer', () => ({
@@ -46,7 +58,7 @@ vi.mock('@/lib/agent/model-provider', () => ({
   isAbortOrTimeout: vi.fn(() => false),
 }));
 
-import { POST as chatRoute } from './route';
+import { POST as chatRoute, runtime, dynamic } from './route';
 
 function makeOwner() {
   const uuid = crypto.randomUUID();
@@ -55,17 +67,20 @@ function makeOwner() {
   return { uuid, cookie, key };
 }
 
-const callChat = (owner: { cookie: string }, body: unknown) =>
+const rawChat = (owner: { cookie?: string }, rawBody: string) =>
   chatRoute(
     new NextRequest('http://localhost/api/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        cookie: owner.cookie,
+        ...(owner.cookie ? { cookie: owner.cookie } : {}),
       },
-      body: JSON.stringify(body),
+      body: rawBody,
     })
   );
+
+const callChat = (owner: { cookie?: string }, body: unknown) =>
+  rawChat(owner, JSON.stringify(body));
 
 describe('POST /api/chat lifecycle', () => {
   beforeEach(() => {
@@ -272,6 +287,7 @@ describe('POST /api/chat lifecycle', () => {
     expect(res.status).toBe(500);
     const body = await res.json();
     expect(body.error.code).toBe('internal');
+    expect(body).toEqual({ error: { code: 'internal', message: 'Internal server error' } });
 
     // Confirm the run was terminated with internal
     const runRes = await db.query(
@@ -432,38 +448,403 @@ describe('POST /api/chat lifecycle', () => {
   });
 
   it('chat: 429 busy and budget bodies use the fixed phrases', async () => {
-    const owner = makeOwner();
-    const threadId = crypto.randomUUID();
-    const clientMessageId = crypto.randomUUID();
+    const startSpy = vi.spyOn(DbRunStore, 'start');
+    try {
+      const owner = makeOwner();
+      const threadId = crypto.randomUUID();
+      const clientMessageId = crypto.randomUUID();
 
-    vi.spyOn(DbRunStore, 'start').mockRejectedValueOnce(
-      new StoreError(429, 'busy', BUSY)
-    );
+      startSpy.mockRejectedValueOnce(
+        new StoreError(429, 'busy', BUSY)
+      );
 
-    const resBusy = await callChat(owner, {
-      threadId,
-      clientMessageId,
-      text: 'hi',
-      viewingVersion: null,
+      const resBusy = await callChat(owner, {
+        threadId,
+        clientMessageId,
+        text: 'hi',
+        viewingVersion: null,
+      });
+      expect(resBusy.status).toBe(429);
+      expect(await resBusy.json()).toEqual({
+        error: { code: 'busy', message: BUSY },
+      });
+
+      startSpy.mockRejectedValueOnce(
+        new StoreError(429, 'budget', BUDGET_USED)
+      );
+
+      const resBudget = await callChat(owner, {
+        threadId,
+        clientMessageId: crypto.randomUUID(),
+        text: 'hi',
+        viewingVersion: null,
+      });
+      expect(resBudget.status).toBe(429);
+      expect(await resBudget.json()).toEqual({
+        error: { code: 'budget', message: BUDGET_USED },
+      });
+    } finally {
+      startSpy.mockRestore();
+    }
+  });
+
+  describe('request validation and forwarding', () => {
+    const seedDesign = async (ownerKey: string, threadId: string, body: string) => {
+      const db = getDb();
+      await db.query(`INSERT INTO threads(id, owner_key) VALUES ($1, $2)`, [threadId, ownerKey]);
+      await db.query(
+        `INSERT INTO designs(thread_id, version, parent_version, origin, base_request, body, prelude_version, summary)
+         VALUES ($1, 1, null, 'designer', 'make box', $2, '1', 'Box')`,
+        [threadId, body]
+      );
+    };
+    const PIN_BODY = 'w = 40  # [0:100] W\nh = 10';
+
+    it('RT1: the route segment config is nodejs and force-dynamic', () => {
+      expect(runtime).toBe('nodejs');
+      expect(dynamic).toBe('force-dynamic');
     });
-    expect(resBusy.status).toBe(429);
-    expect(await resBusy.json()).toEqual({
-      error: { code: 'busy', message: BUSY },
+
+    it('RT2: no owner cookie, or an invalid one, is 401', async () => {
+      const startSpy = vi.spyOn(DbRunStore, 'start');
+      try {
+        const base = {
+          threadId: crypto.randomUUID(),
+          clientMessageId: crypto.randomUUID(),
+          text: 'hi',
+          viewingVersion: null,
+        };
+        for (const owner of [{}, { cookie: `${CADAI_OWNER_COOKIE}=not-a-uuid` }]) {
+          const res = await callChat(owner, base);
+          expect(res.status).toBe(401);
+          expect(await res.json()).toEqual({
+            error: { code: 'unauthorized', message: 'Unauthorized' },
+          });
+        }
+        expect(startSpy).not.toHaveBeenCalled();
+      } finally {
+        startSpy.mockRestore();
+      }
     });
 
-    vi.spyOn(DbRunStore, 'start').mockRejectedValueOnce(
-      new StoreError(429, 'budget', BUDGET_USED)
-    );
-
-    const resBudget = await callChat(owner, {
-      threadId,
-      clientMessageId: crypto.randomUUID(),
-      text: 'hi',
-      viewingVersion: null,
+    it('RT3: invalid JSON is 400', async () => {
+      const res = await rawChat(makeOwner(), '{not json');
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: { code: 'bad_request', message: 'Invalid JSON' },
+      });
     });
-    expect(resBudget.status).toBe(429);
-    expect(await resBudget.json()).toEqual({
-      error: { code: 'budget', message: BUDGET_USED },
+
+    it.each([['null'], ['[]'], ['"x"'], ['42']])('RT4: body %s must be an object', async (raw) => {
+      const res = await rawChat(makeOwner(), raw);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: { code: 'bad_request', message: 'Request body must be an object' },
+      });
+    });
+
+    it('RT5: text must be a string', async () => {
+      const owner = makeOwner();
+      const ids = { threadId: crypto.randomUUID(), clientMessageId: crypto.randomUUID() };
+      for (const body of [{ ...ids, text: 5 }, { ...ids }]) {
+        const res = await callChat(owner, body);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({
+          error: { code: 'bad_request', message: 'text must be a string' },
+        });
+      }
+    });
+
+    const REJECTED: {
+      name: string;
+      patch?: Record<string, unknown>;
+      raw?: [string, string];
+      code: string;
+      message: string;
+    }[] = [
+      { name: 'threadId wrapped in an array', patch: { threadId: [crypto.randomUUID()] }, code: 'legacy', message: LEGACY },
+      { name: 'clientMessageId not a uuid', patch: { clientMessageId: 'not-a-uuid' }, code: 'stale_client', message: STALE_CLIENT },
+      { name: 'clientMessageId wrapped in an array', patch: { clientMessageId: [crypto.randomUUID()] }, code: 'stale_client', message: STALE_CLIENT },
+      { name: 'viewingVersion 1.5', patch: { viewingVersion: 1.5 }, code: 'stale_client', message: STALE_CLIENT },
+      { name: 'viewingVersion string', patch: { viewingVersion: 'abc' }, code: 'stale_client', message: STALE_CLIENT },
+      { name: 'viewingVersion object', patch: { viewingVersion: {} }, code: 'stale_client', message: STALE_CLIENT },
+      { name: 'attachmentIds with a non-string among strings', patch: { attachmentIds: ['a'.repeat(22), 7] }, code: 'bad_attachment', message: BAD_ATTACHMENT },
+      { name: 'attachmentIds with only a number', patch: { attachmentIds: [7] }, code: 'bad_attachment', message: BAD_ATTACHMENT },
+      { name: 'pinnedParams empty array', patch: { pinnedParams: [] }, code: 'bad_pin', message: BAD_PIN },
+      { name: 'pinnedParams number', patch: { pinnedParams: 5 }, code: 'bad_pin', message: BAD_PIN },
+      { name: 'pinnedParams string value', patch: { pinnedParams: { w: 'x' } }, code: 'bad_pin', message: BAD_PIN },
+      { name: 'pinnedParams 1e999', raw: ['pinnedParams', '{"w":1e999}'], code: 'bad_pin', message: BAD_PIN },
+      { name: 'editedBody number', patch: { editedBody: 5 }, code: 'bad_edit', message: BAD_EDIT },
+      { name: 'editedBody object', patch: { editedBody: {} }, code: 'bad_edit', message: BAD_EDIT },
+    ];
+
+    it.each(REJECTED)('RT6: $name is rejected before the store', async (row) => {
+      const startSpy = vi.spyOn(DbRunStore, 'start');
+      try {
+        const base: Record<string, unknown> = {
+          threadId: crypto.randomUUID(),
+          clientMessageId: crypto.randomUUID(),
+          text: 'hi',
+          viewingVersion: null,
+          ...row.patch,
+        };
+        let raw: string;
+        if (row.raw) {
+          raw = JSON.stringify({ ...base, [row.raw[0]]: '__RAW__' }).replace('"__RAW__"', row.raw[1]);
+        } else {
+          raw = JSON.stringify(base);
+        }
+        const res = await rawChat(makeOwner(), raw);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: { code: row.code, message: row.message } });
+        expect(startSpy).not.toHaveBeenCalled();
+      } finally {
+        startSpy.mockRestore();
+      }
+    });
+
+    it('RT7: omitted viewingVersion and null optional fields are accepted', async () => {
+      const res = await callChat(makeOwner(), {
+        threadId: crypto.randomUUID(),
+        clientMessageId: crypto.randomUUID(),
+        text: 'build a box',
+        attachmentIds: null,
+        pinnedParams: null,
+        editedBody: null,
+      });
+      expect(res.status).toBe(200);
+      await res.text();
+    });
+
+    it('RT8: exactly four attachments are accepted', async () => {
+      const db = getDb();
+      const owner = makeOwner();
+      const threadId = crypto.randomUUID();
+      const ids: string[] = [];
+      for (let i = 0; i < 4; i++) {
+        ids.push(await putArtifact(owner.key, 'image', Buffer.from(`IMG-${i}`)));
+      }
+      const res = await callChat(owner, {
+        threadId,
+        clientMessageId: crypto.randomUUID(),
+        text: 'four refs',
+        viewingVersion: null,
+        attachmentIds: ids,
+      });
+      expect(res.status).toBe(200);
+      await res.text();
+      const cnt = await db.query(
+        `SELECT count(*)::int AS c FROM message_attachments ma
+         JOIN messages m ON m.id = ma.message_id WHERE m.thread_id = $1`,
+        [threadId]
+      );
+      expect(cnt.rows[0].c).toBe(4);
+    });
+
+    it('RT9: pinnedParams and editedBody are forwarded to the store', async () => {
+      const db = getDb();
+      const owner = makeOwner();
+
+      // (i) sliders
+      const t1 = crypto.randomUUID();
+      await seedDesign(owner.key, t1, PIN_BODY);
+      const res1 = await callChat(owner, {
+        threadId: t1,
+        clientMessageId: crypto.randomUUID(),
+        text: 'slide it',
+        viewingVersion: 1,
+        pinnedParams: { w: 60 },
+      });
+      expect(res1.status).toBe(200);
+      await res1.text();
+      const v2a = (await db.query(`SELECT origin, body FROM designs WHERE thread_id = $1 AND version = 2`, [t1])).rows[0];
+      expect(v2a.origin).toBe('user_edit');
+      expect(v2a.body).toBe('w = 60  # [0:100] W\nh = 10');
+
+      // (ii) code edit
+      const t2 = crypto.randomUUID();
+      await seedDesign(owner.key, t2, PIN_BODY);
+      runDesignerMock.mockClear();
+      const edited = 'w = 40  # [0:100] W\nh = 12';
+      const res2 = await callChat(owner, {
+        threadId: t2,
+        clientMessageId: crypto.randomUUID(),
+        text: 'edit code',
+        viewingVersion: 1,
+        editedBody: edited,
+      });
+      expect(res2.status).toBe(200);
+      await res2.text();
+      const v2b = (await db.query(`SELECT origin, body FROM designs WHERE thread_id = $1 AND version = 2`, [t2])).rows[0];
+      expect(v2b.origin).toBe('user_edit');
+      expect(v2b.body).toBe(edited);
+      expect(runDesignerMock.mock.calls[0][0].priorScript).toBe(edited);
+    });
+
+    it('RT10: the model is stored on the run; a non-string model is ignored', async () => {
+      const db = getDb();
+      const owner = makeOwner();
+      const t1 = crypto.randomUUID();
+      const res1 = await callChat(owner, {
+        threadId: t1,
+        clientMessageId: crypto.randomUUID(),
+        text: 'hi',
+        viewingVersion: null,
+        model: 'claude-test-model',
+      });
+      expect(res1.status).toBe(200);
+      await res1.text();
+      expect((await db.query(`SELECT model FROM runs WHERE thread_id = $1`, [t1])).rows[0].model).toBe(
+        'claude-test-model'
+      );
+
+      const t2 = crypto.randomUUID();
+      const res2 = await callChat(owner, {
+        threadId: t2,
+        clientMessageId: crypto.randomUUID(),
+        text: 'hi',
+        viewingVersion: null,
+        model: 5,
+      });
+      expect(res2.status).toBe(200);
+      await res2.text();
+      expect((await db.query(`SELECT model FROM runs WHERE thread_id = $1`, [t2])).rows[0].model).toBeNull();
+    });
+
+    it('RT11: a non-store error from start propagates', async () => {
+      const startSpy = vi
+        .spyOn(DbRunStore, 'start')
+        .mockRejectedValueOnce(new Error('db down'));
+      try {
+        await expect(
+          callChat(makeOwner(), {
+            threadId: crypto.randomUUID(),
+            clientMessageId: crypto.randomUUID(),
+            text: 'hi',
+            viewingVersion: null,
+          })
+        ).rejects.toThrow('db down');
+      } finally {
+        startSpy.mockRestore();
+      }
+    });
+
+    it('RT12: another owner\'s thread is a 404 with the not_found body', async () => {
+      const db = getDb();
+      const a = makeOwner();
+      const b = makeOwner();
+      const threadId = crypto.randomUUID();
+      await db.query(`INSERT INTO threads(id, owner_key) VALUES ($1, $2)`, [threadId, a.key]);
+      const res = await callChat(b, {
+        threadId,
+        clientMessageId: crypto.randomUUID(),
+        text: 'hi',
+        viewingVersion: null,
+      });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({
+        error: { code: 'not_found', message: 'Not found.' },
+      });
+    });
+
+    it('RT13: the graph gets the thread history, config, tracing handler, and is flushed', async () => {
+      const db = getDb();
+      const owner = makeOwner();
+      const threadId = crypto.randomUUID();
+
+      // Turn 1 completes, so the history holds an assistant reply.
+      const res1 = await callChat(owner, {
+        threadId,
+        clientMessageId: crypto.randomUUID(),
+        text: 'first message',
+        viewingVersion: null,
+      });
+      expect(res1.status).toBe(200);
+      await res1.text();
+
+      interface Captured {
+        input: { messages: BaseMessage[] };
+        config: {
+          configurable: unknown;
+          recursionLimit: number;
+          streamMode: string[];
+          callbacks: unknown[];
+          signal: AbortSignal;
+        };
+      }
+      const captured: Captured[] = [];
+      const realCreate = graphMod.createDesignerAgent;
+      const createSpy = vi.spyOn(graphMod, 'createDesignerAgent').mockImplementation(((
+        ...args: Parameters<typeof realCreate>
+      ) => {
+        const agent = realCreate(...args);
+        const origStream = agent.stream.bind(agent) as (i: unknown, c: unknown) => unknown;
+        (agent as unknown as { stream: unknown }).stream = (input: unknown, config: unknown) => {
+          captured.push({ input, config } as Captured);
+          return origStream(input, config);
+        };
+        return agent;
+      }) as typeof realCreate);
+
+      class TestHandler extends BaseCallbackHandler {
+        name = 'route-test-handler';
+      }
+      const handler = new TestHandler();
+      const forceFlush = vi.fn().mockResolvedValue(undefined);
+      langfuseHandlerMock.mockClear();
+      langfuseHandlerMock.mockReturnValue(handler);
+      langfuseProcessorMock.mockReturnValue({ forceFlush });
+
+      try {
+        const res2 = await callChat(owner, {
+          threadId,
+          clientMessageId: crypto.randomUUID(),
+          text: 'second message',
+          viewingVersion: 1,
+        });
+        expect(res2.status).toBe(200);
+        const runId = res2.headers.get('X-Run-Id');
+        await res2.text();
+
+        expect(captured).toHaveLength(1);
+        const { input, config } = captured[0];
+
+        const assistantContent = (
+          await db.query(`SELECT content FROM messages WHERE thread_id = $1 AND role = 'assistant'`, [threadId])
+        ).rows[0].content as string;
+        expect(assistantContent.length).toBeGreaterThan(0);
+        expect(input.messages).toHaveLength(3);
+        expect(input.messages[0]).toBeInstanceOf(HumanMessage);
+        expect(input.messages[0].content).toBe('first message');
+        expect(input.messages[1]).toBeInstanceOf(AIMessage);
+        expect(input.messages[1].content).toBe(assistantContent);
+        expect(input.messages[2]).toBeInstanceOf(HumanMessage);
+        expect(input.messages[2].content).toBe('second message');
+
+        const model = coerceRouteModel(undefined);
+        expect(langfuseHandlerMock).toHaveBeenCalledWith({
+          sessionId: threadId,
+          tags: ['cadai', model],
+          metadata: { model },
+        });
+        expect(config.configurable).toEqual({
+          ownerKey: owner.key,
+          threadId,
+          runId,
+          deadlineAt: expect.any(Number),
+        });
+        expect(config.recursionLimit).toBe(graphRecursionLimit());
+        expect(config.streamMode).toEqual(['updates', 'messages', 'custom', 'tasks', 'values']);
+        expect(config.callbacks).toEqual([handler]);
+        expect(config.signal).toBeInstanceOf(AbortSignal);
+        expect(forceFlush).toHaveBeenCalledTimes(1);
+      } finally {
+        createSpy.mockRestore();
+        langfuseHandlerMock.mockReset();
+        langfuseHandlerMock.mockReturnValue(null);
+        langfuseProcessorMock.mockReset();
+        langfuseProcessorMock.mockReturnValue(null);
+      }
     });
   });
 });

@@ -7,6 +7,7 @@ import { streamRun } from './stream-run';
 import { reapOnce } from '@/lib/persist/loop';
 import { BUILD_FAILED, DEADLINE, SAVE_FAILED, STOPPED } from '@/lib/persist/phrases';
 import type { RunOutcome } from '@/lib/persist/types';
+import { put as realPut } from '@/lib/runs/owner-artifacts';
 
 function makeOwner() {
   const uuid = crypto.randomUUID();
@@ -86,6 +87,18 @@ describe('streamRun', () => {
       status: 'done',
       reply: { kind: 'result', markdown: 'Done' },
     });
+
+    // S9: the first stored event is the run event
+    expect(events[0]).toMatchObject({
+      t: 'run',
+      seq: 1,
+      runId,
+      threadId,
+      status: 'running',
+      resumed: false,
+    });
+    // S16: a finished run is no longer registered for local abort
+    expect(abortRun(runId)).toBe(false);
 
     // Check database has all events stored before the end event
     const stored = await DbRunStore.eventsSince(db, runId, 0, 100);
@@ -459,6 +472,12 @@ describe('streamRun', () => {
       t: 'end',
       status: 'failed',
       reply: { markdown: SAVE_FAILED },
+    });
+    // S8: the unstored fallback continues the sequence and carries the empty message id
+    const prevSeq = (events.at(-2) as { seq: number }).seq;
+    expect(endEvents[0]).toMatchObject({
+      seq: prevSeq + 1,
+      reply: { messageId: '', kind: 'error', markdown: SAVE_FAILED },
     });
   });
 
@@ -1219,5 +1238,520 @@ describe('streamRun', () => {
     const run = await DbRunStore.get(db, runId);
     expect(run?.status).toBe('done');
     expect(Number(run?.costUsd?.toFixed(2))).toBe(0.05);
+  });
+
+  describe('streamRun edge cases (T2)', () => {
+    const OUTCOME: RunOutcome = {
+      replyKind: 'result',
+      replyMarkdown: 'Done',
+      userKind: 'request',
+      costUsd: 0,
+      wallMs: 1,
+      turns: 1,
+    };
+    const DESIGN = {
+      parentVersion: null,
+      origin: 'designer' as const,
+      baseRequest: 'box',
+      edits: [],
+      body: 'box = Box(10, 10, 10)',
+      preludeVersion: '1',
+      summary: 'Box',
+      facts: null,
+      flags: [],
+    };
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    const waitForRunEvent = (db: Db, runId: string) =>
+      vi.waitFor(async () => {
+        expect((await DbRunStore.eventsSince(db, runId, 0, 10)).length).toBeGreaterThan(0);
+      });
+    const aborted = (signal: AbortSignal) =>
+      new Promise<void>((r) => (signal.aborted ? r() : signal.addEventListener('abort', () => r(), { once: true })));
+    const waitForStatus = (db: Db, runId: string, status: string) =>
+      vi.waitFor(async () => {
+        expect((await DbRunStore.get(db, runId))?.status).toBe(status);
+      }, { timeout: 10_000 });
+
+    const fakeDb = (): Db =>
+      ({
+        kind: 'pglite',
+        query: async () => ({ rows: [], rowCount: 0 }),
+        transaction: async (fn: (q: unknown) => unknown) =>
+          fn({ query: async () => ({ rows: [], rowCount: 0 }) }),
+        close: async () => undefined,
+      }) as unknown as Db;
+    const endRow = {
+      t: 'end' as const,
+      seq: 99,
+      status: 'failed' as const,
+      reply: { messageId: 'm', kind: 'error' as const, markdown: SAVE_FAILED },
+    };
+
+    it('S1: the response carries the SSE headers', async () => {
+      const db = getDb();
+      const owner = makeOwner();
+      const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+      const res = streamRun({
+        runId,
+        threadId,
+        ownerKey: owner.key,
+        deadlineAt,
+        invoke: async () =>
+          (async function* () {
+            yield ['values', { outcome: OUTCOME }];
+          })(),
+      });
+      expect(res.headers.get('content-type')).toBe('text/event-stream; charset=utf-8');
+      expect(res.headers.get('cache-control')).toBe('no-cache, no-transform');
+      expect(res.headers.get('connection')).toBe('keep-alive');
+      await res.text();
+    });
+
+    it.each([[undefined], ['0'], ['-5'], ['abc'], ['Infinity']])(
+      'S2: CADAI_HEARTBEAT_MS=%s falls back to the 15 s default',
+      async (value) => {
+        if (value !== undefined) process.env.CADAI_HEARTBEAT_MS = value;
+        else delete process.env.CADAI_HEARTBEAT_MS;
+        const db = getDb();
+        const owner = makeOwner();
+        const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+        let beats = 0;
+        const fakeStore = {
+          ...DbRunStore,
+          heartbeat: async (...args: Parameters<typeof DbRunStore.heartbeat>) => {
+            beats++;
+            return DbRunStore.heartbeat(...args);
+          },
+        };
+        const res = streamRun({
+          runId,
+          threadId,
+          ownerKey: owner.key,
+          deadlineAt,
+          deps: { store: fakeStore as typeof DbRunStore },
+          invoke: async () =>
+            (async function* () {
+              await sleep(150);
+              yield ['values', { outcome: OUTCOME }];
+            })(),
+        });
+        await res.text();
+        expect(beats).toBe(0);
+      }
+    );
+
+    const BIG = 'x'.repeat(10_000);
+    const runWithDeltas = async (count: number) => {
+      const db = getDb();
+      const owner = makeOwner();
+      const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+      const res = streamRun({
+        runId,
+        threadId,
+        ownerKey: owner.key,
+        deadlineAt,
+        invoke: async () =>
+          (async function* () {
+            for (let i = 0; i < count; i++) yield ['custom', { t: 'delta', text: BIG }];
+            yield ['values', { outcome: OUTCOME }];
+          })(),
+      });
+      // nobody reads the body until the run has finished
+      await waitForStatus(db, runId, 'done');
+      return res;
+    };
+
+    it('S3a: with the default backlog a slow client still gets everything', async () => {
+      const res = await runWithDeltas(20);
+      const text = await res.text();
+      expect(text).toContain('"t":"end"');
+    });
+
+    it('S3b: a client under the high-water mark is never cut off', async () => {
+      process.env.CADAI_CLIENT_BACKLOG_BYTES = '1000';
+      const res = await runWithDeltas(3);
+      const text = await res.text();
+      expect(text).toContain('"t":"end"');
+    });
+
+    it('S3c: a client far behind is errored with the reconnect message; the run still commits', async () => {
+      process.env.CADAI_CLIENT_BACKLOG_BYTES = '1000';
+      const res = await runWithDeltas(20);
+      await expect(res.text()).rejects.toThrow(/fell too far behind/);
+    });
+
+    it('S18: a client queued exactly at the backlog threshold is not cut off', async () => {
+      // Calibrate: with the default backlog, read every frame and measure the bytes queued
+      // before the end event (frame sizes are identical between runs: same ids, same payloads).
+      const calib = await (await runWithDeltas(7)).text();
+      const frames = calib.split('\n\n').filter((f) => f.startsWith('data: '));
+      expect(JSON.parse(frames.at(-1)!.slice(6)).t).toBe('end');
+      const queuedBeforeEnd = frames
+        .slice(0, -1)
+        .reduce((n, f) => n + Buffer.byteLength(`${f}\n\n`), 0);
+      const HWM = 64 * 1024;
+      const backlog = queuedBeforeEnd - HWM;
+      expect(backlog).toBeGreaterThan(0);
+
+      // desiredSize = HWM - queued = -backlog exactly when the end event is written: `<` keeps the client.
+      process.env.CADAI_CLIENT_BACKLOG_BYTES = String(backlog);
+      const atThreshold = await (await runWithDeltas(7)).text();
+      expect(atThreshold).toContain('"t":"end"');
+
+      // one byte less and the same client is cut off (proves the equality is exact)
+      process.env.CADAI_CLIENT_BACKLOG_BYTES = String(backlog - 1);
+      await expect((await runWithDeltas(7)).text()).rejects.toThrow(/fell too far behind/);
+    });
+
+    it('S4: commit retries follow 50/100/200/400 ms backoff clamped to the window', async () => {
+      process.env.CADAI_COMMIT_RETRY_MS = '1000';
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+      try {
+        const times: number[] = [];
+        let seq = 0;
+        const fakeStore = {
+          ...DbRunStore,
+          append: async () => ++seq,
+          heartbeat: async () => 1,
+          commit: async () => {
+            times.push(Date.now());
+            if (times.length < 8) throw new Error('commit down');
+            return { committed: true as const, end: { ...endRow, status: 'done' as const } };
+          },
+          terminate: async () => ({ ended: true as const, end: endRow }),
+        };
+        const res = streamRun({
+          runId: 'run_fake',
+          threadId: crypto.randomUUID(),
+          ownerKey: 'owner',
+          deadlineAt: Date.now() + 900_000,
+          deps: { db: fakeDb(), store: fakeStore as unknown as typeof DbRunStore },
+          invoke: async () =>
+            (async function* () {
+              yield ['values', { outcome: OUTCOME }];
+            })(),
+        });
+        const text = res.text();
+        await vi.advanceTimersByTimeAsync(1500);
+        await text;
+        expect(times.map((t) => t - times[0])).toEqual([0, 50, 150, 350, 750, 1000]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('S5: append retries follow the same backoff, then the graph is aborted', async () => {
+      process.env.CADAI_APPEND_WINDOW_MS = '1000';
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+      try {
+        const times: number[] = [];
+        let calls = 0;
+        let signal: AbortSignal | undefined;
+        const fakeStore = {
+          ...DbRunStore,
+          append: async () => {
+            calls++;
+            if (calls === 1) return 1;
+            times.push(Date.now());
+            if (times.length < 8) throw new Error('append down');
+            return calls;
+          },
+          heartbeat: async () => 1,
+          terminate: async () => ({ ended: true as const, end: endRow }),
+        };
+        const res = streamRun({
+          runId: 'run_fake',
+          threadId: crypto.randomUUID(),
+          ownerKey: 'owner',
+          deadlineAt: Date.now() + 900_000,
+          deps: { db: fakeDb(), store: fakeStore as unknown as typeof DbRunStore },
+          invoke: async (sig) => {
+            signal = sig;
+            return (async function* () {
+              yield ['custom', { t: 'delta', text: 'x' }];
+            })();
+          },
+        });
+        const text = res.text();
+        await vi.advanceTimersByTimeAsync(1500);
+        await text;
+        expect(times.map((t) => t - times[0])).toEqual([0, 50, 150, 350, 750, 1000]);
+        expect(signal?.aborted).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    const stlOutcome = (): RunOutcome => ({
+      replyKind: 'result',
+      replyMarkdown: 'Done',
+      userKind: 'request',
+      design: { ...DESIGN, stl: 'solid x' },
+      costUsd: 0,
+      wallMs: 1,
+      turns: 1,
+    });
+
+    it('S7: a run that ended elsewhere (append returns 0) uploads and commits nothing', async () => {
+      const db = getDb();
+      const owner = makeOwner();
+      const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+      const putArtifact = vi.fn(realPut);
+      const res = streamRun({
+        runId,
+        threadId,
+        ownerKey: owner.key,
+        deadlineAt,
+        deps: { putArtifact },
+        invoke: async (signal) =>
+          (async function* () {
+            await waitForRunEvent(db, runId);
+            await db.transaction((q) => DbRunStore.terminate(q, runId, 'cancelled', 'cancelled'));
+            yield ['custom', { t: 'delta', text: 'x' }];
+            await aborted(signal);
+            yield ['values', { outcome: stlOutcome() }];
+          })(),
+      });
+      const events = await readAllEvents(res);
+      expect(putArtifact).not.toHaveBeenCalled();
+      expect(events.at(-1)).toMatchObject({ t: 'end', status: 'cancelled', reply: { markdown: STOPPED } });
+      const n = await db.query(`SELECT count(*)::int AS c FROM designs WHERE thread_id = $1`, [threadId]);
+      expect(n.rows[0].c).toBe(0);
+    });
+
+    it('S7b: a run that ended elsewhere (heartbeat finds 0 rows) uploads and commits nothing', async () => {
+      process.env.CADAI_HEARTBEAT_MS = '20';
+      const db = getDb();
+      const owner = makeOwner();
+      const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+      const putArtifact = vi.fn(realPut);
+      const res = streamRun({
+        runId,
+        threadId,
+        ownerKey: owner.key,
+        deadlineAt,
+        deps: { putArtifact },
+        invoke: async (signal) =>
+          (async function* () {
+            await waitForRunEvent(db, runId);
+            await db.transaction((q) => DbRunStore.terminate(q, runId, 'cancelled', 'cancelled'));
+            await aborted(signal);
+            yield ['values', { outcome: stlOutcome() }];
+          })(),
+      });
+      const events = await readAllEvents(res);
+      expect(putArtifact).not.toHaveBeenCalled();
+      expect(events.at(-1)).toMatchObject({ t: 'end', status: 'cancelled', reply: { markdown: STOPPED } });
+      const n = await db.query(`SELECT count(*)::int AS c FROM designs WHERE thread_id = $1`, [threadId]);
+      expect(n.rows[0].c).toBe(0);
+    });
+
+    it('S10: a graph throw after a remote Stop replays the Stop, not BUILD_FAILED', async () => {
+      const db = getDb();
+      const owner = makeOwner();
+      const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+      const res = streamRun({
+        runId,
+        threadId,
+        ownerKey: owner.key,
+        deadlineAt,
+        invoke: async () =>
+          (async function* () {
+            await waitForRunEvent(db, runId);
+            await db.transaction((q) => DbRunStore.terminate(q, runId, 'cancelled', 'cancelled'));
+            throw new Error('boom');
+          })(),
+      });
+      const events = await readAllEvents(res);
+      const ends = events.filter((e) => e.t === 'end');
+      expect(ends).toHaveLength(1);
+      expect(ends[0]).toMatchObject({ status: 'cancelled', reply: { kind: 'cancelled', markdown: STOPPED } });
+    });
+
+    it('S11: the STL and STEP are uploaded for the owner with the run ids and the injected db', async () => {
+      const db = getDb();
+      const owner = makeOwner();
+      const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+      const putArtifact = vi.fn(realPut);
+      const stepB64 = Buffer.from('STEP-DATA').toString('base64');
+      const res = streamRun({
+        runId,
+        threadId,
+        ownerKey: owner.key,
+        deadlineAt,
+        deps: { db, putArtifact },
+        invoke: async () =>
+          (async function* () {
+            yield [
+              'values',
+              { outcome: { ...stlOutcome(), design: { ...DESIGN, stl: 'solid x', step: stepB64 } } },
+            ];
+          })(),
+      });
+      const events = await readAllEvents(res);
+      expect(events.at(-1)).toMatchObject({ t: 'end', status: 'done' });
+      expect(putArtifact).toHaveBeenCalledTimes(2);
+      expect(putArtifact).toHaveBeenNthCalledWith(
+        1,
+        owner.key,
+        'stl',
+        Buffer.from('solid x', 'utf8'),
+        { threadId, runId },
+        { db }
+      );
+      expect(putArtifact).toHaveBeenNthCalledWith(
+        2,
+        owner.key,
+        'step',
+        Buffer.from('STEP-DATA'),
+        { threadId, runId },
+        { db }
+      );
+      const stlId = await putArtifact.mock.results[0].value;
+      const stepId = await putArtifact.mock.results[1].value;
+      const row = (
+        await db.query(`SELECT stl_artifact, step_artifact FROM designs WHERE thread_id = $1`, [threadId])
+      ).rows[0];
+      expect(row.stl_artifact).toBe(stlId);
+      expect(row.step_artifact).toBe(stepId);
+    });
+
+    it('S12: a STEP upload failure fails the run with SAVE_FAILED and no version', async () => {
+      const db = getDb();
+      const owner = makeOwner();
+      const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+      const putArtifact = vi.fn(async (...args: Parameters<typeof realPut>) => {
+        if (args[1] === 'step') throw new Error('step upload failed');
+        return realPut(...args);
+      });
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const res = streamRun({
+        runId,
+        threadId,
+        ownerKey: owner.key,
+        deadlineAt,
+        deps: { putArtifact },
+        invoke: async () =>
+          (async function* () {
+            yield [
+              'values',
+              {
+                outcome: {
+                  ...stlOutcome(),
+                  design: { ...DESIGN, stl: 'solid x', step: Buffer.from('S').toString('base64') },
+                },
+              },
+            ];
+          })(),
+      });
+      const events = await readAllEvents(res);
+      expect(events.at(-1)).toMatchObject({
+        t: 'end',
+        status: 'failed',
+        reply: { kind: 'error', markdown: SAVE_FAILED },
+      });
+      expect(putArtifact).toHaveBeenCalledTimes(2);
+      const run = await DbRunStore.get(db, runId);
+      expect(run?.status).toBe('failed');
+      expect(run?.designVersion).toBeNull();
+      const n = await db.query(`SELECT count(*)::int AS c FROM designs WHERE thread_id = $1`, [threadId]);
+      expect(n.rows[0].c).toBe(0);
+    });
+
+    it('S13: a graph that ends without an outcome fails with BUILD_FAILED', async () => {
+      const db = getDb();
+      const owner = makeOwner();
+      const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const res = streamRun({
+        runId,
+        threadId,
+        ownerKey: owner.key,
+        deadlineAt,
+        invoke: async () =>
+          (async function* () {
+            yield ['custom', { t: 'delta', text: 'thinking' }];
+          })(),
+      });
+      const events = await readAllEvents(res);
+      expect(events.at(-1)).toMatchObject({
+        t: 'end',
+        status: 'failed',
+        reply: { kind: 'error', markdown: BUILD_FAILED },
+      });
+      const run = await DbRunStore.get(db, runId);
+      expect(run?.status).toBe('failed');
+      expect(run?.error).toEqual({ code: 'graph' });
+    });
+
+    it('S15: the deadline timer is cleared when the run finishes', async () => {
+      const db = getDb();
+      const owner = makeOwner();
+      const { threadId, runId } = await createTestRun(db, owner.key);
+      const timers: { handle: unknown; delay: number | undefined }[] = [];
+      const realSetTimeout = globalThis.setTimeout;
+      const setSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+        fn: () => void,
+        delay?: number,
+        ...rest: unknown[]
+      ) => {
+        const handle = (realSetTimeout as unknown as (...a: unknown[]) => unknown)(fn, delay, ...rest);
+        timers.push({ handle, delay });
+        return handle;
+      }) as unknown as typeof setTimeout);
+      const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
+      try {
+        let signal: AbortSignal | undefined;
+        const res = streamRun({
+          runId,
+          threadId,
+          ownerKey: owner.key,
+          deadlineAt: Date.now() + 60_000,
+          invoke: async (sig) => {
+            signal = sig;
+            return (async function* () {
+              yield ['values', { outcome: OUTCOME }];
+            })();
+          },
+        });
+        const events = await readAllEvents(res);
+        expect(events.at(-1)).toMatchObject({ t: 'end', status: 'done' });
+        // the deadline timer is the one armed for ~60 s (backoffs and sleeps are far shorter)
+        const deadline = timers.filter((t) => (t.delay ?? 0) > 50_000);
+        expect(deadline).toHaveLength(1);
+        expect(clearSpy).toHaveBeenCalledWith(deadline[0].handle);
+        expect(signal?.aborted).toBe(false);
+      } finally {
+        clearSpy.mockRestore();
+        setSpy.mockRestore();
+      }
+    });
+
+    it('S17: onFinally runs once, and a throwing one does not stop the stream closing', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      for (const failing of [false, true]) {
+        const db = getDb();
+        const owner = makeOwner();
+        const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+        const onFinally = vi.fn(async () => {
+          if (failing) throw new Error('flush failed');
+        });
+        const res = streamRun({
+          runId,
+          threadId,
+          ownerKey: owner.key,
+          deadlineAt,
+          onFinally,
+          invoke: async () =>
+            (async function* () {
+              yield ['values', { outcome: OUTCOME }];
+            })(),
+        });
+        const events = await readAllEvents(res);
+        expect(events.at(-1)).toMatchObject({ t: 'end', status: 'done' });
+        expect(onFinally).toHaveBeenCalledTimes(1);
+      }
+    });
   });
 });
