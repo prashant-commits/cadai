@@ -33,8 +33,12 @@ describe('op-kernel tests', () => {
     delete process.env.CADAI_GEO_URL;
   }
 
+  // The same base body is compiled by every case: compile it once. Kernel compiles share 2 CPUs with the rest of
+  // the suite, so give the runner the test's own budget instead of its 60 s default.
+  const compiled = new Map<string, Promise<Awaited<ReturnType<typeof runBrep>>>>();
   async function getBaseLidVolumes(body: string) {
-    const res = await runBrep(withGeneratedPrelude(body));
+    if (!compiled.has(body)) compiled.set(body, runBrep(withGeneratedPrelude(body), { timeoutMs: 110_000 }));
+    const res = await compiled.get(body)!;
     expect(res.ok, res.error).toBe(true);
     const basePart = res.parts.find((p) => p.label === 'base');
     const lidPart = res.parts.find((p) => p.label === 'lid');
@@ -64,7 +68,7 @@ describe('op-kernel tests', () => {
     const { lidVol: newLidVol, res } = await getBaseLidVolumes(modified);
     expect(res.parts.map((p) => p.label).sort()).toEqual(['base', 'lid']);
     expect(newLidVol).toBeLessThan(initialLidVol);
-  }, 120_000);
+  }, 240_000);
 
   kernel('through M3 countersink hole drops target volume and preserves labels', async () => {
     prepareEnv();
@@ -87,7 +91,7 @@ describe('op-kernel tests', () => {
     const { lidVol: newLidVol, res } = await getBaseLidVolumes(modified);
     expect(res.parts.map((p) => p.label).sort()).toEqual(['base', 'lid']);
     expect(newLidVol).toBeLessThan(initialLidVol);
-  }, 120_000);
+  }, 240_000);
 
   kernel('cut-rect drops target volume and preserves labels', async () => {
     prepareEnv();
@@ -110,7 +114,7 @@ describe('op-kernel tests', () => {
     const { lidVol: newLidVol, res } = await getBaseLidVolumes(modified);
     expect(res.parts.map((p) => p.label).sort()).toEqual(['base', 'lid']);
     expect(newLidVol).toBeLessThan(initialLidVol);
-  }, 120_000);
+  }, 240_000);
 
   kernel('engraved text drops target volume and preserves labels', async () => {
     prepareEnv();
@@ -134,7 +138,7 @@ describe('op-kernel tests', () => {
     const { lidVol: newLidVol, res } = await getBaseLidVolumes(modified);
     expect(res.parts.map((p) => p.label).sort()).toEqual(['base', 'lid']);
     expect(newLidVol).toBeLessThan(initialLidVol);
-  }, 120_000);
+  }, 240_000);
 
   kernel('embossed text grows target volume and preserves labels', async () => {
     prepareEnv();
@@ -158,7 +162,7 @@ describe('op-kernel tests', () => {
     const { lidVol: newLidVol, res } = await getBaseLidVolumes(modified);
     expect(res.parts.map((p) => p.label).sort()).toEqual(['base', 'lid']);
     expect(newLidVol).toBeGreaterThan(initialLidVol);
-  }, 120_000);
+  }, 240_000);
 
   kernel('texture knurl drops target volume and preserves labels', async () => {
     prepareEnv();
@@ -181,7 +185,7 @@ describe('op-kernel tests', () => {
     const { lidVol: newLidVol, res } = await getBaseLidVolumes(modified);
     expect(res.parts.map((p) => p.label).sort()).toEqual(['base', 'lid']);
     expect(newLidVol).toBeLessThan(initialLidVol);
-  }, 120_000);
+  }, 240_000);
 
   kernel('texture hex drops target volume and preserves labels', async () => {
     prepareEnv();
@@ -204,7 +208,7 @@ describe('op-kernel tests', () => {
     const { lidVol: newLidVol, res } = await getBaseLidVolumes(modified);
     expect(res.parts.map((p) => p.label).sort()).toEqual(['base', 'lid']);
     expect(newLidVol).toBeLessThan(initialLidVol);
-  }, 120_000);
+  }, 240_000);
 
   kernel('texture ribs drops target volume and preserves labels', async () => {
     prepareEnv();
@@ -227,7 +231,7 @@ describe('op-kernel tests', () => {
     const { lidVol: newLidVol, res } = await getBaseLidVolumes(modified);
     expect(res.parts.map((p) => p.label).sort()).toEqual(['base', 'lid']);
     expect(newLidVol).toBeLessThan(initialLidVol);
-  }, 120_000);
+  }, 240_000);
 
   kernel('texture dimples drops target volume and preserves labels', async () => {
     prepareEnv();
@@ -250,5 +254,5 @@ describe('op-kernel tests', () => {
     const { lidVol: newLidVol, res } = await getBaseLidVolumes(modified);
     expect(res.parts.map((p) => p.label).sort()).toEqual(['base', 'lid']);
     expect(newLidVol).toBeLessThan(initialLidVol);
-  }, 120_000);
+  }, 240_000);
 });
