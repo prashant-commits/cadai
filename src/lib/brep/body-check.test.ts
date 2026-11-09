@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { BUILDER_MODE_REASON, checkPythonBody, checkPythonScript, isBuilderModeReason, GENERATED_PRELUDE, PRELUDE_SENTINEL } from './body-check';
 import { PRELUDES, withGeneratedPrelude } from './prelude';
+import { FONT_IDS } from '../tools/op-text';
 
 const opts = { reserved: ['width', 'depth'], components: ['base', 'lid', 'lid_part'] };
 const ok = (body: string) => checkPythonBody(body, opts).ok;
@@ -226,6 +227,47 @@ describe('checkPythonScript', () => {
     } finally {
       delete PRELUDES['0'];
     }
+  });
+});
+
+describe('CADAI_FONTS and font_path whitelist', () => {
+  it.each(FONT_IDS)('accepts valid font_path with CADAI_FONTS for %s in body and script', (fontId) => {
+    const body = `return extrude(Text("hi", 5, font_path=CADAI_FONTS + "/${fontId}.ttf"), amount=1)`;
+    expect(checkPythonBody(body, opts)).toEqual({ ok: true });
+
+    const script = `${GENERATED_PRELUDE}\n${PRELUDE_SENTINEL}\nb = extrude(Text("hi", 5, font_path=CADAI_FONTS + "/${fontId}.ttf"), amount=1)\nresult = b\n`;
+    expect(checkPythonScript(script)).toEqual({ ok: true });
+  });
+
+  it('accepts valid font_path followed by another argument or closing paren', () => {
+    const bodyWithComma = `return extrude(Text("hi", 5, font_path=CADAI_FONTS + "/inter-bold.ttf", text_align=(TextAlign.CENTER, TextAlign.CENTER)), amount=1)`;
+    expect(checkPythonBody(bodyWithComma, opts)).toEqual({ ok: true });
+  });
+
+  it.each([
+    ['another string font_path', 'return extrude(Text("hi", 5, font_path="/etc/passwd"), amount=1)'],
+    ['another ttf string', 'return extrude(Text("hi", 5, font_path="/other.ttf"), amount=1)'],
+    ['name passed to font_path', 'return extrude(Text("hi", 5, font_path=my_font), amount=1)'],
+    ['CADAI_FONTS + variable', 'return extrude(Text("hi", 5, font_path=CADAI_FONTS + x), amount=1)'],
+    ['path traversal with CADAI_FONTS', 'return extrude(Text("hi", 5, font_path=CADAI_FONTS + "/../inter-bold.ttf"), amount=1)'],
+    ['bytes-prefixed font string', 'return extrude(Text("hi", 5, font_path=CADAI_FONTS + b"/inter-bold.ttf"), amount=1)'],
+    ['f-string font_path', 'return extrude(Text("hi", 5, font_path=CADAI_FONTS + f"/inter-bold.ttf"), amount=1)'],
+    ['dict unpack font_path', 'return extrude(Text("hi", 5, **{"font_path": CADAI_FONTS + "/inter-bold.ttf"}), amount=1)'],
+    ['bare CADAI_FONTS', 'x = CADAI_FONTS\nreturn Box(1, 1, 1)'],
+    ['assigned CADAI_FONTS', 'CADAI_FONTS = "/path"\nreturn Box(1, 1, 1)'],
+    ['rebound by for', 'for CADAI_FONTS in [1, 2]: pass\nreturn Box(1, 1, 1)'],
+    ['rebound by with', 'with Box(1, 1, 1) as CADAI_FONTS: pass\nreturn Box(1, 1, 1)'],
+    ['rebound by walrus', 'if (CADAI_FONTS := 1): pass\nreturn Box(1, 1, 1)'],
+    ['augmented assignment to CADAI_FONTS', 'CADAI_FONTS += 1\nreturn Box(1, 1, 1)'],
+    ['passed elsewhere', 'return Box(CADAI_FONTS, 1, 1)'],
+    ['used as font=', 'return extrude(Text("hi", 5, font=CADAI_FONTS), amount=1)'],
+    ['other file keyword filename', 'return Box(1, 1, 1, filename="/tmp/x")'],
+    ['other file keyword filepath', 'return Box(1, 1, 1, filepath="/tmp/x")'],
+  ])('rejects %s in body and script', (_label, body) => {
+    expect(checkPythonBody(body, opts).ok).toBe(false);
+
+    const script = `${GENERATED_PRELUDE}\n${PRELUDE_SENTINEL}\n${body.replace(/return /g, 'result = ')}\n`;
+    expect(checkPythonScript(script).ok).toBe(false);
   });
 });
 

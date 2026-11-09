@@ -27,6 +27,7 @@ export type ToolOp =
       sizeMm: number;
       mode: 'engrave' | 'emboss';
       depthMm: number;
+      align?: 'left' | 'center' | 'right';
       color?: string;
     })
   | (OpBase & {
@@ -176,6 +177,9 @@ export function validateToolOp(op: unknown): op is ToolOp {
       const validModes = ['engrave', 'emboss'];
       if (!validModes.includes(String(o.mode))) return false;
       if (!isPositiveNumber(o.sizeMm) || !isPositiveNumber(o.depthMm)) return false;
+      if (o.align !== undefined && !['left', 'center', 'right'].includes(String(o.align))) {
+        return false;
+      }
       if (o.color !== undefined && (typeof o.color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(o.color))) {
         return false;
       }
@@ -462,6 +466,14 @@ export function parseOpBlocks(body: string): ParsedOp[] {
       } else if (opData.kind === 'text') {
         if (params['size'] !== undefined) opData.sizeMm = params['size'].value;
         if (params['depth'] !== undefined) opData.depthMm = params['depth'].value;
+        const halignRegex = new RegExp(`^[ \\t]*${markerId}_halign\\s*=\\s*TextAlign\\.(LEFT|CENTER|RIGHT)`);
+        for (const line of blockLines) {
+          const hm = line.match(halignRegex);
+          if (hm) {
+            opData.align = hm[1].toLowerCase() as 'left' | 'center' | 'right';
+            break;
+          }
+        }
       } else if (opData.kind === 'texture') {
         if (params['pitch'] !== undefined) opData.pitchMm = params['pitch'].value;
         if (params['depth'] !== undefined) opData.depthMm = params['depth'].value;
