@@ -40,6 +40,19 @@ async function getDeps(deps: DesignerNodeDeps) {
   return { runDesigner: runDesigner!, makeReviewer: makeReviewer!, formatFlags: formatFlags! };
 }
 
+/**
+ * The request an edit is built and reviewed against: the base request plus the edits already applied to the
+ * viewed version. Without them, the designer and the reviewer judge the design against the original numbers and
+ * undo earlier edits (ms1-app: "30% wider" reverted by the next edit's review).
+ */
+export function withEarlierEdits(request: string, edits: readonly unknown[] | null | undefined): string {
+  const xs = (edits ?? []).filter((e): e is string => typeof e === 'string' && e.trim() !== '').map((e) => e.trim());
+  if (xs.length === 0) return request;
+  return `${request}\n\nEarlier edits, already applied to the current design (where they conflict with the request above, the edits win):\n${xs
+    .map((e, i) => `${i + 1}. ${e}`)
+    .join('\n')}`;
+}
+
 export function createDesignerNode(deps: DesignerNodeDeps = {}) {
   return async function designerNode(
     state: AgentStateType,
@@ -68,14 +81,14 @@ export function createDesignerNode(deps: DesignerNodeDeps = {}) {
       priorScript = state.currentCode;
       editRequest = state.designerCheckFailures;
       request = state.triageKind === 'edit'
-        ? (state.baseRequest ?? firstText)
+        ? withEarlierEdits(state.baseRequest ?? firstText, state.baseEdits)
         : latestText;
       isCheckRetry = true;
     } else if (state.triageKind === 'edit') {
       // Edit (triage edit): request = baseRequest ?? firstHumanText, editRequest = latest human text, priorScript = baseBody.
       priorScript = state.baseBody ?? undefined;
       editRequest = latestText;
-      request = state.baseRequest ?? firstText;
+      request = withEarlierEdits(state.baseRequest ?? firstText, state.baseEdits);
     } else {
       // Fresh (new or no base): no priorScript; request = latest human text.
       request = latestText;

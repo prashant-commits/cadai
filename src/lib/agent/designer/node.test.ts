@@ -187,6 +187,57 @@ describe('designerNode', () => {
     expect(input.editRequest).toBe('make it 60mm instead');
   });
 
+  it('an edit carries the earlier edits with the base request', async () => {
+    const runDesignerMock = vi.fn().mockResolvedValue(mockResult);
+    const node = createDesignerNode({ runDesigner: runDesignerMock });
+
+    const state = createMockState({
+      triageKind: 'edit',
+      baseBody: 'L = 234',
+      baseRequest: 'A desk organizer tray 180 x 100 x 35 mm.',
+      baseEdits: ['Make it 30% wider along the X axis.'],
+      messages: [
+        new HumanMessage('A desk organizer tray 180 x 100 x 35 mm.'),
+        new HumanMessage('Make it 30% wider along the X axis.'),
+        new HumanMessage('Round the outside vertical corners.'),
+      ],
+    });
+
+    await node(state);
+
+    const [input] = runDesignerMock.mock.calls[0];
+    expect(input.request).toBe(
+      'A desk organizer tray 180 x 100 x 35 mm.\n\n' +
+        'Earlier edits, already applied to the current design (where they conflict with the request above, the edits win):\n' +
+        '1. Make it 30% wider along the X axis.'
+    );
+    expect(input.editRequest).toBe('Round the outside vertical corners.');
+    expect(input.priorScript).toBe('L = 234');
+  });
+
+  it('a check retry of an edit keeps the earlier edits in the request', async () => {
+    const runDesignerMock = vi.fn().mockResolvedValue(mockResult);
+    const node = createDesignerNode({ runDesigner: runDesignerMock });
+
+    const state = createMockState({
+      triageKind: 'edit',
+      currentCode: 'L = 234  # broken',
+      baseRequest: 'a tray 180 mm long',
+      baseEdits: ['make it 234 mm long', '  ', 'add a lid'],
+      designerCheckFailures: 'disconnected parts: lid',
+      designerRetryCount: 1,
+      designerCheckCompleted: false,
+      messages: [new HumanMessage('a tray 180 mm long'), new HumanMessage('add a divider')],
+    });
+
+    await node(state);
+
+    const [input] = runDesignerMock.mock.calls[0];
+    expect(input.request).toContain('a tray 180 mm long\n\nEarlier edits');
+    expect(input.request).toContain('\n1. make it 234 mm long\n2. add a lid');
+    expect(input.editRequest).toBe('disconnected parts: lid');
+  });
+
   it('an attachment in graph input reaches runDesigner', async () => {
     const runDesignerMock = vi.fn().mockResolvedValue(mockResult);
     const node = createDesignerNode({ runDesigner: runDesignerMock });

@@ -186,7 +186,7 @@ describe('executeRun', () => {
     const [first, second, third] = runDesigner.mock.calls.map((c) => c[0]);
     expect(first.priorScript).toBeUndefined();
     expect(second).toMatchObject({ request: 'a box with a lid', priorScript: result(1).script, editRequest: 'add a cable hole at the back' });
-    expect(third).toMatchObject({ request: 'a box with a lid', priorScript: result(2).script, editRequest: 'make it 20 mm taller' });
+    expect(third).toMatchObject({ request: 'a box with a lid\n\nEarlier edits, already applied to the current design (where they conflict with the request above, the edits win):\n1. add a cable hole at the back', priorScript: result(2).script, editRequest: 'make it 20 mm taller' });
     expect(first.buildId).toBe(second.buildId); // same thread
 
     const rec = readRecord('reviewer', 'box');
