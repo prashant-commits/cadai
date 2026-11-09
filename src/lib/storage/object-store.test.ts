@@ -20,10 +20,14 @@ describe('LocalObjectStore', () => {
     testDir = path.join(scratchDir, `run-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     fs.mkdirSync(testDir, { recursive: true });
     setObjectStore(undefined);
+    globalThis.__cadaiS3ObjectStore = undefined;
+    globalThis.__cadaiObjectStores = undefined;
   });
 
   afterEach(() => {
     setObjectStore(undefined);
+    globalThis.__cadaiS3ObjectStore = undefined;
+    globalThis.__cadaiObjectStores = undefined;
     if (fs.existsSync(testDir)) {
       fs.rmSync(testDir, { recursive: true, force: true });
     }
@@ -112,7 +116,7 @@ describe('LocalObjectStore', () => {
       process.env.CADAI_ARTIFACT_STORE = 'local';
       expect(getObjectStore()).toBeInstanceOf(LocalObjectStore);
 
-      process.env.CADAI_ARTIFACT_STORE = 's3';
+      process.env.CADAI_ARTIFACT_STORE = 'unsupported';
       expect(() => getObjectStore()).toThrow(/Unsupported CADAI_ARTIFACT_STORE/);
     } finally {
       if (prevEnv !== undefined) {

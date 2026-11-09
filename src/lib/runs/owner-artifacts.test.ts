@@ -91,8 +91,9 @@ describe('owner-artifacts', () => {
 
     const fakeObjectStore: ObjectStore = {
       async put(key: string): Promise<void> {
-        // key format is `${kind}/${id}`
-        const id = key.split('/')[1];
+        // key format is `a/${ownerKey}/${id}.${kind}`
+        const parts = key.split('/');
+        const id = parts[2].split('.')[0];
         const res = await getDb().query('SELECT id FROM artifacts WHERE id = $1', [id]);
         if (res.rows.length === 1 && res.rows[0].id === id) {
           rowVisibleInDbDuringPut = true;

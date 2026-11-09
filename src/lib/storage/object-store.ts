@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { Readable } from 'stream';
 import { runStoreDir, RUN_DIR_NOT_WRITABLE } from '@/lib/runs/config';
+import { S3ObjectStore, createS3ObjectStoreFromEnv } from './s3-object-store';
 
 export interface ObjectStore {
   put(key: string, bytes: Uint8Array): Promise<void>;
@@ -9,12 +10,21 @@ export interface ObjectStore {
   delete(key: string): Promise<void>;
 }
 
-export const OBJECT_KEY_REGEX = /^[a-z]+\/[A-Za-z0-9_-]{22}$/;
+export const NEW_OBJECT_KEY_REGEX = /^a\/[A-Za-z0-9_-]{1,128}\/[A-Za-z0-9_-]{22}\.[a-z]+$/;
+export const LEGACY_OBJECT_KEY_REGEX = /^[a-z]+\/[A-Za-z0-9_-]{22}$/;
+export const OBJECT_KEY_REGEX =
+  /^(?:a\/[A-Za-z0-9_-]{1,128}\/[A-Za-z0-9_-]{22}\.[a-z]+|[a-z]+\/[A-Za-z0-9_-]{22})$/;
 
 export function validateObjectKey(key: string): void {
   if (typeof key !== 'string' || !OBJECT_KEY_REGEX.test(key)) {
     throw new Error(`Invalid object key "${key}".`);
   }
+}
+
+export function objectKeyFor(ownerKey: string, id: string, kind: string): string {
+  const key = `a/${ownerKey}/${id}.${kind}`;
+  validateObjectKey(key);
+  return key;
 }
 
 function assertDirWritable(dir: string): void {
@@ -96,6 +106,7 @@ export class LocalObjectStore implements ObjectStore {
 declare global {
   var __cadaiObjectStores: Map<string, LocalObjectStore> | undefined;
   var __cadaiDefaultObjectStore: ObjectStore | undefined;
+  var __cadaiS3ObjectStore: S3ObjectStore | undefined;
 }
 
 const storeCache = (globalThis.__cadaiObjectStores ??= new Map<string, LocalObjectStore>());
@@ -109,8 +120,10 @@ export function getObjectStore(): ObjectStore {
     return globalThis.__cadaiDefaultObjectStore;
   }
 
-  const raw = (process.env.CADAI_ARTIFACT_STORE ?? 'local').trim().toLowerCase();
-  if (raw === '' || raw === 'local') {
+  const raw = (process.env.CADAI_ARTIFACT_STORE ?? '').trim().toLowerCase();
+  const hasS3Bucket = Boolean(process.env.S3_BUCKET && process.env.S3_BUCKET.trim() !== '');
+
+  if (raw === 'local') {
     const dir = path.join(/*turbopackIgnore: true*/ runStoreDir(), 'objects');
     let store = storeCache.get(dir);
     if (!store) {
@@ -119,5 +132,25 @@ export function getObjectStore(): ObjectStore {
     }
     return store;
   }
-  throw new Error(`Unsupported CADAI_ARTIFACT_STORE "${raw}". Only "local" is implemented.`);
+
+  if (raw === 's3' || (raw === '' && hasS3Bucket)) {
+    let store = globalThis.__cadaiS3ObjectStore;
+    if (!store) {
+      store = createS3ObjectStoreFromEnv();
+      globalThis.__cadaiS3ObjectStore = store;
+    }
+    return store;
+  }
+
+  if (raw === '') {
+    const dir = path.join(/*turbopackIgnore: true*/ runStoreDir(), 'objects');
+    let store = storeCache.get(dir);
+    if (!store) {
+      store = new LocalObjectStore(dir);
+      storeCache.set(dir, store);
+    }
+    return store;
+  }
+
+  throw new Error(`Unsupported CADAI_ARTIFACT_STORE "${raw}". Only "local" or "s3" is implemented.`);
 }
