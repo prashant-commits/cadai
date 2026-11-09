@@ -1,5 +1,7 @@
 import type { AIMessage } from '@langchain/core/messages';
 
+export const MAX_COST_USD = 1.5;
+
 export const MODEL_PRICES: Record<string, { input: number; output: number }> = {
   'claude-haiku-5-5': { input: 0.1, output: 0.5 },
   'claude-haiku-5.5': { input: 0.1, output: 0.5 },

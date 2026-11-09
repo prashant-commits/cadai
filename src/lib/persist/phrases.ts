@@ -17,6 +17,8 @@ export const BAD_ATTACHMENT =
 export const BAD_EDIT =
   "The edited code uses something that isn't allowed, so it wasn't saved.";
 export const BAD_PIN = "A slider value isn't a valid number, so it wasn't applied.";
+export const BUSY = 'The server is busy. Try again in a minute.';
+export const BUDGET_USED = "Today's build budget is used up.";
 
 export type TerminateCode = 'cancelled' | 'run_lost' | 'deadline' | 'graph' | 'internal';
 

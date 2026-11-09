@@ -60,3 +60,21 @@ export function artifactStoreDir(): string {
 export function inlinePayloads(): boolean {
   return process.env.CADAI_INLINE_PAYLOADS?.trim() === '1';
 }
+
+/** Maximum concurrent building runs across all processes (default 4; 0 = no cap). */
+export function maxRunning(): number {
+  const raw = process.env.CADAI_MAX_RUNNING;
+  if (raw === undefined || raw === null || raw.trim() === '') return 4;
+  const n = Number(raw.trim());
+  if (!Number.isInteger(n) || n < 0) return 4;
+  return n;
+}
+
+/** Daily (UTC) build budget in USD. Unset / non-positive = off. */
+export function dailyCostUsd(): number | null {
+  const raw = process.env.CADAI_DAILY_COST_USD;
+  if (raw === undefined || raw === null || raw.trim() === '') return null;
+  const n = Number(raw.trim());
+  if (Number.isNaN(n) || n <= 0) return null;
+  return n;
+}

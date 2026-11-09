@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import * as crypto from 'crypto';
 import { getDb, closeDb } from '@/lib/db/db';
 import { DbRunStore } from './db-run-store';
@@ -13,9 +13,22 @@ import {
   STOPPED,
   RUN_LOST,
   DEADLINE,
+  BUSY,
+  BUDGET_USED,
 } from '@/lib/persist/phrases';
 
 describe('DbRunStore', () => {
+  const origEnv = { ...process.env };
+
+  beforeEach(async () => {
+    const db = getDb();
+    await db.query("UPDATE runs SET status = 'done' WHERE status = 'running'");
+  });
+
+  afterEach(() => {
+    process.env = { ...origEnv };
+  });
+
   afterAll(async () => {
     await closeDb();
   });
@@ -1343,5 +1356,179 @@ describe('DbRunStore', () => {
     await expect(DbRunStore.start(db, input)).rejects.toThrow(
       'store method requires a transaction'
     );
+  });
+
+  it('start over CADAI_MAX_RUNNING → 429 BUSY', async () => {
+    process.env.CADAI_MAX_RUNNING = '2';
+    const db = getDb();
+    await db.query(`UPDATE runs SET status = 'done' WHERE status = 'running'`);
+
+    const thread1 = crypto.randomUUID();
+    const thread2 = crypto.randomUUID();
+    const thread3 = crypto.randomUUID();
+    const owner = `owner_${crypto.randomUUID()}`;
+
+    const r1 = await db.transaction((q) =>
+      DbRunStore.start(q, makeStartInput({ threadId: thread1, ownerKey: owner }))
+    );
+    expect(r1.replay).toBe(false);
+
+    const r2 = await db.transaction((q) =>
+      DbRunStore.start(q, makeStartInput({ threadId: thread2, ownerKey: owner }))
+    );
+    expect(r2.replay).toBe(false);
+
+    // 3rd start exceeds cap 2 -> 429 BUSY
+    let err: StoreError | null = null;
+    try {
+      await db.transaction((q) =>
+        DbRunStore.start(q, makeStartInput({ threadId: thread3, ownerKey: owner }))
+      );
+    } catch (e) {
+      if (e instanceof StoreError) err = e;
+    }
+    expect(err).not.toBeNull();
+    expect(err?.status).toBe(429);
+    expect(err?.code).toBe('busy');
+    expect(err?.message).toBe(BUSY);
+
+    // After one commits, start succeeds
+    const plan: CommitPlan = {
+      replyKind: 'result',
+      replyMarkdown: 'Done',
+      userKind: 'request',
+      costUsd: 0.01,
+      wallMs: 100,
+      turns: 1,
+    };
+    await db.transaction((q) => DbRunStore.commit(q, r1.runId!, plan));
+
+    const r3 = await db.transaction((q) =>
+      DbRunStore.start(q, makeStartInput({ threadId: thread3, ownerKey: owner }))
+    );
+    expect(r3.replay).toBe(false);
+  });
+
+  it('stale running runs do not count toward the cap', async () => {
+    process.env.CADAI_MAX_RUNNING = '2';
+    process.env.CADAI_STALE_MS = '100';
+    const db = getDb();
+    await db.query(`UPDATE runs SET status = 'done' WHERE status = 'running'`);
+
+    const thread1 = crypto.randomUUID();
+    const thread2 = crypto.randomUUID();
+    const thread3 = crypto.randomUUID();
+    const owner = `owner_${crypto.randomUUID()}`;
+
+    const r1 = await db.transaction((q) =>
+      DbRunStore.start(q, makeStartInput({ threadId: thread1, ownerKey: owner }))
+    );
+    await db.transaction((q) =>
+      DbRunStore.start(q, makeStartInput({ threadId: thread2, ownerKey: owner }))
+    );
+
+    // Make run 1 stale
+    await db.query(`UPDATE runs SET heartbeat_at = now() - interval '200 milliseconds' WHERE id = $1`, [
+      r1.runId,
+    ]);
+
+    // Now start on thread3 succeeds because r1 is stale
+    const r3 = await db.transaction((q) =>
+      DbRunStore.start(q, makeStartInput({ threadId: thread3, ownerKey: owner }))
+    );
+    expect(r3.replay).toBe(false);
+  });
+
+  it('CADAI_MAX_RUNNING=0 turns the cap off', async () => {
+    process.env.CADAI_MAX_RUNNING = '0';
+    const db = getDb();
+    const owner = `owner_${crypto.randomUUID()}`;
+
+    for (let i = 0; i < 5; i++) {
+      const res = await db.transaction((q) =>
+        DbRunStore.start(q, makeStartInput({ threadId: crypto.randomUUID(), ownerKey: owner }))
+      );
+      expect(res.replay).toBe(false);
+    }
+  });
+
+  it('daily cost ceiling → 429 BUDGET_USED', async () => {
+    process.env.CADAI_DAILY_COST_USD = '10';
+    process.env.CADAI_MAX_RUNNING = '4';
+    const db = getDb();
+    await db.query(`UPDATE runs SET status = 'done', cost_usd = 0, ended_at = now() - interval '2 days'`);
+    const owner = `owner_${crypto.randomUUID()}`;
+
+    // Insert a past run that ended yesterday UTC with a large cost -> must not count
+    const oldThread = crypto.randomUUID();
+    await db.query(`INSERT INTO threads(id, owner_key) VALUES ($1, $2)`, [oldThread, owner]);
+    await db.query(
+      `INSERT INTO runs(id, thread_id, status, cost_usd, ended_at, created_at, updated_at, heartbeat_at, deadline_at)
+       VALUES ($1, $2, 'done', 50.0, now() - interval '2 days', now(), now(), now(), now())`,
+      [`run_old_${crypto.randomUUID()}`, oldThread]
+    );
+
+    // With CADAI_DAILY_COST_USD=10, CADAI_MAX_RUNNING=4, MAX_COST_USD=1.5:
+    // maxRunningForBudget * MAX_COST_USD = 4 * 1.5 = 6.
+    // spent threshold = 10 - 6 = 4.
+    // Committed run today with cost_usd = 4 -> threshold reached
+    const threadToday = crypto.randomUUID();
+    await db.query(`INSERT INTO threads(id, owner_key) VALUES ($1, $2)`, [threadToday, owner]);
+    await db.query(
+      `INSERT INTO runs(id, thread_id, status, cost_usd, ended_at, created_at, updated_at, heartbeat_at, deadline_at)
+       VALUES ($1, $2, 'done', 4.0, now(), now(), now(), now(), now())`,
+      [`run_today_${crypto.randomUUID()}`, threadToday]
+    );
+
+    let err: StoreError | null = null;
+    try {
+      await db.transaction((q) =>
+        DbRunStore.start(q, makeStartInput({ threadId: crypto.randomUUID(), ownerKey: owner }))
+      );
+    } catch (e) {
+      if (e instanceof StoreError) err = e;
+    }
+    expect(err).not.toBeNull();
+    expect(err?.status).toBe(429);
+    expect(err?.code).toBe('budget');
+    expect(err?.message).toBe(BUDGET_USED);
+
+    // Update today's run cost to 3.99 -> allowed!
+    await db.query(
+      `UPDATE runs SET cost_usd = 3.99 WHERE thread_id = $1`,
+      [threadToday]
+    );
+
+    const allowedRes = await db.transaction((q) =>
+      DbRunStore.start(q, makeStartInput({ threadId: crypto.randomUUID(), ownerKey: owner }))
+    );
+    expect(allowedRes.replay).toBe(false);
+  });
+
+  it('the cap and the ceiling come after the owner check', async () => {
+    process.env.CADAI_MAX_RUNNING = '1';
+    const db = getDb();
+    await db.query(`UPDATE runs SET status = 'done' WHERE status = 'running'`);
+    const owner1 = `owner1_${crypto.randomUUID()}`;
+    const owner2 = `owner2_${crypto.randomUUID()}`;
+
+    // Fill the cap with owner1
+    await db.transaction((q) =>
+      DbRunStore.start(q, makeStartInput({ threadId: crypto.randomUUID(), ownerKey: owner1 }))
+    );
+
+    // Create a thread belonging to owner1
+    const threadOwner1 = crypto.randomUUID();
+    await db.query(`INSERT INTO threads(id, owner_key) VALUES ($1, $2)`, [threadOwner1, owner1]);
+
+    // Attempt start on owner1's thread with owner2 credentials -> throws notFound (404), NOT 429
+    await expect(
+      db.transaction((q) =>
+        DbRunStore.start(q, makeStartInput({ threadId: threadOwner1, ownerKey: owner2 }))
+      )
+    ).rejects.toMatchObject({
+      status: 404,
+      code: 'not_found',
+    });
   });
 });

@@ -142,15 +142,17 @@ export type StoreErrorCode =
   | 'run_active'
   | 'stale_client'
   | 'bad_pin'
-  | 'duplicate_message';
+  | 'duplicate_message'
+  | 'busy'
+  | 'budget';
 
 export class StoreError extends Error {
-  readonly status: 400 | 404 | 409;
+  readonly status: 400 | 404 | 409 | 429;
   readonly code: StoreErrorCode;
   readonly activeRunId?: string;
 
   constructor(
-    status: 400 | 404 | 409,
+    status: 400 | 404 | 409 | 429,
     code: StoreErrorCode,
     message: string,
     activeRunId?: string

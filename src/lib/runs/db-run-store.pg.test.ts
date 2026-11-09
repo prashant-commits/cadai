@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
 import * as crypto from 'crypto';
 import { createPgDb } from '@/lib/db/pg';
 import { migrate } from '@/lib/db/migrate';
@@ -11,7 +11,7 @@ import {
   type StartInput,
   type CommitPlan,
 } from '@/lib/persist/types';
-import { STOPPED } from '@/lib/persist/phrases';
+import { STOPPED, BUSY } from '@/lib/persist/phrases';
 import { txRetryState, type Db } from '@/lib/db/db';
 import type { Pool } from 'pg';
 
@@ -43,6 +43,10 @@ describe('DbRunStore (Postgres concurrency)', () => {
 
   afterAll(async () => {
     await db.close();
+  });
+
+  beforeEach(async () => {
+    await db.query("UPDATE runs SET status = 'done' WHERE status = 'running'");
   });
 
   afterEach(() => {
@@ -1017,5 +1021,61 @@ describe('DbRunStore (Postgres concurrency)', () => {
     const res = await tx2;
     expect(res).toBe(true);
     expect(txRetryState.retryCount).toBe(0);
+  });
+
+  it('two starts at the cap on two connections', async () => {
+    const origMaxRunning = process.env.CADAI_MAX_RUNNING;
+    process.env.CADAI_MAX_RUNNING = '1';
+
+    try {
+      const thread1 = crypto.randomUUID();
+      const thread2 = crypto.randomUUID();
+      const owner = `owner_${crypto.randomUUID()}`;
+
+      const holdTx1 = latch();
+      const tx2Started = latch();
+
+      const p1 = db.transaction(async (q) => {
+        const res = await DbRunStore.start(
+          q,
+          makeStartInput({ threadId: thread1, ownerKey: owner })
+        );
+        await holdTx1.promise;
+        return res;
+      });
+
+      await new Promise((r) => setTimeout(r, 100));
+
+      const p2 = db.transaction(async (q) => {
+        tx2Started.open();
+        return DbRunStore.start(
+          q,
+          makeStartInput({ threadId: thread2, ownerKey: owner })
+        );
+      });
+
+      await tx2Started.promise;
+      expect(await isPending(p2, 200)).toBe(true);
+
+      holdTx1.open();
+
+      const [res1, res2] = await Promise.allSettled([p1, p2]);
+
+      expect(res1.status).toBe('fulfilled');
+      expect(res2.status).toBe('rejected');
+      if (res2.status === 'rejected') {
+        const err = res2.reason;
+        expect(err).toBeInstanceOf(StoreError);
+        expect((err as StoreError).status).toBe(429);
+        expect((err as StoreError).code).toBe('busy');
+        expect((err as StoreError).message).toBe(BUSY);
+      }
+    } finally {
+      if (origMaxRunning === undefined) {
+        delete process.env.CADAI_MAX_RUNNING;
+      } else {
+        process.env.CADAI_MAX_RUNNING = origMaxRunning;
+      }
+    }
   });
 });
