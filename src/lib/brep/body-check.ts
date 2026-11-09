@@ -11,6 +11,9 @@
  */
 
 import { EXTRUDE_FORMS } from './extrude-forms';
+import { FONT_IDS } from '../tools/op-text';
+
+const ALLOWED_FONT_PATHS = new Set(FONT_IDS.map((id) => `/${id}.ttf`));
 
 export interface BodyCheckOptions {
   /** Parameter and derived names as the script spells them: a body must not rebind them. */
@@ -137,6 +140,23 @@ function hasPositionalStringFontPath(tokens: Tok[], open: number): boolean {
   return false;
 }
 
+function isValidFontPathArg(tokens: Tok[], i: number): boolean {
+  if (i < 0 || i + 5 >= tokens.length) return false;
+  const prev = tokens[i - 1];
+  const isKw = prev?.k === 'op' && (prev.v === '(' || prev.v === ',');
+  if (!isKw) return false;
+  if (tokens[i]?.k !== 'name' || tokens[i].v !== 'font_path') return false;
+  if (!isOp(tokens[i + 1], '=')) return false;
+  const tCadai = tokens[i + 2];
+  if (tCadai?.k !== 'name' || tCadai.v !== 'CADAI_FONTS') return false;
+  if (!isOp(tokens[i + 3], '+')) return false;
+  const tStr = tokens[i + 4];
+  if (!tStr || tStr.k !== 'str' || tStr.prefix !== '' || !ALLOWED_FONT_PATHS.has(tStr.v)) return false;
+  const tNext = tokens[i + 5];
+  if (!isOp(tNext, ',') && !isOp(tNext, ')')) return false;
+  return true;
+}
+
 export function checkPythonBody(body: string, options: BodyCheckOptions = {}): BodyCheck {
   // Only \n ends a line. A carriage return, form feed, NUL or other control character would
   // end a line for Python but not for the code that indents the body under `def`.
@@ -170,6 +190,9 @@ export function checkPythonBody(body: string, options: BodyCheckOptions = {}): B
     }
     if (t.k !== 'name') continue;
     if (t.v.includes('__')) return reject(`dunder name ${t.v}`);
+    if (t.v === 'CADAI_FONTS') {
+      if (!isValidFontPathArg(tokens, i - 2)) return reject(`${t.v} is not allowed in a body`);
+    }
     if (!attribute(i) && BUILDER_NAMES.test(t.v)) return reject(BUILDER_MODE_REASON);
     if (BANNED_ANYWHERE.has(t.v)) return reject(`${t.v} is not allowed in a body`);
 
@@ -188,10 +211,17 @@ export function checkPythonBody(body: string, options: BodyCheckOptions = {}): B
       continue;
     }
     if (BANNED_NAMES.has(t.v) || /^(?:export|import)/i.test(t.v)) return reject(`${t.v} is not allowed in a body`);
-    if (isKeywordArgument(tokens, i) && FILE_KEYWORD.test(t.v)) return reject(`keyword ${t.v}= names a file`);
+    if (isKeywordArgument(tokens, i) && FILE_KEYWORD.test(t.v)) {
+      if (t.v === 'font_path' && isValidFontPathArg(tokens, i)) {
+        // Allowed font_path with CADAI_FONTS
+      } else {
+        return reject(`keyword ${t.v}= names a file`);
+      }
+    }
   }
 
   const bound = boundNames(tokens);
+  if (bound.has('CADAI_FONTS')) return reject('CADAI_FONTS is not allowed in a body');
   for (const name of bound) {
     if (reserved.has(name)) return reject(`binds the spec parameter ${name}`);
   }
@@ -358,6 +388,9 @@ export function checkPythonScript(script: string): BodyCheck {
     }
     if (t.k !== 'name') continue;
     if (t.v.includes('__')) return reject(`dunder name ${t.v}`);
+    if (t.v === 'CADAI_FONTS') {
+      if (!isValidFontPathArg(tokens, i - 2)) return reject(`${t.v} is not allowed in a script`);
+    }
     if (!attribute(i) && BUILDER_NAMES.test(t.v)) return reject(BUILDER_MODE_REASON);
     if (BANNED_ANYWHERE_SCRIPT.has(t.v)) return reject(`${t.v} is not allowed in a script`);
 
@@ -375,8 +408,16 @@ export function checkPythonScript(script: string): BodyCheck {
       continue;
     }
     if (BANNED_NAMES.has(t.v) || /^(?:export|import)/i.test(t.v)) return reject(`${t.v} is not allowed in a script`);
-    if (isKeywordArgument(tokens, i) && FILE_KEYWORD.test(t.v)) return reject(`keyword ${t.v}= names a file`);
+    if (isKeywordArgument(tokens, i) && FILE_KEYWORD.test(t.v)) {
+      if (t.v === 'font_path' && isValidFontPathArg(tokens, i)) {
+        // Allowed font_path with CADAI_FONTS
+      } else {
+        return reject(`keyword ${t.v}= names a file`);
+      }
+    }
   }
+
+  if (boundNames(tokens).has('CADAI_FONTS')) return reject('CADAI_FONTS is not allowed in a script');
 
   return { ok: true };
 }

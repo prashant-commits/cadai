@@ -406,6 +406,7 @@ def script_globals(full: bool | None = None) -> dict:
             namespace[name] = getattr(build123d, name)
     for name in ("sin", "cos", "tan", "radians", "degrees", "sqrt", "pi", "atan2", "hypot", "isnan"):
         namespace[name] = getattr(math, name)
+    namespace["CADAI_FONTS"] = os.path.realpath(os.path.join(os.path.dirname(__file__), "fonts"))
     notes_list: list[str] = []
     namespace["_cadai_notes"] = notes_list
     exec(_HELPERS_CODE, namespace)

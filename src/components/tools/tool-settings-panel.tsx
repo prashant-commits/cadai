@@ -55,8 +55,10 @@ export function ToolSettingsPanel() {
     }
   }
 
+  const blockerPhrase = tool.applyBlocker?.(draftOp) ?? null;
+
   const isApplyDisabled =
-    !draftOp || applyStatus === 'applying' || preview.status === 'error';
+    !draftOp || applyStatus === 'applying' || preview.status === 'error' || Boolean(blockerPhrase);
 
   return (
     <div className="flex flex-col h-full overflow-hidden text-xs text-[var(--fg)]">
@@ -71,6 +73,12 @@ export function ToolSettingsPanel() {
         {topoStatusPhrase && (
           <div className="text-xs text-[var(--fg-muted)] p-2 rounded bg-[var(--card)] border border-[var(--glass-border)]">
             {topoStatusPhrase}
+          </div>
+        )}
+
+        {blockerPhrase && (
+          <div className="text-xs text-[var(--fg-muted)] p-2 rounded bg-[var(--card)] border border-[var(--glass-border)]">
+            {blockerPhrase}
           </div>
         )}
 

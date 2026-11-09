@@ -70,6 +70,7 @@ export function PropertiesSection() {
 
     const draft =
       editingOpId === opMatch.op.id && draftOp ? draftOp : opMatch.op;
+    const blockerPhrase = tool.applyBlocker?.(draft) ?? null;
 
     return (
       <section className="space-y-3" aria-label="Properties">
@@ -79,6 +80,11 @@ export function PropertiesSection() {
         </div>
         <div className="space-y-3 px-1">
           <tool.Settings draft={draft} onChange={updateDraft} />
+          {blockerPhrase && (
+            <div className="text-xs text-[var(--fg-muted)] p-2 rounded bg-[var(--card)] border border-[var(--glass-border)]">
+              {blockerPhrase}
+            </div>
+          )}
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-[var(--glass-border)]">
             <Button variant="outline" size="sm" onClick={cancel}>
               Cancel
@@ -89,7 +95,8 @@ export function PropertiesSection() {
               disabled={
                 !draft ||
                 applyStatus === 'applying' ||
-                preview.status === 'error'
+                preview.status === 'error' ||
+                Boolean(blockerPhrase)
               }
             >
               {applyStatus === 'applying' ? 'Applying...' : 'Apply'}

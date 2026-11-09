@@ -26,6 +26,8 @@ export interface ToolDef {
   Settings: React.FC<ToolSettingsProps>;
   initialDraft(face: TopoFace, plane: FacePlane): ToolOp | null;
   ViewportOverlay?: React.FC;
+  /** A fixed phrase when the draft cannot be applied (for example empty text, too dense), else null. */
+  applyBlocker?: (draft: ToolOp | null) => string | null;
 }
 
 // Conflict-free tool registration: each lane (Tasks 13–16) replaces only its own file under ./defs/.
