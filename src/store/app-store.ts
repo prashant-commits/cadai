@@ -167,6 +167,7 @@ export interface AppState extends ProjectsSlice {
   runsByThread: Record<string, string>;
   compileStatus: 'idle' | 'compiling' | 'success' | 'error';
   compileError: string | null;
+  compileErrorLine: number | null;
   compileTimeMs: number;
   viewportSettings: ViewportSettings;
 
@@ -260,6 +261,7 @@ export const useAppStore = create<AppState>((set, get, api) => ({
   runsByThread: {},
   compileStatus: 'idle',
   compileError: null,
+  compileErrorLine: null,
   compileTimeMs: 0,
   isAnnotating: false,
   baseSnapshot: null,
@@ -341,6 +343,7 @@ export const useAppStore = create<AppState>((set, get, api) => ({
       step: null,
       compileStatus: 'idle',
       compileError: null,
+      compileErrorLine: null,
     });
 
     void upsertThread(updatedThread);
@@ -519,6 +522,7 @@ export const useAppStore = create<AppState>((set, get, api) => ({
         step: newStep,
         compileStatus: 'idle',
         compileError: null,
+        compileErrorLine: null,
       });
     } else {
       set({ threads: updatedThreads });
@@ -869,6 +873,7 @@ export const useAppStore = create<AppState>((set, get, api) => ({
       selectedModel: target.selectedModel || get().selectedModel,
       compileStatus: 'idle',
       compileError: null,
+      compileErrorLine: null,
       inFlightRunId: targetRunId,
       isGenerating: !!targetRunId,
       generatingThreadId: targetRunId ? target.id : null,
@@ -1103,6 +1108,7 @@ export const useAppStore = create<AppState>((set, get, api) => ({
       set({
         compileStatus: result.success ? 'success' : 'error',
         compileError: result.error || null,
+        compileErrorLine: result.errorLine ?? null,
         geometry: result.geometry || null,
         stlContent: result.stlContent || null,
         modelInfo: result.modelInfo || null,
@@ -1121,7 +1127,11 @@ export const useAppStore = create<AppState>((set, get, api) => ({
   },
 
   setCompileStatus: (status, error = null) =>
-    set({ compileStatus: status, compileError: error }),
+    set({
+      compileStatus: status,
+      compileError: error,
+      ...(error === null ? { compileErrorLine: null } : {}),
+    }),
 
   updateViewportSettings: (settings) =>
     set((state) => ({
@@ -1385,6 +1395,7 @@ export const useAppStore = create<AppState>((set, get, api) => ({
       activeDraft: null,
       compileStatus: 'idle',
       compileError: null,
+      compileErrorLine: null,
       messages: [welcomeMsg],
       threads: resetThreads,
     });

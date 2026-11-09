@@ -54,6 +54,7 @@ export interface CompileResult {
   geometry?: THREE.BufferGeometry;
   modelInfo?: ModelInfo;
   error?: string;
+  errorLine?: number;
   compileTimeMs?: number;
   aborted?: boolean;
   step?: string;

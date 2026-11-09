@@ -1,15 +1,34 @@
 'use client';
 
 import React, { useRef, useEffect } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, GizmoViewport } from '@react-three/drei';
 import { useAppStore } from '@/store/app-store';
 import { CadModel } from './cad-model';
 import { ViewportToolbar } from './viewport-toolbar';
 import { Annotator } from './annotator';
+import { registerViewportCamera } from './view-presets';
 import { compileModel } from '@/lib/engine/build123d-client';
 import { Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
+
+function CameraRegistration({
+  controlsRef,
+}: {
+  controlsRef: React.RefObject<OrbitControlsImpl | null>;
+}) {
+  const { camera, controls } = useThree();
+
+  useEffect(() => {
+    const ctrl = controlsRef.current || (controls as unknown as OrbitControlsImpl | null);
+    registerViewportCamera(camera, ctrl);
+    return () => {
+      registerViewportCamera(null, null);
+    };
+  }, [camera, controls, controlsRef]);
+
+  return null;
+}
 
 export function ViewportPanel() {
   const {
@@ -19,6 +38,7 @@ export function ViewportPanel() {
     compileError,
     viewportSettings,
     isAnnotating,
+    codeDrawerOpen,
     setCompileResult,
     setCompileStatus,
   } = useAppStore();
@@ -41,12 +61,6 @@ export function ViewportPanel() {
     }
   }, [geometry, code, setCompileResult, setCompileStatus]);
 
-  const handleResetCamera = () => {
-    if (controlsRef.current) {
-      controlsRef.current.reset();
-    }
-  };
-
   const handleRecompile = async () => {
     setCompileStatus('compiling');
     const result = await compileModel(code);
@@ -56,23 +70,24 @@ export function ViewportPanel() {
   return (
     <div className="relative w-full h-full bg-transparent overflow-hidden select-none">
       {isAnnotating && <Annotator />}
-      
+
       {/* Floating Toolbar */}
-      <ViewportToolbar onResetCamera={handleResetCamera} />
+      <ViewportToolbar />
 
       {/* Error notification banner */}
-      {compileStatus === 'error' && (
-        <div className="absolute bottom-4 left-4 right-4 z-20 bg-rose-950/90 border border-rose-800 rounded-lg p-3 text-xs text-rose-200 shadow-xl flex items-start justify-between gap-3">
+      {compileStatus === 'error' && !codeDrawerOpen && (
+        <div className="glass absolute bottom-4 left-4 right-4 z-20 p-3 text-xs text-[var(--fg)] flex items-start justify-between gap-3 shadow-xl">
           <div className="flex items-start gap-2 min-w-0">
-            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            <AlertCircle className="w-4 h-4 text-[var(--destructive)] shrink-0 mt-0.5" />
             <div className="min-w-0">
-              <span className="font-semibold block text-rose-300">Compilation Error</span>
-              <p className="font-mono text-[11px] truncate">{compileError}</p>
+              <span className="font-semibold block text-[var(--destructive)]">Compilation Error</span>
+              <p className="font-mono text-[11px] truncate text-[var(--fg-muted)]">{compileError}</p>
             </div>
           </div>
           <button
+            type="button"
             onClick={handleRecompile}
-            className="px-2.5 py-1 rounded bg-rose-900 hover:bg-rose-800 text-rose-100 text-xs shrink-0 flex items-center gap-1 transition-colors cursor-pointer"
+            className="px-2.5 py-1 rounded bg-[var(--accent)] hover:bg-[var(--accent-glow)] text-[var(--fg)] text-xs shrink-0 flex items-center gap-1 transition-colors cursor-pointer"
           >
             <RefreshCw className="w-3 h-3" />
             <span>Retry</span>
@@ -82,9 +97,9 @@ export function ViewportPanel() {
 
       {/* Compiling overlay */}
       {compileStatus === 'compiling' && (
-        <div className="absolute inset-0 z-20 bg-black/40 backdrop-blur-2xs flex items-center justify-center pointer-events-none">
-          <div className="bg-slate-900/90 border border-slate-800 rounded-xl px-4 py-3 shadow-2xl flex items-center gap-3 text-slate-200 text-xs">
-            <Loader2 className="w-4 h-4 text-indigo-400 animate-spin" />
+        <div className="absolute inset-0 z-20 bg-[color-mix(in_srgb,var(--bg)_40%,transparent)] backdrop-blur-xs flex items-center justify-center pointer-events-none">
+          <div className="glass px-4 py-3 flex items-center gap-3 text-[var(--fg)] text-xs">
+            <Loader2 className="w-4 h-4 text-[var(--accent-from)] animate-spin" />
             <span>Compiling CAD geometry...</span>
           </div>
         </div>
@@ -92,10 +107,12 @@ export function ViewportPanel() {
 
       {/* 3D Canvas */}
       <Canvas
-        shadows
+        shadows="percentage"
         camera={{ position: [60, 60, 70], fov: 45, near: 0.1, far: 5000 }}
         gl={{ antialias: true, logarithmicDepthBuffer: true, preserveDrawingBuffer: true }}
       >
+        <CameraRegistration controlsRef={controlsRef} />
+
         {/* Lights */}
         <ambientLight intensity={0.75} />
         <directionalLight

@@ -60,6 +60,42 @@ export function hasPreludeSentinel(script: string): boolean {
   return script.includes(PRELUDE_SENTINEL);
 }
 
+/**
+ * Maps a 1-based line number from a compiled script (which may include a prelude)
+ * to a 1-based line number in the design body.
+ *
+ * When the script has PRELUDE_SENTINEL, the body starts on the first non-blank line
+ * after the sentinel line. Lines inside the prelude return null.
+ * Without a sentinel, returns scriptLine.
+ */
+export function scriptLineToBodyLine(scriptLine: number, script: string): number | null {
+  if (!hasPreludeSentinel(script)) {
+    return scriptLine;
+  }
+
+  const lines = script.split('\n');
+  const sentinelIdx = lines.findIndex((l) => l.includes(PRELUDE_SENTINEL));
+  if (sentinelIdx === -1) {
+    return scriptLine;
+  }
+
+  let bodyStartIdx = sentinelIdx + 1;
+  while (bodyStartIdx < lines.length && lines[bodyStartIdx].trim() === '') {
+    bodyStartIdx++;
+  }
+
+  if (bodyStartIdx >= lines.length) {
+    return null;
+  }
+
+  const bodyStartLine = bodyStartIdx + 1;
+  const mapped = scriptLine - (bodyStartLine - 1);
+  if (mapped <= 0) {
+    return null;
+  }
+  return mapped;
+}
+
 export function withGeneratedPrelude(body: string, version: string = PRELUDE_VERSION): string {
   const prelude = PRELUDES[version];
   if (prelude === undefined) {

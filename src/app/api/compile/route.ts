@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runBrep, type BrepPart } from '@/lib/engine/brep-runner';
 import { checkPythonScript, MAX_SCRIPT_BYTES } from '@/lib/brep/body-check';
-import { hasPreludeSentinel, withGeneratedPrelude, toBody, PRELUDE_VERSION, PRELUDES } from '@/lib/brep/prelude';
+import { hasPreludeSentinel, withGeneratedPrelude, toBody, scriptLineToBodyLine, PRELUDE_VERSION, PRELUDES } from '@/lib/brep/prelude';
 import type { PartInfo } from '@/lib/contract/run-contract';
 import { badRequest, compileStatus, errorBody, fromBrep } from '@/lib/contract/api-error';
 import { ownerKeyFrom } from '@/lib/owner';
@@ -81,7 +81,12 @@ export async function POST(req: NextRequest) {
     const result = await runBrep(finalCode);
     if (!result.ok) {
       const err = fromBrep(result.error || 'build123d compilation failed.', result.failure);
-      return NextResponse.json(errorBody(err), { status: compileStatus(err) });
+      const line =
+        typeof result.line === 'number'
+          ? scriptLineToBodyLine(result.line, finalCode)
+          : null;
+      const body = line !== null ? { ...errorBody(err), line } : errorBody(err);
+      return NextResponse.json(body, { status: compileStatus(err) });
     }
 
     let stlAscii = '';

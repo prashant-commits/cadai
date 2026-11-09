@@ -8,6 +8,8 @@ import { DesignPanel } from '@/components/design/design-panel';
 import { CodeEditorPanel } from '@/components/editor/code-editor-panel';
 import { AppHeader } from './app-header';
 import { FloatingPanel } from './floating-panel';
+import { ExportMenu } from './export-menu';
+import { CodeDrawer } from './code-drawer';
 
 export const CHAT_COLLAPSED_KEY = 'cadai:workspace:chat-collapsed';
 export const INSPECTOR_COLLAPSED_KEY = 'cadai:workspace:inspector-collapsed';
@@ -88,11 +90,16 @@ export function Workspace() {
         <ViewportPanel />
       </div>
 
+      {/* Code Drawer */}
+      <CodeDrawer />
+
       {/* App Header top-left */}
       <AppHeader />
 
       {/* Export slot top-right */}
-      <div data-slot="export" className="absolute top-4 right-4 z-20 pointer-events-none" />
+      <div data-slot="export" className="absolute top-4 right-4 z-20">
+        <ExportMenu />
+      </div>
 
       {/* Left Chat panel */}
       <FloatingPanel
