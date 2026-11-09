@@ -46,6 +46,7 @@ import { parseStlToGeometry } from '@/lib/engine/geometry-utils';
 import { readStream, streamMessagePatch } from '@/lib/stream-reader';
 import { serializeTranscript } from '@/lib/agent/transcript';
 import { createProjectsSlice, isProjectOpened, type ProjectsSlice } from './projects-slice';
+import { createToolsSlice, type ToolsSlice } from './tools-slice';
 import { NEEDS_PROJECT, WELCOME } from '@/lib/persist/phrases';
 
 function dataUrlToBlob(dataUrlOrBytes: string): Blob {
@@ -147,7 +148,7 @@ export interface PendingAttachment {
   id?: string;
 }
 
-export interface AppState extends ProjectsSlice {
+export interface AppState extends ProjectsSlice, ToolsSlice {
   selectedModel: string;
   threads: ChatThread[];
   activeThreadId: string;
@@ -248,6 +249,7 @@ let attachAbortController: AbortController | null = null;
 
 export const useAppStore = create<AppState>((set, get, api) => ({
   ...createProjectsSlice(set, get, api),
+  ...createToolsSlice(set, get, api),
   selectedModel: DEFAULT_MODEL,
   threads: [],
   activeThreadId: '',

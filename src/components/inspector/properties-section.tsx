@@ -4,6 +4,9 @@ import { ParamControl } from '@/components/design/param-control';
 import { SlidersHorizontal, Code2 } from 'lucide-react';
 import type { ParamValue, ScadParam } from '@/types';
 import { setParamValue } from '@/lib/design/write-params';
+import { parseOpBlocks } from '@/lib/tools/ops';
+import { toolForOpKind, TOOL_UNAVAILABLE } from '@/components/tools/tool-registry';
+import { Button } from '@/components/ui/button';
 
 export const NO_PARAMS = 'No parameters in this model.';
 
@@ -35,7 +38,67 @@ export function PropertiesSection() {
     pinParam,
     unpinParam,
     setCodeDrawerOpen,
+    selectedLayerId,
+    code,
+    draftOp,
+    editingOpId,
+    updateDraft,
+    apply,
+    cancel,
+    applyStatus,
+    preview,
   } = useAppStore();
+
+  const parsedOps = parseOpBlocks(code);
+  const opMatch = selectedLayerId
+    ? parsedOps.find((p) => p.op.id === selectedLayerId)
+    : undefined;
+
+  if (opMatch) {
+    const tool = toolForOpKind(opMatch.op.kind);
+    if (!tool) {
+      return (
+        <section className="space-y-2" aria-label="Properties">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--fg-muted)] px-1 flex items-center gap-1.5">
+            <SlidersHorizontal className="w-3 h-3" />
+            <span>Properties</span>
+          </div>
+          <p className="text-xs text-[var(--fg-muted)] px-1 py-1.5 italic">{TOOL_UNAVAILABLE}</p>
+        </section>
+      );
+    }
+
+    const draft =
+      editingOpId === opMatch.op.id && draftOp ? draftOp : opMatch.op;
+
+    return (
+      <section className="space-y-3" aria-label="Properties">
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--fg-muted)] px-1 flex items-center gap-1.5">
+          <SlidersHorizontal className="w-3 h-3" />
+          <span>Properties</span>
+        </div>
+        <div className="space-y-3 px-1">
+          <tool.Settings draft={draft} onChange={updateDraft} />
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-[var(--glass-border)]">
+            <Button variant="outline" size="sm" onClick={cancel}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => void apply()}
+              disabled={
+                !draft ||
+                applyStatus === 'applying' ||
+                preview.status === 'error'
+              }
+            >
+              {applyStatus === 'applying' ? 'Applying...' : 'Apply'}
+            </Button>
+          </div>
+        </div>
+      </section>
+    );
+  }
 
   const groups = params.reduce((acc, param) => {
     const groupName = param.group || 'General';
