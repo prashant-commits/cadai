@@ -170,6 +170,17 @@ export interface AppState extends ProjectsSlice {
   compileTimeMs: number;
   viewportSettings: ViewportSettings;
 
+  // Workspace UI links (shared by the chat, inspector and code drawer lanes)
+  /** The design version whose chat message is highlighted (set by the inspector's Versions). */
+  highlightedVersion: number | null;
+  setHighlightedVersion: (version: number | null) => void;
+  /** The selected inspector layer (a part label in Phase 1, a tool op id in Phase 2). */
+  selectedLayerId: string | null;
+  setSelectedLayerId: (id: string | null) => void;
+  /** Whether the bottom code drawer is open. */
+  codeDrawerOpen: boolean;
+  setCodeDrawerOpen: (open: boolean) => void;
+
   // Annotation & Input State
   isAnnotating: boolean;
   baseSnapshot: string | null;
@@ -942,6 +953,12 @@ export const useAppStore = create<AppState>((set, get, api) => ({
   },
 
   setSelectedModel: (model) => set({ selectedModel: model }),
+  highlightedVersion: null,
+  setHighlightedVersion: (version) => set({ highlightedVersion: version }),
+  selectedLayerId: null,
+  setSelectedLayerId: (id) => set({ selectedLayerId: id }),
+  codeDrawerOpen: false,
+  setCodeDrawerOpen: (open) => set({ codeDrawerOpen: open }),
 
   addMessage: (message, threadId) => {
     const targetId = threadId || get().activeThreadId;
