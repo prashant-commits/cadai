@@ -10,6 +10,8 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { ViewPresetsMenu } from './view-presets';
+import { TOOLS } from '@/components/tools/tool-registry';
+import { toolAvailability } from '@/store/tools-slice';
 
 export interface ToolbarItemDef {
   id: string;
@@ -17,6 +19,7 @@ export interface ToolbarItemDef {
   icon?: LucideIcon;
   render?: () => React.ReactNode;
   isActive?: (state: AppState) => boolean;
+  disabledReason?: (state: AppState) => string | null;
   onSelect?: (state: AppState) => void;
 }
 
@@ -80,19 +83,53 @@ export function ViewportToolbar() {
         }
 
         const active = item.isActive ? item.isActive(store) : false;
+        const disabledReason = item.disabledReason ? item.disabledReason(store) : null;
+        const isDisabled = disabledReason !== null;
+        const label = isDisabled ? `${item.label} (${disabledReason})` : item.label;
         const Icon = item.icon;
 
         return (
           <button
             key={item.id}
             type="button"
-            aria-label={item.label}
-            title={item.label}
+            aria-label={label}
+            title={label}
+            disabled={isDisabled}
             onClick={() => item.onSelect?.(store)}
-            className={`w-8 h-8 rounded-full flex items-center justify-center transition-all cursor-pointer ${
-              active
-                ? 'bg-[image:var(--accent-gradient)] text-[var(--fg)] shadow-[0_4px_12px_var(--accent-glow)]'
-                : 'text-[var(--fg-muted)] hover:bg-[var(--accent)] hover:text-[var(--fg)]'
+            className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${
+              isDisabled
+                ? 'opacity-40 cursor-not-allowed text-[var(--fg-muted)]'
+                : active
+                ? 'bg-[image:var(--accent-gradient)] text-[var(--fg)] shadow-[0_4px_12px_var(--accent-glow)] cursor-pointer'
+                : 'text-[var(--fg-muted)] hover:bg-[var(--accent)] hover:text-[var(--fg)] cursor-pointer'
+            }`}
+          >
+            {Icon && <Icon className="w-4 h-4" />}
+          </button>
+        );
+      })}
+
+      {TOOLS.map((tool) => {
+        const disabledReason = toolAvailability(store, tool);
+        const isDisabled = disabledReason !== null;
+        const active = store.activeToolId === tool.id;
+        const Icon = tool.icon;
+        const label = isDisabled ? `${tool.label} (${disabledReason})` : tool.label;
+
+        return (
+          <button
+            key={tool.id}
+            type="button"
+            aria-label={label}
+            title={label}
+            disabled={isDisabled}
+            onClick={() => store.selectTool(tool.id)}
+            className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${
+              isDisabled
+                ? 'opacity-40 cursor-not-allowed text-[var(--fg-muted)]'
+                : active
+                ? 'bg-[image:var(--accent-gradient)] text-[var(--fg)] shadow-[0_4px_12px_var(--accent-glow)] cursor-pointer'
+                : 'text-[var(--fg-muted)] hover:bg-[var(--accent)] hover:text-[var(--fg)] cursor-pointer'
             }`}
           >
             {Icon && <Icon className="w-4 h-4" />}

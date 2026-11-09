@@ -1,10 +1,14 @@
 'use client';
 
-import React, { useRef, useMemo, useEffect } from 'react';
+import React, { useRef, useMemo, useEffect, useState } from 'react';
 import * as THREE from 'three';
 import { useThree } from '@react-three/fiber';
 import { useAppStore } from '@/store/app-store';
 import { layerRows } from '@/components/inspector/layers-section';
+import { FacePicker } from '@/components/tools/face-picker';
+import { OpPreview } from '@/components/tools/op-preview';
+import { getTool, toolForOpKind } from '@/components/tools/tool-registry';
+import type { TopoPart } from '@/lib/geometry/topology';
 
 interface CadModelProps {
   geometry: THREE.BufferGeometry;
@@ -19,6 +23,11 @@ export function CadModel({ geometry }: CadModelProps) {
     threads,
     activeThreadId,
     viewingVersion,
+    activeToolId,
+    editingOpId,
+    draftOp,
+    preview,
+    loadVersionTopology,
   } = useAppStore();
   const { camera, controls } = useThree();
 
@@ -31,9 +40,42 @@ export function CadModel({ geometry }: CadModelProps) {
     return rows.find((r) => r.id === selectedLayerId) ?? null;
   }, [parts, currentVersion, selectedLayerId]);
 
+  const [topoLoaded, setTopoLoaded] = useState<{ topoId: string | null; parts: TopoPart[] }>({
+    topoId: null,
+    parts: [],
+  });
+
+  const currentTopo = currentVersion?.topo ?? null;
+
+  useEffect(() => {
+    let isMounted = true;
+    if (selectedPart && !selectedPart.box && currentTopo) {
+      void loadVersionTopology(currentTopo).then((topo) => {
+        if (isMounted && topo?.parts) {
+          setTopoLoaded({ topoId: currentTopo, parts: topo.parts });
+        }
+      });
+    }
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedPart, currentTopo, loadVersionTopology]);
+
+  const resolvedBox = useMemo(() => {
+    if (selectedPart?.box) return selectedPart.box;
+    if (!selectedPart || !currentTopo || topoLoaded.topoId !== currentTopo) return null;
+    const match = topoLoaded.parts.find(
+      (p) => p.label === selectedPart.label || p.label === selectedPart.id
+    );
+    if (match) {
+      return { min: match.min, max: match.max };
+    }
+    return null;
+  }, [selectedPart, currentTopo, topoLoaded]);
+
   const partOutline = useMemo(() => {
-    if (!selectedPart?.box) return null;
-    const { min, max } = selectedPart.box;
+    if (!resolvedBox) return null;
+    const { min, max } = resolvedBox;
     const size: [number, number, number] = [
       Math.max(0.001, max[0] - min[0]),
       Math.max(0.001, max[1] - min[1]),
@@ -48,7 +90,7 @@ export function CadModel({ geometry }: CadModelProps) {
     const edgesGeom = new THREE.EdgesGeometry(boxGeom);
     boxGeom.dispose();
     return { edgesGeom, center };
-  }, [selectedPart]);
+  }, [resolvedBox]);
 
   useEffect(() => {
     return () => {
@@ -110,12 +152,24 @@ export function CadModel({ geometry }: CadModelProps) {
     }
   }, [geometry, maxDim, camera, controls]);
 
+  const activeTool =
+    getTool(activeToolId) ??
+    (editingOpId && draftOp ? toolForOpKind(draftOp.kind) : undefined);
+  const ViewportOverlay = activeTool?.ViewportOverlay;
+  const isPreviewReady = preview.status === 'ready' && !!preview.geometry;
+
   return (
     // Rotate -90° around X so the CAD model's vertical Z-axis aligns with Three.js vertical Y-axis
     <group rotation={[-Math.PI / 2, 0, 0]}>
       <group position={offset}>
         {/* Solid Shaded Model Mesh */}
-        <mesh ref={meshRef} geometry={geometry} castShadow receiveShadow>
+        <mesh
+          ref={meshRef}
+          geometry={geometry}
+          visible={!isPreviewReady}
+          castShadow
+          receiveShadow
+        >
           <meshStandardMaterial
             color="#94a3b8" // Slate 400 CAD plastic
             roughness={0.3}
@@ -129,7 +183,7 @@ export function CadModel({ geometry }: CadModelProps) {
         </mesh>
 
         {/* Technical Edge Highlights */}
-        {viewportSettings.showEdges && edgesGeometry && !viewportSettings.wireframe && (
+        {viewportSettings.showEdges && edgesGeometry && !viewportSettings.wireframe && !isPreviewReady && (
           <lineSegments geometry={edgesGeometry}>
             <lineBasicMaterial color="#0f172a" linewidth={1.5} />
           </lineSegments>
@@ -150,6 +204,15 @@ export function CadModel({ geometry }: CadModelProps) {
             />
           </lineSegments>
         )}
+
+        {/* Face Picker */}
+        <FacePicker />
+
+        {/* Op Preview */}
+        <OpPreview />
+
+        {/* Viewport Overlay */}
+        {ViewportOverlay && <ViewportOverlay />}
       </group>
     </group>
   );

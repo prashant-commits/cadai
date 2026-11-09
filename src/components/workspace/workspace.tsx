@@ -1,9 +1,11 @@
 'use client';
 
 import React, { useState, useCallback } from 'react';
+import { useAppStore } from '@/store/app-store';
 import { ViewportPanel } from '@/components/viewport/viewport-panel';
 import { ChatPanel } from '@/components/chat/chat-panel';
 import { Inspector } from '@/components/inspector/inspector';
+import { ToolSettingsPanel } from '@/components/tools/tool-settings-panel';
 import { AppHeader } from './app-header';
 import { FloatingPanel } from './floating-panel';
 import { ExportMenu } from './export-menu';
@@ -32,12 +34,16 @@ export function writeCollapsed(key: string, collapsed: boolean): void {
 }
 
 export function Workspace() {
+  const { activeToolId } = useAppStore();
   const [chatCollapsed, setChatCollapsed] = useState(() =>
     readCollapsed(CHAT_COLLAPSED_KEY)
   );
   const [inspectorCollapsed, setInspectorCollapsed] = useState(() =>
     readCollapsed(INSPECTOR_COLLAPSED_KEY)
   );
+
+  const effectiveChatCollapsed = chatCollapsed || activeToolId !== null;
+  const effectiveInspectorCollapsed = activeToolId !== null ? false : inspectorCollapsed;
 
   const toggleChat = useCallback(() => {
     setChatCollapsed((prev) => {
@@ -87,7 +93,7 @@ export function Workspace() {
       </div>
 
       {/* Code Drawer */}
-      <CodeDrawer chatCollapsed={chatCollapsed} inspectorCollapsed={inspectorCollapsed} />
+      <CodeDrawer chatCollapsed={effectiveChatCollapsed} inspectorCollapsed={effectiveInspectorCollapsed} />
 
       {/* App Header top-left */}
       <AppHeader />
@@ -100,7 +106,7 @@ export function Workspace() {
       {/* Left Chat panel */}
       <FloatingPanel
         side="left"
-        collapsed={chatCollapsed}
+        collapsed={effectiveChatCollapsed}
         onToggle={toggleChat}
         widthPx={380}
       >
@@ -112,13 +118,19 @@ export function Workspace() {
       {/* Right Inspector panel */}
       <FloatingPanel
         side="right"
-        collapsed={inspectorCollapsed}
+        collapsed={effectiveInspectorCollapsed}
         onToggle={toggleInspector}
         widthPx={340}
       >
-        <div data-panel="inspector" className="relative flex-1 min-h-0 flex flex-col">
-          <Inspector />
-        </div>
+        {activeToolId !== null ? (
+          <div data-panel="tool-settings" className="relative flex-1 min-h-0 flex flex-col">
+            <ToolSettingsPanel />
+          </div>
+        ) : (
+          <div data-panel="inspector" className="relative flex-1 min-h-0 flex flex-col">
+            <Inspector />
+          </div>
+        )}
       </FloatingPanel>
     </div>
   );
