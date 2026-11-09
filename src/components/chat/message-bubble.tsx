@@ -50,7 +50,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
       >
         <PenLine className="size-3.5 text-muted-foreground shrink-0" />
         <span className="truncate">{message.content}</span>
-        {message.designVersion != null && (
+        {message.designVersion != null && !/· v\d+$/.test(message.content.trim()) && (
           <span className="font-mono text-[11px] text-muted-foreground shrink-0">
             · v{message.designVersion}
           </span>

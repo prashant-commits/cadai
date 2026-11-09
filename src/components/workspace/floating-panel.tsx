@@ -24,7 +24,7 @@ export function FloatingPanel(props: {
         inert={collapsed ? true : undefined}
         style={{ width: widthPx }}
         className={cn(
-          'glass absolute top-16 bottom-4 z-20 flex flex-col overflow-hidden transition-transform duration-300 ease-in-out',
+          'glass absolute top-16 bottom-4 z-20 flex flex-col overflow-clip transition-transform duration-300 ease-in-out',
           isLeft ? 'left-4' : 'right-4',
           collapsed &&
             (isLeft
@@ -49,7 +49,7 @@ export function FloatingPanel(props: {
             )}
           </button>
         )}
-        <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
+        <div className="relative flex-1 min-h-0 flex flex-col overflow-clip">
           {children}
         </div>
       </div>

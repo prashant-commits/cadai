@@ -63,7 +63,7 @@ export function Workspace() {
 
   return (
     <div
-      className="fixed inset-0 overflow-hidden text-[var(--fg)]"
+      className="fixed inset-0 overflow-clip text-[var(--fg)]"
       style={{
         background: [
           'radial-gradient(560px 320px at 22% 18%, var(--bg-glow-1), transparent 70%)',

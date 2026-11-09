@@ -10,6 +10,16 @@ import { isServerThreadId } from '@/lib/client/server-thread';
 import { LEGACY } from '@/lib/persist/phrases';
 import { cn } from '@/lib/utils';
 
+/** The scrollTop that centers `el` inside a scroll container whose top edge is at `containerTop`. */
+export function centeredScrollTop(
+  containerTop: number,
+  el: { top: number; height: number },
+  scrollTop: number,
+  clientHeight: number
+): number {
+  return Math.max(0, el.top - containerTop + scrollTop - clientHeight / 2 + el.height / 2);
+}
+
 export function ChatPanel() {
   const {
     messages,
@@ -26,6 +36,7 @@ export function ChatPanel() {
   } = useAppStore();
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
 
   // Initialize threads from IndexedDB on client mount
   useEffect(() => {
@@ -55,8 +66,11 @@ export function ChatPanel() {
     (isGenerating && generatingThreadId === activeThreadId);
   const isLegacy = activeThread ? !isServerThreadId(activeThread.id) : false;
 
+  // Scroll the message list itself. scrollIntoView would also scroll every clipped ancestor (the floating panel,
+  // the workspace root) and shift the whole layout.
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const c = messagesRef.current;
+    if (c) c.scrollTo({ top: c.scrollHeight, behavior: 'smooth' });
   };
 
   useEffect(() => {
@@ -66,8 +80,13 @@ export function ChatPanel() {
   // Scroll highlighted message into view when inspector highlights a version
   useEffect(() => {
     if (highlightedVersion == null) return;
-    const el = document.querySelector(`[data-design-version="${highlightedVersion}"]`);
-    el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    const c = messagesRef.current;
+    const el = c?.querySelector<HTMLElement>(`[data-design-version="${highlightedVersion}"]`);
+    if (!c || !el) return;
+    c.scrollTo({
+      top: centeredScrollTop(c.getBoundingClientRect().top, el.getBoundingClientRect(), c.scrollTop, c.clientHeight),
+      behavior: 'smooth',
+    });
   }, [highlightedVersion]);
 
   const showPromptChips =
@@ -100,7 +119,7 @@ export function ChatPanel() {
       )}
 
       {/* Message List */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-2">
+      <div ref={messagesRef} data-slot="chat-messages" className="flex-1 overflow-y-auto p-4 space-y-2">
         {messages.map((msg) => {
           const isHighlighted =
             msg.designVersion !== undefined &&

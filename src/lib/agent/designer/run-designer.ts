@@ -54,6 +54,26 @@ export {
 export const MAX_TURNS = 18;
 export { MAX_COST_USD } from './cost-params';
 import { MAX_COST_USD } from './cost-params';
+import { parseOpBlocks } from '../../tools/ops';
+import { opLayerName } from '../../tools/layers';
+
+/**
+ * The user's manual tool edits (op blocks) in the script being edited. The reviewer never sees the code, so
+ * without this it judges a hand-added hole or engraving against the original request and flags it as unrequested.
+ */
+export function withManualEdits(request: string, script: string | undefined): string {
+  if (!script) return request;
+  let names: string[] = [];
+  try {
+    names = parseOpBlocks(toBody(script)).map((p) => opLayerName(p.op));
+  } catch {
+    return request;
+  }
+  if (names.length === 0) return request;
+  return `${request}\n\nThe user added these features by hand with the modeling tools; they are part of the request:\n${names
+    .map((n, i) => `${i + 1}. ${n}`)
+    .join('\n')}`;
+}
 
 /** One geometry run never waits longer than this (it is also clipped to the wall time left). */
 export const RUN_TIMEOUT_MS = 120_000;
@@ -71,7 +91,9 @@ export const runDesigner: RunDesignerFn = async (input: DesignerInput, deps: Des
   const deadline = startedAt + wallMs;
   const isEdit = !!(input.priorScript && input.editRequest);
   const minRunScripts = isEdit ? 1 : 2;
-  const reviewRequest = isEdit ? `${input.request}\n\nFollow-up edit: ${input.editRequest}` : input.request;
+  const reviewRequest = isEdit
+    ? withManualEdits(`${input.request}\n\nFollow-up edit: ${input.editRequest}`, input.priorScript)
+    : input.request;
 
   const modelSlug =
     deps.model ?? (process.env.CADAI_MODEL && isOfferedModel(process.env.CADAI_MODEL) ? process.env.CADAI_MODEL : DEFAULT_MODEL);

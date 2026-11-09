@@ -264,6 +264,37 @@ describe('edit mode', () => {
   });
 });
 
+describe('manual edits and the reviewer', () => {
+  it('the reviewer is told the user\'s manual op blocks are part of the request', async () => {
+    const basePlateBody = body([
+      'plate_w = 60  # plate width',
+      'plate = Box(plate_w, 40, 5)',
+      'plate.label = "plate"',
+      '_cadai_parts = [plate]',
+      'result = plate',
+    ]);
+    const plane = { origin: [0, 0, 5] as [number, number, number], normal: [0, 0, 1] as [number, number, number], xDir: [1, 0, 0] as [number, number, number] };
+    const hole: ToolOp = { kind: 'hole', id: 'op_hole01', part: 'plate', plane, offset: [-15, 0], rotationDeg: 0, size: 'M5', diameterMm: 5.5, head: 'none', depthMm: 'through' };
+    const text: ToolOp = { kind: 'text', id: 'op_text01', part: 'plate', plane, offset: [10, 0], rotationDeg: 0, text: 'CADAI', font: 'inter-bold', sizeMm: 8, mode: 'engrave', depthMm: 0.6 };
+    const priorScript = applyOp(applyOp(basePlateBody, hole), text);
+    const review = vi.fn<ReviewFn>(async () => ({ flags: [], costUsd: 0 }));
+    installModel([reply([run(priorScript.replace('plate_w = 60', 'plate_w = 80')), render(), finish('longer')])]);
+    await runDesigner({ request: 'A flat plate. Nothing else.', priorScript, editRequest: 'make it 80 mm long' }, { review });
+    const req = review.mock.calls[0][0].request;
+    expect(req).toContain('Follow-up edit: make it 80 mm long');
+    expect(req).toContain('The user added these features by hand with the modeling tools; they are part of the request:');
+    expect(req).toContain('1. Hole M5');
+    expect(req).toContain('2. Text "CADAI"');
+  });
+
+  it('a first build without op blocks keeps the plain request for the reviewer', async () => {
+    const review = vi.fn<ReviewFn>(async () => ({ flags: [], costUsd: 0 }));
+    installModel([reply([run(PLAIN), run(PLAIN), render()]), reply([finish('ok')])]);
+    await runDesigner({ request: 'a box' }, { review });
+    expect(review.mock.calls[0][0].request).toBe('a box');
+  });
+});
+
 describe('caps', () => {
   it('stops at the turn cap and returns the last passing script, capped', async () => {
     let n = 0;

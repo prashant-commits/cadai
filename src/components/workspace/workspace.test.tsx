@@ -109,6 +109,16 @@ describe('workspace shell', () => {
     expect(panelHtml).not.toMatch(/(?:^|\s)translate-x-\[calc\(100%/);
   });
 
+  it('the workspace and floating panels clip instead of scroll, so focus or scrollIntoView cannot shift the layout', () => {
+    const html = renderToStaticMarkup(
+      <FloatingPanel side="left" collapsed={false} onToggle={() => {}} widthPx={380}>
+        <div />
+      </FloatingPanel>
+    );
+    expect(html).toContain('overflow-clip');
+    expect(html).not.toContain('overflow-hidden');
+  });
+
   it('the inspector is on the right', () => {
     const wsHtml = renderToStaticMarkup(<Workspace />);
     expect(wsHtml).toMatch(

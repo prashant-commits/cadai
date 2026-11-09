@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import fs from 'node:fs';
 import path from 'node:path';
 import { useAppStore } from '@/store/app-store';
-import { ChatPanel } from './chat-panel';
+import { ChatPanel, centeredScrollTop } from './chat-panel';
 import { ChatInput } from './chat-input';
 import { MessageBubble } from './message-bubble';
 import { ThreadsMenuList, createThreadsMenuActions } from './threads-menu';
@@ -207,6 +207,25 @@ describe('ChatPanel and related components', () => {
     expect(html).toContain('v4');
     expect(html).not.toContain('rounded-2xl');
     expect(html).not.toContain('Copy message');
+  });
+
+  it('a tool_edit line from the server shows its version once', () => {
+    const msg = {
+      id: 'm-tool-2',
+      role: 'user' as const,
+      kind: 'tool_edit' as const,
+      content: 'You added Hole M5 · v5',
+      designVersion: 5,
+      timestamp: Date.now(),
+    };
+    const html = renderToStaticMarkup(<MessageBubble message={msg} />);
+    expect(html.match(/v5/g)).toHaveLength(1);
+  });
+
+  it('centeredScrollTop centers an element inside the message list and never goes negative', () => {
+    // container top at 100, element 600..640 inside, scrolled 200, viewport 400 tall
+    expect(centeredScrollTop(100, { top: 600, height: 40 }, 200, 400)).toBe(520);
+    expect(centeredScrollTop(100, { top: 110, height: 20 }, 0, 400)).toBe(0);
   });
 
   it('a highlighted version marks its message', () => {
