@@ -319,6 +319,9 @@ async function runBrepLocal(
         if (opts?.partMeshes) {
           args.push('--part-meshes');
         }
+        if (opts?.topology) {
+          args.push('--topology');
+        }
         const childEnv = localChildEnv();
         childEnv.CADAI_GEO_TIMEOUT = String(Math.ceil(timeoutMs / 1000));
         child = spawn(pythonPath, args, {
@@ -440,6 +443,40 @@ async function runBrepLocal(
       const stlBase64 = await resolveAndReadFile(parsed.stl, 'model.stl');
       const stepBase64 = await resolveAndReadFile(parsed.step, 'model.step');
 
+      let topology: Record<string, unknown> | undefined;
+      if (opts?.topology) {
+        const resolveAndReadJson = async (targetPath: unknown, fallbackName: string): Promise<Record<string, unknown> | undefined> => {
+          const candidates: string[] = [];
+          if (typeof targetPath === 'string' && targetPath.trim().length > 0) {
+            if (path.isAbsolute(targetPath)) {
+              candidates.push(targetPath);
+            } else {
+              candidates.push(path.resolve(geoDir, targetPath));
+              candidates.push(path.resolve(outDir, targetPath));
+              candidates.push(path.resolve(root, targetPath));
+            }
+          }
+          candidates.push(path.join(outDir, fallbackName));
+
+          for (const cand of candidates) {
+            if (existsSync(cand)) {
+              try {
+                const text = await fs.readFile(cand, 'utf-8');
+                const data = JSON.parse(text);
+                if (data && typeof data === 'object') {
+                  return data as Record<string, unknown>;
+                }
+              } catch {
+                // ignore
+              }
+            }
+          }
+          return undefined;
+        };
+
+        topology = await resolveAndReadJson(parsed.topology_file, 'topology.json');
+      }
+
       return {
         ok: true,
         parts: Array.isArray(parsed.parts) ? (parsed.parts as BrepPart[]) : [],
@@ -449,6 +486,7 @@ async function runBrepLocal(
         bbox: parsed.bbox as BrepResult['bbox'],
         stl: stlBase64,
         step: stepBase64,
+        topology,
         ms: Math.max(1, Math.round(performance.now() - t0)),
         interferences: Array.isArray(parsed.interferences)
           ? (parsed.interferences as Array<{ a: string; b: string; volume: number }>)

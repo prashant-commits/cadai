@@ -27,7 +27,7 @@ export interface RunOutcome {
   replyKind: ReplyKind;
   replyMarkdown: string;
   userKind: UserKind;
-  design?: DesignDraft & { stl?: string; step?: string };
+  design?: DesignDraft & { stl?: string; step?: string; topology?: Record<string, unknown> };
   costUsd: number;
   wallMs: number;
   turns: number;
@@ -163,7 +163,7 @@ export interface ArtifactRow {
   ownerKey: string;
   threadId: string | null;
   runId: string | null;
-  kind: 'stl' | 'step' | 'image';
+  kind: 'stl' | 'step' | 'image' | 'topo';
   bytes: number;
   objectKey: string;
   createdAt: number;
@@ -357,7 +357,7 @@ export function rowToArtifact(row: Record<string, unknown>): ArtifactRow {
     ownerKey: String(row.owner_key ?? row.ownerKey),
     threadId: ((row.thread_id ?? row.threadId) as string | null) ?? null,
     runId: ((row.run_id ?? row.runId) as string | null) ?? null,
-    kind: row.kind as 'stl' | 'step' | 'image',
+    kind: row.kind as 'stl' | 'step' | 'image' | 'topo',
     bytes: Number(row.bytes),
     objectKey: String(row.object_key ?? row.objectKey),
     createdAt: Number(row.created_at ?? row.createdAt),

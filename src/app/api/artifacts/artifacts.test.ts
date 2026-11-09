@@ -1,5 +1,6 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import * as crypto from 'crypto';
+import * as zlib from 'zlib';
 import { NextRequest } from 'next/server';
 import { closeDb } from '@/lib/db/db';
 import { CADAI_OWNER_COOKIE } from '@/lib/owner';
@@ -73,5 +74,26 @@ describe('GET /api/artifacts/:id', () => {
     const owner = makeOwner();
     const res = await req('non-existent-id-22ch--', owner.cookie);
     expect(res.status).toBe(404);
+  });
+
+  it('serves decompressed topo artifact with application/json and no content-length', async () => {
+    const owner = makeOwner();
+    const topoPayload = JSON.stringify({
+      mesh: { positions: [0, 0, 0], indices: [0, 0, 0], faceIds: [1] },
+      faces: [],
+      edges: [],
+      parts: [],
+    });
+    const gzipped = zlib.gzipSync(Buffer.from(topoPayload));
+    const topoId = await put(owner.key, 'topo', gzipped);
+
+    const res = await req(topoId, owner.cookie);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/json');
+    expect(res.headers.get('content-length')).toBeNull();
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    const body = await res.json();
+    expect(body).toEqual(JSON.parse(topoPayload));
   });
 });

@@ -1,5 +1,6 @@
 import type { Db } from '@/lib/db/db';
 import { getDb } from '@/lib/db/db';
+import { gzipSync } from 'node:zlib';
 import { DbRunStore } from '@/lib/runs/db-run-store';
 import { put as defaultPutArtifact } from '@/lib/runs/owner-artifacts';
 import { registerRun, unregisterRun } from '@/lib/runs/run-control';
@@ -349,6 +350,21 @@ export function streamRun(o: StreamRunOptions): Response {
           }
         }
 
+        let topoArtifact: string | undefined;
+        if (!uploadFailed && outcome.design?.topology) {
+          try {
+            topoArtifact = await putArtifact(
+              o.ownerKey,
+              'topo',
+              gzipSync(Buffer.from(JSON.stringify(outcome.design.topology))),
+              { threadId: o.threadId, runId: o.runId },
+              { db }
+            );
+          } catch (err) {
+            console.error('Topology upload failed:', err);
+          }
+        }
+
         if (uploadFailed) {
           await terminateAndFinish('failed', 'internal');
           return;
@@ -360,9 +376,11 @@ export function streamRun(o: StreamRunOptions): Response {
             ...outcome.design,
             stlArtifact,
             stepArtifact,
+            topoArtifact,
           };
           delete (design as { stl?: string }).stl;
           delete (design as { step?: string }).step;
+          delete (design as { topology?: Record<string, unknown> }).topology;
           plan = {
             ...outcome,
             costUsd: costTotal,

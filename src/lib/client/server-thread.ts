@@ -41,6 +41,7 @@ export interface ServerThreadVersion {
   preludeVersion: string;
   stl: string | null;
   step: string | null;
+  topo?: string | null;
   createdAt: number;
   partLabels?: string[];
 }

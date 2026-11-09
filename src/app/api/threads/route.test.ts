@@ -138,6 +138,7 @@ describe('Threads API Routes', () => {
       preludeVersion: 'v1',
       stl: stlArtId,
       step: stepArtId,
+      topo: null,
       createdAt: expect.any(Number),
       partLabels: [],
     });

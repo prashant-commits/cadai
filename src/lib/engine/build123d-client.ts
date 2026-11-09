@@ -11,7 +11,7 @@ let activeAbortController: AbortController | null = null;
 
 export function compileModel(
   code: string,
-  opts?: { preludeVersion?: string }
+  opts?: { preludeVersion?: string; topology?: boolean }
 ): Promise<CompileResult> {
   return new Promise((resolve) => {
     if (compileTimeout) clearTimeout(compileTimeout);
@@ -41,6 +41,9 @@ export function compileModel(
         const payload: Record<string, unknown> = { code, language: 'build123d' };
         if (opts?.preludeVersion !== undefined) {
           payload.preludeVersion = opts.preludeVersion;
+        }
+        if (opts?.topology !== undefined) {
+          payload.topology = opts.topology;
         }
 
         const response = await fetch('/api/compile', {
@@ -74,6 +77,7 @@ export function compileModel(
           geometry,
           modelInfo,
           step: data.step,
+          topology: data.topology && typeof data.topology === 'object' ? (data.topology as Record<string, unknown>) : undefined,
           language: 'build123d',
           parts: Array.isArray(data.parts) ? data.parts : [],
           compileTimeMs: typeof data.compileTimeMs === 'number' ? data.compileTimeMs : Math.round(performance.now() - startTime),

@@ -59,6 +59,7 @@ export interface CompileResult {
   compileTimeMs?: number;
   aborted?: boolean;
   step?: string;
+  topology?: Record<string, unknown>;
   language?: 'build123d';
   parts?: PartInfo[];
 }

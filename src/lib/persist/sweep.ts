@@ -27,7 +27,7 @@ export async function sweep(
        WHERE a.created_at < to_timestamp(($1::bigint - 86400000) / 1000.0)
          AND NOT EXISTS (
            SELECT 1 FROM designs d
-           WHERE d.stl_artifact = a.id OR d.step_artifact = a.id
+           WHERE d.stl_artifact = a.id OR d.step_artifact = a.id OR d.topo_artifact = a.id
          )
          AND NOT EXISTS (
            SELECT 1 FROM message_attachments ma

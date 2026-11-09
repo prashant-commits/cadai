@@ -1659,6 +1659,87 @@ describe('streamRun', () => {
       expect(n.rows[0].c).toBe(0);
     });
 
+    it('S12b: topology is uploaded and saved as topoArtifact when present', async () => {
+      const db = getDb();
+      const owner = makeOwner();
+      const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+      const putArtifact = vi.fn(realPut);
+      const stepB64 = Buffer.from('STEP-DATA').toString('base64');
+      const topoObj = { mesh: { positions: [], indices: [], faceIds: [] }, faces: [], edges: [], parts: [] };
+      const res = streamRun({
+        runId,
+        threadId,
+        ownerKey: owner.key,
+        deadlineAt,
+        deps: { db, putArtifact },
+        invoke: async () =>
+          (async function* () {
+            yield [
+              'values',
+              { outcome: { ...stlOutcome(), design: { ...DESIGN, stl: 'solid x', step: stepB64, topology: topoObj } } },
+            ];
+          })(),
+      });
+      const events = await readAllEvents(res);
+      expect(events.at(-1)).toMatchObject({ t: 'end', status: 'done' });
+      expect(putArtifact).toHaveBeenCalledTimes(3);
+      expect(putArtifact).toHaveBeenNthCalledWith(
+        3,
+        owner.key,
+        'topo',
+        expect.any(Buffer),
+        { threadId, runId },
+        { db }
+      );
+      const topoId = await putArtifact.mock.results[2].value;
+      const row = (
+        await db.query(`SELECT topo_artifact FROM designs WHERE thread_id = $1`, [threadId])
+      ).rows[0];
+      expect(row.topo_artifact).toBe(topoId);
+    });
+
+    it('S12c: a topology upload failure is non-fatal; commits without topoArtifact', async () => {
+      const db = getDb();
+      const owner = makeOwner();
+      const { threadId, runId, deadlineAt } = await createTestRun(db, owner.key);
+      const putArtifact = vi.fn(async (...args: Parameters<typeof realPut>) => {
+        if (args[1] === 'topo') throw new Error('topo upload failed');
+        return realPut(...args);
+      });
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const res = streamRun({
+        runId,
+        threadId,
+        ownerKey: owner.key,
+        deadlineAt,
+        deps: { db, putArtifact },
+        invoke: async () =>
+          (async function* () {
+            yield [
+              'values',
+              {
+                outcome: {
+                  ...stlOutcome(),
+                  design: {
+                    ...DESIGN,
+                    stl: 'solid x',
+                    step: Buffer.from('S').toString('base64'),
+                    topology: { mesh: { positions: [], indices: [], faceIds: [] }, faces: [], edges: [], parts: [] },
+                  },
+                },
+              },
+            ];
+          })(),
+      });
+      const events = await readAllEvents(res);
+      expect(events.at(-1)).toMatchObject({ t: 'end', status: 'done' });
+      const row = (
+        await db.query(`SELECT topo_artifact, stl_artifact FROM designs WHERE thread_id = $1`, [threadId])
+      ).rows[0];
+      expect(row.topo_artifact).toBeNull();
+      expect(row.stl_artifact).toBeTruthy();
+    });
+
     it('S13: a graph that ends without an outcome fails with BUILD_FAILED', async () => {
       const db = getDb();
       const owner = makeOwner();
