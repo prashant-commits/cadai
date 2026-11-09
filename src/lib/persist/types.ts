@@ -155,6 +155,7 @@ export interface DesignRow {
   stepArtifact: string | null;
   /** Gzipped topology JSON artifact (Task 10); null for versions built before topology. */
   topoArtifact: string | null;
+  ops: unknown[];
   createdAt: number;
 }
 
@@ -347,6 +348,7 @@ export function rowToDesign(row: Record<string, unknown>): DesignRow {
     stlArtifact: ((row.stl_artifact ?? row.stlArtifact) as string | null) ?? null,
     stepArtifact: ((row.step_artifact ?? row.stepArtifact) as string | null) ?? null,
     topoArtifact: ((row.topo_artifact ?? row.topoArtifact) as string | null) ?? null,
+    ops: parseJsonField<unknown[]>(row.ops, []),
     createdAt: Number(row.created_at ?? row.createdAt),
   };
 }

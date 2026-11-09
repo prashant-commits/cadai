@@ -26,6 +26,8 @@ import { applyPins, BadPinError } from '@/lib/design/write-params';
 import { maxRunning, dailyCostUsd } from '@/lib/runs/config';
 import { MAX_COST_USD } from '@/lib/agent/designer/cost-params';
 import { buildTranscript } from '@/lib/agent/transcript-build';
+import { parseOpBlocks, type ToolOp } from '@/lib/tools/ops';
+import { toolEditPhrase, toolEditActionPhrase } from '@/lib/tools/phrases';
 
 export const RUN_START_LOCK_ID = BigInt('723948192847192842');
 
@@ -650,6 +652,140 @@ async function commit(
   return { committed: true, end };
 }
 
+export interface CommitUserEditInput {
+  ownerKey: string;
+  threadId: string;
+  baseVersion: number;
+  body: string;
+  op: ToolOp;
+  clientMessageId: string;
+  stlArtifact?: string | null;
+  stepArtifact?: string | null;
+  topoArtifact?: string | null;
+  parts?: unknown[];
+}
+
+async function commitUserEdit(
+  q: Queryable,
+  input: CommitUserEditInput
+): Promise<{ version: number }> {
+  requireTransaction();
+
+  // 1. Thread check and lock (order: threads, then runs)
+  const threadRes = await q.query(
+    `SELECT owner_key, archived_at, active_run_id FROM threads WHERE id = $1 FOR UPDATE`,
+    [input.threadId]
+  );
+  if (threadRes.rows.length === 0) {
+    throw notFound();
+  }
+  const threadRow = threadRes.rows[0];
+  if (threadRow.owner_key !== input.ownerKey || threadRow.archived_at !== null) {
+    throw notFound();
+  }
+
+  // 2. Active run check
+  if (threadRow.active_run_id) {
+    const activeRunId = String(threadRow.active_run_id);
+    const runStatusRes = await q.query(`SELECT status FROM runs WHERE id = $1`, [activeRunId]);
+    if (runStatusRes.rows.length > 0 && runStatusRes.rows[0].status === 'running') {
+      const reaped = await reap(q, activeRunId);
+      if (!reaped) {
+        throw runActive(activeRunId);
+      }
+    }
+  }
+
+  // 3. Duplicate client message check
+  const dupRes = await q.query(
+    `SELECT id FROM messages WHERE thread_id = $1 AND client_message_id = $2`,
+    [input.threadId, input.clientMessageId]
+  );
+  if (dupRes.rows.length > 0) {
+    throw new StoreError(409, 'duplicate_message', 'Duplicate client message ID');
+  }
+
+  // 4. Base design check
+  const baseDesignRes = await q.query(
+    `SELECT version, base_request, edits, prelude_version FROM designs WHERE thread_id = $1 AND version = $2`,
+    [input.threadId, input.baseVersion]
+  );
+  if (baseDesignRes.rows.length === 0) {
+    throw notFound();
+  }
+  const baseDesign = baseDesignRes.rows[0];
+
+  // 5. Next version
+  const maxVRes = await q.query(
+    `SELECT coalesce(max(version), 0) + 1 AS next_v FROM designs WHERE thread_id = $1`,
+    [input.threadId]
+  );
+  const nextVersion = Number(maxVRes.rows[0].next_v);
+
+  // 6. Parse ops and prepare fields
+  const ops = parseOpBlocks(input.body).map((p) => p.op);
+  const summary = toolEditActionPhrase(input.op);
+  const facts = input.parts ? { parts: input.parts } : null;
+  const editsJson =
+    typeof baseDesign.edits === 'string'
+      ? baseDesign.edits
+      : JSON.stringify(baseDesign.edits ?? []);
+
+  // 7. Insert designs row
+  await q.query(
+    `INSERT INTO designs(
+      thread_id, version, parent_version, origin, run_id,
+      base_request, edits, body, prelude_version, summary,
+      facts, flags, stl_artifact, step_artifact, topo_artifact, ops
+    ) VALUES (
+      $1, $2, $3, 'user_edit', null,
+      $4, $5, $6, $7, $8,
+      $9, '[]'::jsonb, $10, $11, $12, $13::jsonb
+    )`,
+    [
+      input.threadId,
+      nextVersion,
+      input.baseVersion,
+      baseDesign.base_request,
+      editsJson,
+      input.body,
+      baseDesign.prelude_version,
+      summary,
+      facts ? JSON.stringify(facts) : null,
+      input.stlArtifact ?? null,
+      input.stepArtifact ?? null,
+      input.topoArtifact ?? null,
+      JSON.stringify(ops),
+    ]
+  );
+
+  // 8. Insert messages row
+  const phrase = toolEditPhrase(input.op, nextVersion);
+  await q.query(
+    `INSERT INTO messages(
+      id, thread_id, seq, role, kind, content, client_message_id, design_version
+    ) VALUES (
+      gen_random_uuid(),
+      $1,
+      coalesce((SELECT max(seq) FROM messages WHERE thread_id = $1), 0) + 1,
+      'user',
+      'tool_edit',
+      $2,
+      $3,
+      $4
+    )`,
+    [input.threadId, phrase, input.clientMessageId, nextVersion]
+  );
+
+  // 9. Bump thread updated_at
+  await q.query(
+    `UPDATE threads SET updated_at = now() WHERE id = $1`,
+    [input.threadId]
+  );
+
+  return { version: nextVersion };
+}
+
 async function terminate(
   q: Queryable,
   runId: string,
@@ -767,6 +903,7 @@ async function listStale(q: Queryable): Promise<string[]> {
 export const DbRunStore = {
   start,
   commit,
+  commitUserEdit,
   terminate,
   reap,
   append,

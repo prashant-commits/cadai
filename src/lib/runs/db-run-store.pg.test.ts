@@ -1200,4 +1200,157 @@ describe('DbRunStore (Postgres concurrency)', () => {
     ].sort((a, b) => a.id.localeCompare(b.id));
     expect(updatedArts.rows).toEqual(expectedArts);
   });
+
+  it('an apply and a chat start on two connections never both win', async () => {
+    // Interleaving 1: start acquires lock first, apply sees run_active
+    {
+      const threadId = crypto.randomUUID();
+      const ownerKey = `owner_${crypto.randomUUID()}`;
+      const proj = await db.transaction((q) => ProjectStore.create(q, ownerKey, 'Test Project'));
+      await db.query(
+        `INSERT INTO threads(id, owner_key, project_id) VALUES ($1, $2, $3)`,
+        [threadId, ownerKey, proj.id]
+      );
+      await db.query(
+        `INSERT INTO designs(thread_id, version, parent_version, origin, base_request, edits, body, prelude_version, summary, facts, flags)
+         VALUES ($1, 1, null, 'designer', 'initial req', '[]', 'box = Box(10, 10, 10)\n_cadai_parts = [box]', '1', 'v1', null, '[]')`,
+        [threadId]
+      );
+
+      const reached1 = latch();
+      const gate = latch();
+
+      const t1 = db.transaction(async (q) => {
+        const r = await DbRunStore.start(q, makeStartInput({
+          threadId,
+          ownerKey,
+          projectId: proj.id,
+          clientMessageId: crypto.randomUUID(),
+          text: 'Starting run first',
+          viewingVersion: 1,
+        }));
+        reached1.open();
+        await gate.promise;
+        return r;
+      });
+
+      await reached1.promise;
+
+      const t2 = db.transaction((q) =>
+        DbRunStore.commitUserEdit(q, {
+          ownerKey,
+          threadId,
+          baseVersion: 1,
+          body: 'box = Box(10, 10, 10)\n_cadai_parts = [box]',
+          op: {
+            id: 'op_h00001',
+            part: 'box',
+            plane: { origin: [0, 0, 10], normal: [0, 0, 1], xDir: [1, 0, 0] },
+            offset: [0, 0],
+            rotationDeg: 0,
+            kind: 'hole',
+            size: 'M5',
+            diameterMm: 5.5,
+            head: 'none',
+            depthMm: 5,
+          },
+          clientMessageId: crypto.randomUUID(),
+        })
+      );
+
+      expect(await isPending(t2, 300)).toBe(true);
+
+      gate.open();
+
+      const [r1, r2] = await Promise.allSettled([t1, t2]);
+
+      expect(r1.status).toBe('fulfilled');
+      if (r1.status !== 'fulfilled') throw new Error('Expected t1 to be fulfilled');
+      expect(r1.value.replay).toBe(false);
+      const activeRunId = (r1.value as { runId: string }).runId;
+
+      expect(r2.status).toBe('rejected');
+      if (r2.status !== 'rejected') throw new Error('Expected t2 to be rejected');
+      expect(r2.reason).toBeInstanceOf(StoreError);
+      const storeErr = r2.reason as StoreError;
+      expect(storeErr.status).toBe(409);
+      expect(storeErr.code).toBe('run_active');
+      expect(storeErr.activeRunId).toBe(activeRunId);
+    }
+
+    // Interleaving 2: commitUserEdit acquires lock first, start sees the new version after it
+    {
+      const threadId = crypto.randomUUID();
+      const ownerKey = `owner_${crypto.randomUUID()}`;
+      const proj = await db.transaction((q) => ProjectStore.create(q, ownerKey, 'Test Project'));
+      await db.query(
+        `INSERT INTO threads(id, owner_key, project_id) VALUES ($1, $2, $3)`,
+        [threadId, ownerKey, proj.id]
+      );
+      await db.query(
+        `INSERT INTO designs(thread_id, version, parent_version, origin, base_request, edits, body, prelude_version, summary, facts, flags)
+         VALUES ($1, 1, null, 'designer', 'initial req', '[]', 'box = Box(10, 10, 10)\n_cadai_parts = [box]', '1', 'v1', null, '[]')`,
+        [threadId]
+      );
+
+      const reached1 = latch();
+      const gate = latch();
+
+      const t1 = db.transaction(async (q) => {
+        const r = await DbRunStore.commitUserEdit(q, {
+          ownerKey,
+          threadId,
+          baseVersion: 1,
+          body: 'box = Box(10, 10, 10)\n_cadai_parts = [box]',
+          op: {
+            id: 'op_h00001',
+            part: 'box',
+            plane: { origin: [0, 0, 10], normal: [0, 0, 1], xDir: [1, 0, 0] },
+            offset: [0, 0],
+            rotationDeg: 0,
+            kind: 'hole',
+            size: 'M5',
+            diameterMm: 5.5,
+            head: 'none',
+            depthMm: 5,
+          },
+          clientMessageId: crypto.randomUUID(),
+        });
+        reached1.open();
+        await gate.promise;
+        return r;
+      });
+
+      await reached1.promise;
+
+      const t2 = db.transaction((q) =>
+        DbRunStore.start(q, makeStartInput({
+          threadId,
+          ownerKey,
+          projectId: proj.id,
+          clientMessageId: crypto.randomUUID(),
+          text: 'Starting run after apply',
+          viewingVersion: 1,
+        }))
+      );
+
+      expect(await isPending(t2, 300)).toBe(true);
+
+      gate.open();
+
+      const [r1, r2] = await Promise.allSettled([t1, t2]);
+
+      expect(r1.status).toBe('fulfilled');
+      if (r1.status !== 'fulfilled') throw new Error('Expected t1 to be fulfilled');
+      expect(r1.value).toEqual({ version: 2 });
+
+      expect(r2.status).toBe('fulfilled');
+      if (r2.status !== 'fulfilled') throw new Error('Expected t2 to be fulfilled');
+      expect(r2.value.replay).toBe(false);
+
+      // Verify the designs in DB has version 2 before the run's start
+      const dRes = await db.query(`SELECT version FROM designs WHERE thread_id = $1 ORDER BY version`, [threadId]);
+      expect(dRes.rows.map((r) => r.version)).toEqual([1, 2]);
+    }
+  });
 });
