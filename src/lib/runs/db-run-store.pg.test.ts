@@ -1018,4 +1018,27 @@ describe('DbRunStore (Postgres concurrency)', () => {
     expect(res).toBe(true);
     expect(txRetryState.retryCount).toBe(0);
   });
+
+  it('DP1: a user_edit version copies a base design\'s non-empty edits as jsonb', async () => {
+    const threadId = crypto.randomUUID();
+    const ownerKey = `owner_${crypto.randomUUID()}`;
+    await db.query(`INSERT INTO threads(id, owner_key) VALUES ($1, $2)`, [threadId, ownerKey]);
+    await db.query(
+      `INSERT INTO designs(thread_id, version, parent_version, origin, base_request, edits, body, prelude_version, summary)
+       VALUES ($1, 1, null, 'designer', 'make a box', '["taller"]'::jsonb, 'w = 40  # [0:100] W', 'p1', 'box')`,
+      [threadId]
+    );
+    const res = await db.transaction((q) =>
+      DbRunStore.start(
+        q,
+        makeStartInput({ threadId, ownerKey, viewingVersion: 1, pinnedParams: { w: 60 } })
+      )
+    );
+    if (res.replay) throw new Error('Expected replay=false');
+    expect(res.baseVersion).toBe(2);
+    const v2 = (await db.query(`SELECT origin, edits, body FROM designs WHERE thread_id = $1 AND version = 2`, [threadId])).rows[0];
+    expect(v2.origin).toBe('user_edit');
+    expect(v2.edits).toEqual(['taller']);
+    expect(v2.body).toBe('w = 60  # [0:100] W');
+  });
 });

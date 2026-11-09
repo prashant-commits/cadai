@@ -179,4 +179,79 @@ describe('owner-artifacts', () => {
 
     expect(objectWritten).toBe(false);
   });
+
+  it('OT1: injected deps are used by put and openStream, and undefined resets them', async () => {
+    const owner = `owner_${crypto.randomUUID()}`;
+    const puts: string[] = [];
+    const fakeStore: ObjectStore = {
+      async put(key: string): Promise<void> {
+        puts.push(key);
+      },
+      async openStream(): Promise<Readable | null> {
+        return null;
+      },
+      async delete(): Promise<void> {},
+    };
+    setOwnerArtifactsDeps({ objectStore: fakeStore });
+    const id = await put(owner, 'image', new Uint8Array([1, 2, 3]));
+    expect(puts).toEqual([`image/${id}`]);
+
+    const emptyDb = () =>
+      ({
+        kind: 'pglite',
+        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+        transaction: vi.fn(),
+        close: vi.fn(),
+      }) as unknown as Db & { query: ReturnType<typeof vi.fn> };
+    const globalDb = emptyDb();
+    const argDb = emptyDb();
+    setOwnerArtifactsDeps({ db: globalDb, objectStore: fakeStore });
+    // deps.db wins over the global one
+    expect(await openStream(owner, newArtifactId(), { db: argDb, objectStore: fakeStore })).toBeNull();
+    expect(argDb.query).toHaveBeenCalledTimes(1);
+    expect(globalDb.query).not.toHaveBeenCalled();
+    // with no deps argument the global db is used
+    expect(await openStream(owner, newArtifactId())).toBeNull();
+    expect(globalDb.query).toHaveBeenCalledTimes(1);
+
+    setOwnerArtifactsDeps(undefined);
+    expect(globalThis.__cadaiOwnerArtifactDeps).toBeUndefined();
+  });
+
+  it('OT2: malformed ids never reach the database', async () => {
+    const owner = `owner_${crypto.randomUUID()}`;
+    const q = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) };
+    const bad: unknown[] = [
+      '',
+      'short',
+      'a'.repeat(21),
+      'a'.repeat(23),
+      'x'.repeat(22) + '!',
+      '../../etc/passwd',
+      `art_${crypto.randomUUID()}`,
+      ['a'.repeat(22)],
+      5,
+      null,
+    ];
+    for (const id of bad) {
+      expect(await get(q, owner, id as string)).toBeNull();
+    }
+    expect(q.query).not.toHaveBeenCalled();
+
+    expect(await get(q, owner, newArtifactId())).toBeNull();
+    expect(q.query).toHaveBeenCalledTimes(1);
+  });
+
+  it('OT3: openStream is null when the row exists but the object is missing', async () => {
+    const owner = `owner_${crypto.randomUUID()}`;
+    const id = await put(owner, 'step', new Uint8Array([9, 9]));
+    const missingObject: ObjectStore = {
+      async put(): Promise<void> {},
+      async openStream(): Promise<Readable | null> {
+        return null;
+      },
+      async delete(): Promise<void> {},
+    };
+    expect(await openStream(owner, id, { objectStore: missingObject })).toBeNull();
+  });
 });
