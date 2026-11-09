@@ -3,22 +3,36 @@
 import React, { Suspense, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
-import { AppHeader } from '@/components/layout/header';
 import { useAppStore } from '@/store/app-store';
-import { setNavigator } from '@/store/projects-slice';
+import { setNavigator, isProjectOpened } from '@/store/projects-slice';
 
-const SplitPaneLayout = dynamic(
-  () => import('@/components/layout/split-pane').then((mod) => mod.SplitPaneLayout),
+function WorkspaceLoadingFallback() {
+  return (
+    <div
+      className="fixed inset-0 flex items-center justify-center font-mono text-xs text-[var(--fg-muted)] select-none"
+      style={{
+        background: [
+          'radial-gradient(560px 320px at 22% 18%, var(--bg-glow-1), transparent 70%)',
+          'radial-gradient(600px 340px at 85% 88%, var(--bg-glow-2), transparent 70%)',
+          'radial-gradient(420px 240px at 60% 40%, var(--bg-glow-3), transparent 70%)',
+          'radial-gradient(1200px 520px at 55% 60%, var(--bg-2) 0%, var(--bg) 68%)',
+        ].join(', '),
+      }}
+    >
+      <div className="glass px-4 py-3 flex items-center gap-2.5">
+        <div className="w-4 h-4 rounded-full border-2 border-[var(--primary)] border-t-transparent animate-spin" />
+        <span>Opening the workspace…</span>
+      </div>
+    </div>
+  );
+}
+
+const Workspace = dynamic(
+  () =>
+    import('@/components/workspace/workspace').then((mod) => mod.Workspace),
   {
     ssr: false,
-    loading: () => (
-      <div className="flex-1 w-full h-[calc(100vh-3.5rem)] bg-slate-950 flex items-center justify-center text-slate-500 font-mono text-xs">
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin" />
-          <span>Initializing CAD AI Workspace...</span>
-        </div>
-      </div>
-    ),
+    loading: () => <WorkspaceLoadingFallback />,
   }
 );
 
@@ -26,7 +40,7 @@ function WorkspaceContent() {
   const router = useRouter();
   const params = useParams();
   const searchParams = useSearchParams();
-  const { openProject } = useAppStore();
+  const { openProject, activeProjectId, activeThreadId } = useAppStore();
 
   const projectId =
     typeof params?.projectId === 'string'
@@ -48,26 +62,23 @@ function WorkspaceContent() {
     }
   }, [projectId, t, openProject]);
 
-  return (
-    <main className="h-screen w-screen flex flex-col overflow-hidden bg-slate-950">
-      <AppHeader />
-      <SplitPaneLayout />
-    </main>
-  );
+  useEffect(() => {
+    if (
+      activeProjectId === projectId &&
+      isProjectOpened(projectId) &&
+      activeThreadId &&
+      activeThreadId !== t
+    ) {
+      router.replace(`/p/${projectId}?t=${activeThreadId}`);
+    }
+  }, [activeProjectId, projectId, activeThreadId, t, router]);
+
+  return <Workspace />;
 }
 
 export default function ProjectWorkspacePage() {
   return (
-    <Suspense
-      fallback={
-        <div className="h-screen w-screen bg-slate-950 flex items-center justify-center text-slate-500 font-mono text-xs">
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin" />
-            <span>Initializing CAD AI Workspace...</span>
-          </div>
-        </div>
-      }
-    >
+    <Suspense fallback={<WorkspaceLoadingFallback />}>
       <WorkspaceContent />
     </Suspense>
   );

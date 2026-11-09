@@ -54,18 +54,11 @@ export function ViewportPanel() {
   };
 
   return (
-    <div className="relative w-full h-full bg-[#090d16] overflow-hidden select-none">
+    <div className="relative w-full h-full bg-transparent overflow-hidden select-none">
       {isAnnotating && <Annotator />}
       
       {/* Floating Toolbar */}
       <ViewportToolbar onResetCamera={handleResetCamera} />
-
-      {/* Viewport Header overlay */}
-      <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
-        <div className="bg-slate-900/80 backdrop-blur-md border border-slate-800 rounded-lg px-3 py-1 text-[11px] font-mono text-slate-400">
-          3D Viewport
-        </div>
-      </div>
 
       {/* Error notification banner */}
       {compileStatus === 'error' && (
