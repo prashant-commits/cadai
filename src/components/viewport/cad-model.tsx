@@ -8,6 +8,7 @@ import { layerRows } from '@/components/inspector/layers-section';
 import { FacePicker } from '@/components/tools/face-picker';
 import { OpPreview } from '@/components/tools/op-preview';
 import { getTool, toolForOpKind } from '@/components/tools/tool-registry';
+import { useSectionClippingPlanes } from '@/components/tools/section-tool';
 import type { TopoPart } from '@/lib/geometry/topology';
 
 interface CadModelProps {
@@ -157,6 +158,7 @@ export function CadModel({ geometry }: CadModelProps) {
     (editingOpId && draftOp ? toolForOpKind(draftOp.kind) : undefined);
   const ViewportOverlay = activeTool?.ViewportOverlay;
   const isPreviewReady = preview.status === 'ready' && !!preview.geometry;
+  const sectionPlanes = useSectionClippingPlanes();
 
   return (
     // Rotate -90° around X so the CAD model's vertical Z-axis aligns with Three.js vertical Y-axis
@@ -179,13 +181,14 @@ export function CadModel({ geometry }: CadModelProps) {
             polygonOffset
             polygonOffsetFactor={1}
             polygonOffsetUnits={1}
+            clippingPlanes={sectionPlanes}
           />
         </mesh>
 
         {/* Technical Edge Highlights */}
         {viewportSettings.showEdges && edgesGeometry && !viewportSettings.wireframe && !isPreviewReady && (
           <lineSegments geometry={edgesGeometry}>
-            <lineBasicMaterial color="#0f172a" linewidth={1.5} />
+            <lineBasicMaterial color="#0f172a" linewidth={1.5} clippingPlanes={sectionPlanes} />
           </lineSegments>
         )}
 
