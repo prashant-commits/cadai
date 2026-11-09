@@ -69,7 +69,7 @@ export function ViewportToolbar({ onResetCamera }: ViewportToolbarProps) {
   };
 
   return (
-    <div className="absolute top-3 left-3 z-10 flex items-center gap-1 bg-slate-900/90 backdrop-blur-md border border-slate-800 rounded-lg p-1 shadow-lg select-none">
+    <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 bg-slate-900/90 backdrop-blur-md border border-slate-800 rounded-lg p-1 shadow-lg select-none">
       {/* Grid toggle */}
       <button
         onClick={() => updateViewportSettings({ showGrid: !viewportSettings.showGrid })}
