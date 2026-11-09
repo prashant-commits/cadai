@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 import type { Readable } from 'stream';
 import { getDb, type Db, type Queryable } from '@/lib/db/db';
-import { getObjectStore, type ObjectStore } from '@/lib/storage/object-store';
+import { getObjectStore, objectKeyFor, type ObjectStore } from '@/lib/storage/object-store';
 import { rowToArtifact, type ArtifactRow } from '@/lib/persist/types';
 
 export type OwnerArtifactKind = 'stl' | 'step' | 'image';
@@ -36,7 +36,7 @@ export async function put(
   const objectStore = deps?.objectStore ?? globalThis.__cadaiOwnerArtifactDeps?.objectStore ?? getObjectStore();
 
   const id = newArtifactId();
-  const objectKey = `${kind}/${id}`;
+  const objectKey = objectKeyFor(ownerKey, id, kind);
   const threadId = opts?.threadId ?? null;
   const runId = opts?.runId ?? null;
 
