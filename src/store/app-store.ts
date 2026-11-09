@@ -429,6 +429,7 @@ export const useAppStore = create<AppState>((set, get, api) => ({
               image: existing?.image,
               code: existing?.code,
               runId: existing?.runId,
+              designVersion: m.designVersion,
               timestamp: existing?.timestamp ?? Date.now(),
             };
           })

@@ -23,6 +23,10 @@ export interface ChatMessage {
   image?: string;
   attachments?: { id: string; kind: 'markup' | 'reference' }[];
   code?: string;
+  /** The design version this message produced (from the server's `messages.design_version`). */
+  designVersion?: number;
+  /** A manual tool edit renders as a small inline line, not a bubble (Task 11 produces them). */
+  kind?: 'tool_edit';
   timestamp: number;
 }
 
