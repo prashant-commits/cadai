@@ -1,11 +1,8 @@
 'use client';
 
-import React, { useState } from 'react';
+import React from 'react';
 import { useAppStore } from '@/store/app-store';
-import { exportStl } from '@/lib/export/stl-exporter';
-import { export3mf } from '@/lib/export/threemf-exporter';
 import {
-  Download,
   Box,
   Layers,
   ShieldCheck,
@@ -18,36 +15,8 @@ import {
 export function PrintAnalysisPanel() {
   const {
     modelInfo,
-    stlContent,
-    geometry,
     compileStatus,
   } = useAppStore();
-
-  const [exporting, setExporting] = useState(false);
-
-  const handleExportStl = () => {
-    if (!stlContent) return;
-    setExporting(true);
-    try {
-      exportStl(stlContent, `cadai_model_${Date.now()}.stl`);
-    } catch (e) {
-      console.error('Error exporting STL:', e);
-    } finally {
-      setExporting(false);
-    }
-  };
-
-  const handleExport3mf = () => {
-    if (!geometry) return;
-    setExporting(true);
-    try {
-      export3mf(geometry, `cadai_model_${Date.now()}.3mf`);
-    } catch (e) {
-      console.error('Error exporting 3MF:', e);
-    } finally {
-      setExporting(false);
-    }
-  };
 
   const hasModel = modelInfo && compileStatus === 'success';
 
@@ -156,26 +125,6 @@ export function PrintAnalysisPanel() {
               </div>
             </div>
 
-            {/* Export Actions */}
-            <div className="pt-1 space-y-2">
-              <button
-                onClick={handleExport3mf}
-                disabled={!geometry || exporting}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 border border-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-600/30 transition-all disabled:opacity-50 cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5 text-indigo-200" />
-                <span>Download 3MF (Color & Units)</span>
-              </button>
-
-              <button
-                onClick={handleExportStl}
-                disabled={!stlContent || exporting}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 text-slate-200 text-xs font-semibold shadow-xs transition-all disabled:opacity-50 cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Download Standard STL</span>
-              </button>
-            </div>
           </>
         ) : (
           <div className="h-full min-h-[180px] flex flex-col items-center justify-center text-center p-4 text-xs text-slate-500 space-y-2 font-mono">

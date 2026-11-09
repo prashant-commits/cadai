@@ -60,6 +60,7 @@ export function compileModel(
           return resolve({
             success: false,
             error: data.error || `Compilation failed with status ${response.status}`,
+            errorLine: typeof data.line === 'number' ? data.line : undefined,
             compileTimeMs: Math.round(performance.now() - startTime),
             language: 'build123d',
           });

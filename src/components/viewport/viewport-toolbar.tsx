@@ -1,176 +1,104 @@
 'use client';
 
 import React from 'react';
-import { useAppStore } from '@/store/app-store';
+import { useAppStore, type AppState } from '@/store/app-store';
 import {
-  Grid,
-  Axis3d,
+  MousePointer2,
   Layers,
-  RotateCw,
   Eye,
-  Maximize2,
   PenTool,
-  Download,
+  type LucideIcon,
 } from 'lucide-react';
-import { exportStep } from '@/lib/export/stl-exporter';
-import { fetchArtifactText } from '@/lib/client/server-thread';
+import { ViewPresetsMenu } from './view-presets';
 
-export async function downloadStep(): Promise<void> {
-  const { threads, activeThreadId, viewingVersion, step } = useAppStore.getState();
-  const activeThread = threads.find((t) => t.id === activeThreadId);
-  const version = activeThread?.versions?.find((v) => v.version === viewingVersion);
-  const title = activeThread?.title?.trim() || 'model';
-  const baseTitle = title.replace(/\.step$/i, '') || 'model';
-  const filename = `${baseTitle}.step`;
+export interface ToolbarItemDef {
+  id: string;
+  label: string;
+  icon?: LucideIcon;
+  render?: () => React.ReactNode;
+  isActive?: (state: AppState) => boolean;
+  onSelect?: (state: AppState) => void;
+}
 
-  try {
-    if (version?.step) {
-      const stepText = await fetchArtifactText(version.step);
-      exportStep(stepText, filename, 'text');
-    } else if (step) {
-      exportStep(step, filename, 'base64');
-    }
-  } catch (err) {
-    console.error('Failed to download STEP file:', err);
+export function takeViewportSnapshot(): void {
+  const canvas = document.querySelector('canvas');
+  if (canvas) {
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+    const { setBaseSnapshot, setIsAnnotating } = useAppStore.getState();
+    setBaseSnapshot(dataUrl);
+    setIsAnnotating(true);
   }
 }
 
-interface ViewportToolbarProps {
-  onResetCamera: () => void;
-}
+export const TOOLBAR_ITEMS: readonly ToolbarItemDef[] = [
+  {
+    id: 'select',
+    label: 'Select',
+    icon: MousePointer2,
+    isActive: () => true,
+  },
+  {
+    id: 'wireframe',
+    label: 'Wireframe',
+    icon: Eye,
+    isActive: (s) => Boolean(s.viewportSettings.wireframe),
+    onSelect: (s) => s.updateViewportSettings({ wireframe: !s.viewportSettings.wireframe }),
+  },
+  {
+    id: 'edges',
+    label: 'Edges',
+    icon: Layers,
+    isActive: (s) => Boolean(s.viewportSettings.showEdges),
+    onSelect: (s) => s.updateViewportSettings({ showEdges: !s.viewportSettings.showEdges }),
+  },
+  {
+    id: 'presets',
+    label: 'View presets',
+    render: () => <ViewPresetsMenu />,
+  },
+  {
+    id: 'markup',
+    label: 'Snapshot & Annotate',
+    icon: PenTool,
+    isActive: (s) => s.isAnnotating,
+    onSelect: () => takeViewportSnapshot(),
+  },
+] as const;
 
-export function ViewportToolbar({ onResetCamera }: ViewportToolbarProps) {
-  const {
-    viewportSettings,
-    updateViewportSettings,
-    setIsAnnotating,
-    setBaseSnapshot,
-    step,
-    threads,
-    activeThreadId,
-    viewingVersion,
-  } = useAppStore();
-
-  const activeThread = threads.find((t) => t.id === activeThreadId);
-  const viewedVersion = activeThread?.versions?.find((v) => v.version === viewingVersion);
-  const hasStep = Boolean(viewedVersion?.step || step);
-
-  const handleSnapshot = () => {
-    const canvas = document.querySelector('canvas');
-    if (canvas) {
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-      setBaseSnapshot(dataUrl);
-      setIsAnnotating(true);
-    }
-  };
-
-  const handleDownloadStep = () => {
-    void downloadStep();
-  };
+export function ViewportToolbar() {
+  const store = useAppStore();
 
   return (
-    <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 bg-slate-900/90 backdrop-blur-md border border-slate-800 rounded-lg p-1 shadow-lg select-none">
-      {/* Grid toggle */}
-      <button
-        onClick={() => updateViewportSettings({ showGrid: !viewportSettings.showGrid })}
-        className={`p-1.5 rounded-md text-xs transition-colors flex items-center gap-1 ${
-          viewportSettings.showGrid
-            ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/40'
-            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-        }`}
-        title="Toggle Build Grid (10mm)"
-      >
-        <Grid className="w-4 h-4" />
-      </button>
+    <div
+      role="toolbar"
+      aria-label="Viewport controls"
+      className="glass absolute top-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 rounded-full p-1.5 shadow-lg select-none"
+    >
+      {TOOLBAR_ITEMS.map((item) => {
+        if (item.render) {
+          return <React.Fragment key={item.id}>{item.render()}</React.Fragment>;
+        }
 
-      {/* Axes toggle */}
-      <button
-        onClick={() => updateViewportSettings({ showAxes: !viewportSettings.showAxes })}
-        className={`p-1.5 rounded-md text-xs transition-colors flex items-center gap-1 ${
-          viewportSettings.showAxes
-            ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/40'
-            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-        }`}
-        title="Toggle XYZ Axes (Red=X, Green=Y, Blue=Z)"
-      >
-        <Axis3d className="w-4 h-4" />
-      </button>
+        const active = item.isActive ? item.isActive(store) : false;
+        const Icon = item.icon;
 
-      {/* Edges toggle */}
-      <button
-        onClick={() => updateViewportSettings({ showEdges: !viewportSettings.showEdges })}
-        className={`p-1.5 rounded-md text-xs transition-colors flex items-center gap-1 ${
-          viewportSettings.showEdges
-            ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/40'
-            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-        }`}
-        title="Toggle CAD Feature Edges"
-      >
-        <Layers className="w-4 h-4" />
-      </button>
-
-      {/* Wireframe toggle */}
-      <button
-        onClick={() => updateViewportSettings({ wireframe: !viewportSettings.wireframe })}
-        className={`p-1.5 rounded-md text-xs transition-colors flex items-center gap-1 ${
-          viewportSettings.wireframe
-            ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/40'
-            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-        }`}
-        title="Toggle Wireframe Mode"
-      >
-        <Eye className="w-4 h-4" />
-      </button>
-
-      {/* Auto-rotate */}
-      <button
-        onClick={() => updateViewportSettings({ autoRotate: !viewportSettings.autoRotate })}
-        className={`p-1.5 rounded-md text-xs transition-colors flex items-center gap-1 ${
-          viewportSettings.autoRotate
-            ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/40'
-            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-        }`}
-        title="Toggle Turntable Auto-Rotation"
-      >
-        <RotateCw className="w-4 h-4" />
-      </button>
-
-      <div className="w-px h-4 bg-slate-800 mx-0.5" />
-
-      {/* Reset Camera */}
-      <button
-        onClick={onResetCamera}
-        className="p-1.5 rounded-md text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
-        title="Reset Camera & Center Model"
-      >
-        <Maximize2 className="w-4 h-4" />
-      </button>
-
-      <div className="w-px h-4 bg-slate-800 mx-0.5" />
-
-      {/* Snapshot & Annotate */}
-      <button
-        onClick={handleSnapshot}
-        className="p-1.5 rounded-md text-xs text-amber-400 hover:text-amber-200 hover:bg-amber-900/30 transition-colors flex items-center gap-1"
-        title="Snapshot & Annotate (Draw over 3D model)"
-      >
-        <PenTool className="w-4 h-4" />
-      </button>
-
-      {/* STEP Download */}
-      {hasStep && (
-        <>
-          <div className="w-px h-4 bg-slate-800 mx-0.5" />
+        return (
           <button
-            onClick={handleDownloadStep}
-            className="p-1.5 rounded-md text-xs text-indigo-400 hover:text-indigo-200 hover:bg-indigo-900/30 transition-colors flex items-center gap-1 font-medium cursor-pointer"
-            title="Download STEP"
+            key={item.id}
+            type="button"
+            aria-label={item.label}
+            title={item.label}
+            onClick={() => item.onSelect?.(store)}
+            className={`w-8 h-8 rounded-full flex items-center justify-center transition-all cursor-pointer ${
+              active
+                ? 'bg-[image:var(--accent-gradient)] text-[var(--fg)] shadow-[0_4px_12px_var(--accent-glow)]'
+                : 'text-[var(--fg-muted)] hover:bg-[var(--accent)] hover:text-[var(--fg)]'
+            }`}
           >
-            <Download className="w-4 h-4" />
-            <span>STEP</span>
+            {Icon && <Icon className="w-4 h-4" />}
           </button>
-        </>
-      )}
+        );
+      })}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import Editor, { Monaco } from '@monaco-editor/react';
+import Editor, { type Monaco } from '@monaco-editor/react';
 import { useAppStore } from '@/store/app-store';
 import { compileModel } from '@/lib/engine/build123d-client';
 import { PRELUDE_VERSION } from '@/lib/brep/prelude';
@@ -13,10 +13,59 @@ import {
   AlertTriangle,
   Loader2,
   FileCode,
-  Printer,
 } from 'lucide-react';
 
 export const PRELUDE_NOTE = "Helpers like _round and _bevel come from the tool's prelude; edit only the design code.";
+
+export interface MarkerData {
+  startLineNumber: number;
+  endLineNumber: number;
+  startColumn: number;
+  endColumn: number;
+  message: string;
+  severity: 'error';
+}
+
+export function buildCompileMarkers(
+  error: string | null,
+  line: number | null,
+  lineCount: number
+): MarkerData[] {
+  if (!error || line === null || line === undefined || line <= 0 || lineCount <= 0) {
+    return [];
+  }
+
+  const lines = error.split('\n').map((l) => l.trim()).filter(Boolean);
+  const message = lines.length > 0 ? lines[lines.length - 1] : error;
+  const clampedLine = Math.max(1, Math.min(line, lineCount));
+
+  return [
+    {
+      startLineNumber: clampedLine,
+      endLineNumber: clampedLine,
+      startColumn: 1,
+      endColumn: 1000,
+      message,
+      severity: 'error',
+    },
+  ];
+}
+
+const MONACO_SYNTAX_RULES = [
+  { token: 'keyword', foreground: '818cf8', fontStyle: 'bold' },
+  { token: 'type', foreground: '38bdf8' },
+  { token: 'keyword.flow', foreground: 'c084fc' },
+  { token: 'support.function', foreground: '4ade80' },
+  { token: 'variable.predefined', foreground: 'f472b6' },
+  { token: 'variable', foreground: 'e2e8f0' },
+  { token: 'number', foreground: 'fbbf24' },
+  { token: 'number.float', foreground: 'fbbf24' },
+  { token: 'string', foreground: 'a3e635' },
+  { token: 'comment', foreground: '64748b', fontStyle: 'italic' },
+  { token: 'operator', foreground: 'f87171' },
+];
+
+type MonacoEditor = Parameters<NonNullable<React.ComponentProps<typeof Editor>['onMount']>>[0];
 
 /** The editor's compile: the body plus the viewed version's preludeVersion. */
 export async function compileEditorCode(body: string): Promise<void> {
@@ -35,14 +84,17 @@ export function CodeEditorPanel() {
     code,
     setCode,
     compileStatus,
+    compileError,
+    compileErrorLine,
     isGenerating,
-    editorView,
-    setEditorView,
   } = useAppStore();
 
   const [editorValue, setEditorValue] = useState(code);
+  const [editorReady, setEditorReady] = useState(false);
   const [copied, setCopied] = useState(false);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const editorRef = useRef<MonacoEditor | null>(null);
+  const monacoRef = useRef<Monaco | null>(null);
 
   // Sync editor value when store code changes from external source (e.g. AI generation)
   useEffect(() => {
@@ -51,34 +103,73 @@ export function CodeEditorPanel() {
   }, [code]);
 
   const handleEditorWillMount = (monaco: Monaco) => {
-    // Register dark CAD theme
-    monaco.editor.defineTheme('cad-dark', {
+    let fg = '#eef1f6';
+    let accentFrom = '#6b9bff';
+    if (typeof window !== 'undefined') {
+      const styles = getComputedStyle(document.documentElement);
+      const computedFg = styles.getPropertyValue('--fg').trim();
+      if (computedFg) fg = computedFg;
+      const computedAccent = styles.getPropertyValue('--accent-from').trim();
+      if (computedAccent) accentFrom = computedAccent;
+    }
+
+    monaco.editor.defineTheme('cad-glass', {
       base: 'vs-dark',
       inherit: true,
-      rules: [
-        { token: 'keyword', foreground: '818cf8', fontStyle: 'bold' },
-        { token: 'type', foreground: '38bdf8' },
-        { token: 'keyword.flow', foreground: 'c084fc' },
-        { token: 'support.function', foreground: '4ade80' },
-        { token: 'variable.predefined', foreground: 'f472b6' },
-        { token: 'variable', foreground: 'e2e8f0' },
-        { token: 'number', foreground: 'fbbf24' },
-        { token: 'number.float', foreground: 'fbbf24' },
-        { token: 'string', foreground: 'a3e635' },
-        { token: 'comment', foreground: '64748b', fontStyle: 'italic' },
-        { token: 'operator', foreground: 'f87171' },
-      ],
+      rules: MONACO_SYNTAX_RULES,
       colors: {
-        'editor.background': '#0b0f19',
-        'editor.foreground': '#e2e8f0',
-        'editor.lineHighlightBackground': '#1e293b50',
-        'editorCursor.foreground': '#818cf8',
-        'editorWhitespace.foreground': '#334155',
-        'editorIndentGuide.background': '#1e293b',
-        'editorIndentGuide.activeBackground': '#475569',
+        'editor.background': '#00000000',
+        'editor.foreground': fg,
+        'editor.lineHighlightBackground': '#ffffff0a',
+        'editorCursor.foreground': accentFrom,
+        'editorWhitespace.foreground': '#ffffff14',
+        'editorIndentGuide.background': '#ffffff10',
+        'editorIndentGuide.activeBackground': '#ffffff25',
       },
     });
   };
+
+  const handleEditorDidMount = (editor: MonacoEditor, monaco: Monaco) => {
+    editorRef.current = editor;
+    monacoRef.current = monaco;
+    setEditorReady(true);
+    const model = editor.getModel();
+    if (model) {
+      const lineCount = model.getLineCount();
+      const markers = buildCompileMarkers(compileError, compileErrorLine, lineCount);
+      const monacoMarkers = markers.map((m) => ({
+        startLineNumber: m.startLineNumber,
+        endLineNumber: m.endLineNumber,
+        startColumn: m.startColumn,
+        endColumn: m.endColumn,
+        message: m.message,
+        severity: monaco.MarkerSeverity.Error,
+      }));
+      monaco.editor.setModelMarkers(model, 'cadai-compile', monacoMarkers);
+    }
+  };
+
+  // Sync compile error markers to Monaco model
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    const editor = editorRef.current;
+    if (!monaco || !editor) return;
+    const model = editor.getModel();
+    if (!model) return;
+
+    const lineCount = model.getLineCount();
+    const markers = buildCompileMarkers(compileError, compileErrorLine, lineCount);
+    const monacoMarkers = markers.map((m) => ({
+      startLineNumber: m.startLineNumber,
+      endLineNumber: m.endLineNumber,
+      startColumn: m.startColumn,
+      endColumn: m.endColumn,
+      message: m.message,
+      severity: monaco.MarkerSeverity.Error,
+    }));
+
+    monaco.editor.setModelMarkers(model, 'cadai-compile', monacoMarkers);
+  }, [compileError, compileErrorLine, editorValue, editorReady]);
 
   const triggerRecompile = useCallback(
     async (codeToCompile: string) => {
@@ -108,68 +199,56 @@ export function CodeEditorPanel() {
   };
 
   return (
-    <div className="h-full flex flex-col bg-[#0b0f19] border-t border-slate-800 min-w-0">
+    <div className="h-full flex flex-col bg-transparent min-w-0">
       {/* Editor toolbar header */}
-      <div className="px-3.5 py-2 bg-slate-950 border-b border-slate-800 flex items-center justify-between select-none">
+      <div className="px-3.5 py-2 border-b border-[var(--glass-border)] flex items-center justify-between select-none bg-transparent">
         <div className="flex items-center gap-2 min-w-0">
-          <FileCode className="w-4 h-4 text-cyan-400 shrink-0" />
-          <span className="text-xs font-semibold text-slate-200 truncate">
+          <FileCode className="w-4 h-4 text-[var(--accent-from)] shrink-0" />
+          <span className="text-xs font-semibold text-[var(--fg)] truncate">
             build123d Code
           </span>
-          <span className="text-[10px] text-slate-500 font-mono hidden md:inline truncate">
+          <span className="text-[10px] text-[var(--fg-muted)] font-mono hidden md:inline truncate">
             {isGenerating ? '(Streaming...)' : '(Live Sync)'}
           </span>
         </div>
 
         {/* Action Controls */}
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0 pr-8">
           {/* Status badge */}
           {compileStatus === 'compiling' && (
-            <div className="flex items-center gap-1 text-[11px] text-indigo-400 font-mono">
+            <div className="flex items-center gap-1 text-[11px] text-[var(--accent-from)] font-mono">
               <Loader2 className="w-3 h-3 animate-spin" />
               <span className="hidden sm:inline">Compiling...</span>
             </div>
           )}
           {compileStatus === 'success' && (
-            <div className="flex items-center gap-1 text-[11px] text-emerald-400 font-mono">
-              <CheckCircle2 className="w-3 h-3" />
+            <div className="flex items-center gap-1 text-[11px] text-[var(--fg)] font-mono">
+              <CheckCircle2 className="w-3 h-3 text-[var(--accent-from)]" />
               <span className="hidden sm:inline">Synced</span>
             </div>
           )}
           {compileStatus === 'error' && (
-            <div className="flex items-center gap-1 text-[11px] text-rose-400 font-mono">
-              <AlertTriangle className="w-3 h-3" />
+            <div className="flex items-center gap-1 text-[11px] text-[var(--destructive)] font-mono">
+              <AlertTriangle className="w-3 h-3 text-[var(--destructive)]" />
               <span className="hidden sm:inline">Error</span>
             </div>
           )}
 
-          {/* Toggle Design Panel button */}
           <button
-            onClick={() => setEditorView(editorView === 'code' ? 'design' : 'code')}
-            className={`flex items-center gap-1 text-xs px-2 py-1 rounded border transition-colors cursor-pointer ${
-              editorView === 'design'
-                ? 'bg-indigo-600/20 border-indigo-500/40 text-indigo-300'
-                : 'bg-slate-900 hover:bg-slate-800 border-slate-800 text-slate-400 hover:text-slate-200'
-            }`}
-            title={editorView === 'code' ? 'Open Design Panel' : 'Hide Design Panel'}
-          >
-            <Printer className="w-3.5 h-3.5 text-cyan-400" />
-            <span className="text-[11px] hidden sm:inline">Design</span>
-          </button>
-
-          <button
+            type="button"
             onClick={handleCopy}
-            className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 transition-colors cursor-pointer"
+            className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-[var(--accent)] hover:bg-[var(--accent-glow)] border border-[var(--glass-border)] text-[var(--fg)] transition-colors cursor-pointer"
             title="Copy build123d Code"
           >
-            {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+            {copied ? <Check className="w-3 h-3 text-[var(--accent-from)]" /> : <Copy className="w-3 h-3" />}
             <span className="text-[11px] hidden sm:inline">{copied ? 'Copied' : 'Copy'}</span>
           </button>
 
           <button
+            type="button"
             onClick={() => triggerRecompile(editorValue)}
             disabled={compileStatus === 'compiling'}
-            className="flex items-center gap-1 text-xs px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-medium shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+            className="flex items-center gap-1 text-xs px-2.5 py-1 rounded bg-[image:var(--accent-gradient)] hover:opacity-90 text-[var(--fg)] font-medium shadow-xs transition-opacity cursor-pointer disabled:opacity-50"
             title="Recompile build123d Code"
           >
             <Play className="w-3 h-3 fill-current" />
@@ -179,7 +258,7 @@ export function CodeEditorPanel() {
       </div>
 
       {/* Fixed prelude note */}
-      <div className="px-3.5 py-1.5 bg-slate-900/60 border-b border-slate-800 text-[11px] text-slate-400 select-none">
+      <div className="px-3.5 py-1.5 border-b border-[var(--glass-border)] text-[11px] text-[var(--fg-muted)] select-none bg-transparent">
         {PRELUDE_NOTE}
       </div>
 
@@ -188,14 +267,15 @@ export function CodeEditorPanel() {
         <Editor
           height="100%"
           language="python"
-          theme="cad-dark"
+          theme="cad-glass"
           value={editorValue}
           onChange={handleEditorChange}
           beforeMount={handleEditorWillMount}
+          onMount={handleEditorDidMount}
           options={{
             minimap: { enabled: false },
             fontSize: 12,
-            fontFamily: "'JetBrains Mono', 'Fira Code', 'Courier New', monospace",
+            fontFamily: 'var(--font-geist-mono), monospace',
             lineNumbers: 'on',
             roundedSelection: false,
             scrollBeyondLastLine: false,

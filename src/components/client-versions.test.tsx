@@ -7,7 +7,7 @@ import { DB_NAME } from '@/lib/storage/db-schema';
 import { ChatPanel } from './chat/chat-panel';
 import { VersionList, FAILED_CHECKS_LABEL, DESIGNER_LABEL } from './chat/version-list';
 import { CodeEditorPanel, PRELUDE_NOTE, compileEditorCode } from './editor/code-editor-panel';
-import { downloadStep } from './viewport/viewport-toolbar';
+import { downloadStep } from './workspace/export-menu';
 import { applyParamMove } from './design/design-panel';
 import * as stlExporter from '@/lib/export/stl-exporter';
 import { PRELUDE_SENTINEL, withGeneratedPrelude } from '@/lib/brep/prelude';
@@ -1235,7 +1235,7 @@ describe('client versions, sliders and editor', () => {
 
     await downloadStep();
     expect(fetchedArtifacts).toContain('/api/artifacts/P2');
-    expect(exportStepSpy).toHaveBeenCalledWith(artifactText, 'Download Thread.step', 'text');
+    expect(exportStepSpy).toHaveBeenCalledWith(artifactText, 'download-thread-v1.step', 'text');
   });
 
   it('switching back to a running thread restores Stop', async () => {
