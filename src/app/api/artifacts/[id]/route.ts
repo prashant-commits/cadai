@@ -10,6 +10,7 @@ const CONTENT_TYPES: Record<OwnerArtifactKind, string> = {
   stl: 'model/stl',
   step: 'model/step',
   image: 'image/png',
+  topo: 'application/gzip',
 };
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {

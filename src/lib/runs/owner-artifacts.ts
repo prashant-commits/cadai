@@ -4,7 +4,7 @@ import { getDb, type Db, type Queryable } from '@/lib/db/db';
 import { getObjectStore, objectKeyFor, type ObjectStore } from '@/lib/storage/object-store';
 import { rowToArtifact, type ArtifactRow } from '@/lib/persist/types';
 
-export type OwnerArtifactKind = 'stl' | 'step' | 'image';
+export type OwnerArtifactKind = 'stl' | 'step' | 'image' | 'topo';
 
 export interface OwnerArtifactsDeps {
   db?: Db;

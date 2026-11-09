@@ -439,6 +439,7 @@ export const useAppStore = create<AppState>((set, get, api) => ({
               id: m.id,
               role: m.role,
               content: m.markdown,
+              kind: m.kind === 'tool_edit' ? 'tool_edit' : undefined,
               status: isStreaming ? 'streaming' : 'complete',
               transcript,
               attachments,

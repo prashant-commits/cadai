@@ -247,4 +247,38 @@ describe('run-input', () => {
     expect(loadedBare.attachments).toHaveLength(1);
     expect(loadedBare.attachments[0].kind).toBe('markup');
   });
+
+  it('run-input includes tool_edit lines in history', async () => {
+    const db = getDb();
+    const owner = `owner_te_${crypto.randomUUID()}`;
+    const threadId = crypto.randomUUID();
+
+    await db.query(
+      `insert into threads(id, owner_key, title) values ($1, $2, 'Tool Edit Thread')`,
+      [threadId, owner]
+    );
+
+    await db.query(
+      `insert into messages(id, thread_id, seq, role, kind, content, client_message_id) values
+       ($1, $2, 1, 'user', 'request', 'Make a box', $3),
+       ($4, $2, 2, 'assistant', 'result', 'Here is the box', null),
+       ($5, $2, 3, 'user', 'tool_edit', 'You added Hole M5 · v2', $6)`,
+      [
+        crypto.randomUUID(),
+        threadId,
+        crypto.randomUUID(),
+        crypto.randomUUID(),
+        crypto.randomUUID(),
+        crypto.randomUUID(),
+      ]
+    );
+
+    const loaded = await loadRunInput(db, owner, threadId, null, []);
+    expect(loaded.messages).toHaveLength(3);
+    expect(loaded.messages[2]).toEqual({
+      role: 'user',
+      kind: 'tool_edit',
+      content: 'You added Hole M5 · v2',
+    });
+  });
 });
