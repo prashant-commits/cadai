@@ -11,3 +11,7 @@ dependencies = []
 
 [tool.setuptools.packages.find]
 include = ["cadai_geo*"]
+
+# The runner points scripts at cadai_geo/fonts (CADAI_FONTS); a non-editable install needs them too.
+[tool.setuptools.package-data]
+cadai_geo = ["fonts/*"]

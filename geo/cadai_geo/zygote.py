@@ -534,6 +534,20 @@ def _chown_tree(path: str, uid: int, gid: int) -> None:
         _chown_tree(os.path.join(path, name), uid, gid)
 
 
+def _chown_dir_nofollow(path: str, uid: int, gid: int) -> None:
+    """``fchown`` a real directory. A symlink planted at ``path`` is not followed; nothing changes."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return
+    try:
+        os.fchown(fd, uid, gid)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def _run_untrusted(request: dict, err_fd: int, out_fd: int) -> None:
     """Script stage. argv is ``(program, script, scratch)`` — never the outdir."""
     try:
@@ -663,6 +677,9 @@ def _supervise(request: dict) -> None:
         request["fallback_error"] = text
     trust = _trust_account(request)
     if trust is not None:
+        # The work dir (scratch's parent) is the run uid's, mode 0700: the trust uid cannot
+        # reach scratch through it until it owns it too. The run uid is reaped by now.
+        _chown_dir_nofollow(os.path.dirname(request["scratch"]), trust.pw_uid, trust.pw_gid)
         _chown_tree(request["scratch"], trust.pw_uid, trust.pw_gid)
         try:
             os.lchown(request["outdir"], trust.pw_uid, trust.pw_gid)

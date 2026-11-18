@@ -1,0 +1,44 @@
+# Full local stack: web (Next.js) + geo (build123d service). Start with `npm run docker:up`,
+# which creates the shared geo token (.docker/geo-token) on first run.
+name: cadai
+
+services:
+  geo:
+    build: ./geo
+    # The sandbox drops to per-run uids; these are the capabilities it checks for at startup (geo/Dockerfile).
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, KILL, CHOWN, DAC_OVERRIDE, FOWNER]
+    environment:
+      CADAI_GEO_TOKEN_FILE: /run/secrets/geo_token
+    secrets: [geo_token]
+    restart: unless-stopped
+
+  web:
+    build: .
+    depends_on:
+      geo:
+        condition: service_healthy
+    # API keys and CADAI_* settings, the same files `next dev` reads.
+    env_file:
+      - path: .env
+        required: false
+      - path: .env.local
+        required: false
+    environment:
+      NODE_ENV: production
+      CADAI_GEO_URL: http://geo:8000
+      CADAI_RUN_DIR: /data/runs
+      CADAI_DB_SINGLE_PROCESS: "1"
+    secrets: [geo_token]
+    ports:
+      - "127.0.0.1:${CADAI_WEB_PORT:-3123}:3000"
+    volumes:
+      - cadai-data:/data
+    restart: unless-stopped
+
+secrets:
+  geo_token:
+    file: ./.docker/geo-token
+
+volumes:
+  cadai-data:

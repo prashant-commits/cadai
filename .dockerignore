@@ -1,0 +1,17 @@
+.git
+node_modules
+.next
+.cadai
+.docker
+.vercel
+.env*
+!.env.example
+*.tsbuildinfo
+geo/.venv
+geo/*.egg-info
+**/__pycache__
+**/.pytest_cache
+eval/results
+eval/designer/results
+graphify-out
+coverage

@@ -82,6 +82,22 @@ Without `CADAI_GEO_URL` the B-rep scripts run through a local Python child proce
 **dev-only**: it is refused under `NODE_ENV=production` unless `CADAI_GEO_ALLOW_LOCAL=1`.
 Deployments should always set `CADAI_GEO_URL` (and `CADAI_GEO_TOKEN`).
 
+The geometry service's process sandbox is Linux-only: on macOS the service starts but every run fails.
+On a Mac, use the local runner above or Docker.
+
+## Docker
+
+`compose.yaml` runs the whole stack: the web app (production build, Next.js standalone) and the
+geometry service with its full sandbox (per-run uids, Linux capabilities). Data (runs, objects,
+PGlite) lives in the `cadai-data` volume. API keys come from `.env` and `.env.local`.
+```bash
+npm run docker:up      # build and start; creates the shared geo token in .docker/ on first run
+npm run docker:logs    # follow both services
+npm run docker:down    # stop (the data volume is kept)
+```
+The app is served on http://127.0.0.1:3123 (`CADAI_WEB_PORT` to change it). The geometry
+service is reachable only from the web container.
+
 ## Evaluating generation quality
 
 `npm run eval:generation -- --model claude-haiku-5.5 --tag baseline` runs the prompts in

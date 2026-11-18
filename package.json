@@ -12,7 +12,10 @@
     "test:pg": "vitest run --project pg",
     "test:watch": "vitest",
     "geo:setup": "python3 -m venv geo/.venv && geo/.venv/bin/pip install -r geo/requirements-dev.txt && geo/.venv/bin/pip install --no-deps -e geo",
-    "geo:serve": "f=\"${TMPDIR:-/tmp}/cadai-geo-dev-token\"; if [ -e \"$f\" ]; then chmod 0600 \"$f\"; fi; umask 077; printf '%s\\n' dev > \"$f\"; chmod 0400 \"$f\"; CADAI_GEO_TOKEN_FILE=\"$f\" geo/.venv/bin/python -m uvicorn cadai_geo.service:app --host 127.0.0.1 --port 8765"
+    "geo:serve": "f=\"${TMPDIR:-/tmp}/cadai-geo-dev-token\"; if [ -e \"$f\" ]; then chmod 0600 \"$f\"; fi; umask 077; printf '%s\\n' dev > \"$f\"; chmod 0400 \"$f\"; CADAI_GEO_TOKEN_FILE=\"$f\" geo/.venv/bin/python -m uvicorn cadai_geo.service:app --host 127.0.0.1 --port 8765",
+    "docker:up": "sh scripts/docker-up.sh",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1164.0",

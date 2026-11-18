@@ -71,3 +71,6 @@ explabs_smoke.mjs
 
 # eval run output (records, meshes, private PGlite)
 eval/designer/results/
+
+# Docker stack: shared geo token (scripts/docker-up.sh)
+/.docker/
